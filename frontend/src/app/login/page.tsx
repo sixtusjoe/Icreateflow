@@ -1,0 +1,147 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useAuth } from "@/lib/auth";
+import { Loader2, Eye, EyeOff, LogIn, UserPlus, Zap, BarChart3, Layers } from "lucide-react";
+import ThemeToggle from "@/components/ThemeToggle";
+
+export default function LoginPage() {
+  const { login } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await login(email, password);
+    } catch (err: any) {
+      setError(err.message || "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen">
+      {/* Left — Form */}
+      <div className="flex flex-1 flex-col justify-between bg-background px-8 py-6 md:px-16 lg:px-24">
+        <div className="flex items-center justify-between">
+          <Link href="/landing" className="text-lg font-bold tracking-tight text-foreground">ICREATE</Link>
+          <ThemeToggle />
+        </div>
+
+        <div className="mx-auto w-full max-w-sm animate-slide-up">
+          {/* Tabs with icons */}
+          <div className="mb-8 flex rounded-xl border border-border overflow-hidden">
+            <div className="flex flex-1 items-center justify-center gap-2 bg-foreground py-3 text-sm font-semibold text-background">
+              <LogIn className="h-4 w-4" />
+              Log In
+            </div>
+            <Link href="/register" className="flex flex-1 items-center justify-center gap-2 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+              <UserPlus className="h-4 w-4" />
+              Sign Up
+            </Link>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {error && (
+              <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+                {error}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-sm font-semibold text-foreground">Email</label>
+              <input
+                type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus
+                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground outline-none transition-colors focus:border-foreground placeholder:text-muted-foreground"
+                placeholder="Work Email"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-sm font-semibold text-foreground">Password</label>
+              <div className="relative">
+                <input
+                  type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} required
+                  className="w-full rounded-xl border border-border bg-background px-4 py-3 pr-10 text-sm text-foreground outline-none transition-colors focus:border-foreground placeholder:text-muted-foreground"
+                  placeholder="Enter your password"
+                />
+                <button type="button" onClick={() => setShowPw(!showPw)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" disabled={loading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-lime py-3 text-sm font-bold text-black transition-all hover:brightness-95 disabled:opacity-50">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
+              Log In
+            </button>
+          </form>
+
+          <p className="mt-5 text-center text-sm text-muted-foreground">
+            Don&apos;t have an account?{" "}
+            <Link href="/register" className="font-semibold text-foreground hover:underline">Sign up free</Link>
+          </p>
+        </div>
+
+        <div className="text-center text-xs text-muted-foreground">
+          <p>&copy; {new Date().getFullYear()} ICREATE. All Rights Reserved.</p>
+        </div>
+      </div>
+
+      {/* Right — Animated Visual */}
+      <div className="hidden flex-1 items-center justify-center bg-[#ddd8f3] lg:flex relative overflow-hidden">
+        {/* Floating decorative shapes */}
+        <div className="absolute top-20 left-16 h-16 w-16 rounded-2xl bg-white/40 backdrop-blur-sm animate-float" />
+        <div className="absolute bottom-32 right-20 h-12 w-12 rounded-full bg-white/30 backdrop-blur-sm animate-float-slow delay-500" />
+        <div className="absolute top-1/4 right-16 h-8 w-8 rounded-lg bg-black/10 animate-float-reverse delay-300" />
+        <div className="absolute bottom-1/4 left-24 h-10 w-10 rounded-full bg-black/5 animate-float delay-700" />
+
+        {/* Main card */}
+        <div className="relative z-10 animate-float-slow">
+          <div className="w-80 rounded-2xl bg-white p-6 shadow-2xl shadow-black/10">
+            <div className="mb-4 flex items-center gap-2">
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-black text-[10px] text-white font-bold">IC</div>
+              <span className="text-sm font-bold text-black">ICREATE</span>
+            </div>
+            <div className="mb-5 space-y-2.5">
+              <div className="h-3 w-3/4 rounded-full bg-gray-200 animate-shimmer" />
+              <div className="h-3 w-1/2 rounded-full bg-gray-100" />
+              <div className="h-3 w-2/3 rounded-full bg-gray-200 animate-shimmer delay-300" />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { n: "12", l: "Brands", icon: Layers, delay: "0s" },
+                { n: "48", l: "Posts", icon: BarChart3, delay: "0.5s" },
+                { n: "4", l: "Platforms", icon: Zap, delay: "1s" },
+              ].map((s) => (
+                <div key={s.l} className="rounded-xl bg-gray-900 p-3 text-center animate-scale-pulse" style={{ animationDelay: s.delay }}>
+                  <s.icon className="mx-auto mb-1 h-3.5 w-3.5 text-gray-400" />
+                  <p className="text-lg font-bold text-white">{s.n}</p>
+                  <p className="text-[10px] text-gray-400">{s.l}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Floating mini card */}
+          <div className="absolute -bottom-6 -right-8 rounded-xl bg-white px-4 py-3 shadow-lg animate-float delay-1000">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-green-400 animate-pulse-soft" />
+              <span className="text-xs font-semibold text-black">3 posts scheduled</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

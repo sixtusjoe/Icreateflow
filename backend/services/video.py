@@ -1,0 +1,109 @@
+"""
+FFmpeg video builder.
+Creates 9:16 videos with left-slide transitions from slide images.
+Optionally mixes in background music.
+"""
+import subprocess
+import shutil
+from pathlib import Path
+
+
+def check_ffmpeg() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def build_video(slide_paths: list[str], output_path: str,
+                slide_duration: float = 3.0, transition_duration: float = 0.5,
+                fps: int = 30, music_path: str = None) -> str:
+    """
+    Build a 9:16 video with left-slide transitions from a list of slide images.
+
+    Args:
+        slide_paths: Ordered list of 9:16 slide image paths
+        output_path: Where to save the output MP4
+        slide_duration: How long each slide is shown (seconds)
+        transition_duration: How long the slide-left transition takes (seconds)
+        fps: Frames per second
+        music_path: Optional path to background music file
+
+    Returns:
+        Path to the output video file
+    """
+    if not check_ffmpeg():
+        raise RuntimeError("FFmpeg not found. Install with: brew install ffmpeg")
+
+    if len(slide_paths) < 2:
+        raise ValueError("Need at least 2 slides to create a video")
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    n = len(slide_paths)
+
+    # Build input arguments: each image is looped for slide_duration
+    inputs = []
+    for p in slide_paths:
+        inputs.extend(["-loop", "1", "-t", str(slide_duration), "-i", str(p)])
+
+    # Build xfade filter chain
+    filter_parts = []
+    offset = slide_duration - transition_duration
+
+    for i in range(1, n):
+        if i == 1:
+            in_label = "[0:v]"
+        else:
+            in_label = f"[v{i - 1}]"
+
+        if i == n - 1:
+            out_label = "[outv]"
+        else:
+            out_label = f"[v{i}]"
+
+        filter_parts.append(
+            f"{in_label}[{i}:v]xfade=transition=slideleft"
+            f":duration={transition_duration}:offset={offset}{out_label}"
+        )
+        offset += slide_duration - transition_duration
+
+    filter_complex = ";".join(filter_parts)
+
+    # Base command
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+    ]
+
+    # Add music if provided
+    if music_path and Path(music_path).exists():
+        # Calculate total video duration
+        total_duration = (n * slide_duration) - ((n - 1) * transition_duration)
+
+        cmd.extend([
+            "-i", str(music_path),
+            "-map", f"{n}:a",
+            "-shortest",
+            "-af", f"afade=t=out:st={total_duration - 1}:d=1",
+        ])
+
+    cmd.extend([
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-movflags", "+faststart",
+        str(output_path)
+    ])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed: {result.stderr[-500:]}")
+
+    return output_path
+
+
+def get_video_duration(slide_count: int, slide_duration: float = 3.0,
+                       transition_duration: float = 0.5) -> float:
+    """Calculate total video duration given slide count and timings."""
+    return (slide_count * slide_duration) - ((slide_count - 1) * transition_duration)
