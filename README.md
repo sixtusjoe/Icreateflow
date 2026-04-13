@@ -151,13 +151,13 @@ Open two terminal tabs and run:
 
 **Tab 1 — Backend:**
 ```bash
-cd ~/path/to/Icreateflow/backend
+cd /Users/mac/Desktop/Zagged/backend
 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Tab 2 — Frontend:**
 ```bash
-cd ~/path/to/Icreateflow/frontend
+cd /Users/mac/Desktop/Zagged/frontend
 npm run dev
 ```
 
