@@ -52,13 +52,18 @@ def build_redirect_uri(redirect_base: str, platform: str) -> str:
     return f"{base}/api/oauth/{platform}/callback"
 
 
-def sign_state(user_id: int, account_id: int, platform: str) -> str:
-    """Short-lived JWT binding the connecting user to the account + platform."""
+def sign_state(user_id: int, account_id: int, platform: str, kind: str = "account") -> str:
+    """Short-lived JWT binding the connecting user to the account/variation + platform.
+
+    `kind` is either 'account' (brand accounts, default) or 'variation' (artist_accounts).
+    `account_id` carries the target row id regardless of kind.
+    """
     payload = {
         "purpose": "oauth_state",
         "platform": platform,
         "user_id": user_id,
         "account_id": account_id,
+        "kind": kind,
         "nonce": secrets.token_hex(8),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
     }
@@ -77,6 +82,7 @@ def verify_state(state: str) -> dict[str, Any] | None:
             "platform": str(payload["platform"]),
             "user_id": int(payload["user_id"]),
             "account_id": int(payload["account_id"]),
+            "kind": str(payload.get("kind") or "account"),
         }
     except (KeyError, ValueError):
         return None
@@ -194,3 +200,51 @@ async def exchange_code(
             "platform_user_id": None,
             "raw": data,
         }
+
+
+async def refresh_access_token(
+    platform: str, refresh_token: str, client_id: str, client_secret: str
+) -> dict[str, Any]:
+    """Exchange a refresh_token for a fresh access_token.
+
+    TikTok and Google (youtube) issue expiring access tokens with refresh tokens.
+    Meta's long-lived page tokens don't rotate, so this is a no-op there.
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        if platform == "tiktok":
+            resp = await client.post(
+                TOKEN_URLS["tiktok"],
+                data={
+                    "client_key": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            data = resp.json()
+            return {
+                "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token") or refresh_token,
+                "expires_in": data.get("expires_in"),
+                "raw": data,
+            }
+        if platform == "youtube":
+            resp = await client.post(
+                TOKEN_URLS["youtube"],
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            data = resp.json()
+            return {
+                "access_token": data.get("access_token"),
+                "refresh_token": refresh_token,
+                "expires_in": data.get("expires_in"),
+                "raw": data,
+            }
+        # meta: no rotation
+        return {"access_token": None, "refresh_token": refresh_token, "expires_in": None, "raw": {}}

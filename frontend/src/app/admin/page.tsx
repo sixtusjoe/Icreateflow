@@ -13,9 +13,10 @@ import {
   getAdminBrands, deleteAdminBrand, getAdminPosts, deleteAdminPost, getAdminAccounts,
   getAdminMusic, deleteAdminMusic, getAdminSchedule, getAdminApiKeys,
   getOAuthApps, updateOAuthApp,
+  getAdminArtists, deleteAdminArtist,
 } from "@/lib/api";
 
-type Tab = "overview" | "users" | "brands" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "branding";
+type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "branding";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -30,6 +31,7 @@ export default function AdminPage() {
   const [schedule, setSchedule] = useState<any[]>([]);
   const [apiKeys, setApiKeys] = useState<any[]>([]);
   const [oauth, setOauth] = useState<any>(null);
+  const [artists, setArtists] = useState<any[]>([]);
   const [siteConfig, setSiteConfig] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -48,6 +50,7 @@ export default function AdminPage() {
     getAdminSchedule().then(setSchedule).catch(() => {});
     getAdminApiKeys().then(setApiKeys).catch(() => {});
     getOAuthApps().then(setOauth).catch(() => {});
+    getAdminArtists().then(setArtists).catch(() => {});
     getSiteConfig().then(setSiteConfig).catch(() => {});
   };
 
@@ -57,6 +60,7 @@ export default function AdminPage() {
     { id: "overview", label: "Overview" },
     { id: "users", label: "Users" },
     { id: "brands", label: "Brands" },
+    { id: "artists", label: "Artists" },
     { id: "posts", label: "Posts" },
     { id: "accounts", label: "Accounts" },
     { id: "music", label: "Music" },
@@ -94,6 +98,7 @@ export default function AdminPage() {
       {tab === "overview" && <OverviewTab stats={stats} />}
       {tab === "users" && <UsersTab users={users} currentUserId={user.id} onReload={reloadAll} />}
       {tab === "brands" && <BrandsTab brands={brands} onReload={reloadAll} />}
+      {tab === "artists" && <ArtistsTab artists={artists} onReload={reloadAll} />}
       {tab === "posts" && <PostsTab posts={posts} onReload={reloadAll} />}
       {tab === "accounts" && <AccountsTab accounts={accounts} />}
       {tab === "music" && <MusicTab tracks={music} onReload={reloadAll} />}
@@ -299,6 +304,48 @@ function BrandsTab({ brands, onReload }: any) {
   );
 }
 
+function ArtistsTab({ artists, onReload }: any) {
+  const handleDelete = async (id: number, name: string) => {
+    if (!confirm(`Delete artist "${name}" and all variations, clips, and scheduled posts?`)) return;
+    try { await deleteAdminArtist(id); toast.success("Artist deleted"); onReload(); }
+    catch { toast.error("Failed"); }
+  };
+  return (
+    <div className="overflow-x-auto rounded-2xl bg-card">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border text-left">
+            <Th>Name</Th><Th>Owner</Th>
+            <Th className="hidden md:table-cell">Variations</Th>
+            <Th className="hidden md:table-cell">Clips</Th>
+            <Th className="hidden md:table-cell">Posts</Th>
+            <Th className="hidden md:table-cell">Views</Th>
+            <Th></Th>
+          </tr>
+        </thead>
+        <tbody>
+          {artists.map((a: any) => (
+            <tr key={a.id} className="border-b border-border/50">
+              <Td><div className="font-medium">{a.name}</div><div className="text-xs text-muted-foreground">/{a.slug}</div></Td>
+              <Td>{a.user_name || "—"}<div className="text-xs text-muted-foreground hidden md:block">{a.user_email}</div></Td>
+              <Td className="hidden md:table-cell">{a.variations_count ?? 0}</Td>
+              <Td className="hidden md:table-cell">{a.clips_count ?? 0}</Td>
+              <Td className="hidden md:table-cell">{a.posts_count ?? 0}</Td>
+              <Td className="hidden md:table-cell">{(a.views_total ?? 0).toLocaleString()}</Td>
+              <Td>
+                <button onClick={() => handleDelete(a.id, a.name)}
+                  className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function PostsTab({ posts, onReload }: any) {
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const filtered = filterStatus === "all" ? posts : posts.filter((p: any) => p.status === filterStatus);
@@ -459,6 +506,37 @@ function OAuthTab({ oauth, onReload }: any) {
         </div>
       </div>
       {["tiktok", "youtube", "meta"].map((p) => <OAuthCard key={p} platform={p} data={oauth[p]} redirectBase={redirectBase} onReload={onReload} />)}
+      <GoogleDriveCard data={oauth.google_drive} onReload={onReload} />
+    </div>
+  );
+}
+
+function GoogleDriveCard({ data, onReload }: any) {
+  const [apiKey, setApiKey] = useState("");
+  const save = async () => {
+    if (!apiKey) { toast.error("Enter an API key"); return; }
+    try { await updateOAuthApp("google_drive", { api_key: apiKey }); toast.success("Google Drive key saved"); setApiKey(""); onReload(); }
+    catch { toast.error("Failed"); }
+  };
+  return (
+    <div className="rounded-2xl bg-card p-4 md:p-6">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-base font-semibold">Google Drive</h3>
+        <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${data?.configured ? "border-green-500/40 text-green-500" : "border-border text-muted-foreground"}`}>
+          {data?.configured ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+          {data?.configured ? "Configured" : "Not configured"}
+        </span>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">Server-side API key with Drive API enabled. Used to mirror public Drive folders into an artist&apos;s clip directory — shared across all users.</p>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">API Key {data?.api_key_preview && <span className="ml-1 text-muted-foreground/70">({data.api_key_preview})</span>}</label>
+        <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+          placeholder={data?.api_key_preview ? "leave blank to keep existing" : "AIza..."}
+          className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 text-base sm:text-sm" />
+      </div>
+      <button onClick={save} className="mt-3 inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 text-sm font-medium text-background">
+        <Save className="h-4 w-4" /> Save Google Drive
+      </button>
     </div>
   );
 }

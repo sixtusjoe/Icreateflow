@@ -67,7 +67,10 @@ DB_PATH = Path(__file__).parent / "icreate.db"
 
 # Columns stored as Postgres TIMESTAMP — ISO strings coming from callers need
 # to be parsed into `datetime` since asyncpg rejects str for timestamp binds.
-_TIMESTAMP_COLUMNS = {"created_at", "last_login", "scheduled_at"}
+_TIMESTAMP_COLUMNS = {
+    "created_at", "last_login", "scheduled_at",
+    "scheduled_for", "posted_at", "view_count_updated_at", "last_posted_at",
+}
 
 # Columns that must always be coerced to real booleans regardless of input form.
 _BOOLEAN_COLUMNS = {
@@ -240,6 +243,81 @@ class SiteConfig(Base):
     __tablename__ = "site_config"
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+# --- Clipping: Artists, Variations, Clips, ClipPosts ------------------------
+
+
+class Artist(Base):
+    __tablename__ = "artists"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    timezone: Mapped[str] = mapped_column(Text, server_default="US/Eastern")
+    posts_per_day: Mapped[int] = mapped_column(Integer, server_default="3")
+    window_start: Mapped[str] = mapped_column(Text, server_default="09:00")
+    window_end: Mapped[str] = mapped_column(Text, server_default="21:00")
+    gdrive_folder_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    gdrive_folder_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
+class ArtistAccount(Base):
+    __tablename__ = "artist_accounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    tiktok_handle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    youtube_handle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instagram_handle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    facebook_handle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tiktok_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    youtube_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instagram_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    facebook_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class Clip(Base):
+    __tablename__ = "clips"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    local_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    gdrive_file_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    duration_s: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    times_posted: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_posted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (CheckConstraint("source IN ('upload','gdrive')", name="clips_source_chk"),)
+
+
+class ClipPost(Base):
+    __tablename__ = "clip_posts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clip_id: Mapped[int] = mapped_column(ForeignKey("clips.id", ondelete="CASCADE"), nullable=False)
+    artist_account_id: Mapped[int] = mapped_column(
+        ForeignKey("artist_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    scheduled_for: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    posted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    platform_post_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, server_default="scheduled")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    view_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    view_count_updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    __table_args__ = (
+        CheckConstraint(
+            "platform IN ('tiktok','youtube','instagram','facebook')",
+            name="clip_posts_platform_chk",
+        ),
+        CheckConstraint(
+            "status IN ('scheduled','posting','posted','failed')", name="clip_posts_status_chk"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -527,10 +605,19 @@ async def _migrate_oauth_columns(conn) -> None:
         await conn.execute(text(f'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS {col} TEXT'))
 
 
+async def _migrate_artist_oauth_columns(conn) -> None:
+    """Idempotently add OAuth-related columns to artist_accounts (Postgres)."""
+    for col in OAUTH_ACCOUNT_COLUMNS:
+        await conn.execute(
+            text(f'ALTER TABLE artist_accounts ADD COLUMN IF NOT EXISTS {col} TEXT')
+        )
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_oauth_columns(conn)
+        await _migrate_artist_oauth_columns(conn)
     db = await get_db()
     try:
         await _seed(db)
@@ -1001,4 +1088,219 @@ async def set_setting(db: Connection, key: str, value: str):
         ),
         {"k": key, "v": value},
     )
+    await s.commit()
+
+
+# --- Artists ---
+
+async def create_artist(
+    db: Connection,
+    name: str,
+    slug: str,
+    user_id: int | None = None,
+    timezone: str = "US/Eastern",
+    posts_per_day: int = 3,
+    window_start: str = "09:00",
+    window_end: str = "21:00",
+):
+    s = db.session
+    stmt = (
+        insert(Artist)
+        .values(
+            name=name, slug=slug, user_id=user_id, timezone=timezone,
+            posts_per_day=posts_per_day, window_start=window_start, window_end=window_end,
+        )
+        .returning(Artist.id)
+    )
+    aid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return aid
+
+
+async def get_artists(db: Connection, user_id: int | None = None):
+    s = db.session
+    stmt = select(Artist)
+    if user_id:
+        stmt = stmt.where(Artist.user_id == user_id)
+    stmt = stmt.order_by(Artist.created_at.desc())
+    return _rows((await s.execute(stmt)).scalars().all())
+
+
+async def get_artist(db: Connection, artist_id: int):
+    s = db.session
+    return _row(
+        (await s.execute(select(Artist).where(Artist.id == artist_id))).scalar_one_or_none()
+    )
+
+
+async def get_artist_by_slug(db: Connection, user_id: int, slug: str):
+    s = db.session
+    return _row(
+        (await s.execute(
+            select(Artist).where(Artist.user_id == user_id, Artist.slug == slug)
+        )).scalar_one_or_none()
+    )
+
+
+async def update_artist(db: Connection, artist_id: int, **kwargs):
+    s = db.session
+    await s.execute(update(Artist).where(Artist.id == artist_id).values(**_prep(kwargs)))
+    await s.commit()
+
+
+async def delete_artist(db: Connection, artist_id: int):
+    s = db.session
+    await s.execute(delete(Artist).where(Artist.id == artist_id))
+    await s.commit()
+
+
+# --- Artist accounts (variations) ---
+
+async def create_artist_account(db: Connection, artist_id: int, name: str, **kwargs):
+    s = db.session
+    stmt = (
+        insert(ArtistAccount)
+        .values(artist_id=artist_id, name=name, **_prep(kwargs))
+        .returning(ArtistAccount.id)
+    )
+    vid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return vid
+
+
+async def get_artist_accounts(db: Connection, artist_id: int):
+    s = db.session
+    rows = await s.execute(
+        select(ArtistAccount).where(ArtistAccount.artist_id == artist_id).order_by(ArtistAccount.id)
+    )
+    return _rows(rows.scalars().all())
+
+
+async def get_artist_account(db: Connection, variation_id: int):
+    s = db.session
+    return _row(
+        (
+            await s.execute(select(ArtistAccount).where(ArtistAccount.id == variation_id))
+        ).scalar_one_or_none()
+    )
+
+
+async def update_artist_account(db: Connection, variation_id: int, **kwargs):
+    s = db.session
+    await s.execute(
+        update(ArtistAccount).where(ArtistAccount.id == variation_id).values(**_prep(kwargs))
+    )
+    await s.commit()
+
+
+async def delete_artist_account(db: Connection, variation_id: int):
+    s = db.session
+    await s.execute(delete(ArtistAccount).where(ArtistAccount.id == variation_id))
+    await s.commit()
+
+
+# --- Clips ---
+
+async def create_clip(
+    db: Connection,
+    artist_id: int,
+    source: str,
+    filename: str,
+    local_path: str | None = None,
+    gdrive_file_id: str | None = None,
+    caption: str | None = None,
+    duration_s: float | None = None,
+):
+    s = db.session
+    stmt = (
+        insert(Clip)
+        .values(
+            artist_id=artist_id, source=source, filename=filename,
+            local_path=local_path, gdrive_file_id=gdrive_file_id,
+            caption=caption, duration_s=duration_s,
+        )
+        .returning(Clip.id)
+    )
+    cid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return cid
+
+
+async def get_clips(db: Connection, artist_id: int):
+    s = db.session
+    rows = await s.execute(
+        select(Clip).where(Clip.artist_id == artist_id).order_by(Clip.created_at.desc())
+    )
+    return _rows(rows.scalars().all())
+
+
+async def get_clip(db: Connection, clip_id: int):
+    s = db.session
+    return _row((await s.execute(select(Clip).where(Clip.id == clip_id))).scalar_one_or_none())
+
+
+async def update_clip(db: Connection, clip_id: int, **kwargs):
+    s = db.session
+    await s.execute(update(Clip).where(Clip.id == clip_id).values(**_prep(kwargs)))
+    await s.commit()
+
+
+async def delete_clip(db: Connection, clip_id: int):
+    s = db.session
+    await s.execute(delete(Clip).where(Clip.id == clip_id))
+    await s.commit()
+
+
+# --- Clip posts ---
+
+async def create_clip_post(
+    db: Connection,
+    clip_id: int,
+    artist_account_id: int,
+    platform: str,
+    scheduled_for: datetime | str | None = None,
+    status: str = "scheduled",
+):
+    s = db.session
+    stmt = (
+        insert(ClipPost)
+        .values(
+            clip_id=clip_id,
+            artist_account_id=artist_account_id,
+            platform=platform,
+            scheduled_for=_parse_timestamp(scheduled_for),
+            status=status,
+        )
+        .returning(ClipPost.id)
+    )
+    pid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return pid
+
+
+async def get_clip_posts(
+    db: Connection,
+    artist_id: int | None = None,
+    clip_id: int | None = None,
+    status: str | None = None,
+    limit: int | None = None,
+):
+    s = db.session
+    stmt = select(ClipPost)
+    if artist_id:
+        stmt = stmt.join(Clip, ClipPost.clip_id == Clip.id).where(Clip.artist_id == artist_id)
+    if clip_id:
+        stmt = stmt.where(ClipPost.clip_id == clip_id)
+    if status:
+        stmt = stmt.where(ClipPost.status == status)
+    stmt = stmt.order_by(ClipPost.scheduled_for.desc().nullslast(), ClipPost.id.desc())
+    if limit:
+        stmt = stmt.limit(limit)
+    rows = await s.execute(stmt)
+    return _rows(rows.scalars().all())
+
+
+async def update_clip_post(db: Connection, clip_post_id: int, **kwargs):
+    s = db.session
+    await s.execute(update(ClipPost).where(ClipPost.id == clip_post_id).values(**_prep(kwargs)))
     await s.commit()

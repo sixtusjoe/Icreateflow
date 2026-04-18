@@ -6,7 +6,7 @@ import sys
 import shutil
 import asyncio
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -30,7 +30,14 @@ async def lifespan(app: FastAPI):
     Path("uploads").mkdir(exist_ok=True)
     Path("output").mkdir(exist_ok=True)
     Path("music").mkdir(exist_ok=True)
-    yield
+    # Kick off Clipping scheduler loops (slot planner / dispatcher / view poller)
+    from services import clip_scheduler
+    clip_tasks = await clip_scheduler.start_background_tasks()
+    try:
+        yield
+    finally:
+        for t in clip_tasks:
+            t.cancel()
 
 app = FastAPI(title="ICREATEFLOW API", lifespan=lifespan)
 
@@ -198,6 +205,51 @@ class PostSchedule(BaseModel):
 class SettingUpdate(BaseModel):
     key: str
     value: str
+
+
+# --- Clipping (Artists / Variations / Clips) ---
+
+class ArtistCreate(BaseModel):
+    name: str
+    slug: str
+    timezone: str = "US/Eastern"
+    posts_per_day: int = 3
+    window_start: str = "09:00"
+    window_end: str = "21:00"
+
+
+class ArtistUpdate(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    timezone: Optional[str] = None
+    posts_per_day: Optional[int] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    gdrive_folder_url: Optional[str] = None
+
+
+class VariationCreate(BaseModel):
+    name: str
+    tiktok_handle: Optional[str] = None
+    youtube_handle: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    facebook_handle: Optional[str] = None
+
+
+class VariationUpdateArtist(BaseModel):
+    name: Optional[str] = None
+    tiktok_handle: Optional[str] = None
+    youtube_handle: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    facebook_handle: Optional[str] = None
+
+
+class ClipUpdate(BaseModel):
+    caption: Optional[str] = None
+
+
+class GdriveSyncReq(BaseModel):
+    folder_url: str
 
 
 # --- Helper ---
@@ -644,6 +696,7 @@ OAUTH_CONFIG_KEYS = [
     "oauth_tiktok_client_id", "oauth_tiktok_client_secret",
     "oauth_youtube_client_id", "oauth_youtube_client_secret",
     "oauth_meta_client_id", "oauth_meta_client_secret",
+    "oauth_google_drive_api_key",
     "oauth_redirect_base",
 ]
 
@@ -651,6 +704,7 @@ OAUTH_CONFIG_KEYS = [
 class OAuthAppUpdate(BaseModel):
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
+    api_key: Optional[str] = None
     redirect_base: Optional[str] = None
 
 
@@ -675,6 +729,11 @@ async def admin_get_oauth_apps(admin: dict = Depends(admin_required)):
                 "client_secret_preview": _mask(sec),
                 "configured": bool(cid and sec),
             }
+        gkey = cfg.get("oauth_google_drive_api_key", "")
+        result["google_drive"] = {
+            "api_key_preview": _mask(gkey),
+            "configured": bool(gkey),
+        }
         return result
     finally:
         await database.close()
@@ -684,13 +743,16 @@ async def admin_get_oauth_apps(admin: dict = Depends(admin_required)):
 async def admin_update_oauth_app(
     platform: str, data: OAuthAppUpdate, admin: dict = Depends(admin_required)
 ):
-    if platform != "_base" and platform not in OAUTH_PLATFORMS:
+    if platform not in {"_base", "google_drive"} and platform not in OAUTH_PLATFORMS:
         raise HTTPException(400, f"Unknown platform: {platform}")
     database = await db.get_db()
     try:
         if platform == "_base":
             if data.redirect_base is not None:
                 await db.set_site_config(database, "oauth_redirect_base", data.redirect_base)
+        elif platform == "google_drive":
+            if data.api_key is not None:
+                await db.set_site_config(database, "oauth_google_drive_api_key", data.api_key)
         else:
             if data.client_id is not None:
                 await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id)
@@ -726,16 +788,46 @@ setTimeout(function(){{ try{{ window.close(); }}catch(e){{}} }}, 800);
 </body></html>"""
 
 
-@app.get("/api/oauth/{platform}/start")
-async def oauth_start(platform: str, account_id: int, user: dict = Depends(get_current_user)):
-    if platform not in oauth_svc.AUTHORIZE_URLS:
-        raise HTTPException(400, f"Unknown platform: {platform}")
+async def _verify_artist_ownership(artist_id: int, user: dict) -> dict:
     database = await db.get_db()
     try:
-        account = await db.get_account(database, account_id)
-        if not account:
-            raise HTTPException(404, "Account not found")
-        await verify_brand_ownership(account["brand_id"], user)
+        artist = await db.get_artist(database, artist_id)
+        if not artist:
+            raise HTTPException(404, "Artist not found")
+        if user.get("role") != "admin" and artist.get("user_id") != user["id"]:
+            raise HTTPException(403, "Access denied")
+        return dict(artist)
+    finally:
+        await database.close()
+
+
+@app.get("/api/oauth/{platform}/start")
+async def oauth_start(
+    platform: str,
+    account_id: Optional[int] = None,
+    variation_id: Optional[int] = None,
+    user: dict = Depends(get_current_user),
+):
+    if platform not in oauth_svc.AUTHORIZE_URLS:
+        raise HTTPException(400, f"Unknown platform: {platform}")
+    if (account_id is None) == (variation_id is None):
+        raise HTTPException(400, "Pass exactly one of account_id or variation_id")
+
+    kind = "account" if account_id is not None else "variation"
+    target_id = account_id if account_id is not None else variation_id
+
+    database = await db.get_db()
+    try:
+        if kind == "account":
+            row = await db.get_account(database, target_id)
+            if not row:
+                raise HTTPException(404, "Account not found")
+            await verify_brand_ownership(row["brand_id"], user)
+        else:
+            row = await db.get_artist_account(database, target_id)
+            if not row:
+                raise HTTPException(404, "Variation not found")
+            await _verify_artist_ownership(row["artist_id"], user)
         cfg = await db.get_site_config(database)
     finally:
         await database.close()
@@ -746,7 +838,7 @@ async def oauth_start(platform: str, account_id: int, user: dict = Depends(get_c
         raise HTTPException(400, f"{platform} OAuth app not configured by admin")
 
     redirect_uri = oauth_svc.build_redirect_uri(redirect_base, platform)
-    state = oauth_svc.sign_state(user["id"], account_id, platform)
+    state = oauth_svc.sign_state(user["id"], target_id, platform, kind=kind)
     auth_url = oauth_svc.build_authorize_url(platform, client_id, redirect_uri, state)
     return {"authorize_url": auth_url}
 
@@ -764,7 +856,8 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
     if not verified or verified["platform"] != platform:
         return HTMLResponse(_oauth_close_html(False, "Invalid or expired state"))
 
-    account_id = verified["account_id"]
+    target_id = verified["account_id"]
+    kind = verified.get("kind", "account")
 
     database = await db.get_db()
     try:
@@ -801,23 +894,29 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
             if tokens.get("platform_user_id"):
                 updates[f"{p}_user_id"] = str(tokens["platform_user_id"])
 
-        await db.update_account(database, account_id, **updates)
+        if kind == "variation":
+            await db.update_artist_account(database, target_id, **updates)
+        else:
+            await db.update_account(database, target_id, **updates)
         return HTMLResponse(_oauth_close_html(True))
     finally:
         await database.close()
 
 
 @app.post("/api/oauth/{platform}/disconnect")
-async def oauth_disconnect(platform: str, account_id: int, user: dict = Depends(get_current_user)):
+async def oauth_disconnect(
+    platform: str,
+    account_id: Optional[int] = None,
+    variation_id: Optional[int] = None,
+    user: dict = Depends(get_current_user),
+):
     if platform not in ("tiktok", "youtube", "instagram", "facebook", "meta"):
         raise HTTPException(400, f"Unknown platform: {platform}")
+    if (account_id is None) == (variation_id is None):
+        raise HTTPException(400, "Pass exactly one of account_id or variation_id")
+
     database = await db.get_db()
     try:
-        account = await db.get_account(database, account_id)
-        if not account:
-            raise HTTPException(404, "Account not found")
-        await verify_brand_ownership(account["brand_id"], user)
-
         target_platforms = ["instagram", "facebook"] if platform == "meta" else [platform]
         updates: dict = {}
         for p in target_platforms:
@@ -826,7 +925,19 @@ async def oauth_disconnect(platform: str, account_id: int, user: dict = Depends(
             updates[f"{p}_expires_at"] = None
             updates[f"{p}_scopes"] = None
             updates[f"{p}_user_id"] = None
-        await db.update_account(database, account_id, **updates)
+
+        if account_id is not None:
+            row = await db.get_account(database, account_id)
+            if not row:
+                raise HTTPException(404, "Account not found")
+            await verify_brand_ownership(row["brand_id"], user)
+            await db.update_account(database, account_id, **updates)
+        else:
+            row = await db.get_artist_account(database, variation_id)
+            if not row:
+                raise HTTPException(404, "Variation not found")
+            await _verify_artist_ownership(row["artist_id"], user)
+            await db.update_artist_account(database, variation_id, **updates)
         return {"ok": True}
     finally:
         await database.close()
@@ -1996,6 +2107,409 @@ async def get_stats(user: dict = Depends(get_current_user)):
         }
     finally:
         await database.close()
+
+
+# =============================================
+# CLIPPING ROUTES — Artists, Variations, Clips
+# =============================================
+
+from services import gdrive as gdrive_svc
+
+
+def _artist_upload_dir(artist: dict) -> Path:
+    d = Path("uploads") / "artists" / artist["slug"]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _artist_account_dict(row) -> dict:
+    """Strip raw token values but expose booleans for connection status."""
+    d = dict(row)
+    for p in ("tiktok", "youtube", "instagram", "facebook"):
+        d[f"{p}_connected"] = bool(d.get(f"{p}_token"))
+        # drop raw tokens from the API response
+        for k in (f"{p}_token", f"{p}_refresh_token"):
+            d.pop(k, None)
+    return d
+
+
+@app.get("/api/artists")
+async def list_artists(user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        artists = await db.get_artists(database, user_id=user["id"])
+        result = []
+        for a in artists:
+            variations = await db.get_artist_accounts(database, a["id"])
+            clips = await db.get_clips(database, a["id"])
+            posts = await db.get_clip_posts(database, artist_id=a["id"])
+            views_total = sum(int(p.get("view_count") or 0) for p in posts)
+            posts_total = sum(1 for p in posts if p.get("status") == "posted")
+            result.append({
+                **dict(a),
+                "variations_count": len(variations),
+                "clips_count": len(clips),
+                "posts_count": posts_total,
+                "views_total": views_total,
+            })
+        return result
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists")
+async def create_artist(data: ArtistCreate, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        aid = await db.create_artist(
+            database, name=data.name, slug=data.slug, user_id=user["id"],
+            timezone=data.timezone, posts_per_day=data.posts_per_day,
+            window_start=data.window_start, window_end=data.window_end,
+        )
+        artist = await db.get_artist(database, aid)
+        return row_to_dict(artist)
+    finally:
+        await database.close()
+
+
+@app.get("/api/artists/by-slug/{slug}")
+async def get_artist_by_slug_route(slug: str, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        artist = await db.get_artist_by_slug(database, user["id"], slug)
+        if not artist:
+            raise HTTPException(404, "Artist not found")
+        artist_id = artist["id"]
+        variations = await db.get_artist_accounts(database, artist_id)
+        clips = await db.get_clips(database, artist_id)
+        posts = await db.get_clip_posts(database, artist_id=artist_id, limit=50)
+        return {
+            **dict(artist),
+            "variations": [_artist_account_dict(v) for v in variations],
+            "clips": rows_to_list(clips),
+            "recent_posts": rows_to_list(posts),
+        }
+    finally:
+        await database.close()
+
+
+@app.get("/api/artists/{artist_id}")
+async def get_artist_detail(artist_id: int, user: dict = Depends(get_current_user)):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        variations = await db.get_artist_accounts(database, artist_id)
+        clips = await db.get_clips(database, artist_id)
+        posts = await db.get_clip_posts(database, artist_id=artist_id, limit=50)
+        return {
+            **artist,
+            "variations": [_artist_account_dict(v) for v in variations],
+            "clips": rows_to_list(clips),
+            "recent_posts": rows_to_list(posts),
+        }
+    finally:
+        await database.close()
+
+
+@app.put("/api/artists/{artist_id}")
+async def update_artist_route(artist_id: int, data: ArtistUpdate, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        if "gdrive_folder_url" in updates:
+            folder_id = gdrive_svc.parse_folder_id(updates["gdrive_folder_url"])
+            updates["gdrive_folder_id"] = folder_id
+        if updates:
+            await db.update_artist(database, artist_id, **updates)
+        artist = await db.get_artist(database, artist_id)
+        return row_to_dict(artist)
+    finally:
+        await database.close()
+
+
+@app.delete("/api/artists/{artist_id}")
+async def delete_artist_route(artist_id: int, user: dict = Depends(get_current_user)):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        await db.delete_artist(database, artist_id)
+    finally:
+        await database.close()
+    upload_dir = Path("uploads") / "artists" / artist["slug"]
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir, ignore_errors=True)
+    return {"ok": True}
+
+
+# --- Variations (artist accounts) ---
+
+@app.post("/api/artists/{artist_id}/variations")
+async def create_variation_route(artist_id: int, data: VariationCreate, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        kwargs = {k: v for k, v in data.model_dump().items() if v is not None and k != "name"}
+        vid = await db.create_artist_account(database, artist_id, data.name, **kwargs)
+        row = await db.get_artist_account(database, vid)
+        return _artist_account_dict(row)
+    finally:
+        await database.close()
+
+
+@app.put("/api/variations/{variation_id}")
+async def update_artist_variation(variation_id: int, data: VariationUpdateArtist, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        row = await db.get_artist_account(database, variation_id)
+        if not row:
+            raise HTTPException(404, "Variation not found")
+        await _verify_artist_ownership(row["artist_id"], user)
+        updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        if updates:
+            await db.update_artist_account(database, variation_id, **updates)
+        row = await db.get_artist_account(database, variation_id)
+        return _artist_account_dict(row)
+    finally:
+        await database.close()
+
+
+@app.delete("/api/variations/{variation_id}")
+async def delete_artist_variation(variation_id: int, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        row = await db.get_artist_account(database, variation_id)
+        if not row:
+            raise HTTPException(404, "Variation not found")
+        await _verify_artist_ownership(row["artist_id"], user)
+        await db.delete_artist_account(database, variation_id)
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+# --- Clips ---
+
+@app.get("/api/artists/{artist_id}/clips")
+async def list_artist_clips(artist_id: int, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        clips = await db.get_clips(database, artist_id)
+        return rows_to_list(clips)
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists/{artist_id}/clips/upload")
+async def upload_clip(
+    artist_id: int,
+    file: UploadFile = File(...),
+    caption: str = Form(""),
+    user: dict = Depends(get_current_user),
+):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        directory = _artist_upload_dir(artist)
+        # Insert first to get clip id, then save file with that id
+        filename = Path(file.filename or "clip.mp4").name
+        clip_id = await db.create_clip(
+            database, artist_id=artist_id, source="upload", filename=filename, caption=caption or None,
+        )
+        ext = Path(filename).suffix.lower() or ".mp4"
+        dest = directory / f"{clip_id}{ext}"
+        content = await file.read()
+        dest.write_bytes(content)
+        await db.update_clip(database, clip_id, local_path=str(dest))
+        clip = await db.get_clip(database, clip_id)
+        return row_to_dict(clip)
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists/{artist_id}/clips/gdrive")
+async def sync_gdrive_clips(artist_id: int, data: GdriveSyncReq, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    folder_id = gdrive_svc.parse_folder_id(data.folder_url)
+    if not folder_id:
+        raise HTTPException(400, "Couldn't parse a Drive folder id from that URL")
+
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        api_key = cfg.get("oauth_google_drive_api_key") or await db.get_setting(database, "google_api_key")
+        if not api_key:
+            raise HTTPException(400, "Google Drive API key not configured — set it in Admin → OAuth Apps")
+        try:
+            files = await gdrive_svc.list_video_files(folder_id, api_key)
+        except gdrive_svc.GDriveError as e:
+            raise HTTPException(400, str(e))
+
+        # Upsert: existing clips with gdrive_file_id keep their captions, new files added.
+        existing = await db.get_clips(database, artist_id)
+        existing_by_id = {c.get("gdrive_file_id"): c for c in existing if c.get("gdrive_file_id")}
+
+        added = 0
+        for f in files:
+            fid = f.get("id")
+            if not fid or fid in existing_by_id:
+                continue
+            await db.create_clip(
+                database, artist_id=artist_id, source="gdrive",
+                filename=f.get("name", "clip.mp4"), gdrive_file_id=fid,
+            )
+            added += 1
+
+        # Persist folder URL/id on the artist for reuse
+        await db.update_artist(
+            database, artist_id, gdrive_folder_url=data.folder_url, gdrive_folder_id=folder_id
+        )
+
+        clips = await db.get_clips(database, artist_id)
+        return {"added": added, "total": len(clips), "clips": rows_to_list(clips)}
+    finally:
+        await database.close()
+
+
+@app.put("/api/clips/{clip_id}")
+async def update_clip_route(clip_id: int, data: ClipUpdate, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        clip = await db.get_clip(database, clip_id)
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        await _verify_artist_ownership(clip["artist_id"], user)
+        updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        if updates:
+            await db.update_clip(database, clip_id, **updates)
+        clip = await db.get_clip(database, clip_id)
+        return row_to_dict(clip)
+    finally:
+        await database.close()
+
+
+@app.delete("/api/clips/{clip_id}")
+async def delete_clip_route(clip_id: int, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        clip = await db.get_clip(database, clip_id)
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        await _verify_artist_ownership(clip["artist_id"], user)
+        local = clip.get("local_path")
+        await db.delete_clip(database, clip_id)
+    finally:
+        await database.close()
+    if local:
+        try:
+            Path(local).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+# --- Dashboard / feed ---
+
+@app.get("/api/artists/{artist_id}/dashboard")
+async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        variations = await db.get_artist_accounts(database, artist_id)
+        clips = await db.get_clips(database, artist_id)
+        posts = await db.get_clip_posts(database, artist_id=artist_id)
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        posts_today = 0
+        posts_total = 0
+        by_platform = {
+            p: {"posted": 0, "views": 0}
+            for p in ("tiktok", "youtube", "instagram", "facebook")
+        }
+        next_scheduled_at = None
+
+        for p in posts:
+            platform = p.get("platform")
+            status = p.get("status")
+            if status == "posted":
+                posts_total += 1
+                if platform in by_platform:
+                    by_platform[platform]["posted"] += 1
+                    by_platform[platform]["views"] += int(p.get("view_count") or 0)
+                posted_at = p.get("posted_at")
+                if isinstance(posted_at, datetime) and posted_at.date().isoformat() == today:
+                    posts_today += 1
+            elif status == "scheduled":
+                sch = p.get("scheduled_for")
+                if isinstance(sch, datetime):
+                    if next_scheduled_at is None or sch < next_scheduled_at:
+                        next_scheduled_at = sch
+
+        return {
+            "variations_count": len(variations),
+            "active_clips": len(clips),
+            "posts_today": posts_today,
+            "posts_total": posts_total,
+            "views_total": sum(b["views"] for b in by_platform.values()),
+            "by_platform": by_platform,
+            "next_scheduled_at": next_scheduled_at.isoformat() if next_scheduled_at else None,
+        }
+    finally:
+        await database.close()
+
+
+@app.get("/api/artists/{artist_id}/feed")
+async def artist_feed(artist_id: int, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        posts = await db.get_clip_posts(database, artist_id=artist_id, limit=100)
+        return rows_to_list(posts)
+    finally:
+        await database.close()
+
+
+# --- Admin: artists ---
+
+@app.get("/api/admin/artists")
+async def admin_list_artists(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        artists = await db.get_artists(database)  # all users
+        result = []
+        for a in artists:
+            variations = await db.get_artist_accounts(database, a["id"])
+            clips = await db.get_clips(database, a["id"])
+            posts = await db.get_clip_posts(database, artist_id=a["id"])
+            owner = await db.get_user(database, a.get("user_id")) if a.get("user_id") else None
+            result.append({
+                **dict(a),
+                "variations_count": len(variations),
+                "clips_count": len(clips),
+                "posts_count": sum(1 for p in posts if p.get("status") == "posted"),
+                "views_total": sum(int(p.get("view_count") or 0) for p in posts),
+                "owner_email": dict(owner).get("email") if owner else None,
+            })
+        return result
+    finally:
+        await database.close()
+
+
+@app.delete("/api/admin/artists/{artist_id}")
+async def admin_delete_artist(artist_id: int, admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        artist = await db.get_artist(database, artist_id)
+        if not artist:
+            raise HTTPException(404, "Artist not found")
+        await db.delete_artist(database, artist_id)
+    finally:
+        await database.close()
+    upload_dir = Path("uploads") / "artists" / artist["slug"]
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir, ignore_errors=True)
+    return {"ok": True}
 
 
 if __name__ == "__main__":

@@ -267,11 +267,85 @@ export const deleteAdminUser = (id: number) =>
 export const getOAuthApps = () => api.get("/api/admin/oauth-apps").then((r) => r.data);
 export const updateOAuthApp = (
   platform: string,
-  data: { client_id?: string; client_secret?: string; redirect_base?: string },
+  data: { client_id?: string; client_secret?: string; api_key?: string; redirect_base?: string },
 ) => api.put(`/api/admin/oauth-apps/${platform}`, data).then((r) => r.data);
 
 // --- OAuth connect (user-scoped) ---
-export const startOAuth = (platform: string, accountId: number) =>
-  api.get(`/api/oauth/${platform}/start`, { params: { account_id: accountId } }).then((r) => r.data);
-export const disconnectOAuth = (platform: string, accountId: number) =>
-  api.post(`/api/oauth/${platform}/disconnect`, null, { params: { account_id: accountId } }).then((r) => r.data);
+// `kind` is "account" (brand accounts) or "variation" (artist accounts).
+export const startOAuth = (
+  platform: string,
+  id: number,
+  kind: "account" | "variation" = "account",
+) => {
+  const params = kind === "variation" ? { variation_id: id } : { account_id: id };
+  return api.get(`/api/oauth/${platform}/start`, { params }).then((r) => r.data);
+};
+export const disconnectOAuth = (
+  platform: string,
+  id: number,
+  kind: "account" | "variation" = "account",
+) => {
+  const params = kind === "variation" ? { variation_id: id } : { account_id: id };
+  return api.post(`/api/oauth/${platform}/disconnect`, null, { params }).then((r) => r.data);
+};
+
+// --- Clipping: Artists ---
+export const getArtists = () => api.get("/api/artists").then((r) => r.data);
+export const getArtist = (id: number) => api.get(`/api/artists/${id}`).then((r) => r.data);
+export const getArtistBySlug = (slug: string) =>
+  api.get(`/api/artists/by-slug/${encodeURIComponent(slug)}`).then((r) => r.data);
+export const createArtist = (data: {
+  name: string;
+  slug: string;
+  timezone?: string;
+  posts_per_day?: number;
+  window_start?: string;
+  window_end?: string;
+}) => api.post("/api/artists", data).then((r) => r.data);
+export const updateArtist = (id: number, data: Record<string, string | number | undefined>) =>
+  api.put(`/api/artists/${id}`, data).then((r) => r.data);
+export const deleteArtist = (id: number) =>
+  api.delete(`/api/artists/${id}`).then((r) => r.data);
+
+// --- Clipping: Variations ---
+export const createVariation = (
+  artistId: number,
+  data: {
+    name: string;
+    tiktok_handle?: string;
+    youtube_handle?: string;
+    instagram_handle?: string;
+    facebook_handle?: string;
+  },
+) => api.post(`/api/artists/${artistId}/variations`, data).then((r) => r.data);
+export const updateArtistVariation = (id: number, data: Record<string, string | undefined>) =>
+  api.put(`/api/variations/${id}`, data).then((r) => r.data);
+export const deleteArtistVariation = (id: number) =>
+  api.delete(`/api/variations/${id}`).then((r) => r.data);
+
+// --- Clipping: Clips ---
+export const listClips = (artistId: number) =>
+  api.get(`/api/artists/${artistId}/clips`).then((r) => r.data);
+export const uploadClip = (artistId: number, file: File, caption = "") => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("caption", caption);
+  return api.post(`/api/artists/${artistId}/clips/upload`, form).then((r) => r.data);
+};
+export const syncGdriveClips = (artistId: number, folder_url: string) =>
+  api.post(`/api/artists/${artistId}/clips/gdrive`, { folder_url }).then((r) => r.data);
+export const updateClip = (id: number, data: { caption?: string }) =>
+  api.put(`/api/clips/${id}`, data).then((r) => r.data);
+export const deleteClip = (id: number) =>
+  api.delete(`/api/clips/${id}`).then((r) => r.data);
+
+// --- Clipping: Dashboard + feed ---
+export const getArtistDashboard = (id: number) =>
+  api.get(`/api/artists/${id}/dashboard`).then((r) => r.data);
+export const getArtistFeed = (id: number) =>
+  api.get(`/api/artists/${id}/feed`).then((r) => r.data);
+
+// --- Admin: artists ---
+export const getAdminArtists = () => api.get("/api/admin/artists").then((r) => r.data);
+export const deleteAdminArtist = (id: number) =>
+  api.delete(`/api/admin/artists/${id}`).then((r) => r.data);
