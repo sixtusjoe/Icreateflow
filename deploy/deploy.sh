@@ -18,8 +18,8 @@ VENV=$APP_DIR/venv
 USER=icreateflow
 
 echo "==> Syncing code into app dirs"
-rsync -a --delete "$SRC/backend/"  "$BACKEND/"
-rsync -a --delete "$SRC/frontend/" "$FRONTEND/"
+rsync -a --delete --exclude='.env' "$SRC/backend/"  "$BACKEND/"
+rsync -a --delete --exclude='.env.production' --exclude='.env.local' "$SRC/frontend/" "$FRONTEND/"
 rsync -a --delete "$SRC/fonts/"    "$APP_DIR/fonts/" 2>/dev/null || true
 chown -R $USER:$USER "$BACKEND" "$FRONTEND" "$APP_DIR/fonts" 2>/dev/null || true
 
