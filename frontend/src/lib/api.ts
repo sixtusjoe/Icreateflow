@@ -186,7 +186,42 @@ export const uploadMusicTrack = (name: string, genre: string, file: File) => {
 export const deleteMusicTrack = (id: number) =>
   api.delete(`/api/music/${id}`).then((r) => r.data);
 
+// --- Re-run OCR ---
+export const rerunOcr = (postId: number) =>
+  api.post(`/api/posts/${postId}/rerun-ocr`).then((r) => r.data);
+
+// --- Output slides preview ---
+export const getOutputSlides = (postId: number) =>
+  api.get(`/api/posts/${postId}/output-slides`).then((r) => r.data);
+
+export const regenerateSlide = (postId: number, data: {
+  account_id: number; slide_number: number;
+  title_text?: string; body_text?: string; cta_text?: string;
+  font_size_title?: number; font_size_body?: number; font_size_cta?: number;
+  y_ratio_title?: number; y_ratio_body?: number; y_ratio_cta?: number;
+  x_ratio_title?: number; x_ratio_body?: number; x_ratio_cta?: number;
+  scale_title?: number; scale_body?: number; scale_cta?: number;
+  font_weight?: string; text_style?: string;
+}) => api.post(`/api/posts/${postId}/regenerate-slide`, data).then((r) => r.data);
+
+export const regenerateVideo = (postId: number, accountId: number) =>
+  api.post(`/api/posts/${postId}/regenerate-video`, { account_id: accountId }).then((r) => r.data);
+
 // --- Downloads ---
+export const downloadFile = async (postId: number, accountId?: number) => {
+  const url = accountId
+    ? `/api/posts/${postId}/download/${accountId}`
+    : `/api/posts/${postId}/download`;
+  const resp = await api.get(url, { responseType: "blob" });
+  const blob = new Blob([resp.data], { type: "application/zip" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const disposition = resp.headers["content-disposition"];
+  const filename = disposition?.match(/filename="?(.+?)"?$/)?.[1] || `post_${postId}.zip`;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+};
 export const getDownloadUrl = (postId: number, accountId?: number) =>
   accountId
     ? `${api.defaults.baseURL}/api/posts/${postId}/download/${accountId}`
@@ -202,5 +237,41 @@ export const updateSetting = (key: string, value: string) =>
 export const getStats = () => api.get("/api/stats").then((r) => r.data);
 
 // --- File URL helper ---
+// Encode per segment so forward-slashes remain literal (Apache's AllowEncodedSlashes=Off
+// rejects %2F in URL paths, which would break reverse-proxy file serving otherwise).
 export const fileUrl = (path: string) =>
-  `${api.defaults.baseURL}/api/files/${encodeURIComponent(path)}`;
+  `${api.defaults.baseURL}/api/files/${path
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/")}`;
+
+// --- Admin: cross-user resource management ---
+export const getAdminBrands = () => api.get("/api/admin/brands").then((r) => r.data);
+export const deleteAdminBrand = (id: number) =>
+  api.delete(`/api/admin/brands/${id}`).then((r) => r.data);
+export const getAdminPosts = (params?: { user_id?: number; brand_id?: number; status?: string }) =>
+  api.get("/api/admin/posts", { params }).then((r) => r.data);
+export const deleteAdminPost = (id: number) =>
+  api.delete(`/api/admin/posts/${id}`).then((r) => r.data);
+export const getAdminAccounts = () => api.get("/api/admin/accounts").then((r) => r.data);
+export const getAdminMusic = () => api.get("/api/admin/music").then((r) => r.data);
+export const deleteAdminMusic = (id: number) =>
+  api.delete(`/api/admin/music/${id}`).then((r) => r.data);
+export const getAdminSchedule = () => api.get("/api/admin/schedule").then((r) => r.data);
+export const getAdminApiKeys = () => api.get("/api/admin/api-keys").then((r) => r.data);
+export const deleteAdminUser = (id: number) =>
+  api.delete(`/api/admin/users/${id}`).then((r) => r.data);
+
+// --- Admin: OAuth app credentials ---
+export const getOAuthApps = () => api.get("/api/admin/oauth-apps").then((r) => r.data);
+export const updateOAuthApp = (
+  platform: string,
+  data: { client_id?: string; client_secret?: string; redirect_base?: string },
+) => api.put(`/api/admin/oauth-apps/${platform}`, data).then((r) => r.data);
+
+// --- OAuth connect (user-scoped) ---
+export const startOAuth = (platform: string, accountId: number) =>
+  api.get(`/api/oauth/${platform}/start`, { params: { account_id: accountId } }).then((r) => r.data);
+export const disconnectOAuth = (platform: string, accountId: number) =>
+  api.post(`/api/oauth/${platform}/disconnect`, null, { params: { account_id: accountId } }).then((r) => r.data);

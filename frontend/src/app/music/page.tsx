@@ -36,46 +36,46 @@ export default function MusicPage() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Music Library</h1>
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Music Library</h1>
           <p className="mt-1 text-sm text-muted-foreground">Royalty-free background music for your videos.</p>
         </div>
         <button
           onClick={() => setShowUpload(!showUpload)}
-          className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90"
+          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90"
         >
           <Upload className="h-4 w-4" /> Upload Track
         </button>
       </div>
 
       {showUpload && (
-        <div className="mb-6 rounded-2xl bg-card p-6">
+        <div className="mb-6 rounded-2xl bg-card p-4 md:p-6">
           <h3 className="mb-4 text-base font-semibold">Upload Royalty-Free Track</h3>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
               <label className="mb-1.5 block text-sm font-medium">Track Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Chill Vibes"
-                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground placeholder:text-muted-foreground" />
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground placeholder:text-muted-foreground" />
             </div>
             <div>
               <label className="mb-1.5 block text-sm font-medium">Genre</label>
               <input value={genre} onChange={(e) => setGenre(e.target.value)} placeholder="lo-fi, upbeat, etc."
-                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground placeholder:text-muted-foreground" />
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground placeholder:text-muted-foreground" />
             </div>
             <div>
               <label className="mb-1.5 block text-sm font-medium">Audio File (.mp3, .wav)</label>
               <input type="file" accept="audio/*" onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground file:mr-3 file:border-0 file:bg-transparent file:text-sm file:font-medium" />
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground file:mr-3 file:border-0 file:bg-transparent file:text-sm file:font-medium" />
             </div>
           </div>
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button onClick={handleUpload} disabled={uploading}
-              className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50">
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50">
               {uploading ? "Uploading..." : "Upload"}
             </button>
             <button onClick={() => setShowUpload(false)}
-              className="rounded-lg px-5 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+              className="min-h-[44px] rounded-lg px-5 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
               Cancel
             </button>
           </div>
@@ -90,8 +90,8 @@ export default function MusicPage() {
       ) : (
         <div className="space-y-2">
           {tracks.map((track: any) => (
-            <div key={track.id} className="flex items-center justify-between rounded-xl bg-card px-5 py-3.5">
-              <div className="flex items-center gap-3">
+            <div key={track.id} className="flex flex-col gap-2 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground">
                   <Music className="h-3.5 w-3.5 text-background" />
                 </div>
@@ -107,7 +107,7 @@ export default function MusicPage() {
                 )}
               </div>
               <button onClick={() => handleDelete(track.id)}
-                className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
+                className="inline-flex min-h-[36px] min-w-[36px] self-start items-center justify-center rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors sm:self-auto">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>

@@ -26,7 +26,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "icreate_token";
-const PUBLIC_PATHS = ["/login", "/register", "/landing"];
+const PUBLIC_PATHS = ["/", "/login", "/register", "/terms", "/privacy"];
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -60,8 +60,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       .then((data) => {
         setUser(data);
-        if (PUBLIC_PATHS.includes(pathname)) {
-          router.push("/");
+        // Logged-in user on a marketing/auth page → send to dashboard.
+        if (["/", "/login", "/register"].includes(pathname)) {
+          router.push("/dashboard");
         }
       })
       .catch(() => {
@@ -86,7 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.token);
     setUser(data.user);
-    router.push("/");
+    router.push("/dashboard");
   };
 
   const register = async (email: string, password: string, name: string) => {
@@ -102,7 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.token);
     setUser(data.user);
-    router.push("/");
+    router.push("/dashboard");
   };
 
   const updateUser = (u: User) => setUser(u);

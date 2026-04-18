@@ -1,12 +1,103 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Trash2, Plus, Edit2, Users, Check, X } from "lucide-react";
+import { Trash2, Plus, Edit2, Users, Check, X, Link2, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import {
   getBrands, createBrand, updateBrand, deleteBrand,
   createAccount, updateAccount, deleteAccount,
+  startOAuth, disconnectOAuth,
 } from "@/lib/api";
+
+type PlatformKey = "tiktok" | "youtube" | "instagram" | "facebook";
+const PLATFORM_LABELS: Record<PlatformKey, string> = {
+  tiktok: "TikTok",
+  youtube: "YouTube",
+  instagram: "Instagram",
+  facebook: "Facebook",
+};
+// One Meta OAuth flow grants both IG and FB. YouTube uses the "youtube" OAuth platform.
+const OAUTH_PLATFORM_FOR: Record<PlatformKey, "tiktok" | "youtube" | "meta"> = {
+  tiktok: "tiktok",
+  youtube: "youtube",
+  instagram: "meta",
+  facebook: "meta",
+};
+
+function OAuthTiles({ account, onChange }: { account: any; onChange: () => void }) {
+  const [busy, setBusy] = useState<PlatformKey | null>(null);
+
+  const handleConnect = async (p: PlatformKey) => {
+    setBusy(p);
+    try {
+      const { authorize_url } = await startOAuth(OAUTH_PLATFORM_FOR[p], account.id);
+      const popup = window.open(authorize_url, "oauth", "width=600,height=720");
+      if (!popup) { toast.error("Popup blocked — allow popups for this site"); setBusy(null); return; }
+      const listener = (ev: MessageEvent) => {
+        if (ev.data?.type !== "oauth") return;
+        window.removeEventListener("message", listener);
+        setBusy(null);
+        if (ev.data.status === "success") { toast.success(`${PLATFORM_LABELS[p]} connected`); onChange(); }
+        else toast.error(ev.data.message || "Connection failed");
+      };
+      window.addEventListener("message", listener);
+      // Safety timeout in case the popup is closed without posting a message.
+      const poll = setInterval(() => {
+        if (popup.closed) { clearInterval(poll); window.removeEventListener("message", listener); setBusy(null); }
+      }, 800);
+    } catch {
+      toast.error("Failed to start OAuth — admin must configure the app first");
+      setBusy(null);
+    }
+  };
+
+  const handleDisconnect = async (p: PlatformKey) => {
+    if (!confirm(`Disconnect ${PLATFORM_LABELS[p]}?`)) return;
+    try {
+      await disconnectOAuth(OAUTH_PLATFORM_FOR[p], account.id);
+      toast.success(`${PLATFORM_LABELS[p]} disconnected`);
+      onChange();
+    } catch { toast.error("Failed to disconnect"); }
+  };
+
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {(Object.keys(PLATFORM_LABELS) as PlatformKey[]).map((p) => {
+        const connected = Boolean(account[`${p}_access_token`]);
+        const handle = account[`${p}_handle`];
+        return (
+          <div key={p} className={`rounded-lg border p-2.5 ${connected ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold">{PLATFORM_LABELS[p]}</span>
+              {connected ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : null}
+            </div>
+            {connected ? (
+              <>
+                <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                  {handle ? `@${handle.replace(/^@+/, "")}` : "Connected"}
+                </div>
+                <button
+                  onClick={() => handleDisconnect(p)}
+                  className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive"
+                >
+                  <Unlink className="h-3 w-3" /> Disconnect
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => handleConnect(p)}
+                disabled={busy === p}
+                className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-foreground px-2 py-1 text-[11px] font-medium text-background disabled:opacity-50"
+              >
+                <Link2 className="h-3 w-3" /> {busy === p ? "…" : "Connect"}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function BrandsPage() {
   const [brands, setBrands] = useState<any[]>([]);
@@ -86,25 +177,25 @@ export default function BrandsPage() {
 
   const displayHandle = (handle: string) => handle ? handle.replace(/^@+/, "") : "";
 
-  const inputClass = "w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-foreground placeholder:text-muted-foreground";
+  const inputClass = "w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none transition-colors focus:border-foreground placeholder:text-muted-foreground";
 
   return (
     <div className="mx-auto max-w-4xl">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Brands</h1>
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Brands</h1>
           <p className="mt-1 text-sm text-muted-foreground">Manage your brands and their social accounts.</p>
         </div>
         <button onClick={() => setShowNew(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
+          className="inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
           <Plus className="h-4 w-4" /> Add Brand
         </button>
       </div>
 
       {/* New Brand Dialog */}
       {showNew && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowNew(false)}>
-          <div className="w-full max-w-lg rounded-2xl bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowNew(false)}>
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h2 className="mb-5 text-lg font-semibold">New Brand</h2>
             <div className="space-y-4">
               <div>
@@ -117,7 +208,7 @@ export default function BrandsPage() {
                 <label className="mb-1.5 block text-sm font-medium">Slug (URL-safe)</label>
                 <input value={newBrand.slug} onChange={(e) => setNewBrand({ ...newBrand, slug: e.target.value })} className={inputClass} />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium">Timezone</label>
                   <input value={newBrand.timezone} onChange={(e) => setNewBrand({ ...newBrand, timezone: e.target.value })} className={inputClass} />
@@ -138,11 +229,11 @@ export default function BrandsPage() {
               </div>
               <div className="flex gap-2">
                 <button onClick={handleCreateBrand}
-                  className="flex-1 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
+                  className="flex-1 min-h-[44px] rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
                   Create Brand
                 </button>
                 <button onClick={() => setShowNew(false)}
-                  className="rounded-lg px-5 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+                  className="min-h-[44px] rounded-lg px-5 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                   Cancel
                 </button>
               </div>
@@ -159,12 +250,12 @@ export default function BrandsPage() {
       ) : (
         <div className="space-y-4">
           {brands.map((brand: any) => (
-            <div key={brand.id} className="rounded-2xl bg-card p-6">
+            <div key={brand.id} className="rounded-2xl bg-card p-4 md:p-6">
               {/* Brand header */}
               {editingBrand === brand.id ? (
                 <div className="mb-4 space-y-3 rounded-xl border border-border p-4">
                   <h4 className="text-sm font-semibold">Edit Brand</h4>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="mb-1 block text-xs font-medium">Name</label>
                       <input value={editBrandData.name} onChange={(e) => setEditBrandData({ ...editBrandData, name: e.target.value })} className={inputClass} />
@@ -203,24 +294,24 @@ export default function BrandsPage() {
                   </div>
                 </div>
               ) : (
-                <div className="mb-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                     <div className="h-4 w-4 rounded-full" style={{ backgroundColor: brand.background_color }} />
                     <h3 className="text-lg font-semibold">{brand.name}</h3>
                     <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{brand.slug}</span>
                     <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{brand.timezone}</span>
                   </div>
-                  <div className="flex gap-1.5">
+                  <div className="flex flex-wrap gap-1.5">
                     <button onClick={() => startEditBrand(brand)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                       <Edit2 className="h-3 w-3" /> Edit
                     </button>
                     <button onClick={() => setShowNewAccount(brand.id)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                       <Plus className="h-3 w-3" /> Add Account
                     </button>
                     <button onClick={() => handleDeleteBrand(brand.id)}
-                      className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
+                      className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -240,7 +331,7 @@ export default function BrandsPage() {
                   editingAccount === acc.id ? (
                     <div key={acc.id} className="rounded-xl border border-border p-4">
                       <h4 className="mb-3 text-sm font-semibold">Edit Account</h4>
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                           <label className="mb-1 block text-xs font-medium">Account Name</label>
                           <input value={editAccountData.name} onChange={(e) => setEditAccountData({ ...editAccountData, name: e.target.value })} className={inputClass} />
@@ -248,7 +339,7 @@ export default function BrandsPage() {
                         <div>
                           <label className="mb-1 block text-xs font-medium">Role</label>
                           <select value={editAccountData.role} onChange={(e) => setEditAccountData({ ...editAccountData, role: e.target.value })}
-                            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground">
+                            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground">
                             <option value="master">Master</option>
                             <option value="variation">Variation</option>
                           </select>
@@ -274,29 +365,28 @@ export default function BrandsPage() {
                       </div>
                     </div>
                   ) : (
-                    <div key={acc.id} className="flex items-center justify-between rounded-xl bg-muted/50 px-4 py-2.5">
-                      <div className="flex items-center gap-3">
-                        <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
-                          acc.role === "master" ? "bg-foreground text-background" : "bg-muted text-muted-foreground"
-                        }`}>
-                          {acc.role}
-                        </span>
-                        <span className="text-sm font-medium">{acc.name}</span>
+                    <div key={acc.id} className="rounded-xl bg-muted/50 px-4 py-3">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                          <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                            acc.role === "master" ? "bg-foreground text-background" : "bg-muted text-muted-foreground"
+                          }`}>
+                            {acc.role}
+                          </span>
+                          <span className="text-sm font-medium break-all">{acc.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => startEditAccount(acc)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors">
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button onClick={() => handleDeleteAccount(acc.id)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-destructive transition-colors">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        {acc.tiktok_handle && <span>TT: @{displayHandle(acc.tiktok_handle)}</span>}
-                        {acc.youtube_handle && <span>YT: @{displayHandle(acc.youtube_handle)}</span>}
-                        {acc.instagram_handle && <span>IG: @{displayHandle(acc.instagram_handle)}</span>}
-                        {acc.facebook_handle && <span>FB: {displayHandle(acc.facebook_handle)}</span>}
-                        <button onClick={() => startEditAccount(acc)}
-                          className="rounded-lg p-1 text-muted-foreground hover:text-foreground transition-colors">
-                          <Edit2 className="h-3 w-3" />
-                        </button>
-                        <button onClick={() => handleDeleteAccount(acc.id)}
-                          className="rounded-lg p-1 text-muted-foreground hover:text-destructive transition-colors">
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
+                      <OAuthTiles account={acc} onChange={load} />
                     </div>
                   )
                 ))}
@@ -306,7 +396,7 @@ export default function BrandsPage() {
               {showNewAccount === brand.id && (
                 <div className="mt-4 rounded-xl border border-border p-4">
                   <h4 className="mb-3 text-sm font-semibold">Add Account</h4>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="mb-1 block text-xs font-medium">Account Name</label>
                       <input value={newAccount.name} onChange={(e) => setNewAccount({ ...newAccount, name: e.target.value })} placeholder="e.g. findsbymia_v2" className={inputClass} />
@@ -314,7 +404,7 @@ export default function BrandsPage() {
                     <div>
                       <label className="mb-1 block text-xs font-medium">Role</label>
                       <select value={newAccount.role} onChange={(e) => setNewAccount({ ...newAccount, role: e.target.value })}
-                        className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground">
+                        className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground">
                         <option value="master">Master</option>
                         <option value="variation">Variation</option>
                       </select>

@@ -34,16 +34,16 @@ export default function PostsLibraryPage() {
 
   return (
     <div className="mx-auto max-w-4xl">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Posts Library</h1>
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Posts Library</h1>
           <p className="mt-1 text-sm text-muted-foreground">Browse and manage all your posts.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:gap-3">
           <select
             value={filterBrand}
             onChange={(e) => setFilterBrand(e.target.value)}
-            className="rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground"
+            className="min-h-[44px] rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground"
           >
             <option value="all">All Brands</option>
             {brands.map((b: any) => (
@@ -51,7 +51,7 @@ export default function PostsLibraryPage() {
             ))}
           </select>
           <Link href="/posts/new"
-            className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
             <Plus className="h-4 w-4" /> New Post
           </Link>
         </div>
@@ -65,8 +65,8 @@ export default function PostsLibraryPage() {
       ) : (
         <div className="space-y-2">
           {posts.map((post: any) => (
-            <div key={post.id} className="flex items-center justify-between rounded-xl bg-card px-5 py-3.5">
-              <div className="flex items-center gap-4">
+            <div key={post.id} className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-4">
                 <span className="text-sm font-medium">Post #{post.post_number}</span>
                 <span className="text-sm text-muted-foreground">{post.date}</span>
                 <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium capitalize">{post.status}</span>
@@ -75,17 +75,17 @@ export default function PostsLibraryPage() {
                   <span className="text-xs text-muted-foreground">@ {post.scheduled_time}</span>
                 )}
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex flex-wrap gap-1.5">
                 <Link href={`/posts/new?edit=${post.id}`}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                   <Eye className="h-3 w-3" /> View
                 </Link>
                 <a href={getDownloadUrl(post.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                   <Download className="h-3 w-3" /> Download
                 </a>
                 <button onClick={() => handleDelete(post.id)}
-                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
+                  className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>

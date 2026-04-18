@@ -32,7 +32,7 @@ export default function LoginPage() {
       {/* Left — Form */}
       <div className="flex flex-1 flex-col justify-between bg-background px-8 py-6 md:px-16 lg:px-24">
         <div className="flex items-center justify-between">
-          <Link href="/landing" className="text-lg font-bold tracking-tight text-foreground">ICREATE</Link>
+          <Link href="/" className="text-lg font-bold tracking-tight text-foreground">ICREATEFLOW</Link>
           <ThemeToggle />
         </div>
 
@@ -94,7 +94,7 @@ export default function LoginPage() {
         </div>
 
         <div className="text-center text-xs text-muted-foreground">
-          <p>&copy; {new Date().getFullYear()} ICREATE. All Rights Reserved.</p>
+          <p>&copy; {new Date().getFullYear()} ICREATEFLOW. All Rights Reserved.</p>
         </div>
       </div>
 
@@ -111,7 +111,7 @@ export default function LoginPage() {
           <div className="w-80 rounded-2xl bg-white p-6 shadow-2xl shadow-black/10">
             <div className="mb-4 flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-black text-[10px] text-white font-bold">IC</div>
-              <span className="text-sm font-bold text-black">ICREATE</span>
+              <span className="text-sm font-bold text-black">ICREATEFLOW</span>
             </div>
             <div className="mb-5 space-y-2.5">
               <div className="h-3 w-3/4 rounded-full bg-gray-200 animate-shimmer" />

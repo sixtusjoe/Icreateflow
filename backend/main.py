@@ -1,5 +1,5 @@
 """
-ICREATE API — FastAPI backend for content scaling platform.
+ICREATEFLOW API — FastAPI backend for content scaling platform.
 """
 import os
 import sys
@@ -12,13 +12,14 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
 from services import tiktok_scraper, ocr, generator, overlay, video
 from services import flux
+from services import oauth as oauth_svc
 from services.auth import hash_password, verify_password, create_access_token, decode_token
 
 # --- App setup ---
@@ -31,7 +32,7 @@ async def lifespan(app: FastAPI):
     Path("music").mkdir(exist_ok=True)
     yield
 
-app = FastAPI(title="ICREATE API", lifespan=lifespan)
+app = FastAPI(title="ICREATEFLOW API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -87,7 +88,7 @@ async def verify_brand_ownership(brand_id: int, user: dict):
         brand = await db.get_brand(database, brand_id)
         if not brand:
             raise HTTPException(404, "Brand not found")
-        if user["role"] != "admin" and brand["user_id"] != user["id"]:
+        if brand["user_id"] != user["id"]:
             raise HTTPException(403, "Access denied")
         return dict(brand)
     finally:
@@ -163,6 +164,27 @@ class SlideUpdate(BaseModel):
 
 class VariationUpdate(BaseModel):
     action: str = "keep"
+
+class RegenerateSlide(BaseModel):
+    account_id: int
+    slide_number: int
+    title_text: Optional[str] = None
+    body_text: Optional[str] = None
+    cta_text: Optional[str] = None
+    font_size_title: Optional[int] = None
+    font_size_body: Optional[int] = None
+    font_size_cta: Optional[int] = None
+    y_ratio_title: Optional[float] = None
+    y_ratio_body: Optional[float] = None
+    y_ratio_cta: Optional[float] = None
+    x_ratio_title: Optional[float] = None   # 0.0 (far left) to 1.0 (far right), default 0.5
+    x_ratio_body: Optional[float] = None
+    x_ratio_cta: Optional[float] = None
+    scale_title: Optional[float] = None     # Zoom multiplier on top of font_size (e.g. 1.0 = 100%)
+    scale_body: Optional[float] = None
+    scale_cta: Optional[float] = None
+    font_weight: Optional[str] = None   # Light, Regular, Medium, SemiBold, Bold, ExtraBold, Black
+    text_style: Optional[str] = None     # "stroke" or "background"
 
 class FluxGenerate(BaseModel):
     prompt: str
@@ -324,20 +346,488 @@ async def admin_update_site_config(data: SettingUpdate, admin: dict = Depends(ad
         await database.close()
 
 
+def _dir_size_mb(path: str) -> float:
+    total = 0
+    p = Path(path)
+    if not p.exists():
+        return 0.0
+    for f in p.rglob("*"):
+        if f.is_file():
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    return round(total / (1024 * 1024), 1)
+
+
 @app.get("/api/admin/stats")
 async def admin_stats(admin: dict = Depends(admin_required)):
     database = await db.get_db()
     try:
-        users_c = await database.execute("SELECT COUNT(*) as count FROM users")
-        brands_c = await database.execute("SELECT COUNT(*) as count FROM brands")
-        posts_c = await database.execute("SELECT COUNT(*) as count FROM posts")
-        tracks_c = await database.execute("SELECT COUNT(*) as count FROM music_tracks")
+        async def _count(sql: str) -> int:
+            cur = await database.execute(sql)
+            row = await cur.fetchone()
+            return int(row["count"]) if row else 0
+
+        total_users = await _count("SELECT COUNT(*) as count FROM users")
+        total_brands = await _count("SELECT COUNT(*) as count FROM brands")
+        total_posts = await _count("SELECT COUNT(*) as count FROM posts")
+        total_tracks = await _count("SELECT COUNT(*) as count FROM music_tracks")
+        total_accounts = await _count("SELECT COUNT(*) as count FROM accounts")
+        scheduled_posts = await _count(
+            "SELECT COUNT(*) as count FROM posts WHERE status IN ('scheduled','generating','posting')"
+        )
+        failed_posts = await _count("SELECT COUNT(*) as count FROM posts WHERE status = 'failed'")
+        suspended_users = await _count("SELECT COUNT(*) as count FROM users WHERE status = 'suspended'")
+
+        # 24h activity
+        new_users_24h = await _count(
+            "SELECT COUNT(*) as count FROM users WHERE created_at > NOW() - INTERVAL '24 hours'"
+        )
+        new_posts_24h = await _count(
+            "SELECT COUNT(*) as count FROM posts WHERE created_at > NOW() - INTERVAL '24 hours'"
+        )
+
+        # storage
+        uploads_mb = _dir_size_mb("uploads")
+        output_mb = _dir_size_mb("output")
+        music_mb = _dir_size_mb("music")
+
+        # system health (optional psutil)
+        health: dict = {"cpu_percent": None, "mem_percent": None, "disk_percent": None}
+        try:
+            import psutil  # type: ignore
+            health["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+            health["mem_percent"] = psutil.virtual_memory().percent
+            health["disk_percent"] = psutil.disk_usage("/").percent
+        except Exception:
+            pass
+
         return {
-            "total_users": (await users_c.fetchone())["count"],
-            "total_brands": (await brands_c.fetchone())["count"],
-            "total_posts": (await posts_c.fetchone())["count"],
-            "total_tracks": (await tracks_c.fetchone())["count"],
+            "total_users": total_users,
+            "total_brands": total_brands,
+            "total_posts": total_posts,
+            "total_tracks": total_tracks,
+            "total_accounts": total_accounts,
+            "scheduled_posts": scheduled_posts,
+            "failed_posts": failed_posts,
+            "suspended_users": suspended_users,
+            "new_users_24h": new_users_24h,
+            "new_posts_24h": new_posts_24h,
+            "storage_mb": {
+                "uploads": uploads_mb,
+                "output": output_mb,
+                "music": music_mb,
+                "total": round(uploads_mb + output_mb + music_mb, 1),
+            },
+            "health": health,
         }
+    finally:
+        await database.close()
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, admin: dict = Depends(admin_required)):
+    if user_id == admin["id"]:
+        raise HTTPException(400, "Cannot delete yourself")
+    database = await db.get_db()
+    try:
+        target = await db.get_user(database, user_id)
+        if not target:
+            raise HTTPException(404, "User not found")
+
+        # Find and cascade-delete user's brands (cascades to accounts/posts/slides/variations/outputs)
+        brands_cur = await database.execute("SELECT id FROM brands WHERE user_id = ?", (user_id,))
+        for b in await brands_cur.fetchall():
+            bid = b["id"]
+            posts_cur = await database.execute("SELECT id FROM posts WHERE brand_id = ?", (bid,))
+            for p in await posts_cur.fetchall():
+                pid = p["id"]
+                slides_cur = await database.execute("SELECT id FROM slides WHERE post_id = ?", (pid,))
+                for s in await slides_cur.fetchall():
+                    await database.execute("DELETE FROM variations WHERE slide_id = ?", (s["id"],))
+                await database.execute("DELETE FROM slides WHERE post_id = ?", (pid,))
+                await database.execute("DELETE FROM outputs WHERE post_id = ?", (pid,))
+            await database.execute("DELETE FROM posts WHERE brand_id = ?", (bid,))
+            await database.execute("DELETE FROM accounts WHERE brand_id = ?", (bid,))
+        await database.execute("DELETE FROM brands WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM music_tracks WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        await database.commit()
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+# --- Admin cross-user resource management ---
+
+@app.get("/api/admin/brands")
+async def admin_list_brands(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        cursor = await database.execute(
+            """
+            SELECT b.*, u.name AS user_name, u.email AS user_email,
+                   (SELECT COUNT(*) FROM accounts a WHERE a.brand_id = b.id) AS account_count,
+                   (SELECT COUNT(*) FROM posts p WHERE p.brand_id = b.id) AS post_count
+            FROM brands b
+            LEFT JOIN users u ON u.id = b.user_id
+            ORDER BY b.created_at DESC
+            """
+        )
+        return rows_to_list(await cursor.fetchall())
+    finally:
+        await database.close()
+
+
+@app.delete("/api/admin/brands/{brand_id}")
+async def admin_delete_brand(brand_id: int, admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        await db.delete_brand(database, brand_id)
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.get("/api/admin/posts")
+async def admin_list_posts(
+    user_id: Optional[int] = None,
+    brand_id: Optional[int] = None,
+    status: Optional[str] = None,
+    admin: dict = Depends(admin_required),
+):
+    database = await db.get_db()
+    try:
+        sql = """
+            SELECT p.*, b.name AS brand_name, b.slug AS brand_slug,
+                   u.id AS user_id, u.name AS user_name, u.email AS user_email
+            FROM posts p
+            JOIN brands b ON b.id = p.brand_id
+            LEFT JOIN users u ON u.id = b.user_id
+            WHERE 1=1
+        """
+        params: list = []
+        if user_id:
+            sql += " AND b.user_id = ?"
+            params.append(user_id)
+        if brand_id:
+            sql += " AND p.brand_id = ?"
+            params.append(brand_id)
+        if status:
+            sql += " AND p.status = ?"
+            params.append(status)
+        sql += " ORDER BY p.date DESC, p.post_number"
+        cursor = await database.execute(sql, params)
+        return rows_to_list(await cursor.fetchall())
+    finally:
+        await database.close()
+
+
+@app.delete("/api/admin/posts/{post_id}")
+async def admin_delete_post(post_id: int, admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        slides_cur = await database.execute("SELECT id FROM slides WHERE post_id = ?", (post_id,))
+        for s in await slides_cur.fetchall():
+            await database.execute("DELETE FROM variations WHERE slide_id = ?", (s["id"],))
+        await database.execute("DELETE FROM slides WHERE post_id = ?", (post_id,))
+        await database.execute("DELETE FROM outputs WHERE post_id = ?", (post_id,))
+        await database.execute("DELETE FROM posts WHERE id = ?", (post_id,))
+        await database.commit()
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.get("/api/admin/accounts")
+async def admin_list_accounts(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        cursor = await database.execute(
+            """
+            SELECT a.*, b.name AS brand_name, b.slug AS brand_slug,
+                   u.id AS user_id, u.name AS user_name, u.email AS user_email
+            FROM accounts a
+            JOIN brands b ON b.id = a.brand_id
+            LEFT JOIN users u ON u.id = b.user_id
+            ORDER BY b.name, a.role DESC, a.id
+            """
+        )
+        return rows_to_list(await cursor.fetchall())
+    finally:
+        await database.close()
+
+
+@app.get("/api/admin/music")
+async def admin_list_music(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        cursor = await database.execute(
+            """
+            SELECT m.*, u.name AS user_name, u.email AS user_email
+            FROM music_tracks m
+            LEFT JOIN users u ON u.id = m.user_id
+            ORDER BY m.created_at DESC
+            """
+        )
+        return rows_to_list(await cursor.fetchall())
+    finally:
+        await database.close()
+
+
+@app.delete("/api/admin/music/{track_id}")
+async def admin_delete_music(track_id: int, admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        await db.delete_music_track(database, track_id)
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.get("/api/admin/schedule")
+async def admin_list_schedule(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        cursor = await database.execute(
+            """
+            SELECT p.*, b.name AS brand_name, b.slug AS brand_slug,
+                   u.id AS user_id, u.name AS user_name
+            FROM posts p
+            JOIN brands b ON b.id = p.brand_id
+            LEFT JOIN users u ON u.id = b.user_id
+            WHERE p.status IN ('scheduled','generating','posting')
+            ORDER BY p.date, p.scheduled_time
+            """
+        )
+        return rows_to_list(await cursor.fetchall())
+    finally:
+        await database.close()
+
+
+@app.get("/api/admin/api-keys")
+async def admin_list_api_keys(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        cursor = await database.execute(
+            """
+            SELECT u.id AS user_id, u.name AS user_name, u.email AS user_email,
+                   MAX(CASE WHEN us.key = 'replicate_api_key' THEN us.value END) AS replicate,
+                   MAX(CASE WHEN us.key IN ('anthropic_api_key','claude_api_key') THEN us.value END) AS anthropic
+            FROM users u
+            LEFT JOIN user_settings us ON us.user_id = u.id
+            GROUP BY u.id, u.name, u.email
+            ORDER BY u.id
+            """
+        )
+        rows = []
+        for r in await cursor.fetchall():
+            d = dict(r)
+            rep = d.pop("replicate") or ""
+            ant = d.pop("anthropic") or ""
+            d["has_replicate"] = bool(rep)
+            d["has_anthropic"] = bool(ant)
+            d["replicate_preview"] = (rep[:4] + "…" + rep[-4:]) if len(rep) > 8 else ""
+            d["anthropic_preview"] = (ant[:6] + "…" + ant[-4:]) if len(ant) > 10 else ""
+            rows.append(d)
+        return rows
+    finally:
+        await database.close()
+
+
+# --- OAuth app configuration (admin) ---
+
+OAUTH_PLATFORMS = {"tiktok", "youtube", "meta"}
+OAUTH_CONFIG_KEYS = [
+    "oauth_tiktok_client_id", "oauth_tiktok_client_secret",
+    "oauth_youtube_client_id", "oauth_youtube_client_secret",
+    "oauth_meta_client_id", "oauth_meta_client_secret",
+    "oauth_redirect_base",
+]
+
+
+class OAuthAppUpdate(BaseModel):
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    redirect_base: Optional[str] = None
+
+
+def _mask(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    s = str(s)
+    return s[:4] + "…" + s[-4:] if len(s) > 8 else "…"
+
+
+@app.get("/api/admin/oauth-apps")
+async def admin_get_oauth_apps(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        result = {"redirect_base": cfg.get("oauth_redirect_base", "")}
+        for platform in OAUTH_PLATFORMS:
+            cid = cfg.get(f"oauth_{platform}_client_id", "")
+            sec = cfg.get(f"oauth_{platform}_client_secret", "")
+            result[platform] = {
+                "client_id": cid,
+                "client_secret_preview": _mask(sec),
+                "configured": bool(cid and sec),
+            }
+        return result
+    finally:
+        await database.close()
+
+
+@app.put("/api/admin/oauth-apps/{platform}")
+async def admin_update_oauth_app(
+    platform: str, data: OAuthAppUpdate, admin: dict = Depends(admin_required)
+):
+    if platform != "_base" and platform not in OAUTH_PLATFORMS:
+        raise HTTPException(400, f"Unknown platform: {platform}")
+    database = await db.get_db()
+    try:
+        if platform == "_base":
+            if data.redirect_base is not None:
+                await db.set_site_config(database, "oauth_redirect_base", data.redirect_base)
+        else:
+            if data.client_id is not None:
+                await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id)
+            if data.client_secret is not None:
+                await db.set_site_config(database, f"oauth_{platform}_client_secret", data.client_secret)
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+# =============================================
+# OAUTH CONNECT FLOWS (TikTok / YouTube / Meta)
+# =============================================
+
+def _oauth_close_html(success: bool, message: str = "") -> str:
+    status = "success" if success else "error"
+    safe = message.replace("</", "<\\/").replace("'", "\\'")
+    return f"""<!doctype html><html><head><meta charset=utf-8><title>OAuth {status}</title>
+<style>body{{font-family:system-ui;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}</style>
+</head><body>
+<div style="text-align:center">
+  <h2>{'Connected!' if success else 'Connection failed'}</h2>
+  <p>{safe or ('You can close this window.' if success else '')}</p>
+</div>
+<script>
+try {{
+  if (window.opener) {{
+    window.opener.postMessage({{type:'oauth', status:'{status}', message:'{safe}'}}, '*');
+  }}
+}} catch(e) {{}}
+setTimeout(function(){{ try{{ window.close(); }}catch(e){{}} }}, 800);
+</script>
+</body></html>"""
+
+
+@app.get("/api/oauth/{platform}/start")
+async def oauth_start(platform: str, account_id: int, user: dict = Depends(get_current_user)):
+    if platform not in oauth_svc.AUTHORIZE_URLS:
+        raise HTTPException(400, f"Unknown platform: {platform}")
+    database = await db.get_db()
+    try:
+        account = await db.get_account(database, account_id)
+        if not account:
+            raise HTTPException(404, "Account not found")
+        await verify_brand_ownership(account["brand_id"], user)
+        cfg = await db.get_site_config(database)
+    finally:
+        await database.close()
+
+    client_id = cfg.get(f"oauth_{platform}_client_id", "")
+    redirect_base = cfg.get("oauth_redirect_base", "")
+    if not client_id or not redirect_base:
+        raise HTTPException(400, f"{platform} OAuth app not configured by admin")
+
+    redirect_uri = oauth_svc.build_redirect_uri(redirect_base, platform)
+    state = oauth_svc.sign_state(user["id"], account_id, platform)
+    auth_url = oauth_svc.build_authorize_url(platform, client_id, redirect_uri, state)
+    return {"authorize_url": auth_url}
+
+
+@app.get("/api/oauth/{platform}/callback")
+async def oauth_callback(platform: str, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    if error:
+        return HTMLResponse(_oauth_close_html(False, f"Provider error: {error}"))
+    if platform not in oauth_svc.AUTHORIZE_URLS:
+        return HTMLResponse(_oauth_close_html(False, "Unknown platform"))
+    if not code or not state:
+        return HTMLResponse(_oauth_close_html(False, "Missing code or state"))
+
+    verified = oauth_svc.verify_state(state)
+    if not verified or verified["platform"] != platform:
+        return HTMLResponse(_oauth_close_html(False, "Invalid or expired state"))
+
+    account_id = verified["account_id"]
+
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        client_id = cfg.get(f"oauth_{platform}_client_id", "")
+        client_secret = cfg.get(f"oauth_{platform}_client_secret", "")
+        redirect_base = cfg.get("oauth_redirect_base", "")
+        redirect_uri = oauth_svc.build_redirect_uri(redirect_base, platform)
+
+        try:
+            tokens = await oauth_svc.exchange_code(platform, code, client_id, client_secret, redirect_uri)
+        except Exception as e:
+            return HTMLResponse(_oauth_close_html(False, f"Token exchange failed: {e}"))
+
+        if not tokens.get("access_token"):
+            return HTMLResponse(_oauth_close_html(False, "Provider returned no access token"))
+
+        expires_at = None
+        if tokens.get("expires_in"):
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(tokens["expires_in"]))
+            expires_at = expires_at.isoformat()
+
+        # Meta flow populates BOTH instagram_ and facebook_ columns
+        target_platforms = ["instagram", "facebook"] if platform == "meta" else [platform]
+        updates: dict = {}
+        for p in target_platforms:
+            updates[f"{p}_token"] = tokens["access_token"]
+            if tokens.get("refresh_token"):
+                updates[f"{p}_refresh_token"] = tokens["refresh_token"]
+            if expires_at:
+                updates[f"{p}_expires_at"] = expires_at
+            if tokens.get("scope"):
+                updates[f"{p}_scopes"] = tokens["scope"]
+            if tokens.get("platform_user_id"):
+                updates[f"{p}_user_id"] = str(tokens["platform_user_id"])
+
+        await db.update_account(database, account_id, **updates)
+        return HTMLResponse(_oauth_close_html(True))
+    finally:
+        await database.close()
+
+
+@app.post("/api/oauth/{platform}/disconnect")
+async def oauth_disconnect(platform: str, account_id: int, user: dict = Depends(get_current_user)):
+    if platform not in ("tiktok", "youtube", "instagram", "facebook", "meta"):
+        raise HTTPException(400, f"Unknown platform: {platform}")
+    database = await db.get_db()
+    try:
+        account = await db.get_account(database, account_id)
+        if not account:
+            raise HTTPException(404, "Account not found")
+        await verify_brand_ownership(account["brand_id"], user)
+
+        target_platforms = ["instagram", "facebook"] if platform == "meta" else [platform]
+        updates: dict = {}
+        for p in target_platforms:
+            updates[f"{p}_token"] = None
+            updates[f"{p}_refresh_token"] = None
+            updates[f"{p}_expires_at"] = None
+            updates[f"{p}_scopes"] = None
+            updates[f"{p}_user_id"] = None
+        await db.update_account(database, account_id, **updates)
+        return {"ok": True}
     finally:
         await database.close()
 
@@ -364,10 +854,7 @@ async def create_brand(data: BrandCreate, user: dict = Depends(get_current_user)
 async def list_brands(user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
-        if user["role"] == "admin":
-            brands = await db.get_brands(database)
-        else:
-            brands = await db.get_brands(database, user_id=user["id"])
+        brands = await db.get_brands(database, user_id=user["id"])
         result = []
         for b in brands:
             brand_dict = dict(b)
@@ -467,10 +954,7 @@ async def delete_account(account_id: int, user: dict = Depends(get_current_user)
 async def list_posts(brand_id: Optional[int] = None, date: Optional[str] = None, user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
-        if user["role"] == "admin":
-            posts = await db.get_posts(database, brand_id=brand_id, date=date)
-        else:
-            posts = await db.get_posts(database, brand_id=brand_id, date=date, user_id=user["id"])
+        posts = await db.get_posts(database, brand_id=brand_id, date=date, user_id=user["id"])
         result = []
         for p in posts:
             post_dict = dict(p)
@@ -567,6 +1051,19 @@ async def import_tiktok_post(data: PostImport, user: dict = Depends(get_current_
         if not brand:
             raise HTTPException(404, "Brand not found")
 
+        # Scrape FIRST so we don't create an empty post on failure
+        tmp_dir = Path("uploads") / brand["slug"] / f"_import_tmp_{int(datetime.now().timestamp())}"
+        download_result = await tiktok_scraper.download_tiktok_slides(
+            data.tiktok_url, str(tmp_dir)
+        )
+        slide_paths = download_result["slides"]
+        if not slide_paths:
+            raise HTTPException(
+                422,
+                "Couldn't extract any images from that TikTok URL. "
+                "Check the link (must be a photo carousel post) or upload slides manually.",
+            )
+
         post_id = await db.create_post(
             database, data.brand_id,
             datetime.now().strftime("%Y-%m-%d"),
@@ -575,40 +1072,45 @@ async def import_tiktok_post(data: PostImport, user: dict = Depends(get_current_
             caption=data.caption or "",
         )
 
+        # Move scraped files into the post's final folder
         upload_dir = Path("uploads") / brand["slug"] / f"post_{post_id}"
-        download_result = await tiktok_scraper.download_tiktok_slides(
-            data.tiktok_url, str(upload_dir)
-        )
-
-        slide_paths = download_result["slides"]
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        moved_paths: list[str] = []
+        for sp in slide_paths:
+            src = Path(sp)
+            if not src.exists():
+                continue
+            dest = upload_dir / src.name
+            try:
+                src.replace(dest)
+            except OSError:
+                shutil.copy2(src, dest)
+                src.unlink(missing_ok=True)
+            moved_paths.append(str(dest))
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+        slide_paths = moved_paths
         if download_result["caption"] and not data.caption:
             await db.update_post(database, post_id, caption=download_result["caption"])
         if download_result["sound_id"]:
             await db.update_post(database, post_id, tiktok_sound_id=download_result["sound_id"])
 
-        if slide_paths:
-            ocr_results = ocr.extract_slide_texts(slide_paths)
-        else:
-            ocr_results = []
-
+        # No auto-OCR — user clicks "Run OCR" manually to save API costs
         accounts = await db.get_accounts(database, data.brand_id)
 
         for i, slide_path in enumerate(slide_paths):
-            ocr_data = ocr_results[i] if i < len(ocr_results) else {}
-            slide_type = ocr_data.get("type", "content")
-            if i == 0:
-                slide_type = "hook"
-            elif i == len(slide_paths) - 1:
-                slide_type = "cta"
+            slide_type = "hook" if i == 0 else ("cta" if i == len(slide_paths) - 1 else "content")
 
             slide_id = await db.create_slide(
                 database, post_id,
                 slide_number=i + 1,
                 type=slide_type,
-                has_face=ocr_data.get("has_face", False),
-                title_text=ocr_data.get("title_text", ""),
-                body_text=ocr_data.get("body_text", ""),
-                cta_text=ocr_data.get("cta_text", ""),
+                has_face=False,
+                title_text="",
+                body_text="",
+                cta_text="",
                 master_image_path=slide_path,
             )
 
@@ -654,29 +1156,20 @@ async def upload_slides_manually(
             path.write_bytes(content)
             slide_paths.append(str(path))
 
-        if slide_paths:
-            ocr_results = ocr.extract_slide_texts(slide_paths)
-        else:
-            ocr_results = []
-
+        # No auto-OCR — user clicks "Run OCR" manually to save API costs
         accounts = await db.get_accounts(database, brand_id)
 
         for i, slide_path in enumerate(slide_paths):
-            ocr_data = ocr_results[i] if i < len(ocr_results) else {}
-            slide_type = ocr_data.get("type", "content")
-            if i == 0:
-                slide_type = "hook"
-            elif i == len(slide_paths) - 1:
-                slide_type = "cta"
+            slide_type = "hook" if i == 0 else ("cta" if i == len(slide_paths) - 1 else "content")
 
             slide_id = await db.create_slide(
                 database, post_id,
                 slide_number=i + 1,
                 type=slide_type,
-                has_face=ocr_data.get("has_face", False),
-                title_text=ocr_data.get("title_text", ""),
-                body_text=ocr_data.get("body_text", ""),
-                cta_text=ocr_data.get("cta_text", ""),
+                has_face=False,
+                title_text="",
+                body_text="",
+                cta_text="",
                 master_image_path=slide_path,
             )
 
@@ -745,6 +1238,311 @@ async def upload_slide_image(post_id: int, slide_number: int, file: UploadFile =
 
         await db.update_slide(database, slide["id"], master_image_path=str(save_path))
         return {"path": str(save_path)}
+    finally:
+        await database.close()
+
+
+@app.post("/api/posts/{post_id}/rerun-ocr")
+async def rerun_ocr(post_id: int, user: dict = Depends(get_current_user)):
+    """Re-run OCR on all slides of a post using updated extraction logic."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        slides = await db.get_slides(database, post_id)
+        if not slides:
+            raise HTTPException(400, "No slides found")
+
+        slide_paths = [s["master_image_path"] for s in slides if s["master_image_path"]]
+        if not slide_paths:
+            raise HTTPException(400, "No slide images found")
+
+        # Fetch the Anthropic key from the Postgres settings table, falling back
+        # to the env var. Surface a clear 400 if nothing is configured so the
+        # frontend toast tells the user to set it in Settings.
+        api_key = await db.get_setting(database, "anthropic_api_key")
+        if not api_key:
+            api_key = await db.get_setting(database, "claude_api_key")
+        if not api_key:
+            import os as _os
+            api_key = _os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise HTTPException(400, "Anthropic API key not configured — add one in Settings")
+
+        try:
+            ocr_results = ocr.extract_slide_texts(slide_paths, api_key=api_key)
+        except ocr.OCRError as e:
+            raise HTTPException(502, f"OCR failed: {e}")
+
+        updated = []
+        extracted_any = False
+        for i, slide in enumerate(slides):
+            if i < len(ocr_results):
+                ocr_data = ocr_results[i]
+                if ocr_data.get("title_text") or ocr_data.get("body_text") or ocr_data.get("cta_text"):
+                    extracted_any = True
+                await db.update_slide(database, slide["id"],
+                    type=ocr_data.get("type", slide["type"]),
+                    title_text=ocr_data.get("title_text", ""),
+                    body_text=ocr_data.get("body_text", ""),
+                    cta_text=ocr_data.get("cta_text", ""),
+                )
+                updated.append({"slide_number": slide["slide_number"], **ocr_data})
+
+        return {"updated": len(updated), "extracted_any": extracted_any, "slides": updated}
+    finally:
+        await database.close()
+
+
+@app.get("/api/posts/{post_id}/output-slides")
+async def list_output_slides(post_id: int, user: dict = Depends(get_current_user)):
+    """List all generated slide images for each account."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        outputs = await db.get_outputs(database, post_id)
+        accounts = await db.get_accounts(database, post["brand_id"])
+        account_map = {a["id"]: dict(a) for a in accounts}
+
+        result = []
+        for out in outputs:
+            slides_dir = out["slides_dir"]
+            slides_3x4 = []
+            slides_9x16 = []
+            if slides_dir and Path(slides_dir).exists():
+                for f in sorted(Path(slides_dir).iterdir()):
+                    if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                        if "_9x16" in f.stem:
+                            slides_9x16.append(str(f))
+                        else:
+                            slides_3x4.append(str(f))
+
+            acc = account_map.get(out["account_id"], {})
+            result.append({
+                "account_id": out["account_id"],
+                "account_name": acc.get("name", f"Account {out['account_id']}"),
+                "account_role": acc.get("role", ""),
+                "slides_3x4": slides_3x4,
+                "slides_9x16": slides_9x16,
+                "video_path": out["video_path"],
+                "posting_status": out["posting_status"],
+            })
+        return result
+    finally:
+        await database.close()
+
+
+@app.post("/api/posts/{post_id}/regenerate-slide")
+async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dict = Depends(get_current_user)):
+    """Regenerate overlay for a single slide of a specific account.
+    Allows adjusting text content and positioning (font sizes, y_ratios)."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        brand = await db.get_brand(database, post["brand_id"])
+        slides = await db.get_slides(database, post_id)
+        slide = next((s for s in slides if s["slide_number"] == data.slide_number), None)
+        if not slide:
+            raise HTTPException(404, f"Slide {data.slide_number} not found")
+
+        # Use provided text or fall back to stored slide text
+        title_text = data.title_text if data.title_text is not None else slide["title_text"]
+        body_text = data.body_text if data.body_text is not None else slide["body_text"]
+        cta_text = data.cta_text if data.cta_text is not None else slide["cta_text"]
+
+        # Update slide text in DB if changed
+        text_updates = {}
+        if data.title_text is not None:
+            text_updates["title_text"] = data.title_text
+        if data.body_text is not None:
+            text_updates["body_text"] = data.body_text
+        if data.cta_text is not None:
+            text_updates["cta_text"] = data.cta_text
+        if text_updates:
+            await db.update_slide(database, slide["id"], **text_updates)
+
+        # Determine source image (master or variation replacement)
+        variations = await db.get_variations(database, post_id=post_id, account_id=data.account_id)
+        var = next((v for v in variations if v["slide_id"] == slide["id"]), None)
+        if var and var["action"] in ("replace", "generate") and var["replacement_image_path"]:
+            source_image = var["replacement_image_path"]
+        else:
+            source_image = slide["master_image_path"]
+
+        if not source_image or not Path(source_image).exists():
+            raise HTTPException(400, "Source image not found")
+
+        # Find account and output dir
+        account = await database.execute("SELECT * FROM accounts WHERE id = ?", (data.account_id,))
+        account = await account.fetchone()
+        if not account:
+            raise HTTPException(404, "Account not found")
+
+        out_dir = Path("output") / brand["slug"] / post["date"] / account["name"] / f"post_{post['post_number']}"
+        slides_dir = out_dir / "slides"
+        slides_dir.mkdir(parents=True, exist_ok=True)
+
+        output_path = str(slides_dir / f"slide_{data.slide_number:02d}.png")
+        bg_color = "#000000"  # Always black for 9:16 canvas bars
+
+        # Build custom text blocks with overridden positioning
+        slide_type = slide["type"]
+        custom_texts = []
+
+        if slide_type == "hook":
+            text = title_text or body_text or ""
+            if text:
+                custom_texts.append({
+                    "text": text,
+                    "font_size": data.font_size_title or 56,
+                    "y_ratio": data.y_ratio_title or 0.30,
+                    "x_ratio": data.x_ratio_title if data.x_ratio_title is not None else 0.5,
+                    "scale": data.scale_title if data.scale_title is not None else 1.0,
+                })
+        elif slide_type == "content":
+            if title_text:
+                custom_texts.append({
+                    "text": title_text,
+                    "font_size": data.font_size_title or 52,
+                    "y_ratio": data.y_ratio_title or 0.28,
+                    "x_ratio": data.x_ratio_title if data.x_ratio_title is not None else 0.5,
+                    "scale": data.scale_title if data.scale_title is not None else 1.0,
+                })
+            if body_text:
+                custom_texts.append({
+                    "text": body_text,
+                    "font_size": data.font_size_body or 38,
+                    "y_ratio": data.y_ratio_body or 0.48,
+                    "x_ratio": data.x_ratio_body if data.x_ratio_body is not None else 0.5,
+                    "scale": data.scale_body if data.scale_body is not None else 1.0,
+                })
+        elif slide_type == "cta":
+            if title_text:
+                custom_texts.append({
+                    "text": title_text,
+                    "font_size": data.font_size_title or 48,
+                    "y_ratio": data.y_ratio_title or 0.25,
+                    "x_ratio": data.x_ratio_title if data.x_ratio_title is not None else 0.5,
+                    "scale": data.scale_title if data.scale_title is not None else 1.0,
+                })
+            if body_text:
+                custom_texts.append({
+                    "text": body_text,
+                    "font_size": data.font_size_body or 34,
+                    "y_ratio": data.y_ratio_body or 0.45,
+                    "x_ratio": data.x_ratio_body if data.x_ratio_body is not None else 0.5,
+                    "scale": data.scale_body if data.scale_body is not None else 1.0,
+                })
+            if cta_text:
+                custom_texts.append({
+                    "text": cta_text,
+                    "font_size": data.font_size_cta or 42,
+                    "y_ratio": data.y_ratio_cta or 0.75,
+                    "x_ratio": data.x_ratio_cta if data.x_ratio_cta is not None else 0.5,
+                    "scale": data.scale_cta if data.scale_cta is not None else 1.0,
+                })
+
+        # Use overlay engine directly with custom text blocks
+        from PIL import Image
+        font_weight = data.font_weight or overlay.DEFAULT_WEIGHT
+        text_style = data.text_style or "stroke"
+
+        img = Image.open(source_image).convert("RGB")
+        img_3x4 = overlay.resize_to_3x4(img)
+
+        if custom_texts:
+            img_3x4 = overlay._apply_text_block(
+                img_3x4, custom_texts,
+                weight=font_weight, text_style=text_style,
+            )
+
+        output_3x4 = Path(output_path)
+        output_3x4.parent.mkdir(parents=True, exist_ok=True)
+        img_3x4.save(str(output_3x4), "PNG")
+
+        img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
+        output_9x16 = output_3x4.parent / f"{output_3x4.stem}_9x16{output_3x4.suffix}"
+        img_9x16.save(str(output_9x16), "PNG")
+
+        return {
+            "slide_3x4": str(output_3x4),
+            "slide_9x16": str(output_9x16),
+            "slide_number": data.slide_number,
+            "account_id": data.account_id,
+        }
+    finally:
+        await database.close()
+
+
+class RegenerateVideo(BaseModel):
+    account_id: int
+
+
+@app.post("/api/posts/{post_id}/regenerate-video")
+async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dict = Depends(get_current_user)):
+    """Rebuild the video for a specific account from the current 9:16 slide files."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        brand = await db.get_brand(database, post["brand_id"])
+        cursor = await database.execute("SELECT * FROM accounts WHERE id = ?", (data.account_id,))
+        account = await cursor.fetchone()
+        if not account:
+            raise HTTPException(404, "Account not found")
+
+        # Music path (optional)
+        music_path = None
+        if post["music_track_id"]:
+            c = await database.execute("SELECT file_path FROM music_tracks WHERE id = ?", (post["music_track_id"],))
+            t = await c.fetchone()
+            if t:
+                music_path = t["file_path"]
+
+        out_dir = Path("output") / brand["slug"] / post["date"] / account["name"] / f"post_{post['post_number']}"
+        slides_dir = out_dir / "slides"
+        if not slides_dir.exists():
+            raise HTTPException(400, "No slides directory found — generate the post first")
+
+        # Collect 9:16 slide files in order
+        slide_paths = []
+        for f in sorted(slides_dir.iterdir()):
+            if f.suffix.lower() in (".png", ".jpg", ".jpeg") and "_9x16" in f.stem:
+                slide_paths.append(str(f))
+
+        if len(slide_paths) < 2:
+            raise HTTPException(400, f"Need at least 2 slides to build a video (found {len(slide_paths)})")
+
+        video_path = str(out_dir / "video.mp4")
+        video.build_video(
+            slide_paths=slide_paths,
+            output_path=video_path,
+            music_path=music_path,
+        )
+
+        # Update output record
+        c = await database.execute(
+            "SELECT id FROM outputs WHERE post_id = ? AND account_id = ?", (post_id, data.account_id)
+        )
+        existing = await c.fetchone()
+        if existing:
+            await db.update_output(database, existing["id"], video_path=video_path)
+
+        return {"video_path": video_path, "account_id": data.account_id, "slide_count": len(slide_paths)}
     finally:
         await database.close()
 
@@ -946,12 +1744,8 @@ async def schedule_post(post_id: int, data: PostSchedule, user: dict = Depends(g
 async def get_schedule(brand_id: Optional[int] = None, user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
-        if user["role"] == "admin":
-            query = "SELECT p.*, b.name as brand_name, b.slug as brand_slug FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.status IN ('scheduled', 'generating', 'posting')"
-            params = []
-        else:
-            query = "SELECT p.*, b.name as brand_name, b.slug as brand_slug FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.status IN ('scheduled', 'generating', 'posting') AND b.user_id = ?"
-            params = [user["id"]]
+        query = "SELECT p.*, b.name as brand_name, b.slug as brand_slug FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.status IN ('scheduled', 'generating', 'posting') AND b.user_id = ?"
+        params = [user["id"]]
         if brand_id:
             query += " AND p.brand_id = ?"
             params.append(brand_id)
@@ -971,10 +1765,7 @@ async def get_schedule(brand_id: Optional[int] = None, user: dict = Depends(get_
 async def list_music(user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
-        if user["role"] == "admin":
-            tracks = await db.get_music_tracks(database)
-        else:
-            tracks = await db.get_music_tracks(database, user_id=user["id"])
+        tracks = await db.get_music_tracks(database, user_id=user["id"])
         return rows_to_list(tracks)
     finally:
         await database.close()
@@ -1098,7 +1889,16 @@ async def serve_file(file_path: str):
                 break
     if not full_path.exists():
         raise HTTPException(404, "File not found")
-    return FileResponse(str(full_path))
+    # Force browsers to revalidate — regenerated slides overwrite the same filename,
+    # so without no-cache the old image would stick around after a regenerate.
+    return FileResponse(
+        str(full_path),
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 # =============================================

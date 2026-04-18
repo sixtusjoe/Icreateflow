@@ -1,0 +1,28 @@
+[Unit]
+Description=ICREATEFLOW Next.js frontend (npm run start)
+After=network.target icreateflow-backend.service
+Wants=icreateflow-backend.service
+
+[Service]
+Type=simple
+User=icreateflow
+Group=icreateflow
+WorkingDirectory=/srv/icreateflow/frontend
+Environment=NODE_ENV=production
+Environment=PORT=3100
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/npm run start -- -p 3100 -H 127.0.0.1
+Restart=on-failure
+RestartSec=5
+# Resource limits
+CPUQuota=100%
+MemoryMax=1G
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/icreateflow
+
+[Install]
+WantedBy=multi-user.target

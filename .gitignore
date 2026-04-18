@@ -16,6 +16,12 @@ venv/
 
 # Database
 *.db
+*.db.backup
+*.sqlite
+*.sqlite3
+
+# Local output
+output/
 
 # Environment
 .env

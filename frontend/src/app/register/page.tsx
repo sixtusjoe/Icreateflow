@@ -31,7 +31,7 @@ export default function RegisterPage() {
       {/* Left — Form */}
       <div className="flex flex-1 flex-col justify-between bg-background px-8 py-6 md:px-16 lg:px-24">
         <div className="flex items-center justify-between">
-          <Link href="/landing" className="text-lg font-bold tracking-tight text-foreground">ICREATE</Link>
+          <Link href="/" className="text-lg font-bold tracking-tight text-foreground">ICREATEFLOW</Link>
           <ThemeToggle />
         </div>
 
@@ -96,7 +96,7 @@ export default function RegisterPage() {
         </div>
 
         <div className="text-center text-xs text-muted-foreground">
-          <p>&copy; {new Date().getFullYear()} ICREATE. All Rights Reserved.</p>
+          <p>&copy; {new Date().getFullYear()} ICREATEFLOW. All Rights Reserved.</p>
         </div>
       </div>
 
@@ -111,7 +111,7 @@ export default function RegisterPage() {
           {/* Big number */}
           <p className="text-8xl font-black tracking-tighter text-black/90 animate-scale-pulse">800+</p>
           <p className="mt-3 max-w-xs text-base font-medium text-black/60">
-            Content creators use ICREATE to scale, automate, and post content faster.
+            Content creators use ICREATEFLOW to scale, automate, and post content faster.
           </p>
 
           {/* Feature pills */}

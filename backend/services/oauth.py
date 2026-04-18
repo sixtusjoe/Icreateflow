@@ -1,0 +1,196 @@
+"""OAuth scaffolding for TikTok / YouTube / Meta (IG+FB).
+
+Provides:
+- Authorize URL construction per platform
+- Token exchange (code → access_token + refresh_token + expiry)
+- State JWT signing/verification binding user+account+platform
+
+Real-world posting uses the stored tokens elsewhere; this module only handles
+the connection handshake.
+"""
+from __future__ import annotations
+
+import os
+import time
+import json
+import secrets
+from typing import Any
+from urllib.parse import urlencode
+
+import httpx
+from datetime import datetime, timedelta, timezone
+from jose import jwt, JWTError
+
+from services.auth import SECRET_KEY, ALGORITHM
+
+
+AUTHORIZE_URLS = {
+    "tiktok": "https://www.tiktok.com/v2/auth/authorize/",
+    "youtube": "https://accounts.google.com/o/oauth2/v2/auth",
+    # Meta app covers both Instagram Business + Facebook Pages in one flow
+    "meta": "https://www.facebook.com/v19.0/dialog/oauth",
+}
+
+TOKEN_URLS = {
+    "tiktok": "https://open.tiktokapis.com/v2/oauth/token/",
+    "youtube": "https://oauth2.googleapis.com/token",
+    "meta": "https://graph.facebook.com/v19.0/oauth/access_token",
+}
+
+SCOPES = {
+    "tiktok": "user.info.basic,video.publish,video.upload",
+    "youtube": "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+    "meta": (
+        "instagram_basic,instagram_content_publish,"
+        "pages_show_list,pages_manage_posts,pages_read_engagement,business_management"
+    ),
+}
+
+
+def build_redirect_uri(redirect_base: str, platform: str) -> str:
+    base = (redirect_base or "").rstrip("/")
+    return f"{base}/api/oauth/{platform}/callback"
+
+
+def sign_state(user_id: int, account_id: int, platform: str) -> str:
+    """Short-lived JWT binding the connecting user to the account + platform."""
+    payload = {
+        "purpose": "oauth_state",
+        "platform": platform,
+        "user_id": user_id,
+        "account_id": account_id,
+        "nonce": secrets.token_hex(8),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_state(state: str) -> dict[str, Any] | None:
+    try:
+        payload = jwt.decode(state, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("purpose") != "oauth_state":
+        return None
+    try:
+        return {
+            "platform": str(payload["platform"]),
+            "user_id": int(payload["user_id"]),
+            "account_id": int(payload["account_id"]),
+        }
+    except (KeyError, ValueError):
+        return None
+
+
+def build_authorize_url(
+    platform: str, client_id: str, redirect_uri: str, state: str
+) -> str:
+    """Return a platform-specific authorize URL."""
+    if platform not in AUTHORIZE_URLS:
+        raise ValueError(f"Unknown platform: {platform}")
+
+    if platform == "tiktok":
+        params = {
+            "client_key": client_id,
+            "response_type": "code",
+            "scope": SCOPES["tiktok"],
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+    elif platform == "youtube":
+        params = {
+            "client_id": client_id,
+            "response_type": "code",
+            "scope": SCOPES["youtube"],
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "access_type": "offline",
+            "prompt": "consent",
+            "include_granted_scopes": "true",
+        }
+    else:  # meta
+        params = {
+            "client_id": client_id,
+            "response_type": "code",
+            "scope": SCOPES["meta"],
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+
+    return f"{AUTHORIZE_URLS[platform]}?{urlencode(params)}"
+
+
+async def exchange_code(
+    platform: str,
+    code: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+) -> dict[str, Any]:
+    """Exchange an auth code for access + refresh tokens."""
+    if platform not in TOKEN_URLS:
+        raise ValueError(f"Unknown platform: {platform}")
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        if platform == "tiktok":
+            resp = await client.post(
+                TOKEN_URLS["tiktok"],
+                data={
+                    "client_key": client_id,
+                    "client_secret": client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": redirect_uri,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            data = resp.json()
+            return {
+                "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token"),
+                "expires_in": data.get("expires_in"),
+                "scope": data.get("scope"),
+                "platform_user_id": data.get("open_id"),
+                "raw": data,
+            }
+
+        if platform == "youtube":
+            resp = await client.post(
+                TOKEN_URLS["youtube"],
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": redirect_uri,
+                },
+            )
+            data = resp.json()
+            return {
+                "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token"),
+                "expires_in": data.get("expires_in"),
+                "scope": data.get("scope"),
+                "platform_user_id": None,
+                "raw": data,
+            }
+
+        # meta
+        resp = await client.get(
+            TOKEN_URLS["meta"],
+            params={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+        data = resp.json()
+        return {
+            "access_token": data.get("access_token"),
+            "refresh_token": None,
+            "expires_in": data.get("expires_in"),
+            "scope": None,
+            "platform_user_id": None,
+            "raw": data,
+        }

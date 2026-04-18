@@ -1,12 +1,27 @@
-fastapi==0.115.0
-uvicorn==0.30.6
-python-multipart==0.0.9
-Pillow==10.4.0
-pyyaml==6.0.2
-aiosqlite==0.20.0
-yt-dlp==2024.8.6
-easyocr==1.7.1
-replicate==0.32.1
-apscheduler==3.10.4
-httpx==0.27.2
-python-jose==3.3.0
+# --- Web framework ---
+fastapi==0.135.3
+uvicorn[standard]==0.44.0        # includes uvloop + httptools for prod perf
+gunicorn==23.0.0                 # production process manager (use with -k uvicorn.workers.UvicornWorker)
+python-multipart==0.0.25         # required by FastAPI for File/Form
+
+# --- Auth ---
+bcrypt==5.0.0                    # password hashing (services/auth.py)
+python-jose[cryptography]==3.5.0 # JWT signing/verification
+
+# --- Database (Postgres) ---
+SQLAlchemy[asyncio]==2.0.49
+asyncpg==0.31.0                  # async Postgres driver used by SQLAlchemy
+greenlet==3.4.0                  # required for SQLAlchemy async-ORM bridge
+
+# --- HTTP / integrations ---
+httpx==0.28.1                    # async HTTP client (TikTok scraper, Flux image gen, OCR)
+# Replicate is called via REST (services/flux.py) — no SDK needed.
+yt-dlp>=2025.9.26                # TikTok photo-post fallback extractor (services/tiktok_scraper.py)
+
+# --- System metrics ---
+psutil==6.1.0                    # CPU/memory/disk for admin health card
+
+# --- Media pipeline ---
+Pillow==12.2.0                   # image overlay + resize (services/overlay.py, generator.py)
+# ffmpeg: system binary, install with `brew install ffmpeg` or apt `ffmpeg`
+#         (services/video.py shells out to ffmpeg for 9:16 video assembly)

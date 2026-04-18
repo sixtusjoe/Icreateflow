@@ -39,36 +39,36 @@ export default function AccountPage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight">My Account</h1>
+      <div className="mb-6 md:mb-8">
+        <h1 className="text-xl md:text-2xl font-bold tracking-tight">My Account</h1>
         <p className="mt-1 text-sm text-muted-foreground">Manage your profile and security settings.</p>
       </div>
 
-      <div className="mb-6 rounded-2xl bg-card p-6">
+      <div className="mb-6 rounded-2xl bg-card p-4 md:p-6">
         <h2 className="mb-5 text-base font-semibold">Profile</h2>
         <div className="space-y-4">
           <div>
             <label className="mb-1.5 block text-sm font-medium">Full Name</label>
             <input value={name} onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground" />
+              className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground" />
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium">Email</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground" />
+              className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground" />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <span className="rounded-md bg-foreground px-2 py-0.5 text-xs font-medium text-background capitalize">{user.role}</span>
             <span className="text-xs text-muted-foreground">Joined {new Date(user.created_at).toLocaleDateString()}</span>
           </div>
           <button onClick={handleSaveProfile}
-            className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
             <Save className="h-4 w-4" /> Save Profile
           </button>
         </div>
       </div>
 
-      <div className="rounded-2xl bg-card p-6">
+      <div className="rounded-2xl bg-card p-4 md:p-6">
         <h2 className="mb-5 flex items-center gap-2 text-base font-semibold">
           <Lock className="h-4 w-4 text-muted-foreground" /> Change Password
         </h2>
@@ -76,20 +76,20 @@ export default function AccountPage() {
           <div>
             <label className="mb-1.5 block text-sm font-medium">Current Password</label>
             <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground" />
+              className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground" />
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium">New Password</label>
             <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground" placeholder="At least 6 characters" />
+              className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground" placeholder="At least 6 characters" />
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium">Confirm New Password</label>
             <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground" />
+              className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground" />
           </div>
           <button onClick={handleChangePassword}
-            className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
             <Lock className="h-4 w-4" /> Update Password
           </button>
         </div>

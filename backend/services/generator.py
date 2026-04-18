@@ -3,6 +3,7 @@ Full pipeline orchestrator.
 Coordinates: overlay generation → video creation for all accounts.
 """
 from pathlib import Path
+from PIL import Image
 from . import overlay, video
 import database as db
 
@@ -44,7 +45,7 @@ async def generate_post(post_id: int, database) -> dict:
         if track:
             music_path = track["file_path"]
 
-    bg_color = brand["background_color"] or "#000000"
+    bg_color = "#000000"  # Always black for 9:16 canvas bars
     results = {}
 
     # Update post status
@@ -60,11 +61,12 @@ async def generate_post(post_id: int, database) -> dict:
             slides_dir = out_dir / "slides"
             slides_dir.mkdir(parents=True, exist_ok=True)
 
+            is_master = account["role"] == "master"
+
             # Get variations for this account
             variations = await db.get_variations(database, post_id=post_id, account_id=account_id)
             variation_map = {}
             for v in variations:
-                # Map slide_id to variation
                 variation_map[v["slide_id"]] = v
 
             # Process each slide
@@ -75,7 +77,9 @@ async def generate_post(post_id: int, database) -> dict:
                 var = variation_map.get(slide["id"])
 
                 # Determine source image
-                if var and var["action"] in ("replace", "generate") and var["replacement_image_path"]:
+                has_replacement = (var and var["action"] in ("replace", "generate")
+                                   and var["replacement_image_path"])
+                if has_replacement:
                     source_image = var["replacement_image_path"]
                 else:
                     source_image = slide["master_image_path"]
@@ -83,19 +87,40 @@ async def generate_post(post_id: int, database) -> dict:
                 if not source_image or not Path(source_image).exists():
                     continue
 
-                # Apply overlay
-                output_path = str(slides_dir / f"slide_{slide_num:02d}.png")
-                result = overlay.apply_overlay(
-                    image_path=source_image,
-                    slide_type=slide["type"],
-                    output_path=output_path,
-                    title_text=slide["title_text"],
-                    body_text=slide["body_text"],
-                    cta_text=slide["cta_text"],
-                    bg_color=bg_color,
-                )
+                if is_master:
+                    # Master: resize to 9:16 only (no text overlay, no 3:4 output)
+                    # Master reposts original content — only needs video for YT/IG/FB
+                    img = Image.open(source_image).convert("RGB")
+                    img_3x4 = overlay.resize_to_3x4(img)
+                    img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
+                    out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
+                    img_9x16.save(str(out_9x16), "PNG")
+                    slide_9x16_paths.append(str(out_9x16))
 
-                slide_9x16_paths.append(result["slide_9x16"])
+                elif has_replacement:
+                    # Variation with replacement image: apply text overlay
+                    output_path = str(slides_dir / f"slide_{slide_num:02d}.png")
+                    result = overlay.apply_overlay(
+                        image_path=source_image,
+                        slide_type=slide["type"],
+                        output_path=output_path,
+                        title_text=slide["title_text"],
+                        body_text=slide["body_text"],
+                        cta_text=slide["cta_text"],
+                        bg_color=bg_color,
+                    )
+                    slide_9x16_paths.append(result["slide_9x16"])
+
+                else:
+                    # Using master image (already has text) — save as-is, no overlay
+                    img = Image.open(source_image).convert("RGB")
+                    img_3x4 = overlay.resize_to_3x4(img)
+                    out_3x4 = slides_dir / f"slide_{slide_num:02d}.png"
+                    img_3x4.save(str(out_3x4), "PNG")
+                    img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
+                    out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
+                    img_9x16.save(str(out_9x16), "PNG")
+                    slide_9x16_paths.append(str(out_9x16))
 
             # Build video from 9:16 slides
             video_path = None
