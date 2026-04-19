@@ -53,18 +53,18 @@ if [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
 fi
 systemctl enable --now postgresql
 
-# Create app DB + user (idempotent)
-sudo -u postgres psql <<'SQL'
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'icreateflow') THEN
-        CREATE ROLE icreateflow LOGIN PASSWORD 'OBo8fNSwwkvPmu3qJe7HTPmPoRl7aq1';
-    END IF;
-END$$;
-
-SELECT 'CREATE DATABASE icreateflow OWNER icreateflow'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'icreateflow')\gexec
-SQL
+# Create app DB + user (idempotent). On a fresh box we generate a random
+# password and stash it in /srv/icreateflow/backend/.env; on re-runs we
+# leave the existing role (and existing .env) alone.
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='icreateflow'" | grep -q 1; then
+    DBPW=$(openssl rand -hex 24)
+    sudo -u postgres psql -c "CREATE ROLE icreateflow LOGIN PASSWORD '$DBPW';"
+    # Stash for the .env step below.
+    echo "$DBPW" > /root/.icreateflow-dbpw
+    chmod 600 /root/.icreateflow-dbpw
+fi
+sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='icreateflow'" | grep -q 1 || \
+    sudo -u postgres psql -c "CREATE DATABASE icreateflow OWNER icreateflow;"
 
 # Tune postgresql.conf for 8 GB box (only if not already tuned)
 PGCONF=/var/lib/pgsql/data/postgresql.conf
@@ -146,6 +146,28 @@ fi
 
 # SELinux: allow nginx to proxy to localhost ports
 setsebool -P httpd_can_network_connect 1 || true
+
+# ---------------------------------------------------------------------------
+# 8. Seed backend/.env on a fresh box (only if it doesn't exist).
+# ---------------------------------------------------------------------------
+if [ ! -f /srv/icreateflow/backend/.env ]; then
+    echo "==> Seeding /srv/icreateflow/backend/.env"
+    JWT=$(openssl rand -hex 48)
+    if [ -f /root/.icreateflow-dbpw ]; then
+        DBPW=$(cat /root/.icreateflow-dbpw)
+    else
+        # Role already existed but no stashed pw — rotate and reset.
+        DBPW=$(openssl rand -hex 24)
+        sudo -u postgres psql -c "ALTER ROLE icreateflow WITH PASSWORD '$DBPW';"
+    fi
+    cat > /srv/icreateflow/backend/.env <<EOF
+ICREATE_JWT_SECRET=$JWT
+ICREATE_DB_DSN=postgresql+asyncpg://icreateflow:$DBPW@127.0.0.1:5432/icreateflow
+EOF
+    chown icreateflow:icreateflow /srv/icreateflow/backend/.env
+    chmod 600 /srv/icreateflow/backend/.env
+    rm -f /root/.icreateflow-dbpw
+fi
 
 echo
 echo "==> server-setup complete."
