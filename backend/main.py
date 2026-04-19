@@ -1866,6 +1866,7 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
         public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
         if not public_base:
             raise HTTPException(400, "oauth_redirect_base not configured in /settings — needed to expose videos to platforms")
+        tt_privacy = (cfg.get("tiktok_privacy_level") or "SELF_ONLY").upper()
 
         outputs = await db.get_outputs(database, post_id)
         if not outputs:
@@ -1911,7 +1912,8 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                     continue
                 try:
                     # TikTok needs a public URL; YouTube/IG/FB also accept URL. Use public_url.
-                    res = await adapter.upload_video(token, public_url, caption)
+                    extra = {"privacy_level": tt_privacy} if name == "tiktok" else {}
+                    res = await adapter.upload_video(token, public_url, caption, **extra)
                     per_platform[name] = {
                         "status": "posted",
                         "platform_post_id": res.get("platform_post_id"),

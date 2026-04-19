@@ -15,12 +15,16 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
 
     `video_source` must be a publicly-reachable URL (e.g. a Drive direct-download
     link). Local uploads are not supported by this adapter in v1.
+
+    Pass `privacy_level` via kwargs to override the default. While a TikTok app
+    is unaudited, PUBLIC_TO_EVERYONE is rejected — only SELF_ONLY is allowed.
     """
     if not video_source.startswith("http"):
         raise PostingError("TikTok adapter only supports URL video sources in v1")
 
+    privacy_level = kwargs.get("privacy_level") or "SELF_ONLY"
     init_body = {
-        "post_info": {"title": (caption or "")[:2200], "privacy_level": "PUBLIC_TO_EVERYONE"},
+        "post_info": {"title": (caption or "")[:2200], "privacy_level": privacy_level},
         "source_info": {"source": "PULL_FROM_URL", "video_url": video_source},
     }
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
