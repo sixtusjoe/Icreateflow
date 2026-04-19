@@ -717,6 +717,7 @@ class OAuthAppUpdate(BaseModel):
     client_secret: Optional[str] = None
     api_key: Optional[str] = None
     redirect_base: Optional[str] = None
+    tiktok_privacy_level: Optional[str] = None
 
 
 def _mask(s: Optional[str]) -> str:
@@ -731,7 +732,10 @@ async def admin_get_oauth_apps(admin: dict = Depends(admin_required)):
     database = await db.get_db()
     try:
         cfg = await db.get_site_config(database)
-        result = {"redirect_base": cfg.get("oauth_redirect_base", "")}
+        result = {
+            "redirect_base": cfg.get("oauth_redirect_base", ""),
+            "tiktok_privacy_level": cfg.get("tiktok_privacy_level", "SELF_ONLY"),
+        }
         for platform in OAUTH_PLATFORMS:
             cid = cfg.get(f"oauth_{platform}_client_id", "")
             sec = cfg.get(f"oauth_{platform}_client_secret", "")
@@ -769,6 +773,11 @@ async def admin_update_oauth_app(
                 await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id)
             if data.client_secret is not None:
                 await db.set_site_config(database, f"oauth_{platform}_client_secret", data.client_secret)
+            if platform == "tiktok" and data.tiktok_privacy_level is not None:
+                lvl = data.tiktok_privacy_level.upper()
+                if lvl not in {"SELF_ONLY", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "PUBLIC_TO_EVERYONE"}:
+                    raise HTTPException(400, "Invalid tiktok_privacy_level")
+                await db.set_site_config(database, "tiktok_privacy_level", lvl)
         return {"ok": True}
     finally:
         await database.close()
