@@ -202,6 +202,61 @@ async def exchange_code(
         }
 
 
+async def fetch_profile_handles(platform: str, access_token: str) -> dict[str, str]:
+    """Return {'{platform}_handle': name} discovered from the connected account.
+
+    Best-effort — returns {} on any failure so OAuth success isn't blocked.
+    For `meta`, may return both `facebook_handle` and `instagram_handle`.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            if platform == "tiktok":
+                r = await client.get(
+                    "https://open.tiktokapis.com/v2/user/info/",
+                    params={"fields": "display_name,username"},
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                data = (r.json() or {}).get("data", {}).get("user", {}) or {}
+                name = data.get("username") or data.get("display_name")
+                return {"tiktok_handle": name} if name else {}
+
+            if platform == "youtube":
+                r = await client.get(
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet", "mine": "true"},
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                items = (r.json() or {}).get("items", []) or []
+                if not items:
+                    return {}
+                snip = items[0].get("snippet", {}) or {}
+                name = snip.get("customUrl") or snip.get("title")
+                return {"youtube_handle": name} if name else {}
+
+            if platform == "meta":
+                r = await client.get(
+                    "https://graph.facebook.com/v19.0/me/accounts",
+                    params={
+                        "fields": "name,instagram_business_account{username}",
+                        "access_token": access_token,
+                    },
+                )
+                pages = (r.json() or {}).get("data", []) or []
+                if not pages:
+                    return {}
+                page = pages[0]
+                out: dict[str, str] = {}
+                if page.get("name"):
+                    out["facebook_handle"] = page["name"]
+                ig = (page.get("instagram_business_account") or {}).get("username")
+                if ig:
+                    out["instagram_handle"] = ig
+                return out
+    except Exception:
+        return {}
+    return {}
+
+
 async def refresh_access_token(
     platform: str, refresh_token: str, client_id: str, client_secret: str
 ) -> dict[str, Any]:

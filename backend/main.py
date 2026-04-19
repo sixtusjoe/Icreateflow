@@ -905,6 +905,16 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
             if tokens.get("platform_user_id"):
                 updates[f"{p}_user_id"] = str(tokens["platform_user_id"])
 
+        # Auto-fill the *_handle fields from the connected account profile.
+        # Best-effort: failures here never block the OAuth success.
+        try:
+            handles = await oauth_svc.fetch_profile_handles(platform, tokens["access_token"])
+            for k, v in handles.items():
+                if v:
+                    updates[k] = v
+        except Exception:
+            pass
+
         if kind == "variation":
             await db.update_artist_account(database, target_id, **updates)
         else:
