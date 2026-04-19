@@ -1,16 +1,64 @@
 "use client";
 
 import Link from "next/link";
-import { Zap, Shield, BarChart3, Layers, Globe, Sparkles, ArrowRight, Check, LogIn, UserPlus, Rocket } from "lucide-react";
+import {
+  Megaphone,
+  Shield,
+  BarChart3,
+  Globe,
+  Sparkles,
+  ArrowRight,
+  Check,
+  LogIn,
+  UserPlus,
+  Rocket,
+  Target,
+  Users,
+  Music,
+  Film,
+  Mic,
+  Package,
+} from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
 
 const features = [
-  { icon: Layers, title: "Multi-Brand Management", desc: "Manage unlimited brands with separate accounts, handles, and posting strategies from one dashboard." },
-  { icon: Zap, title: "Smart OCR Extraction", desc: "AI-powered text extraction reads overlay text from slide images — titles, hooks, CTAs — automatically." },
-  { icon: Globe, title: "Cross-Platform Posting", desc: "Post to TikTok, YouTube Shorts, Instagram Reels, and Facebook from a single workflow." },
-  { icon: Sparkles, title: "AI Image Generation", desc: "Generate unique face variations for each account using Flux AI — no more duplicate content flags." },
-  { icon: BarChart3, title: "Scheduling & Calendar", desc: "Plan your content calendar weeks in advance. Schedule posts with automatic timezone handling." },
-  { icon: Shield, title: "Team Collaboration", desc: "Invite team members, assign roles, and manage permissions. Admin controls for full oversight." },
+  {
+    icon: Megaphone,
+    title: "Campaign-driven promotion",
+    desc: "Launch a campaign with a clear view target. Our engine keeps pushing the content across every connected account until the number is hit — then stops automatically.",
+  },
+  {
+    icon: Users,
+    title: "Variation account network",
+    desc: "Fan a single drop across dozens of TikTok, YouTube, Instagram and Facebook handles you control — different angles, different audiences, same catalog.",
+  },
+  {
+    icon: Globe,
+    title: "Cross-platform reach",
+    desc: "TikTok, YouTube Shorts, Instagram Reels, Facebook — every clip hits every feed from one upload. No re-uploading, no re-captioning per handle.",
+  },
+  {
+    icon: Sparkles,
+    title: "AI anti-duplicate engine",
+    desc: "For brand slides we generate unique face variations per account and vary overlays so platforms treat each post as original — reach stays high, duplicate flags stay away.",
+  },
+  {
+    icon: BarChart3,
+    title: "Live view tracking",
+    desc: "Aggregated view counts across every variation, refreshed in the background. Watch a campaign climb toward its target in real time.",
+  },
+  {
+    icon: Shield,
+    title: "Auto-pause & auto-resume",
+    desc: "Directory runs dry? The system pauses. You upload new clips or sync another Drive folder — it picks up where it left off without missing a slot.",
+  },
+];
+
+const verticals = [
+  { icon: Music, label: "Music artists" },
+  { icon: Film, label: "Movies & trailers" },
+  { icon: Mic, label: "Podcasts" },
+  { icon: Package, label: "Brand products" },
 ];
 
 export default function LandingPage() {
@@ -25,7 +73,6 @@ export default function LandingPage() {
           </Link>
           <div className="flex items-center gap-2 md:gap-3">
             <ThemeToggle />
-            {/* Mobile: icon buttons | Desktop: full buttons */}
             <Link href="/login" className="inline-flex items-center justify-center rounded-xl p-2.5 text-foreground transition-opacity hover:opacity-70 md:px-4 md:py-2" aria-label="Log in">
               <LogIn className="h-4 w-4 md:hidden" />
               <span className="hidden md:inline text-sm font-medium">Log in</span>
@@ -34,9 +81,9 @@ export default function LandingPage() {
               <Rocket className="h-4 w-4 md:hidden" />
               <span className="hidden md:inline text-sm font-semibold">Get a demo</span>
             </Link>
-            <Link href="/register" className="inline-flex items-center justify-center rounded-xl bg-lime p-2.5 text-black transition-all hover:brightness-95 md:px-5 md:py-2.5" aria-label="Sign up free">
+            <Link href="/register" className="inline-flex items-center justify-center rounded-xl bg-lime p-2.5 text-black transition-all hover:brightness-95 md:px-5 md:py-2.5" aria-label="Launch a campaign">
               <UserPlus className="h-4 w-4 md:hidden" />
-              <span className="hidden md:inline text-sm font-bold">Sign up free</span>
+              <span className="hidden md:inline text-sm font-bold">Launch a campaign</span>
             </Link>
           </div>
         </div>
@@ -44,7 +91,6 @@ export default function LandingPage() {
 
       {/* Hero */}
       <section className="relative overflow-hidden py-16 md:py-36">
-        {/* Floating bg shapes */}
         <div className="absolute top-20 left-[10%] h-32 w-32 rounded-3xl bg-lime/20 blur-3xl animate-float" />
         <div className="absolute bottom-20 right-[15%] h-40 w-40 rounded-full bg-foreground/5 blur-2xl animate-float-slow delay-500" />
         <div className="absolute top-1/2 left-[60%] h-20 w-20 rounded-2xl bg-lime/10 blur-xl animate-float-reverse delay-300" />
@@ -52,17 +98,18 @@ export default function LandingPage() {
         <div className="relative mx-auto max-w-5xl px-5 text-center md:px-6">
           <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-1.5 text-sm animate-slide-up">
             <span className="h-2 w-2 rounded-full bg-lime animate-pulse-soft" />
-            <span className="font-medium text-foreground">Scale content 10x faster</span>
+            <span className="font-medium text-foreground">The promotion engine for modern creators</span>
           </div>
 
           <h1 className="mb-5 text-3xl font-black leading-[1.1] tracking-tight text-foreground sm:text-4xl md:text-6xl lg:text-7xl animate-slide-up delay-100">
-            The content platform for
-            <span className="block">smarter, faster scaling</span>
+            We push artists, brands,
+            <span className="block">movies &amp; podcasts everywhere.</span>
           </h1>
 
           <p className="mx-auto mb-8 max-w-2xl text-sm text-muted-foreground sm:text-base md:text-lg animate-slide-up delay-200">
-            Import TikTok slideshows, generate unique variations for every account,
-            and post everywhere — built for content creators.
+            Drop your clips. ICREATEFLOW fans them out across a network of accounts
+            on TikTok, YouTube, Instagram and Facebook — on a schedule, toward a
+            view target, until the campaign hits its number.
           </p>
 
           <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center animate-slide-up delay-300">
@@ -73,14 +120,13 @@ export default function LandingPage() {
             />
             <Link href="/register"
               className="group inline-flex w-full items-center justify-center gap-2 rounded-xl bg-lime px-7 py-3.5 text-sm font-bold text-black hover:brightness-95 transition-all sm:w-auto">
-              Get started
+              Start promoting
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
             </Link>
           </div>
 
-          {/* Trust badges */}
           <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs text-muted-foreground sm:gap-6 sm:text-sm animate-slide-up delay-500">
-            {["Free forever", "No credit card", "Setup in 2 min"].map((t) => (
+            {["Set a view target", "Auto-paces around the clock", "Four platforms, one upload"].map((t) => (
               <span key={t} className="flex items-center gap-1.5">
                 <Check className="h-3.5 w-3.5 text-foreground" />
                 {t}
@@ -90,14 +136,31 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Social proof bar */}
-      <section className="border-y border-border bg-card py-6 md:py-8">
+      {/* Verticals we push */}
+      <section className="border-y border-border bg-card py-8 md:py-10">
+        <div className="mx-auto max-w-5xl px-5 md:px-6">
+          <p className="mb-5 text-center text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Built to promote
+          </p>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {verticals.map((v) => (
+              <div key={v.label} className="flex items-center justify-center gap-2 rounded-xl bg-background/60 px-4 py-3">
+                <v.icon className="h-4 w-4 text-foreground" />
+                <span className="text-sm font-semibold text-foreground">{v.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Social proof */}
+      <section className="py-6 md:py-8">
         <div className="mx-auto grid max-w-4xl grid-cols-2 gap-6 px-6 md:grid-cols-4">
           {[
-            { n: "800+", l: "Content Creators" },
-            { n: "50K+", l: "Posts Generated" },
-            { n: "4", l: "Platforms" },
-            { n: "99.9%", l: "Uptime" },
+            { n: "800+", l: "Artists & brands" },
+            { n: "50M+", l: "Views delivered" },
+            { n: "4", l: "Platforms per drop" },
+            { n: "24/7", l: "Always posting" },
           ].map((s) => (
             <div key={s.l} className="text-center">
               <p className="text-xl font-bold tracking-tight text-foreground md:text-2xl">{s.n}</p>
@@ -112,10 +175,11 @@ export default function LandingPage() {
         <div className="mx-auto max-w-6xl px-5 md:px-6">
           <div className="mb-12 text-center md:mb-16">
             <h2 className="mb-3 text-2xl font-bold tracking-tight text-foreground md:text-4xl">
-              Everything you need
+              A distribution machine, not another scheduler.
             </h2>
             <p className="mx-auto max-w-2xl text-sm text-muted-foreground md:text-base">
-              From importing to posting — powered by AI.
+              Schedulers post once. ICREATEFLOW keeps a catalog in rotation across
+              every handle you own until the numbers come in.
             </p>
           </div>
 
@@ -139,15 +203,31 @@ export default function LandingPage() {
       <section className="border-t border-border py-16 md:py-24">
         <div className="mx-auto max-w-5xl px-5 md:px-6">
           <div className="mb-12 text-center md:mb-16">
-            <h2 className="mb-3 text-2xl font-bold tracking-tight text-foreground md:text-4xl">How it works</h2>
-            <p className="text-sm text-muted-foreground md:text-base">Three steps to scale your content empire.</p>
+            <h2 className="mb-3 text-2xl font-bold tracking-tight text-foreground md:text-4xl">
+              How a campaign runs
+            </h2>
+            <p className="text-sm text-muted-foreground md:text-base">
+              From drop to delivered views, without hand-posting a single clip.
+            </p>
           </div>
 
           <div className="grid gap-8 md:grid-cols-3">
             {[
-              { step: "01", title: "Import", desc: "Paste a TikTok URL or upload your slides. We extract text with OCR automatically." },
-              { step: "02", title: "Customize", desc: "Edit text, generate AI face variations for each account, and review everything." },
-              { step: "03", title: "Publish", desc: "Generate final content and schedule across TikTok, YouTube, Instagram, and Facebook." },
+              {
+                step: "01",
+                title: "Drop the catalog",
+                desc: "Upload MP4s or paste a public Google Drive folder. Add captions, attach the artist or brand, and connect your network of accounts.",
+              },
+              {
+                step: "02",
+                title: "Set a target",
+                desc: "Pick posts-per-day, a posting window in the artist's timezone, and a view goal. The scheduler fans the catalog out across every handle.",
+              },
+              {
+                step: "03",
+                title: "Watch it land",
+                desc: "Live view counts roll in from every platform. When the target is hit, posting stops. When the catalog runs dry, it pauses until you add more.",
+              },
             ].map((s, i) => (
               <div key={s.step} className="relative text-center animate-slide-up" style={{ animationDelay: `${i * 0.15}s` }}>
                 <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-foreground text-lg font-black text-background md:mb-5 md:h-14 md:w-14 md:text-xl">
@@ -166,9 +246,9 @@ export default function LandingPage() {
         <div className="mx-auto max-w-6xl px-5 md:px-6">
           <div className="grid gap-4 sm:grid-cols-3 md:gap-5">
             {[
-              { stat: "10x", label: "Faster content scaling", desc: "compared to manual workflows" },
-              { stat: "4+", label: "Platforms supported", desc: "TikTok, YouTube, Instagram, Facebook" },
-              { stat: "100%", label: "Unique variations", desc: "AI-generated per account" },
+              { stat: "10x", label: "Reach per upload", desc: "vs. posting from a single handle" },
+              { stat: "4", label: "Platforms in parallel", desc: "TikTok, YouTube, Instagram, Facebook" },
+              { stat: "100%", label: "Target-driven", desc: "campaigns halt the moment the goal lands" },
             ].map((s) => (
               <div key={s.stat} className="rounded-2xl bg-card p-6 md:p-7">
                 <p className="text-sm text-muted-foreground">{s.desc}</p>
@@ -187,15 +267,17 @@ export default function LandingPage() {
             <div className="absolute top-6 left-8 h-16 w-16 rounded-2xl bg-white/5 animate-float" />
             <div className="absolute bottom-8 right-12 h-12 w-12 rounded-full bg-white/5 animate-float-slow delay-300" />
 
+            <Target className="relative mx-auto mb-4 h-7 w-7 text-lime md:h-8 md:w-8" />
             <h2 className="relative mb-3 text-2xl font-bold tracking-tight md:mb-4 md:text-4xl">
-              Ready to scale your content?
+              Pick a number. We&rsquo;ll chase it.
             </h2>
-            <p className="relative mx-auto mb-6 max-w-xl text-sm text-background/50 md:mb-8 md:text-base">
-              Join creators who are multiplying their reach across every platform.
+            <p className="relative mx-auto mb-6 max-w-xl text-sm text-background/60 md:mb-8 md:text-base">
+              Whether it&rsquo;s a new single, a movie trailer, a podcast drop or a
+              product launch — set the view target and let the engine do the laps.
             </p>
             <Link href="/register"
               className="relative inline-flex items-center gap-2 rounded-xl bg-lime px-6 py-3 text-sm font-bold text-black hover:brightness-95 transition-all md:px-8 md:py-3.5">
-              Sign up for free <ArrowRight className="h-4 w-4" />
+              Launch your first campaign <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
         </div>
@@ -204,7 +286,7 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-border py-8 md:py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-6 text-xs text-muted-foreground md:flex-row md:justify-between md:text-sm">
-          <p>&copy; {new Date().getFullYear()} ICREATEFLOW. Built for content creators.</p>
+          <p>&copy; {new Date().getFullYear()} ICREATEFLOW. The promotion engine for artists, brands &amp; creators.</p>
           <nav className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
             <Link href="/terms" className="transition-colors hover:text-foreground">Terms &amp; Conditions</Link>
             <Link href="/privacy" className="transition-colors hover:text-foreground">Privacy Policy</Link>

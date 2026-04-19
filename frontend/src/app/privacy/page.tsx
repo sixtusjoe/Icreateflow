@@ -5,7 +5,7 @@ import LegalShell, { Section } from "@/components/LegalShell";
 export const metadata: Metadata = {
   title: "Privacy Policy — ICREATEFLOW",
   description:
-    "How ICREATEFLOW collects, uses, shares, and protects your personal information when you use our content creation platform.",
+    "How ICREATEFLOW collects, uses, shares, and protects your personal information when you use our promotion and distribution platform.",
 };
 
 export default function PrivacyPage() {
@@ -13,17 +13,19 @@ export default function PrivacyPage() {
     <LegalShell
       title="Privacy Policy"
       subtitle="This Privacy Policy explains what information ICREATEFLOW collects about you, how we use it, who we share it with, and the choices you have."
-      lastUpdated="April 17, 2026"
+      lastUpdated="April 19, 2026"
     >
       <Section number="1" title="Introduction" id="intro">
         <p>
           ICREATEFLOW (&ldquo;<strong>ICREATEFLOW</strong>&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;, or
-          &ldquo;our&rdquo;) provides a multi-brand content creation and scheduling platform accessible at{" "}
+          &ldquo;our&rdquo;) operates a promotion and distribution platform for artists, brands,
+          movie studios, podcasters, and other creators at{" "}
           <a href="https://icreateflow.com" className="font-medium underline underline-offset-2 hover:text-foreground">
             icreateflow.com
           </a>{" "}
-          (the &ldquo;<strong>Service</strong>&rdquo;). We respect your privacy and are committed to
-          handling your personal information responsibly and transparently.
+          (the &ldquo;<strong>Service</strong>&rdquo;). We help you push your clips, trailers,
+          episodes, and product drops across a network of social accounts you control. We respect
+          your privacy and are committed to handling your information responsibly and transparently.
         </p>
         <p>
           This Policy applies to the ICREATEFLOW web application, APIs, and related services. By using
@@ -43,9 +45,9 @@ export default function PrivacyPage() {
           <h3 className="mb-2 text-base font-semibold text-foreground">a. Information you provide</h3>
           <ul className="list-disc space-y-2 pl-6">
             <li><strong>Account details</strong>: name, email address, password (stored hashed), and optional profile information.</li>
-            <li><strong>Brand and workspace content</strong>: brand names, handles, timezones, uploaded images, videos, music, captions, and post metadata.</li>
-            <li><strong>Third-party credentials</strong>: API keys or OAuth tokens you provide to connect AI providers or social platforms. These are encrypted at rest.</li>
-            <li><strong>Communications</strong>: messages you send to support, feedback, and survey responses.</li>
+            <li><strong>Artist, brand, and campaign content</strong>: artist names, brand names, handles, timezones, posting windows, view targets, uploaded clips, captions, artwork, trailers, episodes, and other promotional material.</li>
+            <li><strong>Connected account credentials</strong>: OAuth tokens and optional API keys for the TikTok, YouTube, Instagram, Facebook, and Google Drive accounts you link to the Service. These are stored encrypted and used only to perform the distribution tasks you configure.</li>
+            <li><strong>Communications</strong>: messages you send to support, feedback, clearance and takedown correspondence, and survey responses.</li>
             <li><strong>Billing information</strong>: handled by our payment processor; we receive only limited details (such as the last four digits of your card and billing country) needed to operate your subscription.</li>
           </ul>
         </div>
@@ -53,7 +55,7 @@ export default function PrivacyPage() {
         <div>
           <h3 className="mb-2 text-base font-semibold text-foreground">b. Information collected automatically</h3>
           <ul className="list-disc space-y-2 pl-6">
-            <li><strong>Usage data</strong>: actions you take in the Service, features used, generation jobs, and performance metrics.</li>
+            <li><strong>Usage data</strong>: actions you take in the Service, features used, campaigns launched, clips distributed, and performance metrics.</li>
             <li><strong>Device and log data</strong>: IP address, browser type and version, operating system, referring pages, and timestamps.</li>
             <li><strong>Cookies and similar technologies</strong>: used to keep you signed in, remember preferences, and measure performance (see Section 7).</li>
           </ul>
@@ -62,33 +64,35 @@ export default function PrivacyPage() {
         <div>
           <h3 className="mb-2 text-base font-semibold text-foreground">c. Information from third parties</h3>
           <ul className="list-disc space-y-2 pl-6">
-            <li>Data returned by connected social platforms (e.g., TikTok, YouTube, Instagram, Facebook) when you link an account, limited to the scopes you grant.</li>
-            <li>Output from AI service providers (OCR results, generated images) associated with your generation requests.</li>
+            <li>Data returned by connected platforms (TikTok, YouTube, Instagram, Facebook, Google Drive) when you link an account, limited to the scopes you grant — for example, permission to upload videos, set captions, and read post IDs and view counts for the posts the Service published on your behalf.</li>
+            <li>Output from AI service providers (OCR results, generated image variations) associated with your promotional jobs.</li>
           </ul>
         </div>
       </Section>
 
       <Section number="3" title="How we use information" id="how-we-use">
         <ul className="list-disc space-y-2 pl-6">
-          <li>Provide, operate, and maintain the Service, including rendering slides, generating images, and scheduling posts;</li>
-          <li>Authenticate you, secure your account, and prevent fraud and abuse;</li>
-          <li>Communicate with you about features, updates, security alerts, and support responses;</li>
+          <li>Operate the Service — schedule and distribute your clips across the accounts you have connected, rotate catalog items, and enforce posting windows and view targets;</li>
+          <li>Compute aggregated campaign statistics, including per-platform posts and views, progress toward campaign targets, and CSV exports;</li>
+          <li>Authenticate you, secure your account, and prevent fraud, abuse, and unauthorized posting;</li>
+          <li>Communicate with you about features, updates, security alerts, campaign issues, and support responses;</li>
           <li>Improve the Service through analytics, debugging, and user-experience research;</li>
           <li>Process payments and manage subscriptions;</li>
-          <li>Comply with legal obligations and enforce our Terms.</li>
+          <li>Comply with legal obligations, platform-integration requirements, and enforce our Terms.</li>
         </ul>
         <p>
           We do <strong>not</strong> sell your personal information, and we do <strong>not</strong>{" "}
-          use your content to train our own AI models without your explicit consent.
+          use Your Content — including your clips, captions, or campaign data — to train our own AI
+          models without your explicit consent.
         </p>
       </Section>
 
       <Section number="4" title="Legal bases (EEA/UK users)" id="legal-bases">
         <p>If the EU/UK GDPR applies to you, we process your personal data on these bases:</p>
         <ul className="list-disc space-y-2 pl-6">
-          <li><strong>Contract</strong>: to provide the Service you requested;</li>
+          <li><strong>Contract</strong>: to provide the Service you requested, including running your promotion campaigns;</li>
           <li><strong>Legitimate interests</strong>: to secure, improve, and promote the Service, where those interests are not overridden by your rights;</li>
-          <li><strong>Consent</strong>: for optional cookies, marketing emails, and certain integrations (you can withdraw consent at any time);</li>
+          <li><strong>Consent</strong>: for optional cookies, marketing emails, and optional integrations (you can withdraw consent at any time);</li>
           <li><strong>Legal obligation</strong>: to comply with applicable laws.</li>
         </ul>
       </Section>
@@ -96,18 +100,18 @@ export default function PrivacyPage() {
       <Section number="5" title="How we share information" id="sharing">
         <p>We share information only as described below:</p>
         <ul className="list-disc space-y-2 pl-6">
-          <li><strong>Service providers</strong>: cloud hosting, database, storage, email delivery, payment processing, analytics, and AI providers (e.g., OCR and image-generation APIs) acting on our instructions under confidentiality obligations.</li>
-          <li><strong>Connected platforms</strong>: when you authorize publication or scheduling, we send the necessary content and metadata to the platform you selected.</li>
+          <li><strong>Connected platforms</strong>: when you authorize a campaign, we transmit the necessary clip files, captions, thumbnails, and metadata to the TikTok, YouTube, Instagram, and Facebook accounts you have connected, so the Service can publish on your behalf.</li>
+          <li><strong>Service providers</strong>: cloud hosting, database, storage, email delivery, payment processing, analytics, and AI providers (for example, OCR and image-generation APIs) acting on our instructions under confidentiality obligations.</li>
           <li><strong>Business transfers</strong>: if ICREATEFLOW is involved in a merger, acquisition, or asset sale, information may be transferred as part of that transaction, subject to standard confidentiality protections.</li>
-          <li><strong>Legal requirements</strong>: when required to comply with a law, valid legal process, or to protect the rights, property, or safety of ICREATEFLOW, our users, or the public.</li>
+          <li><strong>Legal requirements</strong>: when required to comply with a law, valid legal process, rights-holder takedown notice, or to protect the rights, property, or safety of ICREATEFLOW, our users, rights-holders, or the public.</li>
           <li><strong>With your consent</strong>: for any other purpose disclosed to you at the time.</li>
         </ul>
       </Section>
 
       <Section number="6" title="International transfers" id="transfers">
         <p>
-          ICREATEFLOW and its service providers may process your information in countries other than the
-          one in which you reside. Where required, we rely on appropriate safeguards such as the
+          ICREATEFLOW and its service providers may process your information in countries other than
+          the one in which you reside. Where required, we rely on appropriate safeguards such as the
           European Commission&rsquo;s Standard Contractual Clauses and equivalent frameworks to
           protect your information when it is transferred across borders.
         </p>
@@ -117,7 +121,7 @@ export default function PrivacyPage() {
         <p>We use a small number of cookies:</p>
         <ul className="list-disc space-y-2 pl-6">
           <li><strong>Essential</strong>: required for authentication, session security, and core functionality. These cannot be disabled.</li>
-          <li><strong>Preference</strong>: remember your theme (light/dark), selected workspace, and similar settings.</li>
+          <li><strong>Preference</strong>: remember your theme (light/dark), selected artist or brand workspace, and similar settings.</li>
           <li><strong>Analytics</strong>: aggregate usage data to help us improve the Service. We only enable analytics cookies with your consent where required by law.</li>
         </ul>
         <p>
@@ -129,7 +133,8 @@ export default function PrivacyPage() {
       <Section number="8" title="Data retention" id="retention">
         <ul className="list-disc space-y-2 pl-6">
           <li>Account information is retained while your account is active and for a reasonable period afterwards to satisfy legal, accounting, or reporting obligations.</li>
-          <li>Generated assets (slides, videos, drafts) are retained until you delete them, your workspace is deleted, or your account is closed, whichever comes first.</li>
+          <li>Uploaded clips and generated assets are retained until you delete them, reset the artist directory, or your account is closed — whichever comes first.</li>
+          <li>Campaign statistics (posts, view counts, platform post IDs, captions) are retained after a campaign ends so that historical CSV exports remain available, even if the underlying clips have been removed.</li>
           <li>Security and audit logs are kept for a limited period and then deleted or anonymized.</li>
           <li>When information is no longer needed, we securely delete or de-identify it.</li>
         </ul>
@@ -139,9 +144,9 @@ export default function PrivacyPage() {
         <p>
           We implement administrative, technical, and organizational measures designed to protect
           your information — including encryption in transit (TLS), encryption at rest for sensitive
-          fields such as third-party credentials, access controls, and regular backups. No method of
-          transmission or storage is 100% secure; if you become aware of any suspected security
-          issue, please email{" "}
+          fields such as third-party OAuth tokens and API keys, least-privilege access controls,
+          and regular backups. No method of transmission or storage is 100% secure; if you become
+          aware of any suspected security issue, please email{" "}
           <a href="mailto:security@icreateflow.com" className="font-medium underline underline-offset-2 hover:text-foreground">
             security@icreateflow.com
           </a>
@@ -155,14 +160,15 @@ export default function PrivacyPage() {
           <li>Access the personal information we hold about you;</li>
           <li>Correct information that is inaccurate or incomplete;</li>
           <li>Request deletion (&ldquo;right to be forgotten&rdquo;), subject to legal limits;</li>
-          <li>Port your data to another service in a commonly used, machine-readable format;</li>
+          <li>Port your data to another service in a commonly used, machine-readable format — including CSV exports of your campaign history directly from the dashboard;</li>
+          <li>Disconnect any linked social or Drive account at any time from your workspace settings, which revokes ICREATEFLOW&rsquo;s access to that account;</li>
           <li>Object to or restrict certain processing, including direct marketing;</li>
           <li>Withdraw consent at any time, without affecting the lawfulness of prior processing;</li>
           <li>Lodge a complaint with your local data-protection authority.</li>
         </ul>
         <p>
-          You can exercise many of these rights directly from your account settings, or by contacting
-          us at{" "}
+          You can exercise many of these rights directly from your account settings, or by
+          contacting us at{" "}
           <a href="mailto:privacy@icreateflow.com" className="font-medium underline underline-offset-2 hover:text-foreground">
             privacy@icreateflow.com
           </a>
@@ -179,11 +185,12 @@ export default function PrivacyPage() {
         </p>
       </Section>
 
-      <Section number="12" title="Third-party links" id="third-parties">
+      <Section number="12" title="Third-party links & integrations" id="third-parties">
         <p>
-          The Service may contain links to third-party websites or integrations (such as TikTok,
-          YouTube, Instagram, Facebook, or AI providers). Their privacy practices are governed by
-          their own policies. We recommend reviewing those policies before using their services.
+          The Service integrates with and links to third-party platforms (including TikTok,
+          YouTube, Instagram, Facebook, Google Drive, and AI providers). Their collection and use of
+          your information is governed by their own privacy policies. We recommend reviewing those
+          policies before connecting your accounts or relying on their services.
         </p>
       </Section>
 
