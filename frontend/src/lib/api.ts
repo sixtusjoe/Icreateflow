@@ -173,6 +173,8 @@ export const schedulePost = (
 ) => api.put(`/api/posts/${postId}/schedule`, data).then((r) => r.data);
 export const getSchedule = (brandId?: number) =>
   api.get("/api/schedule", { params: brandId ? { brand_id: brandId } : {} }).then((r) => r.data);
+export const postNow = (postId: number) =>
+  api.post(`/api/posts/${postId}/post-now`).then((r) => r.data);
 
 // --- Music ---
 export const getMusicTracks = () => api.get("/api/music").then((r) => r.data);

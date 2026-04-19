@@ -12,7 +12,7 @@ import {
   getBrands, importTikTokPost, uploadSlidesManually, getPost, updateSlide,
   uploadVariationImage, generateVariationImage, approveVariation,
   updateVariation, generatePost, getGenerationStatus,
-  schedulePost, getMusicTracks, getDownloadUrl, downloadFile, fileUrl,
+  schedulePost, postNow, getMusicTracks, getDownloadUrl, downloadFile, fileUrl,
   rerunOcr, getOutputSlides, regenerateSlide, regenerateVideo,
 } from "@/lib/api";
 
@@ -708,7 +708,30 @@ function NewPostPageInner() {
                 className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted">
                 <Clock className="h-4 w-4" /> Save Schedule
               </button>
-              <button onClick={() => { toast.info("Posting to all platforms..."); }}
+              <button
+                onClick={async () => {
+                  if (!post?.id) { toast.error("Generate the post first"); return; }
+                  const t = toast.loading("Posting to connected platforms...");
+                  try {
+                    const res = await postNow(post.id);
+                    toast.dismiss(t);
+                    const lines: string[] = [];
+                    let anyOk = false;
+                    for (const r of res.results || []) {
+                      const plats = r.platforms || {};
+                      const posted = Object.entries(plats).filter(([, v]: any) => v.status === "posted").map(([k]) => k);
+                      const failed = Object.entries(plats).filter(([, v]: any) => v.status === "failed").map(([k, v]: any) => `${k} (${v.error})`);
+                      const skipped = Object.entries(plats).filter(([, v]: any) => v.status === "skipped").map(([k]) => k);
+                      if (posted.length) anyOk = true;
+                      lines.push(`${r.account_name}: ✓ ${posted.join(", ") || "none"}${failed.length ? ` · ✗ ${failed.join(", ")}` : ""}${skipped.length ? ` · — ${skipped.join(", ")}` : ""}`);
+                    }
+                    if (anyOk) toast.success(lines.join("\n"));
+                    else toast.error(lines.join("\n") || "Nothing was posted");
+                  } catch (e: any) {
+                    toast.dismiss(t);
+                    toast.error(e?.response?.data?.detail || "Post Now failed");
+                  }
+                }}
                 className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-lime px-5 py-2.5 text-sm font-bold text-black transition-all hover:brightness-95">
                 <Send className="h-4 w-4" /> Post Now
               </button>

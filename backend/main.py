@@ -1844,6 +1844,104 @@ async def get_generation_status(post_id: int, user: dict = Depends(get_current_u
     return generation_status.get(post_id, {"status": "idle"})
 
 
+@app.post("/api/posts/{post_id}/post-now")
+async def post_now(post_id: int, user: dict = Depends(get_current_user)):
+    """Push each account's generated video to every connected platform on that account.
+
+    Uses the same adapters as the Clipping dispatcher. An account is skipped for a
+    platform if it has no `{platform}_token`. Local video files are exposed via the
+    `/files/output/...` static mount using `oauth_redirect_base` as the public host.
+    Returns per-account / per-platform results.
+    """
+    from services.posting import tiktok as _tt, youtube as _yt, instagram as _ig, facebook as _fb, PostingError
+
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        cfg = await db.get_site_config(database)
+        public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
+        if not public_base:
+            raise HTTPException(400, "oauth_redirect_base not configured in /settings — needed to expose videos to platforms")
+
+        outputs = await db.get_outputs(database, post_id)
+        if not outputs:
+            raise HTTPException(400, "No generated outputs — generate the post first")
+
+        caption = post.get("caption") or ""
+        results: list[dict] = []
+        any_success = False
+
+        for out in outputs:
+            account = await db.get_account(database, out["account_id"])
+            if not account:
+                continue
+
+            video_path = out.get("video_path")
+            if not video_path:
+                results.append({
+                    "account_id": out["account_id"],
+                    "account_name": account.get("name"),
+                    "skipped": "no video generated yet",
+                })
+                continue
+
+            # Local path like "output/<brand>/<date>/<acct>/post_N/video.mp4"
+            # Static mount serves `output/` at `/files/output/`.
+            rel = video_path.split("output/", 1)[-1] if "output/" in video_path else video_path
+            public_url = f"{public_base}/files/output/{rel}"
+
+            targets = [
+                ("tiktok",    _tt, account.get("tiktok_token")),
+                ("youtube",   _yt, account.get("youtube_token")),
+                ("instagram", _ig, account.get("instagram_token")),
+                ("facebook",  _fb, account.get("facebook_token")),
+            ]
+            per_platform: dict = {}
+            for name, adapter, token in targets:
+                if not token:
+                    per_platform[name] = {"status": "skipped", "reason": "not connected"}
+                    continue
+                try:
+                    # TikTok needs a public URL; YouTube/IG/FB also accept URL. Use public_url.
+                    res = await adapter.upload_video(token, public_url, caption)
+                    per_platform[name] = {
+                        "status": "posted",
+                        "platform_post_id": res.get("platform_post_id"),
+                        "permalink": res.get("permalink"),
+                    }
+                    any_success = True
+                    # flag on outputs table
+                    try:
+                        await db.update_output(database, out["id"], **{f"{name}_posted": True})
+                    except Exception:
+                        pass
+                except PostingError as e:
+                    per_platform[name] = {"status": "failed", "error": str(e)[:300]}
+                except Exception as e:
+                    per_platform[name] = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:250]}"}
+
+            results.append({
+                "account_id": out["account_id"],
+                "account_name": account.get("name"),
+                "video_url": public_url,
+                "platforms": per_platform,
+            })
+
+        if any_success:
+            try:
+                await db.update_post(database, post_id, status="posted")
+            except Exception:
+                pass
+
+        return {"ok": any_success, "results": results}
+    finally:
+        await database.close()
+
+
 # =============================================
 # SCHEDULING
 # =============================================
