@@ -102,14 +102,15 @@ export default function LandingPage() {
           </div>
 
           <h1 className="mb-5 text-3xl font-black leading-[1.1] tracking-tight text-foreground sm:text-4xl md:text-6xl lg:text-7xl animate-slide-up delay-100">
-            We push artists, brands,
-            <span className="block">movies &amp; podcasts everywhere.</span>
+            The promotion engine
+            <span className="block">behind every drop.</span>
           </h1>
 
           <p className="mx-auto mb-8 max-w-2xl text-sm text-muted-foreground sm:text-base md:text-lg animate-slide-up delay-200">
-            Drop your clips. ICREATEFLOW fans them out across a network of accounts
-            on TikTok, YouTube, Instagram and Facebook — on a schedule, toward a
-            view target, until the campaign hits its number.
+            Artists, labels, studios, and podcast networks hand us their catalog.
+            We put it into rotation across a network of TikTok, YouTube,
+            Instagram and Facebook accounts — on schedule, toward a view target,
+            until the numbers land.
           </p>
 
           <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center animate-slide-up delay-300">
