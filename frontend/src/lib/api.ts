@@ -349,3 +349,40 @@ export const getArtistFeed = (id: number) =>
 export const getAdminArtists = () => api.get("/api/admin/artists").then((r) => r.data);
 export const deleteAdminArtist = (id: number) =>
   api.delete(`/api/admin/artists/${id}`).then((r) => r.data);
+
+// --- Clipping: Promotion + Campaigns ---
+export const startPromotion = (
+  artistId: number,
+  data: { view_target?: number; campaign_name?: string },
+) => api.post(`/api/artists/${artistId}/promotion/start`, data).then((r) => r.data);
+export const stopPromotion = (artistId: number) =>
+  api.post(`/api/artists/${artistId}/promotion/stop`).then((r) => r.data);
+export const resetPromotion = (
+  artistId: number,
+  data: { view_target?: number; campaign_name?: string; delete_clips?: boolean },
+) => api.post(`/api/artists/${artistId}/promotion/reset`, data).then((r) => r.data);
+export const listCampaigns = (artistId: number) =>
+  api.get(`/api/artists/${artistId}/campaigns`).then((r) => r.data);
+export const downloadStatsCsv = async (
+  artistId: number,
+  opts: { slug: string; campaign_id?: number },
+) => {
+  const params = opts.campaign_id ? { campaign_id: opts.campaign_id } : {};
+  const resp = await api.get(`/api/artists/${artistId}/stats.csv`, {
+    params,
+    responseType: "blob",
+  });
+  const blob = new Blob([resp.data], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const suffix = opts.campaign_id ? `-campaign${opts.campaign_id}` : "";
+  link.download = `${opts.slug}-stats${suffix}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+};
+
+// --- Admin: error logs ---
+export const getAdminErrorLogs = (params?: { limit?: number; source?: string }) =>
+  api.get("/api/admin/error-logs", { params }).then((r) => r.data);
+export const clearAdminErrorLogs = () =>
+  api.delete("/api/admin/error-logs").then((r) => r.data);

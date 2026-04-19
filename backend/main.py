@@ -252,6 +252,17 @@ class GdriveSyncReq(BaseModel):
     folder_url: str
 
 
+class PromotionStartReq(BaseModel):
+    view_target: Optional[int] = None
+    campaign_name: Optional[str] = None
+
+
+class PromotionResetReq(BaseModel):
+    view_target: Optional[int] = None
+    campaign_name: Optional[str] = None
+    delete_clips: bool = True
+
+
 # --- Helper ---
 
 def row_to_dict(row):
@@ -2322,6 +2333,10 @@ async def upload_clip(
         content = await file.read()
         dest.write_bytes(content)
         await db.update_clip(database, clip_id, local_path=str(dest))
+        try:
+            await clip_scheduler.maybe_resume_on_new_clip(database, artist_id)
+        except Exception:
+            pass
         clip = await db.get_clip(database, clip_id)
         return row_to_dict(clip)
     finally:
@@ -2366,6 +2381,11 @@ async def sync_gdrive_clips(artist_id: int, data: GdriveSyncReq, user: dict = De
             database, artist_id, gdrive_folder_url=data.folder_url, gdrive_folder_id=folder_id
         )
 
+        if added:
+            try:
+                await clip_scheduler.maybe_resume_on_new_clip(database, artist_id)
+            except Exception:
+                pass
         clips = await db.get_clips(database, artist_id)
         return {"added": added, "total": len(clips), "clips": rows_to_list(clips)}
     finally:
@@ -2446,6 +2466,14 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                     if next_scheduled_at is None or sch < next_scheduled_at:
                         next_scheduled_at = sch
 
+        artist_row = await db.get_artist(database, artist_id)
+        artist_d = dict(artist_row) if artist_row else {}
+        current_cid = artist_d.get("current_campaign_id")
+        campaign = None
+        if current_cid:
+            c = await db.get_campaign(database, current_cid)
+            campaign = dict(c) if c else None
+
         return {
             "variations_count": len(variations),
             "active_clips": len(clips),
@@ -2454,6 +2482,10 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             "views_total": sum(b["views"] for b in by_platform.values()),
             "by_platform": by_platform,
             "next_scheduled_at": next_scheduled_at.isoformat() if next_scheduled_at else None,
+            "is_active": bool(artist_d.get("is_active")),
+            "paused_reason": artist_d.get("paused_reason"),
+            "view_target": artist_d.get("view_target"),
+            "current_campaign": campaign,
         }
     finally:
         await database.close()
@@ -2468,6 +2500,211 @@ async def artist_feed(artist_id: int, user: dict = Depends(get_current_user)):
         return rows_to_list(posts)
     finally:
         await database.close()
+
+
+# --- Promotion lifecycle ---
+
+async def _promotion_preflight(database, artist_id: int) -> list[str]:
+    """Return a list of human-readable errors blocking promotion start."""
+    errors: list[str] = []
+
+    variations = await db.get_artist_accounts(database, artist_id)
+    if not variations:
+        errors.append("No variations — add at least one variation with platform connections.")
+
+    any_connected = False
+    connected_platforms: set[str] = set()
+    for v in variations:
+        for p in ("tiktok", "youtube", "instagram", "facebook"):
+            if dict(v).get(f"{p}_token"):
+                any_connected = True
+                connected_platforms.add(p)
+    if variations and not any_connected:
+        errors.append("No platforms connected — click Connect on at least one variation's TikTok / YouTube / Instagram / Facebook tile.")
+
+    clips = await db.get_clips(database, artist_id)
+    if not clips:
+        errors.append("Video directory is empty — upload MP4s or sync a Google Drive folder.")
+
+    # OAuth app credentials check — if any platform is in use, its client id/secret must exist.
+    cfg = await db.get_site_config(database)
+    platform_key = {"tiktok": "tiktok", "youtube": "youtube", "instagram": "meta", "facebook": "meta"}
+    for p in connected_platforms:
+        k = platform_key[p]
+        if not (cfg.get(f"oauth_{k}_client_id") and cfg.get(f"oauth_{k}_client_secret")):
+            errors.append(f"{p.capitalize()} OAuth app credentials not configured in admin settings.")
+
+    # Google Drive key required if any clip is sourced from Drive.
+    has_gdrive = any((dict(c).get("source") == "gdrive") for c in clips)
+    if has_gdrive and not cfg.get("oauth_google_drive_api_key"):
+        errors.append("Google Drive API key missing — set it in Admin → OAuth Apps.")
+
+    return errors
+
+
+@app.post("/api/artists/{artist_id}/promotion/start")
+async def promotion_start(
+    artist_id: int, data: PromotionStartReq, user: dict = Depends(get_current_user)
+):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        errors = await _promotion_preflight(database, artist_id)
+        if errors:
+            raise HTTPException(400, {"errors": errors})
+
+        # Already running? Just return current state.
+        current_cid = artist.get("current_campaign_id")
+        if artist.get("is_active") and current_cid:
+            campaign = await db.get_campaign(database, current_cid)
+            return {"ok": True, "campaign": dict(campaign) if campaign else None}
+
+        name = (data.campaign_name or "").strip() or \
+            f"Campaign — {datetime.now(timezone.utc).strftime('%b %d, %Y')}"
+        cid = await db.create_campaign(
+            database, artist_id=artist_id, name=name, view_target=data.view_target,
+        )
+        await db.update_artist(
+            database, artist_id,
+            is_active=True, paused_reason=None,
+            view_target=data.view_target,
+            current_campaign_id=cid,
+        )
+        return {"ok": True, "campaign_id": cid}
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists/{artist_id}/promotion/stop")
+async def promotion_stop(artist_id: int, user: dict = Depends(get_current_user)):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        await db.update_artist(database, artist_id, is_active=False)
+        cid = artist.get("current_campaign_id")
+        if cid:
+            posts = await db.get_clip_posts(database, artist_id=artist_id)
+            views = sum(int(p.get("view_count") or 0) for p in posts if p.get("campaign_id") == cid)
+            posts_total = sum(1 for p in posts if p.get("campaign_id") == cid and p.get("status") == "posted")
+            await db.update_campaign(
+                database, cid, status="ended",
+                ended_at=datetime.now(timezone.utc),
+                views_total=views, posts_total=posts_total,
+            )
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists/{artist_id}/promotion/reset")
+async def promotion_reset(
+    artist_id: int, data: PromotionResetReq, user: dict = Depends(get_current_user)
+):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        # Archive current campaign with a final snapshot.
+        cid = artist.get("current_campaign_id")
+        if cid:
+            posts = await db.get_clip_posts(database, artist_id=artist_id)
+            views = sum(int(p.get("view_count") or 0) for p in posts if p.get("campaign_id") == cid)
+            posts_total = sum(1 for p in posts if p.get("campaign_id") == cid and p.get("status") == "posted")
+            await db.update_campaign(
+                database, cid, status="reset",
+                ended_at=datetime.now(timezone.utc),
+                views_total=views, posts_total=posts_total,
+            )
+
+        # Delete clips (and their files), preserve clip_posts for historical CSV.
+        clips = await db.get_clips(database, artist_id)
+        for c in clips:
+            if dict(c).get("source") == "upload" and dict(c).get("local_path"):
+                try:
+                    Path(dict(c)["local_path"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            await db.delete_clip(database, c["id"])
+
+        # Start fresh campaign.
+        name = (data.campaign_name or "").strip() or \
+            f"Campaign — {datetime.now(timezone.utc).strftime('%b %d, %Y')}"
+        new_cid = await db.create_campaign(
+            database, artist_id=artist_id, name=name, view_target=data.view_target,
+        )
+        await db.update_artist(
+            database, artist_id,
+            is_active=False,  # user clicks Start again after re-stocking the directory
+            paused_reason=None,
+            view_target=data.view_target,
+            current_campaign_id=new_cid,
+        )
+        return {"ok": True, "campaign_id": new_cid}
+    finally:
+        await database.close()
+
+
+@app.get("/api/artists/{artist_id}/campaigns")
+async def list_campaigns(artist_id: int, user: dict = Depends(get_current_user)):
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        rows = await db.get_campaigns(database, artist_id)
+        return rows_to_list(rows)
+    finally:
+        await database.close()
+
+
+@app.get("/api/artists/{artist_id}/stats.csv")
+async def artist_stats_csv(
+    artist_id: int,
+    campaign_id: Optional[int] = None,
+    user: dict = Depends(get_current_user),
+):
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        posts = await db.get_clip_posts(database, artist_id=artist_id, limit=10000)
+        variations = {v["id"]: dict(v) for v in await db.get_artist_accounts(database, artist_id)}
+        campaigns = {c["id"]: dict(c) for c in await db.get_campaigns(database, artist_id)}
+    finally:
+        await database.close()
+
+    import csv, io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "posted_at", "scheduled_for", "campaign", "platform", "variation",
+        "status", "clip", "caption", "platform_post_id", "view_count", "error",
+    ])
+    for p in posts:
+        pd = dict(p)
+        if campaign_id is not None and pd.get("campaign_id") != campaign_id:
+            continue
+        var = variations.get(pd.get("artist_account_id"), {})
+        camp = campaigns.get(pd.get("campaign_id"), {})
+        w.writerow([
+            (pd.get("posted_at").isoformat() if isinstance(pd.get("posted_at"), datetime) else (pd.get("posted_at") or "")),
+            (pd.get("scheduled_for").isoformat() if isinstance(pd.get("scheduled_for"), datetime) else (pd.get("scheduled_for") or "")),
+            camp.get("name", ""),
+            pd.get("platform", ""),
+            var.get("name", ""),
+            pd.get("status", ""),
+            pd.get("clip_filename") or "",
+            (pd.get("caption_snapshot") or "").replace("\n", " "),
+            pd.get("platform_post_id") or "",
+            pd.get("view_count") or 0,
+            (pd.get("error") or "").replace("\n", " "),
+        ])
+
+    filename = f"{artist['slug']}-stats"
+    if campaign_id:
+        filename += f"-campaign{campaign_id}"
+    filename += ".csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --- Admin: artists ---
@@ -2510,6 +2747,69 @@ async def admin_delete_artist(artist_id: int, admin: dict = Depends(admin_requir
     if upload_dir.exists():
         shutil.rmtree(upload_dir, ignore_errors=True)
     return {"ok": True}
+
+
+# --- Admin: error logs ---
+
+@app.get("/api/admin/error-logs")
+async def admin_error_logs(
+    limit: int = 200,
+    source: Optional[str] = None,
+    admin: dict = Depends(admin_required),
+):
+    database = await db.get_db()
+    try:
+        rows = await db.get_error_logs(database, limit=min(limit, 1000), source=source)
+        return rows_to_list(rows)
+    finally:
+        await database.close()
+
+
+@app.delete("/api/admin/error-logs")
+async def admin_clear_error_logs(admin: dict = Depends(admin_required)):
+    database = await db.get_db()
+    try:
+        await db.delete_old_error_logs(database, keep_last=0)
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+# --- Global exception logger ---
+
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import traceback as _traceback
+
+
+@app.exception_handler(Exception)
+async def _log_unhandled_exception(request: Request, exc: Exception):
+    # Don't spam the log with routine 4xx / validation errors.
+    if isinstance(exc, (StarletteHTTPException, RequestValidationError)):
+        raise exc
+    try:
+        database = await db.get_db()
+        try:
+            uid = None
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                try:
+                    payload = decode_token(auth.split(" ", 1)[1])
+                    uid = payload.get("sub") if isinstance(payload, dict) else None
+                    uid = int(uid) if uid else None
+                except Exception:
+                    uid = None
+            await db.log_error(
+                database, source="api",
+                message=f"{request.method} {request.url.path}: {exc}",
+                traceback=_traceback.format_exc(),
+                user_id=uid,
+            )
+        finally:
+            await database.close()
+    except Exception:
+        pass
+    raise exc
 
 
 if __name__ == "__main__":

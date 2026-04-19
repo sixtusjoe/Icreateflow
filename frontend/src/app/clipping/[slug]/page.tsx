@@ -17,6 +17,12 @@ import {
   RefreshCw,
   X,
   Check,
+  Play,
+  Square,
+  Download,
+  AlertCircle,
+  RotateCcw,
+  Target,
 } from "lucide-react";
 import { toast } from "sonner";
 import OAuthTiles from "@/components/OAuthTiles";
@@ -31,6 +37,11 @@ import {
   updateClip,
   deleteClip,
   getArtistDashboard,
+  startPromotion,
+  stopPromotion,
+  resetPromotion,
+  listCampaigns,
+  downloadStatsCsv,
 } from "@/lib/api";
 
 type Variation = {
@@ -64,6 +75,22 @@ type Dashboard = {
   views_total: number;
   by_platform: Record<string, { posted: number; views: number }>;
   next_scheduled_at: string | null;
+  is_active?: boolean;
+  paused_reason?: string | null;
+  view_target?: number | null;
+  current_campaign?: Campaign | null;
+};
+
+type Campaign = {
+  id: number;
+  artist_id: number;
+  name: string;
+  view_target?: number | null;
+  started_at: string;
+  ended_at?: string | null;
+  status: "active" | "ended" | "reset";
+  views_total: number;
+  posts_total: number;
 };
 
 const PLATFORMS = ["tiktok", "youtube", "instagram", "facebook"] as const;
@@ -95,6 +122,15 @@ export default function ArtistPage({
   const [editingClipId, setEditingClipId] = useState<number | null>(null);
   const [clipCaption, setClipCaption] = useState("");
 
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [startTarget, setStartTarget] = useState<string>("");
+  const [startName, setStartName] = useState<string>("");
+  const [startErrors, setStartErrors] = useState<string[]>([]);
+  const [showReset, setShowReset] = useState(false);
+  const [resetTarget, setResetTarget] = useState<string>("");
+  const [resetName, setResetName] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+
   const [settings, setSettings] = useState({
     posts_per_day: 3,
     window_start: "09:00",
@@ -117,6 +153,7 @@ export default function ArtistPage({
           timezone: a.timezone ?? "US/Eastern",
         });
         getArtistDashboard(a.id).then(setDashboard).catch(() => {});
+        listCampaigns(a.id).then(setCampaigns).catch(() => {});
       })
       .catch(() => toast.error("Failed to load artist"));
   }, [slug]);
@@ -128,6 +165,88 @@ export default function ArtistPage({
     }, 60000);
     return () => clearInterval(iv);
   }, [id, load]);
+
+  const refreshCampaigns = useCallback(() => {
+    if (id == null) return;
+    listCampaigns(id).then(setCampaigns).catch(() => {});
+    getArtistDashboard(id).then(setDashboard).catch(() => {});
+  }, [id]);
+
+  const handleStartPromotion = async () => {
+    if (id == null) return;
+    setStartErrors([]);
+    setBusy(true);
+    try {
+      await startPromotion(id, {
+        view_target: startTarget ? Number(startTarget) : undefined,
+        campaign_name: startName || undefined,
+      });
+      toast.success("Promotion started");
+      setStartTarget("");
+      setStartName("");
+      refreshCampaigns();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      if (detail && typeof detail === "object" && "errors" in (detail as Record<string, unknown>)) {
+        setStartErrors((detail as { errors: string[] }).errors);
+      } else {
+        toast.error(typeof detail === "string" ? detail : "Failed to start promotion");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStopPromotion = async () => {
+    if (id == null) return;
+    if (!confirm("Stop the current promotion?")) return;
+    setBusy(true);
+    try {
+      await stopPromotion(id);
+      toast.success("Promotion stopped");
+      refreshCampaigns();
+    } catch {
+      toast.error("Failed to stop");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResetPromotion = async () => {
+    if (id == null) return;
+    if (
+      !confirm(
+        "Reset the directory? All uploaded clips will be deleted and the current campaign archived. Historical stats remain downloadable."
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      await resetPromotion(id, {
+        view_target: resetTarget ? Number(resetTarget) : undefined,
+        campaign_name: resetName || undefined,
+        delete_clips: true,
+      });
+      toast.success("Reset complete — upload new clips and start the next campaign");
+      setShowReset(false);
+      setResetTarget("");
+      setResetName("");
+      load();
+    } catch {
+      toast.error("Failed to reset");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDownloadStats = async (campaign_id?: number) => {
+    if (id == null) return;
+    try {
+      await downloadStatsCsv(id, { slug, campaign_id });
+    } catch {
+      toast.error("Download failed");
+    }
+  };
 
   const saveSettings = async () => {
     if (id == null) return;
@@ -286,6 +405,221 @@ export default function ArtistPage({
           ))}
         </div>
       )}
+
+      {/* Campaign / Promotion */}
+      <section className="rounded-2xl bg-card p-4 md:p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Target className="h-4 w-4" /> Campaign
+          </h2>
+          <div className="flex items-center gap-2">
+            {dashboard?.is_active ? (
+              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-600">
+                {dashboard.paused_reason === "target_reached"
+                  ? "Target reached"
+                  : dashboard.paused_reason === "directory_exhausted"
+                  ? "Paused — add clips"
+                  : "Running"}
+              </span>
+            ) : (
+              <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                Stopped
+              </span>
+            )}
+          </div>
+        </div>
+
+        {dashboard?.is_active && dashboard.current_campaign ? (
+          <div className="space-y-4">
+            <div>
+              <div className="mb-1 text-sm font-medium">{dashboard.current_campaign.name}</div>
+              <div className="text-xs text-muted-foreground">
+                Started {new Date(dashboard.current_campaign.started_at).toLocaleString()} ·{" "}
+                {dashboard.posts_total} posts · {dashboard.views_total.toLocaleString()} views
+              </div>
+            </div>
+            {dashboard.view_target != null && dashboard.view_target > 0 && (
+              <div>
+                <div className="mb-1 flex justify-between text-xs text-muted-foreground">
+                  <span>Progress to target</span>
+                  <span>
+                    {dashboard.views_total.toLocaleString()} /{" "}
+                    {dashboard.view_target.toLocaleString()}
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-foreground"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        (dashboard.views_total / Math.max(1, dashboard.view_target)) * 100
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            {dashboard.paused_reason === "directory_exhausted" && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>
+                  Every clip has been posted at least once. Upload new clips or sync more from
+                  Drive and posting will resume automatically.
+                </span>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleStopPromotion}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <Square className="h-3.5 w-3.5" /> Stop
+              </button>
+              <button
+                onClick={() => handleDownloadStats()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                <Download className="h-3.5 w-3.5" /> Download stats CSV
+              </button>
+              <button
+                onClick={() => setShowReset((s) => !s)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Reset directory
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Kick off a new campaign. Posting resumes at the next scheduled slot.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium">View target (optional)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={startTarget}
+                  onChange={(e) => setStartTarget(e.target.value)}
+                  className={inputClass}
+                  placeholder="e.g. 1000000"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium">Campaign name (optional)</label>
+                <input
+                  value={startName}
+                  onChange={(e) => setStartName(e.target.value)}
+                  className={inputClass}
+                  placeholder="e.g. Summer push"
+                />
+              </div>
+            </div>
+            {startErrors.length > 0 && (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-700 dark:text-red-400">
+                <div className="mb-1 flex items-center gap-1.5 font-medium">
+                  <AlertCircle className="h-4 w-4" /> Fix the following before starting:
+                </div>
+                <ul className="ml-5 list-disc space-y-0.5">
+                  {startErrors.map((e, i) => (
+                    <li key={i}>{e}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <button
+              onClick={handleStartPromotion}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
+            >
+              <Play className="h-3.5 w-3.5" /> Start promotion
+            </button>
+          </div>
+        )}
+
+        {showReset && (
+          <div className="mt-4 rounded-xl border border-border p-4 space-y-3">
+            <div className="text-xs text-muted-foreground">
+              This archives the current campaign (stats remain downloadable below), deletes all
+              uploaded clips, and prepares a fresh campaign. Start it manually after uploading new
+              clips.
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium">New view target (optional)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={resetTarget}
+                  onChange={(e) => setResetTarget(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium">New campaign name (optional)</label>
+                <input
+                  value={resetName}
+                  onChange={(e) => setResetName(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleResetPromotion}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Confirm reset
+              </button>
+              <button
+                onClick={() => setShowReset(false)}
+                className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {campaigns.length > 0 && (
+          <div className="mt-5 border-t border-border pt-4">
+            <div className="mb-2 text-xs font-medium text-muted-foreground">Past campaigns</div>
+            <div className="space-y-2">
+              {campaigns
+                .filter((c) => c.status !== "active")
+                .map((c) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-foreground">{c.name}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {new Date(c.started_at).toLocaleDateString()}
+                        {c.ended_at
+                          ? ` → ${new Date(c.ended_at).toLocaleDateString()}`
+                          : ""}
+                        {" · "}
+                        {c.posts_total} posts · {c.views_total.toLocaleString()} views ·{" "}
+                        {c.status}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDownloadStats(c.id)}
+                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-background"
+                    >
+                      <Download className="h-3 w-3" /> CSV
+                    </button>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Variations */}
       <section className="rounded-2xl bg-card p-4 md:p-5">

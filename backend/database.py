@@ -260,7 +260,42 @@ class Artist(Base):
     window_end: Mapped[str] = mapped_column(Text, server_default="21:00")
     gdrive_folder_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     gdrive_folder_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Promotion / campaign state
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    view_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    paused_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    current_campaign_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    artist_id: Mapped[int] = mapped_column(
+        ForeignKey("artists.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    view_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    ended_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(Text, server_default="active")
+    views_total: Mapped[int] = mapped_column(Integer, server_default="0")
+    posts_total: Mapped[int] = mapped_column(Integer, server_default="0")
+    __table_args__ = (
+        CheckConstraint("status IN ('active','ended','reset')", name="campaigns_status_chk"),
+    )
+
+
+class ErrorLog(Base):
+    __tablename__ = "error_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    level: Mapped[str] = mapped_column(Text, server_default="error")
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    traceback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class ArtistAccount(Base):
@@ -297,7 +332,11 @@ class Clip(Base):
 class ClipPost(Base):
     __tablename__ = "clip_posts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    clip_id: Mapped[int] = mapped_column(ForeignKey("clips.id", ondelete="CASCADE"), nullable=False)
+    clip_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    artist_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    campaign_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    clip_filename: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    caption_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     artist_account_id: Mapped[int] = mapped_column(
         ForeignKey("artist_accounts.id", ondelete="CASCADE"), nullable=False
     )
@@ -613,11 +652,47 @@ async def _migrate_artist_oauth_columns(conn) -> None:
         )
 
 
+async def _migrate_campaign_columns(conn) -> None:
+    """Add promotion/campaign columns to artists + clip_posts (idempotent)."""
+    artist_cols = [
+        ("is_active", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("view_target", "INTEGER"),
+        ("paused_reason", "TEXT"),
+        ("current_campaign_id", "INTEGER"),
+    ]
+    for name, typ in artist_cols:
+        await conn.execute(text(f"ALTER TABLE artists ADD COLUMN IF NOT EXISTS {name} {typ}"))
+
+    clip_post_cols = [
+        ("artist_id", "INTEGER"),
+        ("campaign_id", "INTEGER"),
+        ("clip_filename", "TEXT"),
+        ("caption_snapshot", "TEXT"),
+    ]
+    for name, typ in clip_post_cols:
+        await conn.execute(text(f"ALTER TABLE clip_posts ADD COLUMN IF NOT EXISTS {name} {typ}"))
+
+    # Drop the clip_id FK so historical clip_posts can survive clip deletion
+    # (post-reset). Safe to run repeatedly — the DROP CONSTRAINT IF EXISTS no-ops.
+    await conn.execute(text(
+        "ALTER TABLE clip_posts DROP CONSTRAINT IF EXISTS clip_posts_clip_id_fkey"
+    ))
+    # And relax NOT NULL on clip_id (first run only; no-op after).
+    await conn.execute(text("ALTER TABLE clip_posts ALTER COLUMN clip_id DROP NOT NULL"))
+
+    # Backfill clip_posts.artist_id from the clip (if not set yet).
+    await conn.execute(text(
+        "UPDATE clip_posts cp SET artist_id = c.artist_id "
+        "FROM clips c WHERE cp.clip_id = c.id AND cp.artist_id IS NULL"
+    ))
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_oauth_columns(conn)
         await _migrate_artist_oauth_columns(conn)
+        await _migrate_campaign_columns(conn)
     db = await get_db()
     try:
         await _seed(db)
@@ -1255,11 +1330,15 @@ async def delete_clip(db: Connection, clip_id: int):
 
 async def create_clip_post(
     db: Connection,
-    clip_id: int,
+    clip_id: int | None,
     artist_account_id: int,
     platform: str,
     scheduled_for: datetime | str | None = None,
     status: str = "scheduled",
+    artist_id: int | None = None,
+    campaign_id: int | None = None,
+    clip_filename: str | None = None,
+    caption_snapshot: str | None = None,
 ):
     s = db.session
     stmt = (
@@ -1270,12 +1349,94 @@ async def create_clip_post(
             platform=platform,
             scheduled_for=_parse_timestamp(scheduled_for),
             status=status,
+            artist_id=artist_id,
+            campaign_id=campaign_id,
+            clip_filename=clip_filename,
+            caption_snapshot=caption_snapshot,
         )
         .returning(ClipPost.id)
     )
     pid = (await s.execute(stmt)).scalar_one()
     await s.commit()
     return pid
+
+
+# --- Campaigns ---
+
+async def create_campaign(db: Connection, artist_id: int, name: str, view_target: int | None):
+    s = db.session
+    stmt = (
+        insert(Campaign)
+        .values(artist_id=artist_id, name=name, view_target=view_target, status="active")
+        .returning(Campaign.id)
+    )
+    cid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return cid
+
+
+async def get_campaign(db: Connection, campaign_id: int):
+    s = db.session
+    return _row(
+        (await s.execute(select(Campaign).where(Campaign.id == campaign_id))).scalar_one_or_none()
+    )
+
+
+async def get_campaigns(db: Connection, artist_id: int):
+    s = db.session
+    rows = await s.execute(
+        select(Campaign).where(Campaign.artist_id == artist_id).order_by(Campaign.started_at.desc())
+    )
+    return _rows(rows.scalars().all())
+
+
+async def update_campaign(db: Connection, campaign_id: int, **kwargs):
+    s = db.session
+    await s.execute(update(Campaign).where(Campaign.id == campaign_id).values(**_prep(kwargs)))
+    await s.commit()
+
+
+# --- Error logs ---
+
+async def log_error(
+    db: Connection,
+    source: str,
+    message: str,
+    traceback: str | None = None,
+    user_id: int | None = None,
+    context: str | None = None,
+    level: str = "error",
+):
+    """Append a row to error_logs. Best-effort — swallows its own failures so
+    the caller's error path is never aggravated by a logging problem."""
+    try:
+        s = db.session
+        stmt = insert(ErrorLog).values(
+            source=source, message=message[:8000],
+            traceback=(traceback or "")[:16000] or None,
+            user_id=user_id, context=context, level=level,
+        )
+        await s.execute(stmt)
+        await s.commit()
+    except Exception:
+        pass
+
+
+async def get_error_logs(db: Connection, limit: int = 200, source: str | None = None):
+    s = db.session
+    q = select(ErrorLog).order_by(ErrorLog.created_at.desc()).limit(limit)
+    if source:
+        q = q.where(ErrorLog.source == source)
+    rows = await s.execute(q)
+    return _rows(rows.scalars().all())
+
+
+async def delete_old_error_logs(db: Connection, keep_last: int = 1000):
+    """Trim error_logs to the most recent N rows."""
+    s = db.session
+    sub = select(ErrorLog.id).order_by(ErrorLog.created_at.desc()).limit(keep_last).subquery()
+    await s.execute(delete(ErrorLog).where(~ErrorLog.id.in_(select(sub))))
+    await s.commit()
 
 
 async def get_clip_posts(

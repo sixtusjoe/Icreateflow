@@ -1,21 +1,25 @@
 """Clipping auto-post scheduler.
 
-Three background loops:
+Three background loops, each gated by Artist.is_active so paused artists
+don't consume any cycles:
 
 1. Slot planner — every 5 min. Materialises today's `clip_posts` rows per
-   artist (one per variation × 4 platforms × posts_per_day), evenly spread
-   across [window_start, window_end] in the artist's local timezone.
-   Picks the clip with the lowest `times_posted` + oldest `last_posted_at`
-   for each slot (round-robin fairness).
+   active artist, evenly spread across [window_start, window_end] in the
+   artist's local timezone.
 
 2. Dispatcher — every 60 s. Flips scheduled rows whose `scheduled_for <= NOW()`
    to `posting`, calls the right platform adapter, records the result.
+   After each successful post, re-evaluates pause conditions (view target
+   reached OR every clip posted at least once) and auto-pauses the artist.
 
 3. View poller — every 15 min. Re-fetches view counts for posted rows whose
-   counts haven't been refreshed in the last 15 minutes.
+   counts haven't been refreshed in the last 15 minutes. Also checks the
+   view-target pause condition every tick so target-reached kicks in
+   promptly as views arrive.
 
-All three loops catch per-item exceptions so a single bad post doesn't kill
-the scheduler.
+All three loops catch per-item exceptions and log them via database.log_error
+so a single bad post doesn't kill the scheduler, and admins can see what's
+going wrong in `/admin → Errors`.
 """
 from __future__ import annotations
 
@@ -39,6 +43,10 @@ ADAPTERS = {
     "instagram": instagram_adapter,
     "facebook": facebook_adapter,
 }
+
+
+PAUSE_TARGET_REACHED = "target_reached"
+PAUSE_DIRECTORY_EXHAUSTED = "directory_exhausted"
 
 
 def _parse_hhmm(s: str, default: dtime) -> dtime:
@@ -96,63 +104,137 @@ async def _pick_next_clip(database, artist_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+async def _artist_views_total(database, artist_id: int) -> int:
+    cur = await database.execute(
+        "SELECT COALESCE(SUM(view_count), 0) AS v FROM clip_posts WHERE artist_id = ?",
+        (artist_id,),
+    )
+    r = await cur.fetchone()
+    return int(r["v"] or 0) if r else 0
+
+
+async def _has_unposted_clip(database, artist_id: int) -> bool:
+    cur = await database.execute(
+        "SELECT 1 FROM clips WHERE artist_id = ? AND times_posted = 0 LIMIT 1",
+        (artist_id,),
+    )
+    return bool(await cur.fetchone())
+
+
+async def _any_clip(database, artist_id: int) -> bool:
+    cur = await database.execute(
+        "SELECT 1 FROM clips WHERE artist_id = ? LIMIT 1", (artist_id,)
+    )
+    return bool(await cur.fetchone())
+
+
+async def evaluate_pause(database, artist: dict) -> None:
+    """Check whether the artist should be paused. Mutates DB if so."""
+    aid = artist["id"]
+    target = artist.get("view_target")
+    if target and int(target) > 0:
+        views = await _artist_views_total(database, aid)
+        if views >= int(target):
+            await db.update_artist(database, aid, is_active=False, paused_reason=PAUSE_TARGET_REACHED)
+            cid = artist.get("current_campaign_id")
+            if cid:
+                await db.update_campaign(
+                    database, cid, status="ended",
+                    ended_at=datetime.now(timezone.utc),
+                    views_total=views,
+                )
+            return
+
+    # Directory exhaustion: every clip has been posted at least once.
+    if await _any_clip(database, aid) and not await _has_unposted_clip(database, aid):
+        await db.update_artist(database, aid, paused_reason=PAUSE_DIRECTORY_EXHAUSTED)
+
+
+async def maybe_resume_on_new_clip(database, artist_id: int) -> None:
+    """Clear directory_exhausted pause if a fresh unposted clip exists."""
+    artist = await db.get_artist(database, artist_id)
+    if not artist:
+        return
+    if artist.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED and await _has_unposted_clip(database, artist_id):
+        await db.update_artist(database, artist_id, paused_reason=None)
+
+
 async def plan_slots_once() -> None:
-    """Ensure today's clip_posts rows exist for every artist."""
+    """Ensure today's clip_posts rows exist for every ACTIVE artist."""
     database = await db.get_db()
     try:
         artists = await db.get_artists(database)
         now_utc = datetime.now(timezone.utc)
         for a in artists:
             artist = dict(a)
-            # Already materialised today? Check by matching any clip_post scheduled today in UTC.
-            check = await database.execute(
-                """
-                SELECT COUNT(*) AS c FROM clip_posts cp
-                JOIN clips c ON cp.clip_id = c.id
-                WHERE c.artist_id = ? AND cp.scheduled_for IS NOT NULL
-                  AND cp.scheduled_for::date = ?::date
-                """,
-                (artist["id"], now_utc.date().isoformat()),
-            )
-            row = await check.fetchone()
-            if row and int(row["c"] or 0) > 0:
-                continue
-
-            variations = await db.get_artist_accounts(database, artist["id"])
-            if not variations:
-                continue
-
-            slots = _today_slots(artist, now_utc)
-            slots = [s for s in slots if s > now_utc]  # skip past slots
-            if not slots:
-                continue
-
-            for slot in slots:
-                clip = await _pick_next_clip(database, artist["id"])
-                if not clip:
-                    break
-                for var in variations:
-                    for platform in ("tiktok", "youtube", "instagram", "facebook"):
-                        # Only schedule where the variation is connected
-                        if not (dict(var).get(f"{platform}_token")):
-                            continue
-                        await db.create_clip_post(
-                            database,
-                            clip_id=clip["id"],
-                            artist_account_id=var["id"],
-                            platform=platform,
-                            scheduled_for=slot,
-                            status="scheduled",
-                        )
-                # bump round-robin counter so the next slot picks a different clip
-                await db.update_clip(
-                    database,
-                    clip["id"],
-                    times_posted=int(clip.get("times_posted") or 0) + 1,
-                    last_posted_at=now_utc,
+            try:
+                if not artist.get("is_active"):
+                    continue
+                if artist.get("paused_reason"):
+                    continue
+                # Already materialised today?
+                check = await database.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM clip_posts
+                    WHERE artist_id = ? AND scheduled_for IS NOT NULL
+                      AND scheduled_for::date = ?::date
+                    """,
+                    (artist["id"], now_utc.date().isoformat()),
                 )
-    except Exception:
-        traceback.print_exc()
+                row = await check.fetchone()
+                if row and int(row["c"] or 0) > 0:
+                    continue
+
+                variations = await db.get_artist_accounts(database, artist["id"])
+                if not variations:
+                    continue
+
+                slots = _today_slots(artist, now_utc)
+                slots = [s for s in slots if s > now_utc]
+                if not slots:
+                    continue
+
+                campaign_id = artist.get("current_campaign_id")
+                for slot in slots:
+                    clip = await _pick_next_clip(database, artist["id"])
+                    if not clip:
+                        break
+                    for var in variations:
+                        for platform in ("tiktok", "youtube", "instagram", "facebook"):
+                            if not dict(var).get(f"{platform}_token"):
+                                continue
+                            await db.create_clip_post(
+                                database,
+                                clip_id=clip["id"],
+                                artist_account_id=var["id"],
+                                platform=platform,
+                                scheduled_for=slot,
+                                status="scheduled",
+                                artist_id=artist["id"],
+                                campaign_id=campaign_id,
+                                clip_filename=clip.get("filename"),
+                                caption_snapshot=clip.get("caption"),
+                            )
+                    await db.update_clip(
+                        database, clip["id"],
+                        times_posted=int(clip.get("times_posted") or 0) + 1,
+                        last_posted_at=now_utc,
+                    )
+                await evaluate_pause(database, artist)
+            except Exception as e:
+                await db.log_error(
+                    database, source="scheduler.plan",
+                    message=f"artist {artist.get('id')}: {e}",
+                    traceback=traceback.format_exc(),
+                )
+    except Exception as e:
+        try:
+            await db.log_error(
+                database, source="scheduler.plan",
+                message=str(e), traceback=traceback.format_exc(),
+            )
+        except Exception:
+            traceback.print_exc()
     finally:
         await database.close()
 
@@ -163,9 +245,13 @@ async def dispatch_due_once() -> None:
     try:
         cur = await database.execute(
             """
-            SELECT * FROM clip_posts
-            WHERE status = 'scheduled' AND scheduled_for IS NOT NULL AND scheduled_for <= NOW()
-            ORDER BY scheduled_for ASC
+            SELECT cp.* FROM clip_posts cp
+            JOIN artists a ON a.id = cp.artist_id
+            WHERE cp.status = 'scheduled' AND cp.scheduled_for IS NOT NULL
+              AND cp.scheduled_for <= NOW()
+              AND a.is_active = TRUE
+              AND a.paused_reason IS NULL
+            ORDER BY cp.scheduled_for ASC
             LIMIT 50
             """
         )
@@ -174,7 +260,7 @@ async def dispatch_due_once() -> None:
             try:
                 await db.update_clip_post(database, cp["id"], status="posting")
 
-                clip = await db.get_clip(database, cp["clip_id"])
+                clip = await db.get_clip(database, cp["clip_id"]) if cp.get("clip_id") else None
                 variation = await db.get_artist_account(database, cp["artist_account_id"])
                 if not clip or not variation:
                     await db.update_clip_post(
@@ -185,9 +271,10 @@ async def dispatch_due_once() -> None:
                 platform = cp["platform"]
                 access_token = dict(variation).get(f"{platform}_token")
                 if not access_token:
-                    await db.update_clip_post(
-                        database, cp["id"], status="failed",
-                        error=f"{platform} not connected",
+                    err = f"{platform} not connected on variation #{variation['id']}"
+                    await db.update_clip_post(database, cp["id"], status="failed", error=err)
+                    await db.log_error(
+                        database, source=f"scheduler.dispatch.{platform}", message=err,
                     )
                     continue
 
@@ -217,19 +304,39 @@ async def dispatch_due_once() -> None:
                     platform_post_id=result.get("platform_post_id"),
                     error=None,
                 )
+
+                # Re-evaluate pause after each successful post.
+                artist = await db.get_artist(database, cp["artist_id"])
+                if artist:
+                    await evaluate_pause(database, dict(artist))
             except PostingError as e:
                 await db.update_clip_post(database, cp["id"], status="failed", error=str(e)[:500])
+                await db.log_error(
+                    database, source=f"posting.{cp.get('platform')}",
+                    message=str(e), traceback=traceback.format_exc(),
+                    context=f"clip_post_id={cp['id']}",
+                )
             except Exception as e:  # noqa: BLE001
-                traceback.print_exc()
                 await db.update_clip_post(database, cp["id"], status="failed", error=str(e)[:500])
-    except Exception:
-        traceback.print_exc()
+                await db.log_error(
+                    database, source=f"scheduler.dispatch.{cp.get('platform')}",
+                    message=str(e), traceback=traceback.format_exc(),
+                    context=f"clip_post_id={cp['id']}",
+                )
+    except Exception as e:
+        try:
+            await db.log_error(
+                database, source="scheduler.dispatch",
+                message=str(e), traceback=traceback.format_exc(),
+            )
+        except Exception:
+            traceback.print_exc()
     finally:
         await database.close()
 
 
 async def poll_views_once() -> None:
-    """Refresh view counts for posted rows older than 15 minutes."""
+    """Refresh view counts for posted rows older than 15 minutes, then re-check pause."""
     database = await db.get_db()
     try:
         cur = await database.execute(
@@ -242,6 +349,7 @@ async def poll_views_once() -> None:
             """
         )
         rows = [dict(r) for r in await cur.fetchall()]
+        touched_artists: set[int] = set()
         for cp in rows:
             try:
                 variation = await db.get_artist_account(database, cp["artist_account_id"])
@@ -258,11 +366,27 @@ async def poll_views_once() -> None:
                     view_count=int(views or 0),
                     view_count_updated_at=datetime.now(timezone.utc),
                 )
-            except Exception:  # noqa: BLE001
-                # Swallow so one bad row doesn't stall the loop
-                traceback.print_exc()
-    except Exception:
-        traceback.print_exc()
+                if cp.get("artist_id"):
+                    touched_artists.add(cp["artist_id"])
+            except Exception as e:  # noqa: BLE001
+                await db.log_error(
+                    database, source=f"posting.{cp.get('platform')}.views",
+                    message=str(e), traceback=traceback.format_exc(),
+                    context=f"clip_post_id={cp['id']}",
+                )
+
+        for aid in touched_artists:
+            artist = await db.get_artist(database, aid)
+            if artist and artist.get("is_active") and not artist.get("paused_reason"):
+                await evaluate_pause(database, dict(artist))
+    except Exception as e:
+        try:
+            await db.log_error(
+                database, source="scheduler.poll_views",
+                message=str(e), traceback=traceback.format_exc(),
+            )
+        except Exception:
+            traceback.print_exc()
     finally:
         await database.close()
 

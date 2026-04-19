@@ -5,7 +5,7 @@ import { useAuth } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import {
   Shield, Users, FileText, Music, Layers, Save, Activity, HardDrive,
-  Calendar, Key, Trash2, AlertTriangle, CheckCircle2, XCircle, Link2,
+  Calendar, Key, Trash2, AlertTriangle, CheckCircle2, XCircle, Link2, Bug,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -14,9 +14,10 @@ import {
   getAdminMusic, deleteAdminMusic, getAdminSchedule, getAdminApiKeys,
   getOAuthApps, updateOAuthApp,
   getAdminArtists, deleteAdminArtist,
+  getAdminErrorLogs, clearAdminErrorLogs,
 } from "@/lib/api";
 
-type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "branding";
+type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -66,6 +67,7 @@ export default function AdminPage() {
     { id: "music", label: "Music" },
     { id: "schedule", label: "Schedule" },
     { id: "oauth", label: "OAuth Apps" },
+    { id: "errors", label: "Errors" },
     { id: "branding", label: "Branding" },
   ];
 
@@ -104,6 +106,7 @@ export default function AdminPage() {
       {tab === "music" && <MusicTab tracks={music} onReload={reloadAll} />}
       {tab === "schedule" && <ScheduleTab items={schedule} />}
       {tab === "oauth" && <OAuthTab oauth={oauth} onReload={reloadAll} />}
+      {tab === "errors" && <ErrorsTab />}
       {tab === "branding" && <BrandingTab siteConfig={siteConfig} setSiteConfig={setSiteConfig} />}
     </div>
   );
@@ -620,4 +623,120 @@ function Th({ children, className = "" }: any) {
 }
 function Td({ children, className = "" }: any) {
   return <td className={`px-4 py-3 sm:px-5 ${className}`}>{children}</td>;
+}
+
+/* ============================================================
+ * ERRORS — site-wide error log viewer
+ * ============================================================ */
+function ErrorsTab() {
+  const [logs, setLogs] = useState<any[]>([]);
+  const [source, setSource] = useState<string>("");
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    getAdminErrorLogs({ limit: 500, source: source || undefined })
+      .then(setLogs)
+      .catch(() => toast.error("Failed to load errors"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
+
+  const handleClear = async () => {
+    if (!confirm("Delete ALL error logs? This cannot be undone.")) return;
+    try {
+      await clearAdminErrorLogs();
+      toast.success("Cleared");
+      load();
+    } catch {
+      toast.error("Failed to clear");
+    }
+  };
+
+  const sources = Array.from(new Set(logs.map((l) => l.source))).sort();
+
+  return (
+    <div className="rounded-2xl bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4 md:p-5">
+        <div className="flex items-center gap-2">
+          <Bug className="h-4 w-4" />
+          <h2 className="text-base font-semibold">Error log</h2>
+          <span className="text-xs text-muted-foreground">({logs.length})</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs outline-none focus:border-foreground"
+          >
+            <option value="">All sources</option>
+            {sources.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={load}
+            className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+          >
+            Refresh
+          </button>
+          <button
+            onClick={handleClear}
+            className="inline-flex items-center gap-1 rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-500/10"
+          >
+            <Trash2 className="h-3 w-3" /> Clear all
+          </button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+      ) : logs.length === 0 ? (
+        <div className="p-6 text-sm text-muted-foreground">No errors recorded.</div>
+      ) : (
+        <div className="divide-y divide-border">
+          {logs.map((l) => (
+            <div key={l.id} className="p-4 md:p-5">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                <span className="rounded-md bg-red-500/10 px-1.5 py-0.5 font-medium text-red-600">
+                  {l.level}
+                </span>
+                <span className="font-mono">{l.source}</span>
+                <span>·</span>
+                <span>{new Date(l.created_at).toLocaleString()}</span>
+                {l.user_id && (
+                  <>
+                    <span>·</span>
+                    <span>user #{l.user_id}</span>
+                  </>
+                )}
+              </div>
+              <div className="mt-1 text-sm break-words">{l.message}</div>
+              {l.traceback && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => setExpanded(expanded === l.id ? null : l.id)}
+                    className="text-[11px] text-muted-foreground hover:text-foreground underline"
+                  >
+                    {expanded === l.id ? "Hide" : "Show"} traceback
+                  </button>
+                  {expanded === l.id && (
+                    <pre className="mt-2 max-h-80 overflow-auto rounded-lg bg-muted p-3 text-[11px] text-foreground whitespace-pre-wrap break-all">
+                      {l.traceback}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
