@@ -208,6 +208,28 @@
 .delay-2000 { animation-delay: 2s; }
 
 /* ============================================
+   TIME / DATE INPUTS — iOS Safari overflow fix
+   Mobile WebKit gives <input type="time"> an intrinsic width that ignores
+   w-full and overflows narrow containers. Strip the native chrome and
+   force the element to respect its container's width.
+   ============================================ */
+input[type="time"],
+input[type="date"],
+input[type="datetime-local"] {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+input[type="time"]::-webkit-date-and-time-value,
+input[type="date"]::-webkit-date-and-time-value,
+input[type="datetime-local"]::-webkit-date-and-time-value {
+  text-align: left;
+  min-width: 0;
+}
+
+/* ============================================
    SCROLLBAR
    ============================================ */
 ::-webkit-scrollbar {
