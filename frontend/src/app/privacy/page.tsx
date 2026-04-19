@@ -3,21 +3,21 @@ import Link from "next/link";
 import LegalShell, { Section } from "@/components/LegalShell";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — ICREATEFLOW",
+  title: "Privacy Policy — Icreateflow",
   description:
-    "How ICREATEFLOW collects, uses, shares, and protects your personal information when you use our promotion and distribution platform.",
+    "How Icreateflow collects, uses, shares, and protects your personal information when you use our promotion and distribution platform.",
 };
 
 export default function PrivacyPage() {
   return (
     <LegalShell
       title="Privacy Policy"
-      subtitle="This Privacy Policy explains what information ICREATEFLOW collects about you, how we use it, who we share it with, and the choices you have."
+      subtitle="This Privacy Policy explains what information Icreateflow collects about you, how we use it, who we share it with, and the choices you have."
       lastUpdated="April 19, 2026"
     >
       <Section number="1" title="Introduction" id="intro">
         <p>
-          ICREATEFLOW (&ldquo;<strong>ICREATEFLOW</strong>&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;, or
+          Icreateflow (&ldquo;<strong>Icreateflow</strong>&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;, or
           &ldquo;our&rdquo;) operates a promotion and distribution platform for artists, brands,
           movie studios, podcasters, and other creators at{" "}
           <a href="https://icreateflow.com" className="font-medium underline underline-offset-2 hover:text-foreground">
@@ -28,7 +28,7 @@ export default function PrivacyPage() {
           your privacy and are committed to handling your information responsibly and transparently.
         </p>
         <p>
-          This Policy applies to the ICREATEFLOW web application, APIs, and related services. By using
+          This Policy applies to the Icreateflow web application, APIs, and related services. By using
           the Service, you agree to the collection and use of information in accordance with this
           Policy. It should be read alongside our{" "}
           <Link href="/terms" className="font-medium underline underline-offset-2 hover:text-foreground">
@@ -102,15 +102,15 @@ export default function PrivacyPage() {
         <ul className="list-disc space-y-2 pl-6">
           <li><strong>Connected platforms</strong>: when you authorize a campaign, we transmit the necessary clip files, captions, thumbnails, and metadata to the TikTok, YouTube, Instagram, and Facebook accounts you have connected, so the Service can publish on your behalf.</li>
           <li><strong>Service providers</strong>: cloud hosting, database, storage, email delivery, payment processing, analytics, and AI providers (for example, OCR and image-generation APIs) acting on our instructions under confidentiality obligations.</li>
-          <li><strong>Business transfers</strong>: if ICREATEFLOW is involved in a merger, acquisition, or asset sale, information may be transferred as part of that transaction, subject to standard confidentiality protections.</li>
-          <li><strong>Legal requirements</strong>: when required to comply with a law, valid legal process, rights-holder takedown notice, or to protect the rights, property, or safety of ICREATEFLOW, our users, rights-holders, or the public.</li>
+          <li><strong>Business transfers</strong>: if Icreateflow is involved in a merger, acquisition, or asset sale, information may be transferred as part of that transaction, subject to standard confidentiality protections.</li>
+          <li><strong>Legal requirements</strong>: when required to comply with a law, valid legal process, rights-holder takedown notice, or to protect the rights, property, or safety of Icreateflow, our users, rights-holders, or the public.</li>
           <li><strong>With your consent</strong>: for any other purpose disclosed to you at the time.</li>
         </ul>
       </Section>
 
       <Section number="6" title="International transfers" id="transfers">
         <p>
-          ICREATEFLOW and its service providers may process your information in countries other than
+          Icreateflow and its service providers may process your information in countries other than
           the one in which you reside. Where required, we rely on appropriate safeguards such as the
           European Commission&rsquo;s Standard Contractual Clauses and equivalent frameworks to
           protect your information when it is transferred across borders.
@@ -161,7 +161,7 @@ export default function PrivacyPage() {
           <li>Correct information that is inaccurate or incomplete;</li>
           <li>Request deletion (&ldquo;right to be forgotten&rdquo;), subject to legal limits;</li>
           <li>Port your data to another service in a commonly used, machine-readable format — including CSV exports of your campaign history directly from the dashboard;</li>
-          <li>Disconnect any linked social or Drive account at any time from your workspace settings, which revokes ICREATEFLOW&rsquo;s access to that account;</li>
+          <li>Disconnect any linked social or Drive account at any time from your workspace settings, which revokes Icreateflow&rsquo;s access to that account;</li>
           <li>Object to or restrict certain processing, including direct marketing;</li>
           <li>Withdraw consent at any time, without affecting the lawfulness of prior processing;</li>
           <li>Lodge a complaint with your local data-protection authority.</li>

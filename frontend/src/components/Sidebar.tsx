@@ -24,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import Logo from "@/components/Logo";
 
 const mainLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -153,11 +154,13 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       )}>
         {!collapsed ? (
           <Link href="/dashboard" className="flex items-center gap-2 px-1">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-foreground text-[9px] font-bold text-background">IC</div>
-            <span className="text-sm font-bold tracking-tight text-foreground">ICREATEFLOW</span>
+            <Logo size={24} radius={6} />
+            <span className="text-sm font-bold tracking-tight text-foreground">Icreateflow</span>
           </Link>
         ) : (
-          <Link href="/dashboard" className="hidden md:flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-[9px] font-bold text-background">IC</Link>
+          <Link href="/dashboard" className="hidden md:inline-flex">
+            <Logo size={28} radius={7} />
+          </Link>
         )}
         <div className="flex items-center gap-1">
           {/* Close button — mobile only */}

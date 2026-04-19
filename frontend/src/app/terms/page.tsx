@@ -3,23 +3,23 @@ import Link from "next/link";
 import LegalShell, { Section } from "@/components/LegalShell";
 
 export const metadata: Metadata = {
-  title: "Terms & Conditions — ICREATEFLOW",
+  title: "Terms & Conditions — Icreateflow",
   description:
-    "The terms that govern your use of ICREATEFLOW, a promotion and distribution platform for artists, brands, movies and podcasts.",
+    "The terms that govern your use of Icreateflow, a promotion and distribution platform for artists, brands, movies and podcasts.",
 };
 
 export default function TermsPage() {
   return (
     <LegalShell
       title="Terms & Conditions"
-      subtitle="Please read these terms carefully before using ICREATEFLOW. By creating an account or using the Service, you agree to be bound by them."
+      subtitle="Please read these terms carefully before using Icreateflow. By creating an account or using the Service, you agree to be bound by them."
       lastUpdated="April 19, 2026"
     >
       <Section number="1" title="Acceptance of these Terms" id="acceptance">
         <p>
           These Terms &amp; Conditions (the &ldquo;<strong>Terms</strong>&rdquo;) form a legally binding
-          agreement between you and ICREATEFLOW (&ldquo;<strong>ICREATEFLOW</strong>&rdquo;, &ldquo;we&rdquo;,
-          &ldquo;us&rdquo;, or &ldquo;our&rdquo;) governing your access to and use of the ICREATEFLOW
+          agreement between you and Icreateflow (&ldquo;<strong>Icreateflow</strong>&rdquo;, &ldquo;we&rdquo;,
+          &ldquo;us&rdquo;, or &ldquo;our&rdquo;) governing your access to and use of the Icreateflow
           promotion platform, accessible at{" "}
           <a href="https://icreateflow.com" className="font-medium underline underline-offset-2 hover:text-foreground">
             icreateflow.com
@@ -61,7 +61,7 @@ export default function TermsPage() {
 
       <Section number="4" title="The Service" id="service">
         <p>
-          ICREATEFLOW is a promotion and distribution platform that helps artists, brands, movie
+          Icreateflow is a promotion and distribution platform that helps artists, brands, movie
           studios, podcasters, and other creators push their content across social platforms at
           scale. Depending on your plan, the Service may let you:
         </p>
@@ -75,7 +75,7 @@ export default function TermsPage() {
           <li>Pause and resume automatically when your catalog is exhausted or topped up.</li>
         </ul>
         <p>
-          ICREATEFLOW provides the tooling and automation. The Service is <strong>not</strong> a guarantee
+          Icreateflow provides the tooling and automation. The Service is <strong>not</strong> a guarantee
           of views, streams, sales, chart position, or any specific promotional outcome. Results
           depend on the content, the accounts you connect, platform algorithms, and factors outside
           our control.
@@ -94,7 +94,7 @@ export default function TermsPage() {
           clips, captions, and promotional copy that the Service distributes on your behalf.
         </p>
         <p>
-          You retain all ownership rights in Your Content. You grant ICREATEFLOW a worldwide,
+          You retain all ownership rights in Your Content. You grant Icreateflow a worldwide,
           non-exclusive, royalty-free license to host, store, reproduce, modify (for formatting,
           transcoding, or rendering), transmit, and display Your Content, and to publish it to the
           third-party platforms and accounts you have connected, solely for the purpose of operating
@@ -117,7 +117,7 @@ export default function TermsPage() {
         <ul className="list-disc space-y-2 pl-6">
           <li>AI output may contain inaccuracies, hallucinations, or unintended similarities to third-party material.</li>
           <li>You are solely responsible for reviewing, editing, and approving any AI-generated material before it is scheduled for distribution.</li>
-          <li>The same or similar prompts may produce similar outputs for other users; ICREATEFLOW cannot guarantee that any AI output is unique.</li>
+          <li>The same or similar prompts may produce similar outputs for other users; Icreateflow cannot guarantee that any AI output is unique.</li>
           <li>Use of AI output is subject to the terms of the underlying model providers as well as these Terms.</li>
         </ul>
       </Section>
@@ -145,7 +145,7 @@ export default function TermsPage() {
       <Section number="8" title="Third-party platforms & connected accounts" id="third-parties">
         <p>
           When you connect the Service to a third-party platform (via OAuth or an API key), you
-          authorize ICREATEFLOW to access and act on that account on your behalf — including
+          authorize Icreateflow to access and act on that account on your behalf — including
           uploading videos, setting captions, reading published post metadata, and retrieving view
           and engagement statistics — to perform the promotional activity you have configured.
         </p>
@@ -170,7 +170,7 @@ export default function TermsPage() {
 
       <Section number="10" title="Intellectual property" id="ip">
         <p>
-          The Service, including its software, design, and trademarks, is owned by ICREATEFLOW and its
+          The Service, including its software, design, and trademarks, is owned by Icreateflow and its
           licensors and is protected by intellectual-property laws. Except for the limited license to
           use the Service granted in these Terms, no rights are transferred to you.
         </p>
@@ -210,7 +210,7 @@ export default function TermsPage() {
 
       <Section number="13" title="Limitation of liability" id="liability">
         <p>
-          TO THE MAXIMUM EXTENT PERMITTED BY LAW, ICREATEFLOW AND ITS AFFILIATES WILL NOT BE LIABLE FOR
+          TO THE MAXIMUM EXTENT PERMITTED BY LAW, Icreateflow AND ITS AFFILIATES WILL NOT BE LIABLE FOR
           ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF
           PROFITS, REVENUE, DATA, REPUTATION, OR GOODWILL, ARISING OUT OF OR IN CONNECTION WITH THESE
           TERMS OR THE SERVICE — including any action taken by a third-party platform against a
@@ -225,7 +225,7 @@ export default function TermsPage() {
 
       <Section number="14" title="Indemnification" id="indemnity">
         <p>
-          You agree to defend, indemnify, and hold harmless ICREATEFLOW, its affiliates, and their
+          You agree to defend, indemnify, and hold harmless Icreateflow, its affiliates, and their
           respective officers, directors, and employees from any claim or demand, including
           reasonable legal fees, arising out of (i) Your Content or the promotion of Your Content
           through the Service, (ii) your use of the Service, (iii) your violation of these Terms,
@@ -245,7 +245,7 @@ export default function TermsPage() {
 
       <Section number="16" title="Governing law & disputes" id="governing-law">
         <p>
-          These Terms are governed by the laws of the jurisdiction in which ICREATEFLOW is established,
+          These Terms are governed by the laws of the jurisdiction in which Icreateflow is established,
           without regard to conflict-of-laws principles. Any dispute arising out of or relating to
           these Terms or the Service will be resolved exclusively in the competent courts of that
           jurisdiction, unless otherwise required by applicable consumer-protection law.

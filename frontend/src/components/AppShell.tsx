@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Menu } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import Sidebar from "./Sidebar";
+import Logo from "./Logo";
 
 const PUBLIC_PATHS = ["/login", "/register", "/", "/terms", "/privacy"];
 
@@ -77,8 +78,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Menu className="h-5 w-5" />
           </button>
           <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-foreground text-[9px] font-bold text-background">IC</div>
-            <span className="text-sm font-bold tracking-tight text-foreground">ICREATEFLOW</span>
+            <Logo size={24} radius={6} />
+            <span className="text-sm font-bold tracking-tight text-foreground">Icreateflow</span>
           </Link>
           <div className="w-10" aria-hidden="true" />
         </header>

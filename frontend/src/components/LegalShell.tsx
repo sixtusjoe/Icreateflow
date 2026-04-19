@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { LogIn, UserPlus, Rocket } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
+import Logo from "@/components/Logo";
 
 type Props = {
   title: string;
@@ -23,8 +24,8 @@ export default function LegalShell({ title, subtitle, lastUpdated, children }: P
       <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-6 md:py-4">
           <Link href="/" className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-xs font-bold text-background">IC</div>
-            <span className="text-lg font-bold tracking-tight text-foreground md:text-xl">ICREATEFLOW</span>
+            <Logo size={32} radius={8} />
+            <span className="text-lg font-bold tracking-tight text-foreground md:text-xl">Icreateflow</span>
           </Link>
           <div className="flex items-center gap-2 md:gap-3">
             <ThemeToggle />
@@ -68,7 +69,7 @@ export default function LegalShell({ title, subtitle, lastUpdated, children }: P
       {/* Footer */}
       <footer className="border-t border-border py-8 md:py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-6 text-xs text-muted-foreground md:flex-row md:justify-between md:text-sm">
-          <p>&copy; {new Date().getFullYear()} ICREATEFLOW. Built for content creators.</p>
+          <p>&copy; {new Date().getFullYear()} Icreateflow. The promotion engine for artists, brands &amp; creators.</p>
           <nav className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
             <Link href="/terms" className="transition-colors hover:text-foreground">Terms &amp; Conditions</Link>
             <Link href="/privacy" className="transition-colors hover:text-foreground">Privacy Policy</Link>

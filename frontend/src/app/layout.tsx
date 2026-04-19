@@ -18,8 +18,8 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://icreateflow.com"),
-  title: "ICREATEFLOW — Content Scaling Platform",
-  description: "Scale your content across multiple platforms and accounts",
+  title: "Icreateflow — The promotion engine behind every drop",
+  description: "Promotion and distribution platform for artists, brands, movies and podcasts. Push your catalog across TikTok, YouTube, Instagram and Facebook on a schedule, toward a view target.",
 };
 
 export const viewport: Viewport = {
