@@ -426,6 +426,13 @@ export default function ArtistPage({
                 Stopped
               </span>
             )}
+            <button
+              onClick={() => handleDownloadStats()}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              title="Download all stats for this artist"
+            >
+              <Download className="h-3 w-3" /> Download stats
+            </button>
           </div>
         </div>
 
@@ -476,12 +483,6 @@ export default function ArtistPage({
                 className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 <Square className="h-3.5 w-3.5" /> Stop
-              </button>
-              <button
-                onClick={() => handleDownloadStats()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
-              >
-                <Download className="h-3.5 w-3.5" /> Download stats CSV
               </button>
               <button
                 onClick={() => setShowReset((s) => !s)}
