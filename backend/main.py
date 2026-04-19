@@ -1889,10 +1889,14 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 })
                 continue
 
-            # Local path like "output/<brand>/<date>/<acct>/post_N/video.mp4"
-            # Static mount serves `output/` at `/files/output/`.
-            rel = video_path.split("output/", 1)[-1] if "output/" in video_path else video_path
-            public_url = f"{public_base}/files/output/{rel}"
+            # Build a public URL the platforms can pull. In prod, Apache only
+            # proxies /api/* to the backend — the /files mount isn't reachable
+            # externally — so we use the existing /api/files/{path} route, which
+            # resolves relative paths like "output/<brand>/...".
+            from urllib.parse import quote
+            rel_path = video_path.lstrip("./")
+            encoded = "/".join(quote(seg, safe="") for seg in rel_path.split("/") if seg)
+            public_url = f"{public_base}/api/files/{encoded}"
 
             targets = [
                 ("tiktok",    _tt, account.get("tiktok_token")),
