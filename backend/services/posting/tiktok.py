@@ -81,9 +81,11 @@ async def upload_photo_slideshow(
         if not u.startswith("http"):
             raise PostingError("TikTok slideshow requires public URLs, not local paths")
 
+    # TikTok renders both `title` and `description` on slideshows — putting the
+    # caption in both duplicates it. Leave title empty; use description only.
     init_body = {
         "post_info": {
-            "title": (caption or "")[:90],  # photo title limit is stricter
+            "title": "",
             "description": (caption or "")[:4000],
             "privacy_level": privacy_level,
             "disable_comment": False,
