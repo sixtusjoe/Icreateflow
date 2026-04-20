@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1956,18 +1956,18 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 ("instagram", _ig, await _fresh_token("instagram")),
                 ("facebook",  _fb, await _fresh_token("facebook")),
             ]
-            # Build public URLs for the 9x16 slides (used for TikTok slideshow).
+            # Build public URLs for the 3:4 slides (used for TikTok slideshow).
+            # Route through /api/files-jpg/ — TikTok's photo API rejects PNG with
+            # file_format_check_failed, so we re-encode to JPEG on serve.
             slide_urls: list[str] = []
             slides_dir = out.get("slides_dir")
             if slides_dir and Path(slides_dir).exists():
                 from urllib.parse import quote as _q
                 for f in sorted(Path(slides_dir).iterdir()):
-                    # TikTok slideshow uses the 3:4 slides (the portrait-ish ones users see in the Preview).
-                    # Skip the 9:16 renders (those feed the video output).
                     if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" not in f.stem:
                         rel = str(f).lstrip("./")
                         enc = "/".join(_q(seg, safe="") for seg in rel.split("/") if seg)
-                        slide_urls.append(f"{public_base}/api/files/{enc}")
+                        slide_urls.append(f"{public_base}/api/files-jpg/{enc}")
 
             per_platform: dict = {}
             for name, adapter, token in targets:
@@ -2182,6 +2182,44 @@ async def download_all_outputs(post_id: int, user: dict = Depends(get_current_us
 # =============================================
 # FILE SERVING (public — files are behind auth-gated paths anyway)
 # =============================================
+
+@app.get("/api/files-jpg/{file_path:path}")
+async def serve_file_as_jpeg(file_path: str):
+    """Serve any image file re-encoded as JPEG.
+
+    Used by TikTok's photo slideshow API, which rejects PNG with
+    `file_format_check_failed`. We keep the source PNGs untouched and
+    convert on-demand so disk layout doesn't change.
+    """
+    from io import BytesIO
+    from PIL import Image
+
+    full_path = Path(file_path)
+    if not full_path.exists():
+        for base in [Path("uploads"), Path("output"), Path("music")]:
+            candidate = base / file_path
+            if candidate.exists():
+                full_path = candidate
+                break
+    if not full_path.exists():
+        raise HTTPException(404, "File not found")
+
+    try:
+        img = Image.open(full_path)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=92, optimize=True)
+        buf.seek(0)
+    except Exception as e:
+        raise HTTPException(500, f"Could not convert image: {e}")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
 
 @app.get("/api/files/{file_path:path}")
 async def serve_file(file_path: str):
