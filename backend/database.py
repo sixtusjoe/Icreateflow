@@ -170,6 +170,7 @@ class MusicTrack(Base):
     duration: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
     is_custom: Mapped[bool] = mapped_column(Boolean, server_default="false")
     is_public: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    platforms_allowed: Mapped[str] = mapped_column(Text, server_default="youtube,instagram,facebook")
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
 
@@ -183,6 +184,9 @@ class Post(Base):
     tiktok_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tiktok_sound_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     music_track_id: Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
+    youtube_music_track_id:   Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
+    instagram_music_track_id: Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
+    facebook_music_track_id:  Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
     scheduled_time: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(Text, server_default="draft")
@@ -233,6 +237,9 @@ class Output(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
     slides_dir: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     video_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    youtube_video_path:   Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instagram_video_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    facebook_video_path:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posting_status: Mapped[str] = mapped_column(Text, server_default="pending")
     tiktok_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
     youtube_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
@@ -720,12 +727,43 @@ async def _migrate_campaign_columns(conn) -> None:
     ))
 
 
+async def _migrate_per_platform_post_columns(conn) -> None:
+    """Per-platform music + video paths on brand posts (idempotent).
+
+    Touches only brand-side tables (posts, outputs, music_tracks). Does not
+    alter anything in the clipping pipeline (artists, artist_accounts, clips,
+    clip_posts) — those stay on their existing schema.
+    """
+    post_cols = [
+        ("youtube_music_track_id", "INTEGER"),
+        ("instagram_music_track_id", "INTEGER"),
+        ("facebook_music_track_id", "INTEGER"),
+    ]
+    for name, typ in post_cols:
+        await conn.execute(text(f"ALTER TABLE posts ADD COLUMN IF NOT EXISTS {name} {typ}"))
+
+    output_cols = [
+        ("youtube_video_path", "TEXT"),
+        ("instagram_video_path", "TEXT"),
+        ("facebook_video_path", "TEXT"),
+    ]
+    for name, typ in output_cols:
+        await conn.execute(text(f"ALTER TABLE outputs ADD COLUMN IF NOT EXISTS {name} {typ}"))
+
+    # music_tracks.platforms_allowed — CSV of platforms a track is cleared for.
+    await conn.execute(text(
+        "ALTER TABLE music_tracks ADD COLUMN IF NOT EXISTS "
+        "platforms_allowed TEXT NOT NULL DEFAULT 'youtube,instagram,facebook'"
+    ))
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_oauth_columns(conn)
         await _migrate_artist_oauth_columns(conn)
         await _migrate_campaign_columns(conn)
+        await _migrate_per_platform_post_columns(conn)
     db = await get_db()
     try:
         await _seed(db)
