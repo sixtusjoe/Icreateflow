@@ -1206,6 +1206,13 @@ async def get_music_tracks(db: Connection, user_id: int | None = None):
     return _rows(rows.scalars().all())
 
 
+async def update_music_track(db: Connection, track_id: int, **kwargs):
+    s = db.session
+    if kwargs:
+        await s.execute(update(MusicTrack).where(MusicTrack.id == track_id).values(**_prep(kwargs)))
+        await s.commit()
+
+
 async def delete_music_track(db: Connection, track_id: int):
     s = db.session
     track = (

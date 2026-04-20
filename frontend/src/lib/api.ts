@@ -177,7 +177,8 @@ export const postNow = (postId: number) =>
   api.post(`/api/posts/${postId}/post-now`).then((r) => r.data);
 
 // --- Music ---
-export const getMusicTracks = () => api.get("/api/music").then((r) => r.data);
+export const getMusicTracks = (platform?: string) =>
+  api.get("/api/music", { params: platform ? { platform } : {} }).then((r) => r.data);
 export const uploadMusicTrack = (name: string, genre: string, file: File) => {
   const form = new FormData();
   form.append("name", name);
@@ -185,6 +186,10 @@ export const uploadMusicTrack = (name: string, genre: string, file: File) => {
   form.append("file", file);
   return api.post("/api/music", form).then((r) => r.data);
 };
+export const updateMusicTrack = (
+  id: number,
+  data: { platforms_allowed?: string; name?: string; genre?: string },
+) => api.put(`/api/music/${id}`, data).then((r) => r.data);
 export const deleteMusicTrack = (id: number) =>
   api.delete(`/api/music/${id}`).then((r) => r.data);
 

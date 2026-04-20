@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { Music, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
-import { getMusicTracks, uploadMusicTrack, deleteMusicTrack } from "@/lib/api";
+import { getMusicTracks, uploadMusicTrack, updateMusicTrack, deleteMusicTrack } from "@/lib/api";
+
+const PLATFORMS: { key: string; label: string }[] = [
+  { key: "youtube", label: "YouTube" },
+  { key: "instagram", label: "Instagram" },
+  { key: "facebook", label: "Facebook" },
+];
 
 export default function MusicPage() {
   const [tracks, setTracks] = useState<any[]>([]);
@@ -32,6 +38,19 @@ export default function MusicPage() {
     if (!confirm("Delete this track?")) return;
     try { await deleteMusicTrack(id); load(); toast.success("Deleted"); }
     catch { toast.error("Failed"); }
+  };
+
+  const togglePlatform = async (track: any, platform: string) => {
+    const current = new Set(
+      (track.platforms_allowed || "").split(",").map((s: string) => s.trim()).filter(Boolean),
+    );
+    if (current.has(platform)) current.delete(platform);
+    else current.add(platform);
+    const csv = Array.from(current).join(",");
+    // Optimistic update
+    setTracks((prev) => prev.map((t) => (t.id === track.id ? { ...t, platforms_allowed: csv } : t)));
+    try { await updateMusicTrack(track.id, { platforms_allowed: csv }); }
+    catch { toast.error("Failed to update platforms"); load(); }
   };
 
   return (
@@ -89,29 +108,54 @@ export default function MusicPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {tracks.map((track: any) => (
-            <div key={track.id} className="flex flex-col gap-2 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground">
-                  <Music className="h-3.5 w-3.5 text-background" />
+          {tracks.map((track: any) => {
+            const allowed = new Set(
+              (track.platforms_allowed || "").split(",").map((s: string) => s.trim()).filter(Boolean),
+            );
+            return (
+              <div key={track.id} className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground">
+                    <Music className="h-3.5 w-3.5 text-background" />
+                  </div>
+                  <span className="text-sm font-medium">{track.name}</span>
+                  {track.genre && (
+                    <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{track.genre}</span>
+                  )}
+                  {track.is_custom && (
+                    <span className="rounded-md bg-foreground/10 px-2 py-0.5 text-[11px] font-medium">custom</span>
+                  )}
+                  {track.duration && (
+                    <span className="text-xs text-muted-foreground">{Math.round(track.duration)}s</span>
+                  )}
                 </div>
-                <span className="text-sm font-medium">{track.name}</span>
-                {track.genre && (
-                  <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{track.genre}</span>
-                )}
-                {track.is_custom && (
-                  <span className="rounded-md bg-foreground/10 px-2 py-0.5 text-[11px] font-medium">custom</span>
-                )}
-                {track.duration && (
-                  <span className="text-xs text-muted-foreground">{Math.round(track.duration)}s</span>
-                )}
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                  <div className="flex items-center gap-1 rounded-lg border border-border p-1">
+                    {PLATFORMS.map((p) => {
+                      const on = allowed.has(p.key);
+                      return (
+                        <button
+                          key={p.key}
+                          onClick={() => togglePlatform(track, p.key)}
+                          title={`${on ? "Cleared for" : "Not cleared for"} ${p.label}`}
+                          className={
+                            "rounded-md px-2 py-1 text-[11px] font-medium transition-colors " +
+                            (on ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")
+                          }
+                        >
+                          {p.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button onClick={() => handleDelete(track.id)}
+                    className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
-              <button onClick={() => handleDelete(track.id)}
-                className="inline-flex min-h-[36px] min-w-[36px] self-start items-center justify-center rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors sm:self-auto">
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

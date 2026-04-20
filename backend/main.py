@@ -2067,11 +2067,61 @@ async def get_schedule(brand_id: Optional[int] = None, user: dict = Depends(get_
 # =============================================
 
 @app.get("/api/music")
-async def list_music(user: dict = Depends(get_current_user)):
+async def list_music(
+    platform: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """List music tracks available to the user.
+
+    Pass `?platform=youtube|instagram|facebook` to filter to tracks flagged
+    as commercial-safe for that platform (via music_tracks.platforms_allowed).
+    """
     database = await db.get_db()
     try:
         tracks = await db.get_music_tracks(database, user_id=user["id"])
-        return rows_to_list(tracks)
+        rows = rows_to_list(tracks)
+        if platform:
+            p = platform.lower()
+            rows = [
+                t for t in rows
+                if p in {s.strip().lower() for s in (t.get("platforms_allowed") or "").split(",") if s.strip()}
+            ]
+        return rows
+    finally:
+        await database.close()
+
+
+class MusicTrackUpdate(BaseModel):
+    platforms_allowed: Optional[str] = None  # CSV, e.g. "youtube,instagram"
+    name: Optional[str] = None
+    genre: Optional[str] = None
+
+
+@app.put("/api/music/{track_id}")
+async def update_music(track_id: int, data: MusicTrackUpdate, user: dict = Depends(get_current_user)):
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM music_tracks WHERE id = ?", (track_id,))
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Track not found")
+        if user["role"] != "admin" and track["user_id"] != user["id"]:
+            raise HTTPException(403, "Access denied")
+        updates: dict = {}
+        if data.platforms_allowed is not None:
+            allowed = {"youtube", "instagram", "facebook", "tiktok"}
+            csv = ",".join(
+                sorted({s.strip().lower() for s in data.platforms_allowed.split(",") if s.strip().lower() in allowed})
+            )
+            updates["platforms_allowed"] = csv
+        if data.name is not None:
+            updates["name"] = data.name
+        if data.genre is not None:
+            updates["genre"] = data.genre
+        if updates:
+            await db.update_music_track(database, track_id, **updates)
+        cur2 = await database.execute("SELECT * FROM music_tracks WHERE id = ?", (track_id,))
+        return row_to_dict(await cur2.fetchone())
     finally:
         await database.close()
 
