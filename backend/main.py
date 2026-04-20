@@ -1962,7 +1962,9 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
             if slides_dir and Path(slides_dir).exists():
                 from urllib.parse import quote as _q
                 for f in sorted(Path(slides_dir).iterdir()):
-                    if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" in f.stem:
+                    # TikTok slideshow uses the 3:4 slides (the portrait-ish ones users see in the Preview).
+                    # Skip the 9:16 renders (those feed the video output).
+                    if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" not in f.stem:
                         rel = str(f).lstrip("./")
                         enc = "/".join(_q(seg, safe="") for seg in rel.split("/") if seg)
                         slide_urls.append(f"{public_base}/api/files/{enc}")
