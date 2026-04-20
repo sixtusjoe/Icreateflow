@@ -1908,11 +1908,53 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
             encoded = "/".join(quote(seg, safe="") for seg in rel_path.split("/") if seg)
             public_url = f"{public_base}/api/files/{encoded}"
 
+            # Refresh expiring tokens (YouTube/TikTok access tokens are short-lived).
+            async def _fresh_token(platform_name: str) -> Optional[str]:
+                token_local = account.get(f"{platform_name}_token")
+                if not token_local:
+                    return None
+                exp = account.get(f"{platform_name}_expires_at")
+                refresh = account.get(f"{platform_name}_refresh_token")
+                needs_refresh = False
+                if exp:
+                    try:
+                        exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+                        # refresh if <2 min of life left
+                        if exp_dt <= datetime.now(timezone.utc) + timedelta(minutes=2):
+                            needs_refresh = True
+                    except Exception:
+                        pass
+                if not needs_refresh or not refresh:
+                    return token_local
+                provider = "meta" if platform_name in ("instagram", "facebook") else platform_name
+                cid = cfg.get(f"oauth_{provider}_client_id", "")
+                csec = cfg.get(f"oauth_{provider}_client_secret", "")
+                if not cid or not csec:
+                    return token_local
+                try:
+                    refreshed = await oauth_svc.refresh_access_token(provider, refresh, cid, csec)
+                except Exception:
+                    return token_local
+                new_token = refreshed.get("access_token")
+                if not new_token:
+                    return token_local
+                updates_tok: dict = {f"{platform_name}_token": new_token}
+                if refreshed.get("refresh_token"):
+                    updates_tok[f"{platform_name}_refresh_token"] = refreshed["refresh_token"]
+                if refreshed.get("expires_in"):
+                    new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(refreshed["expires_in"]))
+                    updates_tok[f"{platform_name}_expires_at"] = new_exp.isoformat()
+                try:
+                    await db.update_account(database, account["id"], **updates_tok)
+                except Exception:
+                    pass
+                return new_token
+
             targets = [
-                ("tiktok",    _tt, account.get("tiktok_token")),
-                ("youtube",   _yt, account.get("youtube_token")),
-                ("instagram", _ig, account.get("instagram_token")),
-                ("facebook",  _fb, account.get("facebook_token")),
+                ("tiktok",    _tt, await _fresh_token("tiktok")),
+                ("youtube",   _yt, await _fresh_token("youtube")),
+                ("instagram", _ig, await _fresh_token("instagram")),
+                ("facebook",  _fb, await _fresh_token("facebook")),
             ]
             per_platform: dict = {}
             for name, adapter, token in targets:
