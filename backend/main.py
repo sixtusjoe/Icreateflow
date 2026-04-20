@@ -1956,15 +1956,31 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 ("instagram", _ig, await _fresh_token("instagram")),
                 ("facebook",  _fb, await _fresh_token("facebook")),
             ]
+            # Build public URLs for the 9x16 slides (used for TikTok slideshow).
+            slide_urls: list[str] = []
+            slides_dir = out.get("slides_dir")
+            if slides_dir and Path(slides_dir).exists():
+                from urllib.parse import quote as _q
+                for f in sorted(Path(slides_dir).iterdir()):
+                    if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" in f.stem:
+                        rel = str(f).lstrip("./")
+                        enc = "/".join(_q(seg, safe="") for seg in rel.split("/") if seg)
+                        slide_urls.append(f"{public_base}/api/files/{enc}")
+
             per_platform: dict = {}
             for name, adapter, token in targets:
                 if not token:
                     per_platform[name] = {"status": "skipped", "reason": "not connected"}
                     continue
                 try:
-                    # TikTok needs a public URL; YouTube/IG/FB also accept URL. Use public_url.
-                    extra = {"privacy_level": tt_privacy} if name == "tiktok" else {}
-                    res = await adapter.upload_video(token, public_url, caption, **extra)
+                    if name == "tiktok" and slide_urls:
+                        # Swipeable photo slideshow instead of the rendered video.
+                        res = await _tt.upload_photo_slideshow(
+                            token, slide_urls, caption, privacy_level=tt_privacy
+                        )
+                    else:
+                        extra = {"privacy_level": tt_privacy} if name == "tiktok" else {}
+                        res = await adapter.upload_video(token, public_url, caption, **extra)
                     per_platform[name] = {
                         "status": "posted",
                         "platform_post_id": res.get("platform_post_id"),
