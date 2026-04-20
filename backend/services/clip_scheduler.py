@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 import database as db
 from services import gdrive as gdrive_svc
+from services import oauth as oauth_svc
 from services.posting import PostingError
 from services.posting import tiktok as tiktok_adapter
 from services.posting import youtube as youtube_adapter
@@ -81,6 +82,54 @@ def _today_slots(artist: dict, now_utc: datetime) -> list[datetime]:
         (start_dt + timedelta(seconds=i * step)).astimezone(timezone.utc)
         for i in range(n)
     ]
+
+
+async def _fresh_variation_token(database, variation: dict, platform: str) -> str | None:
+    """Return an access token for (variation, platform), refreshing if near expiry.
+
+    Mirrors the Post Now refresh logic but writes back to artist_accounts.
+    Returns None when the platform isn't connected.
+    """
+    v = dict(variation)
+    token = v.get(f"{platform}_token")
+    if not token:
+        return None
+    exp = v.get(f"{platform}_expires_at")
+    refresh = v.get(f"{platform}_refresh_token")
+    needs = False
+    if exp:
+        try:
+            exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if exp_dt <= datetime.now(timezone.utc) + timedelta(minutes=2):
+                needs = True
+        except Exception:
+            pass
+    if not needs or not refresh:
+        return token
+    provider = "meta" if platform in ("instagram", "facebook") else platform
+    cfg = await db.get_site_config(database)
+    cid = cfg.get(f"oauth_{provider}_client_id", "")
+    csec = cfg.get(f"oauth_{provider}_client_secret", "")
+    if not cid or not csec:
+        return token
+    try:
+        refreshed = await oauth_svc.refresh_access_token(provider, refresh, cid, csec)
+    except Exception:
+        return token
+    new_token = refreshed.get("access_token")
+    if not new_token:
+        return token
+    updates: dict = {f"{platform}_token": new_token}
+    if refreshed.get("refresh_token"):
+        updates[f"{platform}_refresh_token"] = refreshed["refresh_token"]
+    if refreshed.get("expires_in"):
+        new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(refreshed["expires_in"]))
+        updates[f"{platform}_expires_at"] = new_exp.isoformat()
+    try:
+        await db.update_artist_account(database, v["id"], **updates)
+    except Exception:
+        pass
+    return new_token
 
 
 def _clip_video_source(clip: dict) -> str | None:
@@ -269,7 +318,7 @@ async def dispatch_due_once() -> None:
                     continue
 
                 platform = cp["platform"]
-                access_token = dict(variation).get(f"{platform}_token")
+                access_token = await _fresh_variation_token(database, variation, platform)
                 if not access_token:
                     err = f"{platform} not connected on variation #{variation['id']}"
                     await db.update_clip_post(database, cp["id"], status="failed", error=err)
@@ -291,6 +340,9 @@ async def dispatch_due_once() -> None:
                     kwargs["ig_user_id"] = dict(variation).get("instagram_user_id")
                 if platform == "facebook":
                     kwargs["page_id"] = dict(variation).get("facebook_user_id")
+                if platform == "tiktok":
+                    cfg_tt = await db.get_site_config(database)
+                    kwargs["privacy_level"] = (cfg_tt.get("tiktok_privacy_level") or "SELF_ONLY").upper()
                 result = await adapter.upload_video(
                     access_token=access_token,
                     video_source=source,
@@ -356,7 +408,7 @@ async def poll_views_once() -> None:
                 if not variation:
                     continue
                 platform = cp["platform"]
-                access_token = dict(variation).get(f"{platform}_token")
+                access_token = await _fresh_variation_token(database, variation, platform)
                 if not access_token:
                     continue
                 adapter = ADAPTERS[platform]
