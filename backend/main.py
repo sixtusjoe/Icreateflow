@@ -442,6 +442,10 @@ async def admin_stats(admin: dict = Depends(admin_required)):
         total_posts = await _count("SELECT COUNT(*) as count FROM posts")
         total_tracks = await _count("SELECT COUNT(*) as count FROM music_tracks")
         total_accounts = await _count("SELECT COUNT(*) as count FROM accounts")
+        total_artists = await _count("SELECT COUNT(*) as count FROM artists")
+        total_variations = await _count("SELECT COUNT(*) as count FROM artist_accounts")
+        total_clips = await _count("SELECT COUNT(*) as count FROM clips")
+        total_clip_posts = await _count("SELECT COUNT(*) as count FROM clip_posts WHERE status = 'posted'")
         scheduled_posts = await _count(
             "SELECT COUNT(*) as count FROM posts WHERE status IN ('scheduled','generating','posting')"
         )
@@ -477,6 +481,10 @@ async def admin_stats(admin: dict = Depends(admin_required)):
             "total_posts": total_posts,
             "total_tracks": total_tracks,
             "total_accounts": total_accounts,
+            "total_artists": total_artists,
+            "total_variations": total_variations,
+            "total_clips": total_clips,
+            "total_clip_posts": total_clip_posts,
             "scheduled_posts": scheduled_posts,
             "failed_posts": failed_posts,
             "suspended_users": suspended_users,
@@ -2485,44 +2493,71 @@ async def update_settings(data: SettingUpdate, user: dict = Depends(get_current_
 async def get_stats(user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
+        async def _count(sql: str, params: tuple = ()) -> int:
+            cur = await database.execute(sql, params) if params else await database.execute(sql)
+            row = await cur.fetchone()
+            return int(row["count"]) if row else 0
+
+        today = datetime.now().strftime("%Y-%m-%d")
         if user["role"] == "admin":
-            brands = await database.execute("SELECT COUNT(*) as count FROM brands")
-            posts_today = await database.execute(
-                "SELECT COUNT(*) as count FROM posts WHERE date = ?",
-                (datetime.now().strftime("%Y-%m-%d"),)
-            )
-            scheduled = await database.execute(
-                "SELECT COUNT(*) as count FROM posts WHERE status = 'scheduled'"
-            )
-            total_posts = await database.execute("SELECT COUNT(*) as count FROM posts")
-            accounts = await database.execute("SELECT COUNT(*) as count FROM accounts")
+            brands_n = await _count("SELECT COUNT(*) as count FROM brands")
+            posts_today_n = await _count("SELECT COUNT(*) as count FROM posts WHERE date = ?", (today,))
+            scheduled_n = await _count("SELECT COUNT(*) as count FROM posts WHERE status = 'scheduled'")
+            total_posts_n = await _count("SELECT COUNT(*) as count FROM posts")
+            accounts_n = await _count("SELECT COUNT(*) as count FROM accounts")
+            artists_n = await _count("SELECT COUNT(*) as count FROM artists")
+            variations_n = await _count("SELECT COUNT(*) as count FROM artist_accounts")
+            clips_n = await _count("SELECT COUNT(*) as count FROM clips")
+            clip_posts_n = await _count("SELECT COUNT(*) as count FROM clip_posts WHERE status = 'posted'")
+            clip_scheduled_n = await _count("SELECT COUNT(*) as count FROM clip_posts WHERE status = 'scheduled'")
         else:
-            brands = await database.execute(
-                "SELECT COUNT(*) as count FROM brands WHERE user_id = ?", (user["id"],)
-            )
-            posts_today = await database.execute(
+            uid = user["id"]
+            brands_n = await _count("SELECT COUNT(*) as count FROM brands WHERE user_id = ?", (uid,))
+            posts_today_n = await _count(
                 "SELECT COUNT(*) as count FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.date = ? AND b.user_id = ?",
-                (datetime.now().strftime("%Y-%m-%d"), user["id"])
+                (today, uid),
             )
-            scheduled = await database.execute(
+            scheduled_n = await _count(
                 "SELECT COUNT(*) as count FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.status = 'scheduled' AND b.user_id = ?",
-                (user["id"],)
+                (uid,),
             )
-            total_posts = await database.execute(
+            total_posts_n = await _count(
                 "SELECT COUNT(*) as count FROM posts p JOIN brands b ON p.brand_id = b.id WHERE b.user_id = ?",
-                (user["id"],)
+                (uid,),
             )
-            accounts = await database.execute(
+            accounts_n = await _count(
                 "SELECT COUNT(*) as count FROM accounts a JOIN brands b ON a.brand_id = b.id WHERE b.user_id = ?",
-                (user["id"],)
+                (uid,),
+            )
+            artists_n = await _count("SELECT COUNT(*) as count FROM artists WHERE user_id = ?", (uid,))
+            variations_n = await _count(
+                "SELECT COUNT(*) as count FROM artist_accounts aa JOIN artists a ON aa.artist_id = a.id WHERE a.user_id = ?",
+                (uid,),
+            )
+            clips_n = await _count(
+                "SELECT COUNT(*) as count FROM clips c JOIN artists a ON c.artist_id = a.id WHERE a.user_id = ?",
+                (uid,),
+            )
+            clip_posts_n = await _count(
+                "SELECT COUNT(*) as count FROM clip_posts cp JOIN artists a ON cp.artist_id = a.id WHERE a.user_id = ? AND cp.status = 'posted'",
+                (uid,),
+            )
+            clip_scheduled_n = await _count(
+                "SELECT COUNT(*) as count FROM clip_posts cp JOIN artists a ON cp.artist_id = a.id WHERE a.user_id = ? AND cp.status = 'scheduled'",
+                (uid,),
             )
 
         return {
-            "brands": (await brands.fetchone())["count"],
-            "accounts": (await accounts.fetchone())["count"],
-            "posts_today": (await posts_today.fetchone())["count"],
-            "scheduled": (await scheduled.fetchone())["count"],
-            "total_posts": (await total_posts.fetchone())["count"],
+            "brands": brands_n,
+            "accounts": accounts_n,
+            "posts_today": posts_today_n,
+            "scheduled": scheduled_n,
+            "total_posts": total_posts_n,
+            "artists": artists_n,
+            "variations": variations_n,
+            "clips": clips_n,
+            "clip_posts": clip_posts_n,
+            "clip_scheduled": clip_scheduled_n,
         }
     finally:
         await database.close()

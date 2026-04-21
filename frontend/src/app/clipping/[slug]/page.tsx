@@ -23,6 +23,8 @@ import {
   AlertCircle,
   RotateCcw,
   Target,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import OAuthTiles from "@/components/OAuthTiles";
@@ -119,6 +121,8 @@ export default function ArtistPage({
   });
   const [gdriveUrl, setGdriveUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [variationsOpen, setVariationsOpen] = useState(true);
+  const [clipsOpen, setClipsOpen] = useState(true);
 
   const [editingVarId, setEditingVarId] = useState<number | null>(null);
   const [editVar, setEditVar] = useState({
@@ -659,19 +663,26 @@ export default function ArtistPage({
 
       {/* Variations */}
       <section className="rounded-2xl bg-card p-4 md:p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Users className="h-4 w-4" /> Variations ({variations.length})
-          </h2>
+        <div className={variationsOpen ? "mb-4 flex items-center justify-between" : "flex items-center justify-between"}>
           <button
-            onClick={() => setShowNewVariation(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            onClick={() => setVariationsOpen((v) => !v)}
+            className="flex items-center gap-2 text-base font-semibold hover:opacity-80"
+            aria-expanded={variationsOpen}
           >
-            <Plus className="h-3 w-3" /> Add
+            {variationsOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            <Users className="h-4 w-4" /> Variations ({variations.length})
           </button>
+          {variationsOpen && (
+            <button
+              onClick={() => setShowNewVariation(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              <Plus className="h-3 w-3" /> Add
+            </button>
+          )}
         </div>
 
-        {showNewVariation && (
+        {variationsOpen && showNewVariation && (
           <div className="mb-4 rounded-xl border border-border p-4 space-y-3">
             <div>
               <label className="mb-1 block text-xs font-medium">Name</label>
@@ -712,7 +723,7 @@ export default function ArtistPage({
           </div>
         )}
 
-        {variations.length === 0 ? (
+        {variationsOpen && (variations.length === 0 ? (
           <p className="text-sm text-muted-foreground">No variations yet.</p>
         ) : (
           <div className="space-y-3">
@@ -819,27 +830,35 @@ export default function ArtistPage({
               )
             ))}
           </div>
-        )}
+        ))}
       </section>
 
       {/* Clips */}
       <section className="rounded-2xl bg-card p-4 md:p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
+        <div className={clipsOpen ? "mb-4 flex items-center justify-between" : "flex items-center justify-between"}>
+          <button
+            onClick={() => setClipsOpen((v) => !v)}
+            className="flex items-center gap-2 text-base font-semibold hover:opacity-80"
+            aria-expanded={clipsOpen}
+          >
+            {clipsOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             <Film className="h-4 w-4" /> Video directory ({clips.length})
-          </h2>
-          <label className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted cursor-pointer">
-            <Upload className="h-3 w-3" /> Upload MP4
-            <input
-              type="file"
-              multiple
-              accept="video/mp4,video/*"
-              onChange={(e) => handleUpload(e.target.files)}
-              className="hidden"
-            />
-          </label>
+          </button>
+          {clipsOpen && (
+            <label className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted cursor-pointer">
+              <Upload className="h-3 w-3" /> Upload MP4
+              <input
+                type="file"
+                multiple
+                accept="video/mp4,video/*"
+                onChange={(e) => handleUpload(e.target.files)}
+                className="hidden"
+              />
+            </label>
+          )}
         </div>
 
+        {clipsOpen && (<>
         <div className="mb-4 flex flex-col gap-2 sm:flex-row">
           <input
             value={gdriveUrl}
@@ -908,6 +927,7 @@ export default function ArtistPage({
             ))}
           </div>
         )}
+        </>)}
       </section>
 
       {/* Settings */}

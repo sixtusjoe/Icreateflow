@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Users, FileText, Music, Layers, Save, Activity, HardDrive,
   Calendar, Key, Trash2, AlertTriangle, CheckCircle2, XCircle, Link2, Bug,
+  Mic2, Scissors, Video,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -139,13 +140,22 @@ function OverviewTab({ stats }: { stats: any }) {
         </div>
       </Section>
 
-      <Section title="Totals">
+      <Section title="Totals · Brands">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
           <Card icon={Users} label="Users" value={stats.total_users} />
           <Card icon={Layers} label="Brands" value={stats.total_brands} />
           <Card icon={FileText} label="Posts" value={stats.total_posts} />
           <Card icon={Music} label="Music" value={stats.total_tracks} />
           <Card icon={Link2} label="Accounts" value={stats.total_accounts} />
+        </div>
+      </Section>
+
+      <Section title="Totals · Clipping">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+          <Card icon={Mic2} label="Artists" value={stats.total_artists ?? 0} />
+          <Card icon={Link2} label="Variations" value={stats.total_variations ?? 0} />
+          <Card icon={Video} label="Clips" value={stats.total_clips ?? 0} />
+          <Card icon={Scissors} label="Clip posts" value={stats.total_clip_posts ?? 0} />
         </div>
       </Section>
 
