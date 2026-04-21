@@ -38,6 +38,10 @@ TOKEN_URLS = {
 }
 
 SCOPES = {
+    # Only scopes the TikTok app is actually approved for. `username` (the
+    # @handle) requires `user.info.profile` which isn't enabled on our app,
+    # so we fall back to display_name in fetch_profile_handles and let the
+    # user override via the Edit button if they want the real @handle.
     "tiktok": "user.info.basic,video.publish,video.upload",
     "youtube": "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
     "meta": (
@@ -202,59 +206,92 @@ async def exchange_code(
         }
 
 
+class ProfileFetchError(Exception):
+    """Raised by fetch_profile_handles so callers can surface platform errors.
+
+    fetch_profile_handles itself still swallows this and returns {} to avoid
+    breaking OAuth callbacks; explicit callers (e.g. the refresh-profile
+    endpoint) can re-raise via fetch_profile_handles_strict to show the
+    platform's actual error message to the user.
+    """
+
+
+async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[str, str]:
+    async with httpx.AsyncClient(timeout=15) as client:
+        if platform == "tiktok":
+            # `username` needs user.info.profile; `display_name` only needs
+            # user.info.basic. Try the combined call first, fall back to
+            # display_name-only if the app isn't granted profile scope.
+            async def _tt(fields: str):
+                return await client.get(
+                    "https://open.tiktokapis.com/v2/user/info/",
+                    params={"fields": fields},
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+            r = await _tt("display_name,username")
+            if r.status_code == 401 and "scope_not_authorized" in r.text:
+                r = await _tt("display_name")
+            if r.status_code >= 400:
+                raise ProfileFetchError(f"tiktok {r.status_code}: {r.text[:200]}")
+            data = (r.json() or {}).get("data", {}).get("user", {}) or {}
+            name = data.get("username") or data.get("display_name")
+            return {"tiktok_handle": name} if name else {}
+
+        if platform == "youtube":
+            r = await client.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "snippet", "mine": "true"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if r.status_code >= 400:
+                raise ProfileFetchError(f"youtube {r.status_code}: {r.text[:200]}")
+            items = (r.json() or {}).get("items", []) or []
+            if not items:
+                return {}
+            snip = items[0].get("snippet", {}) or {}
+            name = snip.get("customUrl") or snip.get("title")
+            return {"youtube_handle": name} if name else {}
+
+        if platform == "meta":
+            r = await client.get(
+                "https://graph.facebook.com/v19.0/me/accounts",
+                params={
+                    "fields": "name,instagram_business_account{username}",
+                    "access_token": access_token,
+                },
+            )
+            if r.status_code >= 400:
+                raise ProfileFetchError(f"meta {r.status_code}: {r.text[:200]}")
+            pages = (r.json() or {}).get("data", []) or []
+            if not pages:
+                return {}
+            page = pages[0]
+            out: dict[str, str] = {}
+            if page.get("name"):
+                out["facebook_handle"] = page["name"]
+            ig = (page.get("instagram_business_account") or {}).get("username")
+            if ig:
+                out["instagram_handle"] = ig
+            return out
+        return {}
+
+
 async def fetch_profile_handles(platform: str, access_token: str) -> dict[str, str]:
     """Return {'{platform}_handle': name} discovered from the connected account.
 
-    Best-effort — returns {} on any failure so OAuth success isn't blocked.
-    For `meta`, may return both `facebook_handle` and `instagram_handle`.
+    Best-effort: swallows all errors so an OAuth callback never fails because
+    of profile-lookup issues. Use `fetch_profile_handles_strict` if you want
+    the platform error surfaced (e.g. the refresh-profile endpoint).
     """
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            if platform == "tiktok":
-                r = await client.get(
-                    "https://open.tiktokapis.com/v2/user/info/",
-                    params={"fields": "display_name,username"},
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                data = (r.json() or {}).get("data", {}).get("user", {}) or {}
-                name = data.get("username") or data.get("display_name")
-                return {"tiktok_handle": name} if name else {}
-
-            if platform == "youtube":
-                r = await client.get(
-                    "https://www.googleapis.com/youtube/v3/channels",
-                    params={"part": "snippet", "mine": "true"},
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                items = (r.json() or {}).get("items", []) or []
-                if not items:
-                    return {}
-                snip = items[0].get("snippet", {}) or {}
-                name = snip.get("customUrl") or snip.get("title")
-                return {"youtube_handle": name} if name else {}
-
-            if platform == "meta":
-                r = await client.get(
-                    "https://graph.facebook.com/v19.0/me/accounts",
-                    params={
-                        "fields": "name,instagram_business_account{username}",
-                        "access_token": access_token,
-                    },
-                )
-                pages = (r.json() or {}).get("data", []) or []
-                if not pages:
-                    return {}
-                page = pages[0]
-                out: dict[str, str] = {}
-                if page.get("name"):
-                    out["facebook_handle"] = page["name"]
-                ig = (page.get("instagram_business_account") or {}).get("username")
-                if ig:
-                    out["instagram_handle"] = ig
-                return out
+        return await _fetch_profile_handles_impl(platform, access_token)
     except Exception:
         return {}
-    return {}
+
+
+async def fetch_profile_handles_strict(platform: str, access_token: str) -> dict[str, str]:
+    """Raise ProfileFetchError on platform failure instead of swallowing."""
+    return await _fetch_profile_handles_impl(platform, access_token)
 
 
 async def refresh_access_token(

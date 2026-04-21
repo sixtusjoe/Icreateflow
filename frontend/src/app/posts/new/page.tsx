@@ -13,8 +13,12 @@ import {
   uploadVariationImage, generateVariationImage, approveVariation,
   updateVariation, generatePost, getGenerationStatus,
   schedulePost, postNow, getMusicTracks, getDownloadUrl, downloadFile, fileUrl,
-  rerunOcr, getOutputSlides, regenerateSlide, regenerateVideo,
+  rerunOcr, getOutputSlides, regenerateSlide, regenerateVideo, updatePostMusic,
 } from "@/lib/api";
+
+type Plat = "youtube" | "instagram" | "facebook";
+const PLATFORMS: Plat[] = ["youtube", "instagram", "facebook"];
+const PLAT_LABEL: Record<Plat, string> = { youtube: "YouTube", instagram: "Instagram", facebook: "Facebook" };
 
 type Step = "import" | "edit" | "variations" | "generate";
 
@@ -47,6 +51,10 @@ function NewPostPageInner() {
   const [genProgress, setGenProgress] = useState(0);
   const [scheduleTime, setScheduleTime] = useState("");
   const [selectedMusic, setSelectedMusic] = useState<number | null>(null);
+  const [platMusic, setPlatMusic] = useState<Record<Plat, number | null>>({ youtube: null, instagram: null, facebook: null });
+  const [platMusicLib, setPlatMusicLib] = useState<Record<Plat, any[]>>({ youtube: [], instagram: [], facebook: [] });
+  const [previewPlatform, setPreviewPlatform] = useState<Plat>("youtube");
+  const [regeneratingPlatform, setRegeneratingPlatform] = useState<string | null>(null);
   const [editLoaded, setEditLoaded] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<number>(0);
@@ -72,6 +80,9 @@ function NewPostPageInner() {
   useEffect(() => {
     getBrands().then(setBrands).catch(() => {});
     getMusicTracks().then(setMusicTracks).catch(() => {});
+    PLATFORMS.forEach((p) => {
+      getMusicTracks(p).then((ts) => setPlatMusicLib((prev) => ({ ...prev, [p]: ts }))).catch(() => {});
+    });
   }, []);
 
   useEffect(() => {
@@ -84,6 +95,11 @@ function NewPostPageInner() {
           setPostNumber(data.post_number || 1);
           if (data.scheduled_time) setScheduleTime(data.scheduled_time);
           if (data.music_track_id) setSelectedMusic(data.music_track_id);
+          setPlatMusic({
+            youtube: data.youtube_music_track_id || null,
+            instagram: data.instagram_music_track_id || null,
+            facebook: data.facebook_music_track_id || null,
+          });
           setStep("edit");
           toast.success("Post loaded");
         })
@@ -197,8 +213,28 @@ function NewPostPageInner() {
     if (!post) return;
     try {
       await schedulePost(post.id, { scheduled_time: scheduleTime, music_track_id: selectedMusic || undefined });
+      await updatePostMusic(post.id, {
+        youtube_music_track_id: platMusic.youtube ?? null,
+        instagram_music_track_id: platMusic.instagram ?? null,
+        facebook_music_track_id: platMusic.facebook ?? null,
+      });
       toast.success("Post scheduled!");
     } catch { toast.error("Failed to schedule"); }
+  };
+
+  const handleRegeneratePlatformVideo = async (accountId: number, platform: Plat) => {
+    if (!post) return;
+    const key = `${accountId}:${platform}`;
+    setRegeneratingPlatform(key);
+    try {
+      await regenerateVideo(post.id, accountId, platform);
+      await loadOutputSlides();
+      await reloadPost();
+      setCacheKey(Date.now());
+      toast.success(`${PLAT_LABEL[platform]} video regenerated`);
+    } catch (e: any) {
+      toast.error("Regeneration failed: " + (e.response?.data?.detail || e.message));
+    } finally { setRegeneratingPlatform(null); }
   };
 
   const handleRerunOcr = async () => {
@@ -692,15 +728,35 @@ function NewPostPageInner() {
                   </p>
                 )}
               </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Background Music (for video version)</label>
-                <select defaultValue="0" onChange={(e) => setSelectedMusic(e.target.value && e.target.value !== "0" ? Number(e.target.value) : null)}
-                  className={inputClass}>
-                  <option value="0">No music</option>
-                  {musicTracks.map((t: any) => (
-                    <option key={t.id} value={String(t.id)}>{t.name} {t.genre && `(${t.genre})`}</option>
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-sm font-medium">Background Music — per platform</label>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  TikTok posts as a swipeable photo slideshow (uses TikTok's own sound library). YouTube / Instagram / Facebook get rendered videos with the music you select here.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {PLATFORMS.map((p) => (
+                    <div key={p}>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">{PLAT_LABEL[p]}</label>
+                      <select
+                        value={platMusic[p] ? String(platMusic[p]) : "0"}
+                        onChange={(e) =>
+                          setPlatMusic((prev) => ({
+                            ...prev,
+                            [p]: e.target.value && e.target.value !== "0" ? Number(e.target.value) : null,
+                          }))
+                        }
+                        className={inputClass}
+                      >
+                        <option value="0">No music</option>
+                        {platMusicLib[p].map((t: any) => (
+                          <option key={t.id} value={String(t.id)}>
+                            {t.name} {t.genre && `(${t.genre})`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   ))}
-                </select>
+                </div>
               </div>
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-3">
@@ -800,30 +856,47 @@ function NewPostPageInner() {
                           </div>
                         )}
 
-                        {/* Video — for YouTube, IG, Facebook */}
+                        {/* Per-platform videos — YouTube / Instagram / Facebook */}
                         <div>
                           <div className="mb-2 flex items-center justify-between">
                             <p className="text-xs font-medium text-muted-foreground">
-                              {isMaster ? "Video (9:16) — for YouTube / IG / Facebook" : "YouTube / Instagram / Facebook (9:16)"}
+                              Videos (9:16) — per platform
                             </p>
-                            <button onClick={() => handleRegenerateVideo(out.account_id)}
-                              disabled={regeneratingVideo === out.account_id}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50">
-                              {regeneratingVideo === out.account_id
-                                ? <><Loader2 className="h-3 w-3 animate-spin" /> Regenerating...</>
-                                : <><RotateCcw className="h-3 w-3" /> Regenerate Video</>}
-                            </button>
                           </div>
-                          {out.video_path ? (
-                            <video
-                              controls
-                              className="w-full max-w-xs rounded-lg border border-border"
-                              style={{ aspectRatio: "9/16" }}
-                              src={`${fileUrl(out.video_path)}?v=${cacheKey || 0}`}
-                            >
-                              Your browser does not support the video tag.
-                            </video>
-                          ) : out.slides_9x16 && out.slides_9x16.length > 0 ? (
+                          <div className="mb-3 flex gap-1 rounded-lg border border-border p-1 w-fit">
+                            {PLATFORMS.map((p) => (
+                              <button key={p} onClick={() => setPreviewPlatform(p)}
+                                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                  previewPlatform === p ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"
+                                }`}>
+                                {PLAT_LABEL[p]}
+                              </button>
+                            ))}
+                          </div>
+                          {(() => {
+                            const pPath = out[`${previewPlatform}_video_path`] || out.video_path;
+                            const busyKey = `${out.account_id}:${previewPlatform}`;
+                            return (
+                              <div className="space-y-2">
+                                <div className="flex justify-end">
+                                  <button onClick={() => handleRegeneratePlatformVideo(out.account_id, previewPlatform)}
+                                    disabled={regeneratingPlatform === busyKey}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50">
+                                    {regeneratingPlatform === busyKey
+                                      ? <><Loader2 className="h-3 w-3 animate-spin" /> Regenerating...</>
+                                      : <><RotateCcw className="h-3 w-3" /> Regenerate {PLAT_LABEL[previewPlatform]}</>}
+                                  </button>
+                                </div>
+                                {pPath ? (
+                                  <video
+                                    controls
+                                    className="w-full max-w-xs rounded-lg border border-border"
+                                    style={{ aspectRatio: "9/16" }}
+                                    src={`${fileUrl(pPath)}?v=${cacheKey || 0}`}
+                                  >
+                                    Your browser does not support the video tag.
+                                  </video>
+                                ) : out.slides_9x16 && out.slides_9x16.length > 0 ? (
                             <div className="grid grid-cols-2 gap-2 md:gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
                               {out.slides_9x16.map((filePath: string, si: number) => (
                                 <div key={si} className="group relative">
@@ -840,6 +913,9 @@ function NewPostPageInner() {
                           ) : (
                             <p className="text-xs text-muted-foreground">No video generated yet. Click Generate All first.</p>
                           )}
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         {/* Caption */}

@@ -35,15 +35,23 @@ async def generate_post(post_id: int, database) -> dict:
     if not slides:
         raise ValueError(f"Post {post_id} has no slides")
 
-    # Get music track path if set
-    music_path = None
-    if post["music_track_id"]:
-        cursor = await database.execute(
-            "SELECT file_path FROM music_tracks WHERE id = ?", (post["music_track_id"],)
+    # Resolve legacy + per-platform music paths. Per-platform falls back to legacy.
+    async def _music_path(track_id):
+        if not track_id:
+            return None
+        cur = await database.execute(
+            "SELECT file_path FROM music_tracks WHERE id = ?", (track_id,)
         )
-        track = await cursor.fetchone()
-        if track:
-            music_path = track["file_path"]
+        t = await cur.fetchone()
+        return t["file_path"] if t else None
+
+    music_path = await _music_path(post.get("music_track_id"))
+    platform_music = {}
+    for plat in ("youtube", "instagram", "facebook"):
+        platform_music[plat] = (
+            await _music_path(post.get(f"{plat}_music_track_id"))
+            or music_path
+        )
 
     bg_color = "#000000"  # Always black for 9:16 canvas bars
     results = {}
@@ -122,8 +130,11 @@ async def generate_post(post_id: int, database) -> dict:
                     img_9x16.save(str(out_9x16), "PNG")
                     slide_9x16_paths.append(str(out_9x16))
 
-            # Build video from 9:16 slides
+            # Build video from 9:16 slides. Always produce legacy video.mp4 for
+            # backward compatibility, plus per-platform renders (YT/IG/FB) with
+            # platform-appropriate caps and per-platform music selection.
             video_path = None
+            platform_paths = {"youtube": None, "instagram": None, "facebook": None}
             if len(slide_9x16_paths) >= 2:
                 video_path = str(out_dir / "video.mp4")
                 try:
@@ -135,6 +146,19 @@ async def generate_post(post_id: int, database) -> dict:
                 except Exception as e:
                     video_path = None
                     print(f"Video generation failed for {account_name}: {e}")
+
+                for plat in ("youtube", "instagram", "facebook"):
+                    out_p = str(out_dir / f"video_{plat}.mp4")
+                    try:
+                        video.build_platform_video(
+                            slide_paths=slide_9x16_paths,
+                            output_path=out_p,
+                            platform=plat,
+                            music_path=platform_music.get(plat),
+                        )
+                        platform_paths[plat] = out_p
+                    except Exception as e:
+                        print(f"{plat} video failed for {account_name}: {e}")
 
             # Save caption
             if post["caption"]:
@@ -151,6 +175,9 @@ async def generate_post(post_id: int, database) -> dict:
                     database, existing_row["id"],
                     slides_dir=str(slides_dir),
                     video_path=video_path,
+                    youtube_video_path=platform_paths["youtube"],
+                    instagram_video_path=platform_paths["instagram"],
+                    facebook_video_path=platform_paths["facebook"],
                     posting_status="ready"
                 )
             else:
@@ -158,6 +185,9 @@ async def generate_post(post_id: int, database) -> dict:
                     database, post_id, account_id,
                     slides_dir=str(slides_dir),
                     video_path=video_path,
+                    youtube_video_path=platform_paths["youtube"],
+                    instagram_video_path=platform_paths["instagram"],
+                    facebook_video_path=platform_paths["facebook"],
                     posting_status="ready"
                 )
 

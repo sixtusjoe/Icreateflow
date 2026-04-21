@@ -15,6 +15,8 @@ import {
   getOAuthApps, updateOAuthApp,
   getAdminArtists, deleteAdminArtist,
   getAdminErrorLogs, clearAdminErrorLogs,
+  getCacheStats, clearCache,
+  getBrandCacheStats, clearBrandCache,
 } from "@/lib/api";
 
 type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding";
@@ -614,20 +616,276 @@ function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: an
  * BRANDING
  * ============================================================ */
 function BrandingTab({ siteConfig, setSiteConfig }: any) {
+  const diversifyOn = !["0", "false", "False", ""].includes(siteConfig.clip_diversification_enabled ?? "1");
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl bg-card p-4 md:p-6">
+        <h2 className="mb-5 text-base font-semibold">Site Branding</h2>
+        <label className="mb-1.5 block text-sm font-medium">Site Name</label>
+        <div className="flex gap-2">
+          <input value={siteConfig.site_name || ""}
+            onChange={(e) => setSiteConfig((s: any) => ({ ...s, site_name: e.target.value }))}
+            className="min-h-[44px] flex-1 rounded-lg border border-border bg-background px-4 text-base sm:text-sm" />
+          <button
+            onClick={async () => { try { await updateSiteConfig("site_name", siteConfig.site_name || ""); toast.success("Saved"); } catch { toast.error("Failed"); } }}
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-foreground px-4 text-background">
+            <Save className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-card p-4 md:p-6">
+        <h2 className="mb-2 text-base font-semibold">Clipping — Per-variation video diversification</h2>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Re-encodes each clip with imperceptible video/audio changes per (clip, variation, platform) so the same clip posted across variations looks different to platform reuse detection. Turn off to post raw clips.
+        </p>
+        <label className="inline-flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={diversifyOn}
+            onChange={async (e) => {
+              const v = e.target.checked ? "1" : "0";
+              setSiteConfig((s: any) => ({ ...s, clip_diversification_enabled: v }));
+              try { await updateSiteConfig("clip_diversification_enabled", v); toast.success(e.target.checked ? "Diversification enabled" : "Diversification disabled"); }
+              catch { toast.error("Failed to save"); }
+            }}
+            className="h-4 w-4"
+          />
+          <span className="text-sm font-medium">{diversifyOn ? "Enabled" : "Disabled"}</span>
+        </label>
+      </div>
+
+      <CaptionVariantToggle siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
+      <CacheCleanupCard />
+      <BrandCacheCleanupCard />
+    </div>
+  );
+}
+
+function BrandCacheCleanupCard() {
+  const [stats, setStats] = useState<any>(null);
+  const [target, setTarget] = useState<"output" | "uploads" | "all">("output");
+  const [date, setDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [busy, setBusy] = useState(false);
+
+  const load = () => { getBrandCacheStats().then(setStats).catch(() => setStats(null)); };
+  useEffect(() => { load(); }, []);
+
+  const fmtBytes = (n: number) => {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0; let v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+  };
+  const fmtDate = (s?: string) => s ? new Date(s).toLocaleString() : "—";
+
+  const run = async (wipeAll: boolean) => {
+    const labels: Record<string, string> = {
+      output: "generated post renders (output/)",
+      uploads: "uploaded source slides (uploads/) — DESTRUCTIVE, breaks regenerate",
+      all: "both output/ and uploads/",
+    };
+    const cutoff = wipeAll ? undefined : date;
+    const scope = wipeAll
+      ? `ALL ${labels[target]}`
+      : `${labels[target]} older than ${cutoff}`;
+    const confirmMsg = target === "uploads" || (target === "all" && wipeAll)
+      ? `⚠ ${scope}\n\nThis deletes user-uploaded slide images. Posts you haven't regenerated will be unrecoverable.\n\nProceed?`
+      : `Delete ${scope}? This cannot be undone.`;
+    if (!confirm(confirmMsg)) return;
+    setBusy(true);
+    try {
+      const r = await clearBrandCache(target, cutoff);
+      toast.success(
+        `Output: ${r.output_dirs_deleted} dirs (${fmtBytes(r.output_bytes_freed)}) · Uploads: ${r.uploads_files_deleted} files (${fmtBytes(r.uploads_bytes_freed)})`
+      );
+      load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to clear brand cache");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="rounded-2xl bg-card p-4 md:p-6">
-      <h2 className="mb-5 text-base font-semibold">Site Branding</h2>
-      <label className="mb-1.5 block text-sm font-medium">Site Name</label>
-      <div className="flex gap-2">
-        <input value={siteConfig.site_name || ""}
-          onChange={(e) => setSiteConfig((s: any) => ({ ...s, site_name: e.target.value }))}
-          className="min-h-[44px] flex-1 rounded-lg border border-border bg-background px-4 text-base sm:text-sm" />
-        <button
-          onClick={async () => { try { await updateSiteConfig("site_name", siteConfig.site_name || ""); toast.success("Saved"); } catch { toast.error("Failed"); } }}
-          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-foreground px-4 text-background">
-          <Save className="h-4 w-4" />
-        </button>
+      <h2 className="mb-2 text-base font-semibold">Brands — Post artifacts cleanup</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        <strong>output/</strong> holds generated slides + videos per (brand, date, account, post). Safe to wipe — regenerating a post recreates everything. <strong>uploads/</strong> holds the original user-uploaded slide images — deleting them means the post can no longer be regenerated. Both trees are already auto-cleaned when the individual post or brand is deleted; this card lets you prune old entries in bulk.
+      </p>
+
+      <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="rounded-lg border border-border p-3">
+          <div className="text-xs text-muted-foreground">Generated renders (output/)</div>
+          <div className="mt-1 text-sm font-semibold">
+            {stats ? `${stats.output.count} files · ${fmtBytes(stats.output.bytes)}` : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            oldest date segment: {stats?.output.oldest_date_segment || "—"}
+          </div>
+        </div>
+        <div className="rounded-lg border border-border p-3">
+          <div className="text-xs text-muted-foreground">Uploaded sources (uploads/)</div>
+          <div className="mt-1 text-sm font-semibold">
+            {stats ? `${stats.uploads.count} files · ${fmtBytes(stats.uploads.bytes)}` : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">oldest file: {stats ? fmtDate(stats.uploads.oldest_mtime) : "…"}</div>
+        </div>
       </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="flex-1">
+          <label className="mb-1 block text-xs font-medium">Target</label>
+          <select value={target} onChange={(e) => setTarget(e.target.value as any)}
+            className="w-full min-h-[44px] rounded-lg border border-border bg-background px-3 text-base sm:text-sm">
+            <option value="output">Generated renders only (safe)</option>
+            <option value="uploads">Uploaded sources only (destructive)</option>
+            <option value="all">Both (destructive)</option>
+          </select>
+        </div>
+        <div className="w-full sm:w-48">
+          <label className="mb-1 block text-xs font-medium">Older than (date)</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            className="w-full min-h-[44px] rounded-lg border border-border bg-background px-3 text-base sm:text-sm" />
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            output/: matches YYYY-MM-DD path segment · uploads/: file mtime
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={() => run(false)}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-border px-4 text-xs font-medium hover:bg-muted disabled:opacity-50">
+            {busy ? "…" : "Clear older"}
+          </button>
+          <button disabled={busy} onClick={() => run(true)}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-destructive px-4 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
+            {busy ? "…" : "Wipe all"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CacheCleanupCard() {
+  const [stats, setStats] = useState<any>(null);
+  const [target, setTarget] = useState<"video_renders" | "caption_variants" | "all">("all");
+  const [days, setDays] = useState<string>("30");
+  const [busy, setBusy] = useState(false);
+
+  const load = () => { getCacheStats().then(setStats).catch(() => setStats(null)); };
+  useEffect(() => { load(); }, []);
+
+  const fmtBytes = (n: number) => {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0; let v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+  };
+  const fmtDate = (s?: string) => s ? new Date(s).toLocaleString() : "—";
+
+  const run = async (wipeAll: boolean) => {
+    const labels: Record<string, string> = {
+      video_renders: "diversified video renders",
+      caption_variants: "caption variants",
+      all: "all caches",
+    };
+    const olderDays = wipeAll ? undefined : Math.max(0, parseInt(days || "0", 10));
+    const scope = wipeAll ? `ALL ${labels[target]}` : `${labels[target]} older than ${olderDays} days`;
+    if (!confirm(`Delete ${scope}? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      const r = await clearCache(target, wipeAll ? undefined : olderDays);
+      toast.success(`Deleted ${r.video_renders_deleted} files · ${r.caption_variants_deleted} rows`);
+      load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to clear cache");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl bg-card p-4 md:p-6">
+      <h2 className="mb-2 text-base font-semibold">Clipping — Cache cleanup</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        The diversified video renders and paraphrased captions are cached so re-posts are deterministic. They aren&apos;t auto-expired — delete old entries here to reclaim disk / DB space. FK cascades already clean these up when a clip or variation is deleted.
+      </p>
+
+      <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="rounded-lg border border-border p-3">
+          <div className="text-xs text-muted-foreground">Video renders</div>
+          <div className="mt-1 text-sm font-semibold">
+            {stats ? `${stats.video_renders.count} files · ${fmtBytes(stats.video_renders.bytes)}` : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">oldest: {stats ? fmtDate(stats.video_renders.oldest) : "…"}</div>
+        </div>
+        <div className="rounded-lg border border-border p-3">
+          <div className="text-xs text-muted-foreground">Caption variants</div>
+          <div className="mt-1 text-sm font-semibold">
+            {stats ? `${stats.caption_variants.count} rows` : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">oldest: {stats ? fmtDate(stats.caption_variants.oldest) : "…"}</div>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="flex-1">
+          <label className="mb-1 block text-xs font-medium">Target</label>
+          <select value={target} onChange={(e) => setTarget(e.target.value as any)}
+            className="w-full min-h-[44px] rounded-lg border border-border bg-background px-3 text-base sm:text-sm">
+            <option value="all">All (renders + captions)</option>
+            <option value="video_renders">Video renders only</option>
+            <option value="caption_variants">Caption variants only</option>
+          </select>
+        </div>
+        <div className="w-full sm:w-40">
+          <label className="mb-1 block text-xs font-medium">Older than (days)</label>
+          <input type="number" min={0} value={days} onChange={(e) => setDays(e.target.value)}
+            className="w-full min-h-[44px] rounded-lg border border-border bg-background px-3 text-base sm:text-sm" />
+        </div>
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={() => run(false)}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-border px-4 text-xs font-medium hover:bg-muted disabled:opacity-50">
+            {busy ? "…" : "Clear older"}
+          </button>
+          <button disabled={busy} onClick={() => run(true)}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-destructive px-4 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
+            {busy ? "…" : "Wipe all"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CaptionVariantToggle({ siteConfig, setSiteConfig }: any) {
+  const on = !["0", "false", "False", ""].includes(siteConfig.clip_caption_variants_enabled ?? "1");
+  return (
+    <div className="rounded-2xl bg-card p-4 md:p-6">
+      <h2 className="mb-2 text-base font-semibold">Clipping — Per-variation caption paraphrasing</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Uses Claude to rewrite each clip's caption per (clip, variation, platform) so the text fingerprint differs across accounts. Results are cached, so each combo generates once and re-uses the same paraphrase. Requires an Anthropic API key in Settings. Turn off to post the raw caption.
+      </p>
+      <label className="inline-flex items-center gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={async (e) => {
+            const v = e.target.checked ? "1" : "0";
+            setSiteConfig((s: any) => ({ ...s, clip_caption_variants_enabled: v }));
+            try { await updateSiteConfig("clip_caption_variants_enabled", v); toast.success(e.target.checked ? "Caption variants enabled" : "Caption variants disabled"); }
+            catch { toast.error("Failed to save"); }
+          }}
+          className="h-4 w-4"
+        />
+        <span className="text-sm font-medium">{on ? "Enabled" : "Disabled"}</span>
+      </label>
     </div>
   );
 }

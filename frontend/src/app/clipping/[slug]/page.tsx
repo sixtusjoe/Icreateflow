@@ -32,6 +32,7 @@ import {
   createVariation,
   updateArtistVariation,
   deleteArtistVariation,
+  refreshVariationProfile,
   uploadClip,
   syncGdriveClips,
   updateClip,
@@ -118,6 +119,40 @@ export default function ArtistPage({
   });
   const [gdriveUrl, setGdriveUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
+
+  const [editingVarId, setEditingVarId] = useState<number | null>(null);
+  const [editVar, setEditVar] = useState({
+    name: "",
+    tiktok_handle: "",
+    youtube_handle: "",
+    instagram_handle: "",
+    facebook_handle: "",
+  });
+
+  const startEditVariation = (v: Variation) => {
+    setEditingVarId(v.id);
+    setEditVar({
+      name: v.name || "",
+      tiktok_handle: (v as any).tiktok_handle || "",
+      youtube_handle: (v as any).youtube_handle || "",
+      instagram_handle: (v as any).instagram_handle || "",
+      facebook_handle: (v as any).facebook_handle || "",
+    });
+  };
+
+  const saveEditVariation = async () => {
+    if (editingVarId == null) return;
+    const clean: Record<string, string> = { name: editVar.name };
+    for (const k of ["tiktok_handle", "youtube_handle", "instagram_handle", "facebook_handle"] as const) {
+      clean[k] = (editVar[k] || "").replace(/^@+/, "");
+    }
+    try {
+      await updateArtistVariation(editingVarId, clean);
+      setEditingVarId(null);
+      load();
+      toast.success("Variation updated");
+    } catch { toast.error("Failed to update variation"); }
+  };
 
   const [editingClipId, setEditingClipId] = useState<number | null>(null);
   const [clipCaption, setClipCaption] = useState("");
@@ -682,18 +717,106 @@ export default function ArtistPage({
         ) : (
           <div className="space-y-3">
             {variations.map((v) => (
-              <div key={v.id} className="rounded-xl bg-muted/50 p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">{v.name}</span>
-                  <button
-                    onClick={() => handleDeleteVariation(v.id)}
-                    className="text-muted-foreground hover:text-destructive p-1"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+              editingVarId === v.id ? (
+                <div key={v.id} className="rounded-xl border border-border p-3">
+                  <h4 className="mb-3 text-sm font-semibold">Edit Variation</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium">Variation Name</label>
+                      <input
+                        value={editVar.name}
+                        onChange={(e) => setEditVar({ ...editVar, name: e.target.value })}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-foreground"
+                      />
+                    </div>
+                    {(["tiktok", "youtube", "instagram", "facebook"] as const).map((p) => (
+                      <div key={p}>
+                        <label className="mb-1 block text-xs font-medium capitalize">{p} handle</label>
+                        <input
+                          value={editVar[`${p}_handle`]}
+                          onChange={(e) => setEditVar({ ...editVar, [`${p}_handle`]: e.target.value })}
+                          placeholder="handle (without @)"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-foreground"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      onClick={saveEditVariation}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-foreground px-4 py-2 text-xs font-medium text-background hover:opacity-90"
+                    >
+                      <Check className="h-3 w-3" /> Save
+                    </button>
+                    <button
+                      onClick={() => setEditingVarId(null)}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3 w-3" /> Cancel
+                    </button>
+                  </div>
                 </div>
-                <OAuthTiles account={v as unknown as Record<string, unknown> & { id: number }} kind="variation" onChange={load} />
-              </div>
+              ) : (
+                <div key={v.id} className="rounded-xl bg-muted/50 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium break-all">{v.name}</div>
+                      {(() => {
+                        const handles = (["tiktok", "youtube", "instagram", "facebook"] as const)
+                          .map((p) => {
+                            const h = (v as any)[`${p}_handle`] as string | undefined;
+                            return h ? `${p}: @${h.replace(/^@+/, "")}` : null;
+                          })
+                          .filter(Boolean);
+                        return handles.length > 0 ? (
+                          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                            {handles.map((h, i) => <span key={i}>{h}</span>)}
+                          </div>
+                        ) : null;
+                      })()}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const r = await refreshVariationProfile(v.id);
+                            const results = (r?.results || {}) as Record<string, { status: string; handles?: Record<string, string>; error?: string }>;
+                            const ok: string[] = [];
+                            const fail: string[] = [];
+                            for (const [p, res] of Object.entries(results)) {
+                              if (res.status === "ok") ok.push(p);
+                              else fail.push(`${p}: ${res.error || "failed"}`);
+                            }
+                            if (ok.length) toast.success(`Refreshed: ${ok.join(", ")}`);
+                            if (fail.length) toast.error(fail.join(" · "));
+                            load();
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || "Failed to refresh");
+                          }
+                        }}
+                        className="text-muted-foreground hover:text-foreground p-1"
+                        title="Refresh handles from connected platforms"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => startEditVariation(v)}
+                        className="text-muted-foreground hover:text-foreground p-1"
+                        title="Edit variation"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteVariation(v.id)}
+                        className="text-muted-foreground hover:text-destructive p-1"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <OAuthTiles account={v as unknown as Record<string, unknown> & { id: number }} kind="variation" onChange={load} />
+                </div>
+              )
             ))}
           </div>
         )}

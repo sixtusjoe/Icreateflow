@@ -369,6 +369,37 @@ class Clip(Base):
     __table_args__ = (CheckConstraint("source IN ('upload','gdrive')", name="clips_source_chk"),)
 
 
+class ClipCaptionVariant(Base):
+    """Per-(clip, variation, platform) paraphrased caption.
+
+    Cached so the same clip always gets the same caption on the same
+    variation+platform — repeat runs of the dispatcher post identical text,
+    and platforms don't see the identical base caption across every
+    variation that shares a clip.
+    """
+    __tablename__ = "clip_caption_variants"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clip_id: Mapped[int] = mapped_column(
+        ForeignKey("clips.id", ondelete="CASCADE"), nullable=False
+    )
+    variation_id: Mapped[int] = mapped_column(
+        ForeignKey("artist_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    caption: Mapped[str] = mapped_column(Text, nullable=False)
+    source_caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        UniqueConstraint(
+            "clip_id", "variation_id", "platform", name="clip_caption_variants_uniq"
+        ),
+        CheckConstraint(
+            "platform IN ('tiktok','youtube','instagram','facebook')",
+            name="clip_caption_variants_platform_chk",
+        ),
+    )
+
+
 class ClipPost(Base):
     __tablename__ = "clip_posts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1401,6 +1432,61 @@ async def update_clip(db: Connection, clip_id: int, **kwargs):
 async def delete_clip(db: Connection, clip_id: int):
     s = db.session
     await s.execute(delete(Clip).where(Clip.id == clip_id))
+    await s.commit()
+
+
+# --- Clip caption variants ---
+
+async def get_clip_caption_variant(
+    db: Connection, clip_id: int, variation_id: int, platform: str
+):
+    s = db.session
+    return _row(
+        (
+            await s.execute(
+                select(ClipCaptionVariant).where(
+                    ClipCaptionVariant.clip_id == clip_id,
+                    ClipCaptionVariant.variation_id == variation_id,
+                    ClipCaptionVariant.platform == platform,
+                )
+            )
+        ).scalar_one_or_none()
+    )
+
+
+async def upsert_clip_caption_variant(
+    db: Connection, clip_id: int, variation_id: int, platform: str,
+    caption: str, source_caption: str,
+):
+    s = db.session
+    existing = (
+        await s.execute(
+            select(ClipCaptionVariant).where(
+                ClipCaptionVariant.clip_id == clip_id,
+                ClipCaptionVariant.variation_id == variation_id,
+                ClipCaptionVariant.platform == platform,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.caption = caption
+        existing.source_caption = source_caption
+        await s.commit()
+        return existing.id
+    row = ClipCaptionVariant(
+        clip_id=clip_id, variation_id=variation_id, platform=platform,
+        caption=caption, source_caption=source_caption,
+    )
+    s.add(row)
+    await s.commit()
+    return row.id
+
+
+async def delete_clip_caption_variants(db: Connection, clip_id: int):
+    s = db.session
+    await s.execute(
+        delete(ClipCaptionVariant).where(ClipCaptionVariant.clip_id == clip_id)
+    )
     await s.commit()
 
 

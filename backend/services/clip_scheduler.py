@@ -31,6 +31,8 @@ from zoneinfo import ZoneInfo
 import database as db
 from services import gdrive as gdrive_svc
 from services import oauth as oauth_svc
+from services import variation_processor as diversify_svc
+from services import caption_variants as caption_svc
 from services.posting import PostingError
 from services.posting import tiktok as tiktok_adapter
 from services.posting import youtube as youtube_adapter
@@ -334,6 +336,30 @@ async def dispatch_due_once() -> None:
                     )
                     continue
 
+                # Per-(clip, variation, platform) diversification to dodge
+                # cross-account dupe detection. Admin can disable via the
+                # `clip_diversification_enabled` setting (default on).
+                cfg = await db.get_site_config(database)
+                public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
+                diversify_on = (cfg.get("clip_diversification_enabled") or "1") not in ("0", "false", "False", "")
+                if diversify_on and public_base:
+                    try:
+                        local = await diversify_svc.diversify(
+                            source=source,
+                            clip_id=clip["id"],
+                            variation_id=variation["id"],
+                            platform=platform,
+                        )
+                        source = diversify_svc.public_url_for(local, public_base)
+                    except Exception as de:
+                        # Log but fall back to the raw source so a single bad
+                        # diversification doesn't block the post.
+                        await db.log_error(
+                            database, source=f"scheduler.diversify.{platform}",
+                            message=str(de), traceback=traceback.format_exc(),
+                            context=f"clip_post_id={cp['id']} clip_id={clip['id']} variation_id={variation['id']}",
+                        )
+
                 adapter = ADAPTERS[platform]
                 kwargs = {}
                 if platform == "instagram":
@@ -343,10 +369,41 @@ async def dispatch_due_once() -> None:
                 if platform == "tiktok":
                     cfg_tt = await db.get_site_config(database)
                     kwargs["privacy_level"] = (cfg_tt.get("tiktok_privacy_level") or "SELF_ONLY").upper()
+
+                # Phase 2: per-(clip, variation, platform) caption paraphrase.
+                # Kill switch: site-config `clip_caption_variants_enabled`
+                # (default on). Falls back to the raw base caption if
+                # disabled, if no API key is configured, or on any error.
+                base_caption = dict(clip).get("caption") or ""
+                caption_on = (cfg.get("clip_caption_variants_enabled") or "1") not in ("0", "false", "False", "")
+                caption_to_post = base_caption
+                if caption_on and base_caption:
+                    try:
+                        caption_to_post = await caption_svc.get_variant(
+                            database,
+                            clip_id=clip["id"],
+                            variation_id=variation["id"],
+                            platform=platform,
+                            base_caption=base_caption,
+                        )
+                    except Exception as ce:
+                        await db.log_error(
+                            database, source=f"scheduler.caption.{platform}",
+                            message=str(ce), traceback=traceback.format_exc(),
+                            context=f"clip_post_id={cp['id']} clip_id={clip['id']} variation_id={variation['id']}",
+                        )
+                        caption_to_post = base_caption
+
+                # Stamp what we actually posted for audit/debug.
+                try:
+                    await db.update_clip_post(database, cp["id"], caption_snapshot=caption_to_post)
+                except Exception:
+                    pass
+
                 result = await adapter.upload_video(
                     access_token=access_token,
                     video_source=source,
-                    caption=dict(clip).get("caption") or "",
+                    caption=caption_to_post,
                     **kwargs,
                 )
                 await db.update_clip_post(

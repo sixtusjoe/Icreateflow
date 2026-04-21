@@ -48,6 +48,12 @@ export const getSiteConfig = () => api.get("/api/admin/site-config").then((r) =>
 export const updateSiteConfig = (key: string, value: string) =>
   api.put("/api/admin/site-config", { key, value }).then((r) => r.data);
 export const getAdminStats = () => api.get("/api/admin/stats").then((r) => r.data);
+export const getCacheStats = () => api.get("/api/admin/cache-stats").then((r) => r.data);
+export const clearCache = (target: "video_renders" | "caption_variants" | "all", older_than_days?: number) =>
+  api.post("/api/admin/cache/clear", { target, older_than_days: older_than_days ?? null }).then((r) => r.data);
+export const getBrandCacheStats = () => api.get("/api/admin/brand-cache-stats").then((r) => r.data);
+export const clearBrandCache = (target: "output" | "uploads" | "all", older_than_date?: string) =>
+  api.post("/api/admin/brand-cache/clear", { target, older_than_date: older_than_date ?? null }).then((r) => r.data);
 
 // --- User Settings (per-user API keys) ---
 export const getUserSettings = () => api.get("/api/user-settings").then((r) => r.data);
@@ -140,7 +146,7 @@ export const uploadSlideImage = (
 
 // --- Variations ---
 export const updateVariation = (id: number, action: string) =>
-  api.put(`/api/variations/${id}`, { action }).then((r) => r.data);
+  api.put(`/api/variations/${id}/action`, { action }).then((r) => r.data);
 
 export const uploadVariationImage = (id: number, file: File) => {
   const form = new FormData();
@@ -211,8 +217,23 @@ export const regenerateSlide = (postId: number, data: {
   font_weight?: string; text_style?: string;
 }) => api.post(`/api/posts/${postId}/regenerate-slide`, data).then((r) => r.data);
 
-export const regenerateVideo = (postId: number, accountId: number) =>
-  api.post(`/api/posts/${postId}/regenerate-video`, { account_id: accountId }).then((r) => r.data);
+export const regenerateVideo = (
+  postId: number,
+  accountId: number,
+  platform?: "youtube" | "instagram" | "facebook",
+) =>
+  api
+    .post(`/api/posts/${postId}/regenerate-video`, { account_id: accountId, platform })
+    .then((r) => r.data);
+
+export const updatePostMusic = (
+  postId: number,
+  data: {
+    youtube_music_track_id?: number | null;
+    instagram_music_track_id?: number | null;
+    facebook_music_track_id?: number | null;
+  },
+) => api.put(`/api/posts/${postId}/music`, data).then((r) => r.data);
 
 // --- Downloads ---
 export const downloadFile = async (postId: number, accountId?: number) => {
@@ -329,6 +350,10 @@ export const updateArtistVariation = (id: number, data: Record<string, string | 
   api.put(`/api/variations/${id}`, data).then((r) => r.data);
 export const deleteArtistVariation = (id: number) =>
   api.delete(`/api/variations/${id}`).then((r) => r.data);
+export const refreshVariationProfile = (id: number) =>
+  api.post(`/api/variations/${id}/refresh-profile`).then((r) => r.data);
+export const refreshAccountProfile = (id: number) =>
+  api.post(`/api/accounts/${id}/refresh-profile`).then((r) => r.data);
 
 // --- Clipping: Clips ---
 export const listClips = (artistId: number) =>

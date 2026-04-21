@@ -6,7 +6,7 @@ import sys
 import shutil
 import asyncio
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dtime
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -201,6 +201,11 @@ class PostSchedule(BaseModel):
     scheduled_time: Optional[str] = None
     caption: Optional[str] = None
     music_track_id: Optional[int] = None
+
+class PostMusic(BaseModel):
+    youtube_music_track_id: Optional[int] = None
+    instagram_music_track_id: Optional[int] = None
+    facebook_music_track_id: Optional[int] = None
 
 class SettingUpdate(BaseModel):
     key: str
@@ -548,10 +553,16 @@ async def admin_list_brands(admin: dict = Depends(admin_required)):
 async def admin_delete_brand(brand_id: int, admin: dict = Depends(admin_required)):
     database = await db.get_db()
     try:
+        brand = await db.get_brand(database, brand_id)
         await db.delete_brand(database, brand_id)
-        return {"ok": True}
     finally:
         await database.close()
+    if brand and brand.get("slug"):
+        for root in ("uploads", "output"):
+            d = Path(root) / brand["slug"]
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+    return {"ok": True}
 
 
 @app.get("/api/admin/posts")
@@ -955,6 +966,10 @@ async def oauth_disconnect(
             updates[f"{p}_expires_at"] = None
             updates[f"{p}_scopes"] = None
             updates[f"{p}_user_id"] = None
+            # Clear the auto-populated handle too — it was pulled from the
+            # connected profile, so disconnecting should wipe it. Users who
+            # typed a handle manually can re-enter it via the Edit button.
+            updates[f"{p}_handle"] = ""
 
         if account_id is not None:
             row = await db.get_account(database, account_id)
@@ -1035,10 +1050,19 @@ async def delete_brand(brand_id: int, user: dict = Depends(get_current_user)):
     await verify_brand_ownership(brand_id, user)
     database = await db.get_db()
     try:
+        brand = await db.get_brand(database, brand_id)
         await db.delete_brand(database, brand_id)
-        return {"ok": True}
     finally:
         await database.close()
+    # Wipe disk artifacts too — DB cascade alone leaves these orphaned
+    # forever. uploads/ holds the original slide sources; output/ holds
+    # the generated renders. Both are tied 1:1 to this brand's slug.
+    if brand and brand.get("slug"):
+        for root in ("uploads", "output"):
+            d = Path(root) / brand["slug"]
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+    return {"ok": True}
 
 
 # =============================================
@@ -1083,6 +1107,54 @@ async def delete_account(account_id: int, user: dict = Depends(get_current_user)
         await verify_brand_ownership(account["brand_id"], user)
         await db.delete_account(database, account_id)
         return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/accounts/{account_id}/refresh-profile")
+async def refresh_account_profile(account_id: int, user: dict = Depends(get_current_user)):
+    """Re-run profile handle lookup for every connected platform on a brand
+    account. Mirrors /api/variations/{id}/refresh-profile for artist-variations.
+    """
+    database = await db.get_db()
+    try:
+        row = await db.get_account(database, account_id)
+        if not row:
+            raise HTTPException(404, "Account not found")
+        await verify_brand_ownership(row["brand_id"], user)
+        a = dict(row)
+
+        status: dict[str, dict] = {}
+        updates: dict = {}
+        platform_specs = [
+            ("tiktok", "tiktok", a.get("tiktok_token")),
+            ("youtube", "youtube", a.get("youtube_token")),
+            ("meta", "facebook", a.get("facebook_token") or a.get("instagram_token")),
+        ]
+        for api_platform, display_key, token in platform_specs:
+            if not token:
+                status[display_key] = {"status": "skipped", "reason": "not connected"}
+                continue
+            try:
+                handles = await oauth_svc.fetch_profile_handles_strict(api_platform, token)
+                if handles:
+                    updates.update(handles)
+                    status[display_key] = {"status": "ok", "handles": handles}
+                else:
+                    status[display_key] = {"status": "empty", "reason": "no username returned"}
+            except oauth_svc.ProfileFetchError as e:
+                msg = str(e)[:300]
+                status[display_key] = {"status": "failed", "error": msg}
+                await db.log_error(
+                    database, source=f"oauth.profile.{api_platform}",
+                    message=msg, context=f"account_id={account_id}",
+                )
+            except Exception as e:
+                status[display_key] = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:250]}"}
+
+        if updates:
+            await db.update_account(database, account_id, **updates)
+        return {"account_id": account_id, "results": status}
     finally:
         await database.close()
 
@@ -1628,11 +1700,34 @@ async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dic
 
 class RegenerateVideo(BaseModel):
     account_id: int
+    platform: Optional[str] = None  # "youtube" | "instagram" | "facebook"; None = legacy shared video
+
+
+async def _music_path_for(database, post: dict, platform: Optional[str]) -> Optional[str]:
+    """Resolve the music file path for a post/platform, falling back to legacy."""
+    candidates = []
+    if platform:
+        candidates.append(post.get(f"{platform}_music_track_id"))
+    candidates.append(post.get("music_track_id"))
+    for tid in candidates:
+        if not tid:
+            continue
+        c = await database.execute("SELECT file_path FROM music_tracks WHERE id = ?", (tid,))
+        t = await c.fetchone()
+        if t and t["file_path"]:
+            return t["file_path"]
+    return None
 
 
 @app.post("/api/posts/{post_id}/regenerate-video")
 async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dict = Depends(get_current_user)):
-    """Rebuild the video for a specific account from the current 9:16 slide files."""
+    """Rebuild the video for a specific account.
+
+    If `platform` is set (youtube|instagram|facebook), render with that
+    platform's profile (duration cap + its music pick) and store under
+    `outputs.{platform}_video_path`. Otherwise render the legacy shared
+    video and store under `outputs.video_path`.
+    """
     database = await db.get_db()
     try:
         post = await db.get_post(database, post_id)
@@ -1646,13 +1741,7 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
         if not account:
             raise HTTPException(404, "Account not found")
 
-        # Music path (optional)
-        music_path = None
-        if post["music_track_id"]:
-            c = await database.execute("SELECT file_path FROM music_tracks WHERE id = ?", (post["music_track_id"],))
-            t = await c.fetchone()
-            if t:
-                music_path = t["file_path"]
+        music_path = await _music_path_for(database, dict(post), data.platform)
 
         out_dir = Path("output") / brand["slug"] / post["date"] / account["name"] / f"post_{post['post_number']}"
         slides_dir = out_dir / "slides"
@@ -1668,22 +1757,62 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
         if len(slide_paths) < 2:
             raise HTTPException(400, f"Need at least 2 slides to build a video (found {len(slide_paths)})")
 
-        video_path = str(out_dir / "video.mp4")
-        video.build_video(
-            slide_paths=slide_paths,
-            output_path=video_path,
-            music_path=music_path,
-        )
+        filename = f"video_{data.platform}.mp4" if data.platform else "video.mp4"
+        video_path = str(out_dir / filename)
 
-        # Update output record
+        if data.platform:
+            video.build_platform_video(
+                slide_paths=slide_paths,
+                output_path=video_path,
+                platform=data.platform,
+                music_path=music_path,
+            )
+        else:
+            video.build_video(
+                slide_paths=slide_paths,
+                output_path=video_path,
+                music_path=music_path,
+            )
+
+        # Update output record — platform-specific column when platform set,
+        # else the legacy shared column.
         c = await database.execute(
             "SELECT id FROM outputs WHERE post_id = ? AND account_id = ?", (post_id, data.account_id)
         )
         existing = await c.fetchone()
         if existing:
-            await db.update_output(database, existing["id"], video_path=video_path)
+            col = f"{data.platform}_video_path" if data.platform else "video_path"
+            await db.update_output(database, existing["id"], **{col: video_path})
 
-        return {"video_path": video_path, "account_id": data.account_id, "slide_count": len(slide_paths)}
+        return {
+            "video_path": video_path,
+            "platform": data.platform,
+            "account_id": data.account_id,
+            "slide_count": len(slide_paths),
+        }
+    finally:
+        await database.close()
+
+
+@app.put("/api/posts/{post_id}/music")
+async def update_post_music(post_id: int, data: PostMusic, user: dict = Depends(get_current_user)):
+    """Set per-platform music track ids on a post (None to unset a platform)."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        updates: dict = {}
+        for plat in ("youtube", "instagram", "facebook"):
+            col = f"{plat}_music_track_id"
+            val = getattr(data, col)
+            # Interpret 0 as clear; anything else (incl None-left-unchanged) handled below
+            updates[col] = val if val else None
+
+        await db.update_post(database, post_id, **updates)
+        return {"ok": True, **updates}
     finally:
         await database.close()
 
@@ -1692,7 +1821,7 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
 # VARIATION ROUTES
 # =============================================
 
-@app.put("/api/variations/{variation_id}")
+@app.put("/api/variations/{variation_id}/action")
 async def update_variation(variation_id: int, data: VariationUpdate, user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
@@ -1890,8 +2019,10 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
             if not account:
                 continue
 
-            video_path = out.get("video_path")
-            if not video_path:
+            legacy_video_path = out.get("video_path")
+            if not legacy_video_path and not any(
+                out.get(f"{p}_video_path") for p in ("youtube", "instagram", "facebook")
+            ):
                 results.append({
                     "account_id": out["account_id"],
                     "account_name": account.get("name"),
@@ -1901,12 +2032,15 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
 
             # Build a public URL the platforms can pull. In prod, Apache only
             # proxies /api/* to the backend — the /files mount isn't reachable
-            # externally — so we use the existing /api/files/{path} route, which
-            # resolves relative paths like "output/<brand>/...".
+            # externally — so we use the existing /api/files/{path} route.
             from urllib.parse import quote
-            rel_path = video_path.lstrip("./")
-            encoded = "/".join(quote(seg, safe="") for seg in rel_path.split("/") if seg)
-            public_url = f"{public_base}/api/files/{encoded}"
+            def _public_video_url(p: Optional[str]) -> Optional[str]:
+                path = (out.get(f"{p}_video_path") if p else None) or legacy_video_path
+                if not path:
+                    return None
+                rel = path.lstrip("./")
+                enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+                return f"{public_base}/api/files/{enc}"
 
             # Refresh expiring tokens (YouTube/TikTok access tokens are short-lived).
             async def _fresh_token(platform_name: str) -> Optional[str]:
@@ -1982,7 +2116,11 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                         )
                     else:
                         extra = {"privacy_level": tt_privacy} if name == "tiktok" else {}
-                        res = await adapter.upload_video(token, public_url, caption, **extra)
+                        plat_url = _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
+                        if not plat_url:
+                            per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
+                            continue
+                        res = await adapter.upload_video(token, plat_url, caption, **extra)
                     per_platform[name] = {
                         "status": "posted",
                         "platform_post_id": res.get("platform_post_id"),
@@ -2002,7 +2140,6 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
             results.append({
                 "account_id": out["account_id"],
                 "account_name": account.get("name"),
-                "video_url": public_url,
                 "platforms": per_platform,
             })
 
@@ -2556,6 +2693,60 @@ async def update_artist_variation(variation_id: int, data: VariationUpdateArtist
         await database.close()
 
 
+@app.post("/api/variations/{variation_id}/refresh-profile")
+async def refresh_variation_profile(variation_id: int, user: dict = Depends(get_current_user)):
+    """Re-run profile handle lookup for every connected platform on a variation.
+
+    For each platform with a stored token, call the platform's me/profile
+    endpoint and update the `{platform}_handle` column. Returns a per-platform
+    status so the UI can show which ones succeeded / why any failed (e.g.
+    TikTok's 'scope_not_authorized' when `user.info.basic` wasn't granted).
+    """
+    database = await db.get_db()
+    try:
+        row = await db.get_artist_account(database, variation_id)
+        if not row:
+            raise HTTPException(404, "Variation not found")
+        await _verify_artist_ownership(row["artist_id"], user)
+        v = dict(row)
+
+        status: dict[str, dict] = {}
+        updates: dict = {}
+        # Meta flow covers IG+FB in one call via facebook_token.
+        platform_specs = [
+            ("tiktok", "tiktok", v.get("tiktok_token")),
+            ("youtube", "youtube", v.get("youtube_token")),
+            ("meta", "facebook", v.get("facebook_token") or v.get("instagram_token")),
+        ]
+        for api_platform, display_key, token in platform_specs:
+            if not token:
+                status[display_key] = {"status": "skipped", "reason": "not connected"}
+                continue
+            try:
+                handles = await oauth_svc.fetch_profile_handles_strict(api_platform, token)
+                if handles:
+                    updates.update(handles)
+                    status[display_key] = {"status": "ok", "handles": handles}
+                else:
+                    status[display_key] = {"status": "empty", "reason": "no username returned"}
+            except oauth_svc.ProfileFetchError as e:
+                msg = str(e)[:300]
+                status[display_key] = {"status": "failed", "error": msg}
+                await db.log_error(
+                    database, source=f"oauth.profile.{api_platform}",
+                    message=msg, context=f"variation_id={variation_id}",
+                )
+            except Exception as e:
+                status[display_key] = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:250]}"}
+
+        if updates:
+            await db.update_artist_account(database, variation_id, **updates)
+        row = await db.get_artist_account(database, variation_id)
+        return {"variation": _artist_account_dict(row), "results": status}
+    finally:
+        await database.close()
+
+
 @app.delete("/api/variations/{variation_id}")
 async def delete_artist_variation(variation_id: int, user: dict = Depends(get_current_user)):
     database = await db.get_db()
@@ -2696,6 +2887,14 @@ async def delete_clip_route(clip_id: int, user: dict = Depends(get_current_user)
         try:
             Path(local).unlink(missing_ok=True)
         except OSError:
+            pass
+    # Also drop the per-variation diversified renders for this clip.
+    div_dir = Path("uploads/variation_renders") / str(clip_id)
+    if div_dir.exists():
+        try:
+            import shutil as _sh
+            _sh.rmtree(div_dir, ignore_errors=True)
+        except Exception:
             pass
     return {"ok": True}
 
@@ -3044,6 +3243,281 @@ async def admin_clear_error_logs(admin: dict = Depends(admin_required)):
         return {"ok": True}
     finally:
         await database.close()
+
+
+# --- Cache / retention ---
+
+@app.get("/api/admin/cache-stats")
+async def admin_cache_stats(admin: dict = Depends(admin_required)):
+    """Sizes + row counts for the two cache layers, so the admin UI can show
+    how much is stored before they click Clear."""
+    from pathlib import Path as _P
+    renders_root = _P("uploads/variation_renders")
+    renders_bytes = 0
+    renders_count = 0
+    renders_oldest: Optional[datetime] = None
+    if renders_root.exists():
+        for f in renders_root.rglob("*.mp4"):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            renders_count += 1
+            renders_bytes += st.st_size
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+            if renders_oldest is None or mtime < renders_oldest:
+                renders_oldest = mtime
+
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT COUNT(*) AS c, MIN(created_at) AS oldest FROM clip_caption_variants"
+        )
+        row = dict(await cur.fetchone())
+    finally:
+        await database.close()
+
+    return {
+        "video_renders": {
+            "count": renders_count,
+            "bytes": renders_bytes,
+            "oldest": renders_oldest.isoformat() if renders_oldest else None,
+        },
+        "caption_variants": {
+            "count": int(row.get("c") or 0),
+            "oldest": row.get("oldest").isoformat() if row.get("oldest") else None,
+        },
+    }
+
+
+class CacheClearRequest(BaseModel):
+    target: str  # "video_renders" | "caption_variants" | "all"
+    older_than_days: Optional[int] = None  # None = clear everything for target
+
+
+class BrandCacheClearRequest(BaseModel):
+    target: str  # "output" | "uploads" | "all"
+    # ISO date (YYYY-MM-DD). For "output" this matches the {date} path segment.
+    # For "uploads" it's compared against file mtime (no date in the path).
+    # None = wipe everything for target.
+    older_than_date: Optional[str] = None
+
+
+@app.post("/api/admin/cache/clear")
+async def admin_clear_cache(data: CacheClearRequest, admin: dict = Depends(admin_required)):
+    """Clear Phase 1 video renders and/or Phase 2 caption variants.
+
+    * `target`: "video_renders" | "caption_variants" | "all"
+    * `older_than_days`: if set, only drop entries older than N days
+      (mtime for files, created_at for rows). If None, wipe everything.
+    """
+    if data.target not in ("video_renders", "caption_variants", "all"):
+        raise HTTPException(400, f"Invalid target: {data.target}")
+
+    cutoff: Optional[datetime] = None
+    if data.older_than_days is not None:
+        if data.older_than_days < 0:
+            raise HTTPException(400, "older_than_days must be >= 0")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=data.older_than_days)
+
+    out = {"video_renders_deleted": 0, "caption_variants_deleted": 0}
+
+    if data.target in ("video_renders", "all"):
+        from pathlib import Path as _P
+        renders_root = _P("uploads/variation_renders")
+        if renders_root.exists():
+            for f in list(renders_root.rglob("*.mp4")):
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if cutoff is not None:
+                    mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+                    if mtime >= cutoff:
+                        continue
+                try:
+                    f.unlink()
+                    out["video_renders_deleted"] += 1
+                except OSError:
+                    pass
+            # Prune empty clip-id subdirs
+            for d in sorted(renders_root.rglob("*"), key=lambda p: -len(p.parts)):
+                if d.is_dir():
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+
+    if data.target in ("caption_variants", "all"):
+        database = await db.get_db()
+        try:
+            if cutoff is not None:
+                cur = await database.execute(
+                    "DELETE FROM clip_caption_variants WHERE created_at < ? RETURNING 1",
+                    (cutoff,),
+                )
+            else:
+                cur = await database.execute(
+                    "DELETE FROM clip_caption_variants RETURNING 1"
+                )
+            deleted = await cur.fetchall()
+            out["caption_variants_deleted"] = len(deleted)
+        finally:
+            await database.close()
+
+    return {"ok": True, **out}
+
+
+# --- Brand post renders / uploads cleanup ---
+
+def _dir_size(p):
+    total = 0
+    count = 0
+    oldest_mtime = None
+    try:
+        for f in p.rglob("*"):
+            if f.is_file():
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                total += st.st_size
+                count += 1
+                if oldest_mtime is None or st.st_mtime < oldest_mtime:
+                    oldest_mtime = st.st_mtime
+    except OSError:
+        pass
+    return total, count, oldest_mtime
+
+
+@app.get("/api/admin/brand-cache-stats")
+async def admin_brand_cache_stats(admin: dict = Depends(admin_required)):
+    from pathlib import Path as _P
+    out_root = _P("output")
+    up_root = _P("uploads")
+
+    out_bytes, out_count, out_oldest = _dir_size(out_root)
+    up_bytes, up_count, up_oldest = _dir_size(up_root)
+
+    # Report the oldest `{date}` subfolder for output too — that's what the
+    # date-segment filter operates on, so the admin can pick a sensible cutoff.
+    oldest_date_seg = None
+    if out_root.exists():
+        date_dirs: list[str] = []
+        for brand_dir in out_root.iterdir():
+            if not brand_dir.is_dir():
+                continue
+            for date_dir in brand_dir.iterdir():
+                if date_dir.is_dir() and len(date_dir.name) == 10 and date_dir.name[4] == "-":
+                    date_dirs.append(date_dir.name)
+        if date_dirs:
+            oldest_date_seg = min(date_dirs)
+
+    return {
+        "output": {
+            "count": out_count,
+            "bytes": out_bytes,
+            "oldest_mtime": datetime.fromtimestamp(out_oldest, tz=timezone.utc).isoformat() if out_oldest else None,
+            "oldest_date_segment": oldest_date_seg,
+        },
+        "uploads": {
+            "count": up_count,
+            "bytes": up_bytes,
+            "oldest_mtime": datetime.fromtimestamp(up_oldest, tz=timezone.utc).isoformat() if up_oldest else None,
+        },
+    }
+
+
+@app.post("/api/admin/brand-cache/clear")
+async def admin_clear_brand_cache(data: BrandCacheClearRequest, admin: dict = Depends(admin_required)):
+    """Clear brand post renders (`output/`) and/or uploaded slide sources (`uploads/`).
+
+    * `target`: "output" | "uploads" | "all"
+    * `older_than_date`: ISO YYYY-MM-DD. For "output" this matches the
+      `{date}` path segment (output/{slug}/{date}/...) — the cleanest
+      notion of "post older than" for brands. For "uploads" (no date
+      in the path) we compare file mtime. None → wipe everything for target.
+
+    DOES NOT touch DB rows. Stale `outputs` table rows will have broken
+    paths after a wipe but that's self-healing on regenerate.
+    """
+    if data.target not in ("output", "uploads", "all"):
+        raise HTTPException(400, f"Invalid target: {data.target}")
+
+    cutoff_date = None
+    cutoff_mtime = None
+    if data.older_than_date:
+        try:
+            cutoff_date = datetime.strptime(data.older_than_date, "%Y-%m-%d").date()
+            cutoff_mtime = datetime.combine(cutoff_date, dtime.min, tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            raise HTTPException(400, "older_than_date must be YYYY-MM-DD")
+
+    from pathlib import Path as _P
+    out = {"output_dirs_deleted": 0, "output_bytes_freed": 0,
+           "uploads_files_deleted": 0, "uploads_bytes_freed": 0}
+
+    # --- Output trees: {brand}/{date}/{account}/post_{N}/ ---
+    if data.target in ("output", "all"):
+        root = _P("output")
+        if root.exists():
+            for brand_dir in list(root.iterdir()):
+                if not brand_dir.is_dir():
+                    continue
+                for date_dir in list(brand_dir.iterdir()):
+                    if not date_dir.is_dir():
+                        continue
+                    # Only operate on YYYY-MM-DD segments
+                    if not (len(date_dir.name) == 10 and date_dir.name[4] == "-" and date_dir.name[7] == "-"):
+                        continue
+                    if cutoff_date is not None:
+                        try:
+                            seg = datetime.strptime(date_dir.name, "%Y-%m-%d").date()
+                        except ValueError:
+                            continue
+                        if seg >= cutoff_date:
+                            continue
+                    sz, _cnt, _ = _dir_size(date_dir)
+                    try:
+                        shutil.rmtree(date_dir, ignore_errors=True)
+                        out["output_dirs_deleted"] += 1
+                        out["output_bytes_freed"] += sz
+                    except OSError:
+                        pass
+                # Prune empty brand dirs
+                try:
+                    brand_dir.rmdir()
+                except OSError:
+                    pass
+
+    # --- Uploads: {brand}/post_{N}/**/*.(jpg|png) by mtime ---
+    if data.target in ("uploads", "all"):
+        root = _P("uploads")
+        if root.exists():
+            for f in list(root.rglob("*")):
+                if not f.is_file():
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if cutoff_mtime is not None and st.st_mtime >= cutoff_mtime:
+                    continue
+                try:
+                    f.unlink()
+                    out["uploads_files_deleted"] += 1
+                    out["uploads_bytes_freed"] += st.st_size
+                except OSError:
+                    pass
+            # Prune empty subdirs (post_*/variations, post_*, brand dirs)
+            for d in sorted(root.rglob("*"), key=lambda p: -len(p.parts)):
+                if d.is_dir():
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+
+    return {"ok": True, **out}
 
 
 # --- Global exception logger ---

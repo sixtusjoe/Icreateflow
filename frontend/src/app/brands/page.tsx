@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Trash2, Plus, Edit2, Users, Check, X } from "lucide-react";
+import { Trash2, Plus, Edit2, Users, Check, X, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import {
   getBrands, createBrand, updateBrand, deleteBrand,
   createAccount, updateAccount, deleteAccount,
+  refreshAccountProfile,
 } from "@/lib/api";
 import OAuthTiles from "@/components/OAuthTiles";
 
@@ -19,6 +20,13 @@ export default function BrandsPage() {
   const [editBrandData, setEditBrandData] = useState<any>({});
   const [editingAccount, setEditingAccount] = useState<number | null>(null);
   const [editAccountData, setEditAccountData] = useState<any>({});
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const toggleCollapsed = (id: number) =>
+    setCollapsed((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
 
   const load = () => getBrands().then(setBrands).catch(() => toast.error("Failed to load brands"));
   useEffect(() => { load(); }, []);
@@ -212,11 +220,17 @@ export default function BrandsPage() {
                     <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{brand.timezone}</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
+                    <button onClick={() => toggleCollapsed(brand.id)}
+                      title={collapsed.has(brand.id) ? "Expand" : "Collapse"}
+                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                      {collapsed.has(brand.id) ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                      {collapsed.has(brand.id) ? `Show (${brand.accounts?.length || 0})` : "Hide"}
+                    </button>
                     <button onClick={() => startEditBrand(brand)}
                       className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                       <Edit2 className="h-3 w-3" /> Edit
                     </button>
-                    <button onClick={() => setShowNewAccount(brand.id)}
+                    <button onClick={() => { setCollapsed((s) => { const n = new Set(s); n.delete(brand.id); return n; }); setShowNewAccount(brand.id); }}
                       className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                       <Plus className="h-3 w-3" /> Add Account
                     </button>
@@ -228,6 +242,7 @@ export default function BrandsPage() {
                 </div>
               )}
 
+              {!collapsed.has(brand.id) && (<>
               <div className="mb-3 text-xs text-muted-foreground">
                 Default times: {brand.default_post_times}
               </div>
@@ -276,16 +291,54 @@ export default function BrandsPage() {
                     </div>
                   ) : (
                     <div key={acc.id} className="rounded-xl bg-muted/50 px-4 py-3">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                          <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
-                            acc.role === "master" ? "bg-foreground text-background" : "bg-muted text-muted-foreground"
-                          }`}>
-                            {acc.role}
-                          </span>
-                          <span className="text-sm font-medium break-all">{acc.name}</span>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                            <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                              acc.role === "master" ? "bg-foreground text-background" : "bg-muted text-muted-foreground"
+                            }`}>
+                              {acc.role}
+                            </span>
+                            <span className="text-sm font-medium break-all">{acc.name}</span>
+                          </div>
+                          {(() => {
+                            const handles = (["tiktok", "youtube", "instagram", "facebook"] as const)
+                              .map((p) => {
+                                const h = acc[`${p}_handle`] as string | undefined;
+                                return h ? `${p}: @${h.replace(/^@+/, "")}` : null;
+                              })
+                              .filter(Boolean);
+                            return handles.length > 0 ? (
+                              <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                                {handles.map((h, i) => <span key={i}>{h}</span>)}
+                              </div>
+                            ) : null;
+                          })()}
                         </div>
                         <div className="flex items-center gap-1">
+                          <button
+                            onClick={async () => {
+                              try {
+                                const r = await refreshAccountProfile(acc.id);
+                                const results = (r?.results || {}) as Record<string, { status: string; handles?: Record<string, string>; error?: string }>;
+                                const ok: string[] = [];
+                                const fail: string[] = [];
+                                for (const [p, res] of Object.entries(results)) {
+                                  if (res.status === "ok") ok.push(p);
+                                  else if (res.status === "failed") fail.push(`${p}: ${res.error || "failed"}`);
+                                }
+                                if (ok.length) toast.success(`Refreshed: ${ok.join(", ")}`);
+                                if (fail.length) toast.error(fail.join(" · "));
+                                load();
+                              } catch (e: any) {
+                                toast.error(e?.response?.data?.detail || "Failed to refresh");
+                              }
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors"
+                            title="Refresh handles from connected platforms"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </button>
                           <button onClick={() => startEditAccount(acc)}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors">
                             <Edit2 className="h-3.5 w-3.5" />
@@ -340,6 +393,7 @@ export default function BrandsPage() {
                   </div>
                 </div>
               )}
+              </>)}
             </div>
           ))}
         </div>

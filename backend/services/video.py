@@ -107,3 +107,54 @@ def get_video_duration(slide_count: int, slide_duration: float = 3.0,
                        transition_duration: float = 0.5) -> float:
     """Calculate total video duration given slide count and timings."""
     return (slide_count * slide_duration) - ((slide_count - 1) * transition_duration)
+
+
+# Per-platform render profiles. Each entry picks slide duration + max duration
+# so we can produce Shorts-safe, Reels-safe, FB-safe renders from the same
+# 9:16 slide set. max_duration is the hard cap we squeeze into by shortening
+# per-slide dwell when needed.
+PLATFORM_PROFILES = {
+    "youtube":   {"slide_duration": 3.0, "max_duration": 60.0},   # Shorts cap
+    "instagram": {"slide_duration": 3.0, "max_duration": 90.0},   # Reels cap
+    "facebook":  {"slide_duration": 3.0, "max_duration": 90.0},   # Match Reels cap
+}
+
+
+def build_platform_video(
+    slide_paths: list[str],
+    output_path: str,
+    platform: str,
+    music_path: str | None = None,
+    transition_duration: float = 0.5,
+    fps: int = 30,
+) -> str:
+    """Build a 9:16 video sized for the given platform's caps.
+
+    Computes a per-slide dwell time that keeps total duration <= the
+    platform's max_duration; falls back to the base 3.0s dwell otherwise.
+    Delegates the actual ffmpeg invocation to build_video.
+    """
+    profile = PLATFORM_PROFILES.get(platform)
+    if not profile:
+        raise ValueError(f"Unknown platform profile: {platform}")
+
+    n = len(slide_paths)
+    if n < 2:
+        raise ValueError("Need at least 2 slides to create a video")
+
+    dwell = profile["slide_duration"]
+    cap = profile["max_duration"]
+    # Duration with the default dwell.
+    total = get_video_duration(n, dwell, transition_duration)
+    if total > cap:
+        # Solve for dwell: (n*d) - (n-1)*t = cap  ->  d = (cap + (n-1)*t) / n
+        dwell = max(1.0, (cap + (n - 1) * transition_duration) / n)
+
+    return build_video(
+        slide_paths=slide_paths,
+        output_path=output_path,
+        slide_duration=dwell,
+        transition_duration=transition_duration,
+        fps=fps,
+        music_path=music_path,
+    )
