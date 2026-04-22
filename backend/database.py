@@ -111,7 +111,7 @@ class User(Base):
     last_login: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'user')", name="users_role_chk"),
-        CheckConstraint("status IN ('active', 'suspended')", name="users_status_chk"),
+        CheckConstraint("status IN ('active', 'suspended', 'pending')", name="users_status_chk"),
     )
 
 
@@ -788,6 +788,16 @@ async def _migrate_per_platform_post_columns(conn) -> None:
     ))
 
 
+async def _migrate_user_status_pending(conn) -> None:
+    """Expand users.status CHECK to include 'pending' (added for admin-approved registration)."""
+    # Drop old constraint if present, re-add expanded one. IF EXISTS makes it idempotent.
+    await conn.execute(text("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_chk"))
+    await conn.execute(text(
+        "ALTER TABLE users ADD CONSTRAINT users_status_chk "
+        "CHECK (status IN ('active', 'suspended', 'pending'))"
+    ))
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -795,6 +805,7 @@ async def init_db() -> None:
         await _migrate_artist_oauth_columns(conn)
         await _migrate_campaign_columns(conn)
         await _migrate_per_platform_post_columns(conn)
+        await _migrate_user_status_pending(conn)
     db = await get_db()
     try:
         await _seed(db)
@@ -883,9 +894,9 @@ def _rows(objs) -> list[Row]:
 
 # --- Users ---
 
-async def create_user(db: Connection, email: str, password_hash: str, name: str, role: str = "user"):
+async def create_user(db: Connection, email: str, password_hash: str, name: str, role: str = "user", status: str = "active"):
     s = db.session
-    stmt = insert(User).values(email=email, password_hash=password_hash, name=name, role=role).returning(User.id)
+    stmt = insert(User).values(email=email, password_hash=password_hash, name=name, role=role, status=status).returning(User.id)
     user_id = (await s.execute(stmt)).scalar_one()
     await s.commit()
     return user_id

@@ -100,10 +100,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const err = await res.json().catch(() => ({ detail: "Registration failed" }));
       throw new Error(err.detail || "Registration failed");
     }
-    const data = await res.json();
-    localStorage.setItem(TOKEN_KEY, data.token);
-    setUser(data.user);
-    router.push("/dashboard");
+    // Registration no longer returns a token — new accounts land in 'pending'
+    // until an admin approves. The register page handles the success UI.
   };
 
   const updateUser = (u: User) => setUser(u);

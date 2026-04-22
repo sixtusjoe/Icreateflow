@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-  getAdminStats, getUsers, updateUser, deleteAdminUser, getSiteConfig, updateSiteConfig,
+  getAdminStats, getUsers, updateUser, approveUser, deleteAdminUser, getSiteConfig, updateSiteConfig,
   getAdminBrands, deleteAdminBrand, getAdminPosts, deleteAdminPost, getAdminAccounts,
   getAdminMusic, deleteAdminMusic, getAdminSchedule, getAdminApiKeys,
   getOAuthApps, updateOAuthApp,
@@ -231,52 +231,93 @@ function UsersTab({ users, currentUserId, onReload }: any) {
   const handleStatus = async (id: number, status: string) => {
     try { await updateUser(id, { status }); toast.success("Status updated"); onReload(); } catch { toast.error("Failed"); }
   };
+  const handleApprove = async (id: number, name: string) => {
+    try { await approveUser(id); toast.success(`${name} approved`); onReload(); }
+    catch (e: any) { toast.error(e.response?.data?.detail || "Failed to approve"); }
+  };
   const handleDelete = async (id: number, name: string) => {
     if (!confirm(`Delete ${name} and ALL their brands, posts, music? This cannot be undone.`)) return;
     try { await deleteAdminUser(id); toast.success("User deleted"); onReload(); }
     catch (e: any) { toast.error(e.response?.data?.detail || "Failed"); }
   };
+
+  const pendingUsers = users.filter((u: any) => u.status === "pending");
+  const otherUsers = users.filter((u: any) => u.status !== "pending");
+
   return (
-    <div className="overflow-x-auto rounded-2xl bg-card">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-border text-left">
-            <Th>Name</Th><Th className="hidden md:table-cell">Email</Th><Th>Role</Th><Th>Status</Th><Th className="hidden md:table-cell">Joined</Th><Th></Th>
-          </tr>
-        </thead>
-        <tbody>
-          {users.map((u: any) => (
-            <tr key={u.id} className="border-b border-border/50">
-              <Td>
-                <div className="font-medium">{u.name}</div>
-                <div className="text-xs text-muted-foreground md:hidden">{u.email}</div>
-              </Td>
-              <Td className="hidden md:table-cell text-muted-foreground">{u.email}</Td>
-              <Td>
-                <select value={u.role} onChange={(e) => handleRole(u.id, e.target.value)} disabled={u.id === currentUserId}
-                  className="rounded-md border border-border bg-background px-2 py-1 text-base sm:text-xs">
-                  <option value="user">User</option><option value="admin">Admin</option>
-                </select>
-              </Td>
-              <Td>
-                <select value={u.status} onChange={(e) => handleStatus(u.id, e.target.value)} disabled={u.id === currentUserId}
-                  className="rounded-md border border-border bg-background px-2 py-1 text-base sm:text-xs">
-                  <option value="active">Active</option><option value="suspended">Suspended</option>
-                </select>
-              </Td>
-              <Td className="hidden md:table-cell text-muted-foreground">{new Date(u.created_at).toLocaleDateString()}</Td>
-              <Td>
-                {u.id !== currentUserId && (
-                  <button onClick={() => handleDelete(u.id, u.name)} title="Delete user"
-                    className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive">
+    <div className="space-y-4">
+      {pendingUsers.length > 0 && (
+        <div className="rounded-2xl border-2 border-amber-400/50 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/5 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+            <h3 className="text-sm font-bold text-foreground">
+              Pending approval ({pendingUsers.length})
+            </h3>
+          </div>
+          <div className="space-y-2">
+            {pendingUsers.map((u: any) => (
+              <div key={u.id} className="flex items-center justify-between gap-3 rounded-xl bg-background p-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{u.name}</div>
+                  <div className="truncate text-xs text-muted-foreground">{u.email} · signed up {new Date(u.created_at).toLocaleString()}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => handleApprove(u.id, u.name)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-xs font-semibold text-background hover:opacity-90">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Approve
+                  </button>
+                  <button onClick={() => handleDelete(u.id, u.name)} title="Reject & delete"
+                    className="inline-flex min-h-[32px] min-w-[32px] items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
-                )}
-              </Td>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-2xl bg-card">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left">
+              <Th>Name</Th><Th className="hidden md:table-cell">Email</Th><Th>Role</Th><Th>Status</Th><Th className="hidden md:table-cell">Joined</Th><Th></Th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {otherUsers.map((u: any) => (
+              <tr key={u.id} className="border-b border-border/50">
+                <Td>
+                  <div className="font-medium">{u.name}</div>
+                  <div className="text-xs text-muted-foreground md:hidden">{u.email}</div>
+                </Td>
+                <Td className="hidden md:table-cell text-muted-foreground">{u.email}</Td>
+                <Td>
+                  <select value={u.role} onChange={(e) => handleRole(u.id, e.target.value)} disabled={u.id === currentUserId}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-base sm:text-xs">
+                    <option value="user">User</option><option value="admin">Admin</option>
+                  </select>
+                </Td>
+                <Td>
+                  <select value={u.status} onChange={(e) => handleStatus(u.id, e.target.value)} disabled={u.id === currentUserId}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-base sm:text-xs">
+                    <option value="active">Active</option><option value="suspended">Suspended</option>
+                  </select>
+                </Td>
+                <Td className="hidden md:table-cell text-muted-foreground">{new Date(u.created_at).toLocaleDateString()}</Td>
+                <Td>
+                  {u.id !== currentUserId && (
+                    <button onClick={() => handleDelete(u.id, u.name)} title="Delete user"
+                      className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

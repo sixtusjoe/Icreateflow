@@ -74,8 +74,11 @@ async def get_current_user(request: Request):
         user = await db.get_user(database, int(payload["sub"]))
         if not user:
             raise HTTPException(401, "User not found")
-        if dict(user).get("status") == "suspended":
+        status = dict(user).get("status")
+        if status == "suspended":
             raise HTTPException(403, "Account suspended")
+        if status == "pending":
+            raise HTTPException(403, "Account pending admin approval")
         return dict(user)
     finally:
         await database.close()
@@ -301,10 +304,15 @@ async def register(data: AuthRegister):
             raise HTTPException(400, "Email already registered")
 
         pw_hash = hash_password(data.password)
-        user_id = await db.create_user(database, data.email.lower().strip(), pw_hash, data.name.strip())
-        user = await db.get_user(database, user_id)
-        token = create_access_token(user_id, user["email"], user["role"])
-        return {"token": token, "user": user_safe(dict(user))}
+        # New signups land in 'pending' — an admin must approve before they can log in.
+        user_id = await db.create_user(
+            database, data.email.lower().strip(), pw_hash, data.name.strip(),
+            status="pending",
+        )
+        return {
+            "pending": True,
+            "message": "Your account is pending admin approval. You'll be able to log in once an admin approves you.",
+        }
     finally:
         await database.close()
 
@@ -318,6 +326,8 @@ async def login(data: AuthLogin):
             raise HTTPException(401, "Invalid email or password")
         if user["status"] == "suspended":
             raise HTTPException(403, "Account suspended")
+        if user["status"] == "pending":
+            raise HTTPException(403, "Your account is pending admin approval.")
 
         await db.update_user(database, user["id"], last_login=datetime.now(timezone.utc).isoformat())
         token = create_access_token(user["id"], user["email"], user["role"])
@@ -376,6 +386,23 @@ async def admin_list_users(admin: dict = Depends(admin_required)):
     try:
         users = await db.get_users(database)
         return rows_to_list(users)
+    finally:
+        await database.close()
+
+
+@app.post("/api/admin/users/{user_id}/approve")
+async def admin_approve_user(user_id: int, admin: dict = Depends(admin_required)):
+    """Approve a pending registration. Sets status='active' so the user can log in."""
+    database = await db.get_db()
+    try:
+        user = await db.get_user(database, user_id)
+        if not user:
+            raise HTTPException(404, "User not found")
+        if dict(user).get("status") != "pending":
+            raise HTTPException(400, "User is not pending approval")
+        await db.update_user(database, user_id, status="active")
+        updated = await db.get_user(database, user_id)
+        return user_safe(dict(updated))
     finally:
         await database.close()
 
@@ -451,6 +478,7 @@ async def admin_stats(admin: dict = Depends(admin_required)):
         )
         failed_posts = await _count("SELECT COUNT(*) as count FROM posts WHERE status = 'failed'")
         suspended_users = await _count("SELECT COUNT(*) as count FROM users WHERE status = 'suspended'")
+        pending_users = await _count("SELECT COUNT(*) as count FROM users WHERE status = 'pending'")
 
         # 24h activity
         new_users_24h = await _count(
@@ -488,6 +516,7 @@ async def admin_stats(admin: dict = Depends(admin_required)):
             "scheduled_posts": scheduled_posts,
             "failed_posts": failed_posts,
             "suspended_users": suspended_users,
+            "pending_users": pending_users,
             "new_users_24h": new_users_24h,
             "new_posts_24h": new_posts_24h,
             "storage_mb": {

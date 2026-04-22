@@ -44,6 +44,8 @@ export const changePassword = (current_password: string, new_password: string) =
 export const getUsers = () => api.get("/api/admin/users").then((r) => r.data);
 export const updateUser = (id: number, data: { role?: string; status?: string; name?: string }) =>
   api.put(`/api/admin/users/${id}`, data).then((r) => r.data);
+export const approveUser = (id: number) =>
+  api.post(`/api/admin/users/${id}/approve`).then((r) => r.data);
 export const getSiteConfig = () => api.get("/api/admin/site-config").then((r) => r.data);
 export const updateSiteConfig = (key: string, value: string) =>
   api.put("/api/admin/site-config", { key, value }).then((r) => r.data);

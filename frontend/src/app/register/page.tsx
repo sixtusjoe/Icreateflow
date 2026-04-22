@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth";
-import { Loader2, UserPlus, LogIn, Check } from "lucide-react";
+import { Loader2, UserPlus, LogIn, Check, Clock } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
 
 export default function RegisterPage() {
@@ -14,6 +14,7 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,7 +22,10 @@ export default function RegisterPage() {
     if (password !== confirmPassword) { setError("Passwords do not match"); return; }
     if (password.length < 6) { setError("Password must be at least 6 characters"); return; }
     setLoading(true);
-    try { await register(email, password, name); }
+    try {
+      await register(email, password, name);
+      setSubmitted(true);
+    }
     catch (err: any) { setError(err.message || "Registration failed"); }
     finally { setLoading(false); }
   };
@@ -48,8 +52,24 @@ export default function RegisterPage() {
             </div>
           </div>
 
+          {submitted ? (
+            <div className="animate-slide-up">
+              <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-100 dark:bg-amber-500/15">
+                <Clock className="h-6 w-6 text-amber-600 dark:text-amber-400" />
+              </div>
+              <h1 className="mb-2 text-xl font-bold tracking-tight text-foreground">Account pending approval</h1>
+              <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
+                Thanks for signing up, {name.split(" ")[0] || "there"}. Your account is now waiting for an admin to approve it. You&apos;ll be able to log in with <span className="font-medium text-foreground">{email}</span> as soon as approval comes through — we&apos;ll email you.
+              </p>
+              <Link href="/login"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-foreground py-3 text-sm font-semibold text-background transition-opacity hover:opacity-90">
+                <LogIn className="h-4 w-4" /> Back to log in
+              </Link>
+            </div>
+          ) : (
+          <>
           <h1 className="mb-1 text-xl font-bold tracking-tight text-foreground">Create your account</h1>
-          <p className="mb-6 text-sm text-muted-foreground">Free forever. Scale your content across platforms.</p>
+          <p className="mb-6 text-sm text-muted-foreground">New accounts are reviewed by an admin before access is granted.</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
@@ -93,6 +113,8 @@ export default function RegisterPage() {
             Already have an account?{" "}
             <Link href="/login" className="font-semibold text-foreground hover:underline">Log in</Link>
           </p>
+          </>
+          )}
         </div>
 
         <div className="text-center text-xs text-muted-foreground">
