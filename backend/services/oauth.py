@@ -358,25 +358,63 @@ async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[
             return {"instagram_handle": name} if name else {}
 
         if platform == "meta":
-            r = await client.get(
-                "https://graph.facebook.com/v19.0/me/accounts",
-                params={
-                    "fields": "name,instagram_business_account{username}",
-                    "access_token": access_token,
-                },
+            # Meta's new granular-permission consent flow breaks /me/accounts:
+            # the token is scoped to specific Page/IG IDs, but /me/accounts
+            # only returns entries for the legacy "all Pages" grant and comes
+            # back empty under granular scopes. Instead, read target_ids out
+            # of the token's granular_scopes via /debug_token and query the
+            # assets by ID directly — which works under both models.
+            dbg = await client.get(
+                "https://graph.facebook.com/debug_token",
+                params={"input_token": access_token, "access_token": access_token},
             )
-            if r.status_code >= 400:
-                raise ProfileFetchError(f"meta {r.status_code}: {r.text[:200]}")
-            pages = (r.json() or {}).get("data", []) or []
-            if not pages:
-                return {}
-            page = pages[0]
+            if dbg.status_code >= 400:
+                raise ProfileFetchError(f"meta debug_token {dbg.status_code}: {dbg.text[:200]}")
+            granular = ((dbg.json() or {}).get("data") or {}).get("granular_scopes") or []
+            page_ids: list[str] = []
+            ig_ids: list[str] = []
+            for g in granular:
+                scope = g.get("scope")
+                tids = g.get("target_ids") or []
+                if scope == "pages_show_list":
+                    page_ids = [str(t) for t in tids]
+                elif scope == "instagram_basic":
+                    ig_ids = [str(t) for t in tids]
             out: dict[str, str] = {}
-            if page.get("name"):
-                out["facebook_handle"] = page["name"]
-            ig = (page.get("instagram_business_account") or {}).get("username")
-            if ig:
-                out["instagram_handle"] = ig
+            if page_ids:
+                pr = await client.get(
+                    f"https://graph.facebook.com/v19.0/{page_ids[0]}",
+                    params={
+                        # Request the Page-scoped access_token too — posting
+                        # to /{page_id}/videos needs a Page token, not the
+                        # user token. Caller stores this in facebook_token.
+                        "fields": "name,access_token,instagram_business_account{username,id}",
+                        "access_token": access_token,
+                    },
+                )
+                if pr.status_code < 400:
+                    pd = pr.json() or {}
+                    if pd.get("name"):
+                        out["facebook_handle"] = pd["name"]
+                    out["facebook_user_id"] = str(page_ids[0])
+                    if pd.get("access_token"):
+                        out["facebook_page_access_token"] = pd["access_token"]
+                    ig_edge = pd.get("instagram_business_account") or {}
+                    if ig_edge.get("username"):
+                        out["instagram_handle"] = ig_edge["username"]
+                    if ig_edge.get("id"):
+                        out["instagram_user_id"] = str(ig_edge["id"])
+            # Fallback: IG was granted but no Page (standalone IG-via-Meta case).
+            if not out.get("instagram_handle") and ig_ids:
+                ir = await client.get(
+                    f"https://graph.facebook.com/v19.0/{ig_ids[0]}",
+                    params={"fields": "username", "access_token": access_token},
+                )
+                if ir.status_code < 400:
+                    idata = ir.json() or {}
+                    if idata.get("username"):
+                        out["instagram_handle"] = idata["username"]
+                    out["instagram_user_id"] = str(ig_ids[0])
             return out
         return {}
 

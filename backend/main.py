@@ -986,10 +986,17 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
             if tokens.get("platform_user_id"):
                 updates[f"{p}_user_id"] = str(tokens["platform_user_id"])
 
-        # Auto-fill the *_handle fields from the connected account profile.
+        # Auto-fill *_handle / *_user_id fields from the connected account.
+        # For the Meta flow, fetch_profile_handles also returns a Page-scoped
+        # access token — we swap that into facebook_token so downstream
+        # posting uses a Page token (required by /{page_id}/videos) instead
+        # of the user token we just got from the code exchange.
         # Best-effort: failures here never block the OAuth success.
         try:
             handles = await oauth_svc.fetch_profile_handles(platform, tokens["access_token"])
+            page_token = handles.pop("facebook_page_access_token", None)
+            if page_token and "facebook" in target_platforms:
+                updates["facebook_token"] = page_token
             for k, v in handles.items():
                 if v:
                     updates[k] = v
