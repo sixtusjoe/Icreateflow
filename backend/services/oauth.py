@@ -43,8 +43,13 @@ _DEFAULT_YOUTUBE_SCOPES = (
     "https://www.googleapis.com/auth/youtube.readonly"
 )
 _DEFAULT_META_SCOPES = (
+    # Minimum set required to post to a FB Page + IG Business account.
+    # pages_read_engagement / business_management are NOT requested by
+    # default — they require App Review and we don't read insights here.
+    # Override via env META_SCOPES if you need additional permissions
+    # your app has been reviewed for.
     "instagram_basic,instagram_content_publish,"
-    "pages_show_list,pages_manage_posts,pages_read_engagement,business_management"
+    "pages_show_list,pages_manage_posts"
 )
 
 SCOPES = {
