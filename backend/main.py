@@ -3358,6 +3358,7 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
     renders_bytes = 0
     renders_count = 0
     renders_oldest: Optional[datetime] = None
+    renders_newest: Optional[datetime] = None
     if renders_root.exists():
         for f in renders_root.rglob("*.mp4"):
             try:
@@ -3369,6 +3370,8 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
             mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
             if renders_oldest is None or mtime < renders_oldest:
                 renders_oldest = mtime
+            if renders_newest is None or mtime > renders_newest:
+                renders_newest = mtime
 
     database = await db.get_db()
     try:
@@ -3384,6 +3387,7 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
             "count": renders_count,
             "bytes": renders_bytes,
             "oldest": renders_oldest.isoformat() if renders_oldest else None,
+            "newest": renders_newest.isoformat() if renders_newest else None,
         },
         "caption_variants": {
             "count": int(row.get("c") or 0),
