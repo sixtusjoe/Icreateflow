@@ -223,14 +223,18 @@ async def plan_slots_once() -> None:
                     continue
                 if artist.get("paused_reason"):
                     continue
-                # Already materialised today?
+                # Already materialised today? Use a half-open UTC range to
+                # sidestep SQLAlchemy text() treating ::date as a bind param.
+                # scheduled_for is TIMESTAMP WITHOUT TIME ZONE — bind naive UTC.
+                day_start = datetime.combine(now_utc.date(), dtime(0, 0))
+                day_end = day_start + timedelta(days=1)
                 check = await database.execute(
                     """
                     SELECT COUNT(*) AS c FROM clip_posts
                     WHERE artist_id = ? AND scheduled_for IS NOT NULL
-                      AND scheduled_for::date = ?::date
+                      AND scheduled_for >= ? AND scheduled_for < ?
                     """,
-                    (artist["id"], now_utc.date().isoformat()),
+                    (artist["id"], day_start, day_end),
                 )
                 row = await check.fetchone()
                 if row and int(row["c"] or 0) > 0:
@@ -240,8 +244,16 @@ async def plan_slots_once() -> None:
                 if not variations:
                     continue
 
-                slots = _today_slots(artist, now_utc)
-                slots = [s for s in slots if s > now_utc]
+                all_slots = _today_slots(artist, now_utc)
+                future = [s for s in all_slots if s > now_utc]
+                past = [s for s in all_slots if s <= now_utc]
+                # Catch-up: if the campaign is active and today's early slots
+                # already passed (e.g. scheduler was down, or campaign started
+                # mid-window), post the most recent missed slot right now so
+                # the user isn't left waiting until tomorrow.
+                if past:
+                    future = [now_utc + timedelta(seconds=30)] + future
+                slots = future
                 if not slots:
                     continue
 

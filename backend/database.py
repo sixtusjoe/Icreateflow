@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -70,6 +70,7 @@ DB_PATH = Path(__file__).parent / "icreate.db"
 _TIMESTAMP_COLUMNS = {
     "created_at", "last_login", "scheduled_at",
     "scheduled_for", "posted_at", "view_count_updated_at", "last_posted_at",
+    "started_at", "ended_at", "next_scheduled_at",
 }
 
 # Columns that must always be coerced to real booleans regardless of input form.
@@ -511,7 +512,14 @@ def _rewrite_boolean_literals(sql: str) -> str:
 
 
 def _parse_timestamp(val: Any) -> Any:
-    if val is None or isinstance(val, datetime):
+    if val is None:
+        return val
+    if isinstance(val, datetime):
+        # All timestamp columns are TIMESTAMP WITHOUT TIME ZONE — asyncpg rejects
+        # tz-aware datetimes against them. Normalise by converting to UTC and
+        # stripping tzinfo so callers can hand us either flavour.
+        if val.tzinfo is not None:
+            return val.astimezone(timezone.utc).replace(tzinfo=None)
         return val
     if not isinstance(val, str):
         return val
@@ -551,7 +559,8 @@ def _coerce_timestamp_params(sql: str, names: list[str], values: list[Any]) -> l
                     out[idx] = _parse_timestamp(out[idx])
                 except (ValueError, IndexError):
                     pass
-    for match in re.finditer(r"(\w+)\s*=\s*:(\w+)", sql):
+    # col = :name, col >= :name, col < :name, col > :name, col <= :name
+    for match in re.finditer(r"(\w+)\s*(?:=|>=?|<=?|<>|!=)\s*:(\w+)", sql):
         col, name = match.group(1), match.group(2)
         if col in _TIMESTAMP_COLUMNS:
             try:
@@ -559,6 +568,12 @@ def _coerce_timestamp_params(sql: str, names: list[str], values: list[Any]) -> l
                 out[idx] = _parse_timestamp(out[idx])
             except (ValueError, IndexError):
                 pass
+    # Catch-all: strip tz from any datetime bind, regardless of column name —
+    # every timestamp column in this schema is TIMESTAMP WITHOUT TIME ZONE, so
+    # a tz-aware datetime binding is always wrong.
+    for i, v in enumerate(out):
+        if isinstance(v, datetime) and v.tzinfo is not None:
+            out[i] = v.astimezone(timezone.utc).replace(tzinfo=None)
     return out
 
 

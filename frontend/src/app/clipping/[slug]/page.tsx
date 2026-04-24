@@ -98,6 +98,28 @@ type Campaign = {
 
 const PLATFORMS = ["tiktok", "youtube", "instagram", "facebook"] as const;
 
+/**
+ * Format a UTC ISO timestamp in the artist's configured scheduler timezone.
+ * The tz saved on the scheduler is the single source of truth — the viewer's
+ * browser tz is ignored so everyone sees the same wall-clock time.
+ */
+function formatInArtistTz(
+  iso: string | null | undefined,
+  tz: string,
+  opts: { dateOnly?: boolean } = {},
+): string {
+  if (!iso) return "";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "short",
+      ...(opts.dateOnly ? {} : { timeStyle: "short", timeZoneName: "short" as const }),
+      timeZone: tz || "US/Eastern",
+    }).format(new Date(iso));
+  } catch {
+    return new Date(iso).toLocaleString();
+  }
+}
+
 export default function ArtistPage({
   params,
 }: {
@@ -424,7 +446,7 @@ export default function ArtistPage({
             label="Next slot"
             value={
               dashboard.next_scheduled_at
-                ? new Date(dashboard.next_scheduled_at).toLocaleString()
+                ? formatInArtistTz(dashboard.next_scheduled_at, settings.timezone)
                 : "—"
             }
           />
@@ -480,7 +502,7 @@ export default function ArtistPage({
             <div>
               <div className="mb-1 text-sm font-medium">{dashboard.current_campaign.name}</div>
               <div className="text-xs text-muted-foreground">
-                Started {new Date(dashboard.current_campaign.started_at).toLocaleString()} ·{" "}
+                Started {formatInArtistTz(dashboard.current_campaign.started_at, settings.timezone)} ·{" "}
                 {dashboard.posts_total} posts · {dashboard.views_total.toLocaleString()} views
               </div>
             </div>
@@ -639,9 +661,9 @@ export default function ArtistPage({
                     <div className="min-w-0">
                       <div className="truncate font-medium text-foreground">{c.name}</div>
                       <div className="text-[11px] text-muted-foreground">
-                        {new Date(c.started_at).toLocaleDateString()}
+                        {formatInArtistTz(c.started_at, settings.timezone, { dateOnly: true })}
                         {c.ended_at
-                          ? ` → ${new Date(c.ended_at).toLocaleDateString()}`
+                          ? ` → ${formatInArtistTz(c.ended_at, settings.timezone, { dateOnly: true })}`
                           : ""}
                         {" · "}
                         {c.posts_total} posts · {c.views_total.toLocaleString()} views ·{" "}

@@ -273,13 +273,24 @@ class PromotionResetReq(BaseModel):
 
 # --- Helper ---
 
+def _tag_utc(d: dict) -> dict:
+    """Tag naive timestamp columns as UTC so JSON serialization emits an
+    offset — browsers then parse correctly rather than treating the string
+    as local time. Stored values are always UTC."""
+    for k in db._TIMESTAMP_COLUMNS:
+        v = d.get(k)
+        if isinstance(v, datetime) and v.tzinfo is None:
+            d[k] = v.replace(tzinfo=timezone.utc)
+    return d
+
+
 def row_to_dict(row):
     if row is None:
         return None
-    return dict(row)
+    return _tag_utc(dict(row))
 
 def rows_to_list(rows):
-    return [dict(r) for r in rows]
+    return [_tag_utc(dict(r)) for r in rows]
 
 def user_safe(user_dict: dict) -> dict:
     """Return user dict without password_hash."""
@@ -3006,7 +3017,7 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         campaign = None
         if current_cid:
             c = await db.get_campaign(database, current_cid)
-            campaign = dict(c) if c else None
+            campaign = row_to_dict(c) if c else None
 
         return {
             "variations_count": len(variations),
@@ -3015,7 +3026,11 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             "posts_total": posts_total,
             "views_total": sum(b["views"] for b in by_platform.values()),
             "by_platform": by_platform,
-            "next_scheduled_at": next_scheduled_at.isoformat() if next_scheduled_at else None,
+            "next_scheduled_at": (
+                (next_scheduled_at.replace(tzinfo=timezone.utc) if next_scheduled_at.tzinfo is None else next_scheduled_at).isoformat()
+                if next_scheduled_at
+                else None
+            ),
             "is_active": bool(artist_d.get("is_active")),
             "paused_reason": artist_d.get("paused_reason"),
             "view_target": artist_d.get("view_target"),
