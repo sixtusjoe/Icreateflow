@@ -42,7 +42,8 @@ SCOPES = {
     # @handle) requires `user.info.profile` which isn't enabled on our app,
     # so we fall back to display_name in fetch_profile_handles and let the
     # user override via the Edit button if they want the real @handle.
-    "tiktok": "user.info.basic,video.publish,video.upload",
+    # `video.list` is required by /v2/video/query for view-count polling.
+    "tiktok": "user.info.basic,video.publish,video.upload,video.list",
     "youtube": "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
     "meta": (
         "instagram_basic,instagram_content_publish,"
