@@ -3599,6 +3599,56 @@ async def admin_clear_brand_cache(data: BrandCacheClearRequest, admin: dict = De
     return {"ok": True, **out}
 
 
+# ---------------------------------------------------------------------------
+# Admin: reconcile a clip_post's platform_post_id when the stored id is stale.
+# The actual live video on the platform can have a different id than what we
+# stored (race-condition leftovers, or the operator deleted the wrong one).
+# POSTing here updates platform_post_id and forces the view poller to re-check
+# this row immediately.
+# ---------------------------------------------------------------------------
+@app.post("/api/admin/clip-posts/{clip_post_id}/reconcile")
+async def admin_reconcile_clip_post(
+    clip_post_id: int,
+    payload: dict,
+    admin: dict = Depends(admin_required),
+):
+    new_id = (payload or {}).get("platform_post_id")
+    if not new_id or not isinstance(new_id, str):
+        raise HTTPException(400, "platform_post_id (string) is required")
+
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT id, platform, platform_post_id, view_count FROM clip_posts WHERE id = ?",
+            (clip_post_id,),
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            raise HTTPException(404, f"clip_post {clip_post_id} not found")
+        before = dict(rows[0])
+        await db.update_clip_post(
+            database, clip_post_id,
+            platform_post_id=new_id,
+            view_count_updated_at=None,  # make poller pick this up on next tick
+        )
+        polled = None
+        try:
+            from services.clip_scheduler import poll_views_once
+            await poll_views_once()
+            cur = await database.execute(
+                "SELECT view_count, view_count_updated_at FROM clip_posts WHERE id = ?",
+                (clip_post_id,),
+            )
+            after = await cur.fetchall()
+            if after:
+                polled = dict(after[0])
+        except Exception as e:  # noqa: BLE001
+            polled = {"error": str(e)}
+        return {"ok": True, "before": before, "new_platform_post_id": new_id, "polled": polled}
+    finally:
+        await database.close()
+
+
 # --- Global exception logger ---
 
 from fastapi.exceptions import RequestValidationError

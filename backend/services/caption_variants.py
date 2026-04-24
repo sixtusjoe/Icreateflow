@@ -18,11 +18,70 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 from typing import Optional
 
 import database as db
+
+
+# Phrases that strongly indicate the model refused / asked for clarification
+# instead of producing a rewrite. If the model output matches any of these we
+# must NOT post it — fall back to the original caption.
+_REFUSAL_PATTERNS = [
+    r"\bi need (?:the|more|a) ",
+    r"\bi don'?t have ",
+    r"\bi (?:can'?t|cannot) ",
+    r"\bas an ai\b",
+    r"\bcould you (?:provide|share|clarify) ",
+    r"\bplease (?:provide|share|clarify) ",
+    r"\bthe original (?:only|just) shows\b",
+    r"\bthis is just a (?:hashtag|emoji)\b",
+    r"\bno actual (?:caption|content)\b",
+    r"\bneeds? rewriting\??\s*$",
+    r"\bcaption text to rewrite\b",
+    r"\bwhat (?:would|do) you\b",
+    r"^i'?m (?:sorry|unable) ",
+]
+_REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS), re.IGNORECASE)
+
+
+def _caption_is_trivial(text: str) -> bool:
+    """True when the caption has no meaningful words to rewrite.
+
+    A caption that's just hashtags / mentions / emoji / whitespace can't be
+    paraphrased — asking an LLM to rewrite it produces a clarification reply
+    like 'I need the original caption text to rewrite...' which then gets
+    posted verbatim. Skip the LLM in this case.
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    # Strip hashtags and @mentions, then strip emoji/symbols and whitespace.
+    stripped = re.sub(r"[#@]\w+", " ", t)
+    # Keep letters/digits; drop everything else.
+    alnum = re.sub(r"[^\w\s]", " ", stripped, flags=re.UNICODE)
+    words = [w for w in alnum.split() if any(c.isalpha() for c in w) and len(w) >= 2]
+    # Need at least 2 real words (3+ chars of content combined) to attempt a rewrite.
+    return len(words) < 2 or sum(len(w) for w in words) < 4
+
+
+def _looks_like_refusal(variant: str, base_caption: str) -> bool:
+    """Reject LLM outputs that are meta-replies instead of rewrites."""
+    v = (variant or "").strip()
+    if not v:
+        return True
+    if _REFUSAL_RE.search(v):
+        return True
+    # Contains the literal base caption AND trailing prose — often a
+    # "the original only shows: X. This is just ..." pattern.
+    if base_caption and base_caption in v and len(v) > len(base_caption) * 3:
+        return True
+    # Extremely long compared to source (hallucinated preamble).
+    if base_caption and len(v) > max(400, len(base_caption) * 4):
+        return True
+    return False
 
 
 # Platform-specific guardrails. Kept conservative — we want the text to
@@ -117,12 +176,22 @@ async def get_variant(
     if not base_caption:
         return ""
 
+    # Trivial captions (just hashtags / emoji / a couple chars) produce
+    # LLM refusals, not rewrites. Skip the model and post the original.
+    if _caption_is_trivial(base_caption):
+        return base_caption
+
     try:
         cached = await db.get_clip_caption_variant(database, clip_id, variation_id, platform)
     except Exception:
         cached = None
 
-    if cached and (cached.get("source_caption") or "") == base_caption and cached.get("caption"):
+    if (
+        cached
+        and (cached.get("source_caption") or "") == base_caption
+        and cached.get("caption")
+        and not _looks_like_refusal(cached["caption"], base_caption)
+    ):
         return cached["caption"]
 
     api_key = await _get_api_key(database)
@@ -136,7 +205,8 @@ async def get_variant(
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
         variant = None
 
-    if not variant:
+    # Reject empty OR refusal-shaped output. NEVER post an LLM meta-reply.
+    if not variant or _looks_like_refusal(variant, base_caption):
         return base_caption
 
     # Defensive length cap — TikTok caps at ~2200 chars, the others are

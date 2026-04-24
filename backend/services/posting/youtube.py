@@ -71,5 +71,12 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
             raise PostingError(f"YouTube stats failed {r.status_code}: {r.text[:200]}")
         items = r.json().get("items") or []
         if not items:
-            return 0
+            # Empty items = video doesn't exist at this ID (deleted, private,
+            # or platform_post_id is stale). Do NOT return 0 — that would
+            # silently clobber a real view count. Raise so the poller logs
+            # it and skips the update.
+            raise PostingError(
+                f"YouTube stats: video id {platform_post_id!r} not found "
+                f"(deleted, private, or stored id is stale)"
+            )
         return int((items[0].get("statistics") or {}).get("viewCount") or 0)

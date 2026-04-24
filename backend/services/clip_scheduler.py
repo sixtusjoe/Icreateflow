@@ -492,11 +492,34 @@ async def poll_views_once() -> None:
                     continue
                 adapter = ADAPTERS[platform]
                 views = await adapter.get_view_count(access_token, cp["platform_post_id"])
-                await db.update_clip_post(
-                    database, cp["id"],
-                    view_count=int(views or 0),
-                    view_count_updated_at=datetime.now(timezone.utc),
-                )
+                new_views = int(views or 0)
+                prev_views = int(cp.get("view_count") or 0)
+                # Don't regress a real count back to 0. If the platform briefly
+                # returns 0 (rate-limit glitch, propagation lag), keep the
+                # previously-observed number instead of clobbering.
+                if new_views == 0 and prev_views > 0:
+                    await db.log_error(
+                        database, source=f"posting.{platform}.views",
+                        message=(
+                            f"adapter returned 0 views but previous was "
+                            f"{prev_views}; keeping previous"
+                        ),
+                        context=(
+                            f"clip_post_id={cp['id']} "
+                            f"platform_post_id={cp.get('platform_post_id')!r}"
+                        ),
+                    )
+                    # Still bump the updated_at so the poller moves on.
+                    await db.update_clip_post(
+                        database, cp["id"],
+                        view_count_updated_at=datetime.now(timezone.utc),
+                    )
+                else:
+                    await db.update_clip_post(
+                        database, cp["id"],
+                        view_count=new_views,
+                        view_count_updated_at=datetime.now(timezone.utc),
+                    )
                 if cp.get("artist_id"):
                     touched_artists.add(cp["artist_id"])
             except Exception as e:  # noqa: BLE001
