@@ -142,33 +142,113 @@ class TikTokStatsUnavailable(PostingError):
     """
 
 
-def _normalize_tiktok_video_id(raw: str) -> str:
-    """Extract the bare integer video id.
+def _is_publish_id(raw: str) -> bool:
+    """TikTok publish_ids look like ``v_pub_url~v2-1.<digits>`` — not a video_id."""
+    return bool(raw) and raw.strip().startswith("v_pub_url~")
 
-    TikTok's /post/publish/status/fetch/ sometimes returns only a publish_id
-    like ``v_pub_url~v2-1.7632224784536864782`` when the post isn't publicly
-    available (SELF_ONLY drafts). That string isn't a valid input to
-    /v2/video/query/ — it wants just the trailing integer. Strip the
-    ``v_pub_url~v2-N.`` prefix, keep only the digits.
+
+async def _fetch_publicly_available_post_id(
+    client: httpx.AsyncClient, access_token: str, publish_id: str
+) -> str | None:
+    """Ask /post/publish/status/fetch/ if the publish_id now has a public video id."""
+    try:
+        r = await client.post(
+            f"{API_BASE}/post/publish/status/fetch/",
+            json={"publish_id": publish_id},
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        )
+        if r.status_code >= 400:
+            return None
+        sd = (r.json().get("data") or {})
+        vid = (sd.get("publicly_available_post_id") or [None])[0]
+        return str(vid) if vid else None
+    except Exception:
+        return None
+
+
+async def _list_videos(
+    client: httpx.AsyncClient, access_token: str, max_count: int = 20
+) -> list[dict]:
+    """Return the authed user's most recent videos via /video/list/."""
+    try:
+        r = await client.post(
+            f"{API_BASE}/video/list/?fields=id,create_time,view_count,share_url",
+            json={"max_count": max_count},
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        )
+        if r.status_code >= 400:
+            return []
+        return ((r.json().get("data") or {}).get("videos")) or []
+    except Exception:
+        return []
+
+
+async def resolve_video_id(
+    access_token: str,
+    stored_id: str,
+    posted_at_epoch: int | None = None,
+) -> str | None:
+    """Upgrade a stored publish_id to a real video_id.
+
+    TikTok's /post/publish/video/init/ returns a ``publish_id`` like
+    ``v_pub_url~v2-1.<digits>`` that's only usable against
+    /post/publish/status/fetch/. The real public video_id is a separate
+    integer that only materialises after moderation — and for SELF_ONLY
+    posts, /status/fetch/ never returns it at all.
+
+    Strategy:
+      1. If stored_id is already a bare integer, return it unchanged.
+      2. Call /post/publish/status/fetch/ — returns publicly_available_post_id
+         once the post has moderated to a public state.
+      3. Fall back to /video/list/ (requires the ``video.list`` scope) and
+         match by create_time closest to posted_at_epoch, else take the
+         newest. Videos posted as SELF_ONLY still show up in /video/list/
+         for the account owner.
     """
-    s = (raw or "").strip()
+    s = (stored_id or "").strip()
     if not s:
-        return s
-    # Everything after the final '.' when the string starts with v_pub_url~
-    if s.startswith("v_pub_url~") and "." in s:
-        tail = s.rsplit(".", 1)[-1]
-        if tail.isdigit():
-            return tail
-    return s
+        return None
+    if not _is_publish_id(s):
+        return s  # already a real id
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        vid = await _fetch_publicly_available_post_id(client, access_token, s)
+        if vid:
+            return vid
+
+        videos = await _list_videos(client, access_token, max_count=20)
+        if not videos:
+            return None
+        if posted_at_epoch is not None:
+            videos_sorted = sorted(
+                videos,
+                key=lambda v: abs(int(v.get("create_time") or 0) - int(posted_at_epoch)),
+            )
+            best = videos_sorted[0]
+            # Guard: only trust the match if create_time is within 10 minutes.
+            if abs(int(best.get("create_time") or 0) - int(posted_at_epoch)) <= 600:
+                return str(best.get("id")) if best.get("id") else None
+            return None
+        # No timestamp → take most recent.
+        videos.sort(key=lambda v: int(v.get("create_time") or 0), reverse=True)
+        return str(videos[0].get("id")) if videos[0].get("id") else None
 
 
 async def get_view_count(access_token: str, platform_post_id: str) -> int:
+    """Look up view_count for a bare video_id.
+
+    Caller is responsible for resolving publish_ids → video_ids via
+    ``resolve_video_id`` first; this function does NOT do that fallback
+    because it can't persist the resolved id back to the DB on its own.
+    """
+    if _is_publish_id(platform_post_id):
+        # Nothing we can do here — the caller should have resolved upstream.
+        return 0
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    video_id = _normalize_tiktok_video_id(platform_post_id)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             f"{API_BASE}/video/query/?fields=view_count",
-            json={"filters": {"video_ids": [video_id]}},
+            json={"filters": {"video_ids": [platform_post_id]}},
             headers=headers,
         )
         if r.status_code == 401 and "scope_not_authorized" in r.text:

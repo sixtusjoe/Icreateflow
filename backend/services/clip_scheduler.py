@@ -498,7 +498,34 @@ async def poll_views_once() -> None:
                 if not access_token:
                     continue
                 adapter = ADAPTERS[platform]
-                views = await adapter.get_view_count(access_token, cp["platform_post_id"])
+
+                # TikTok publish_id → real video_id upgrade. /post/publish/video/init/
+                # returns a publish_id we store when `publicly_available_post_id` is
+                # empty at post time. That string isn't valid for /video/query/ —
+                # resolve it once, persist the upgrade, then stats land correctly
+                # from then on.
+                post_id = cp["platform_post_id"]
+                if platform == "tiktok":
+                    from services.posting.tiktok import _is_publish_id, resolve_video_id
+                    if _is_publish_id(post_id):
+                        posted_at = cp.get("posted_at")
+                        posted_epoch = int(posted_at.timestamp()) if posted_at else None
+                        resolved = await resolve_video_id(access_token, post_id, posted_epoch)
+                        if resolved and resolved != post_id:
+                            await db.update_clip_post(
+                                database, cp["id"], platform_post_id=resolved,
+                            )
+                            post_id = resolved
+                        else:
+                            # Couldn't resolve — bump timestamp so the poller
+                            # moves on and we try again next cycle.
+                            await db.update_clip_post(
+                                database, cp["id"],
+                                view_count_updated_at=datetime.now(timezone.utc),
+                            )
+                            continue
+
+                views = await adapter.get_view_count(access_token, post_id)
                 new_views = int(views or 0)
                 prev_views = int(cp.get("view_count") or 0)
                 # Don't regress a real count back to 0. If the platform briefly
