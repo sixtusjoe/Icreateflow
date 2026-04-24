@@ -132,6 +132,16 @@ async def upload_photo_slideshow(
         raise PostingError("TikTok slideshow publish timed out")
 
 
+class TikTokStatsUnavailable(PostingError):
+    """Raised when per-video stats can't be fetched for scope reasons.
+
+    The Content Posting API scopes (`video.publish`, `video.upload`) do NOT
+    grant access to /v2/video/query/ — that needs `video.list` from the
+    Display API, which requires a separate TikTok developer-portal approval.
+    The poller treats this as a "skip silently" signal instead of an error.
+    """
+
+
 async def get_view_count(access_token: str, platform_post_id: str) -> int:
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -140,6 +150,11 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
             json={"filters": {"video_ids": [platform_post_id]}},
             headers=headers,
         )
+        if r.status_code == 401 and "scope_not_authorized" in r.text:
+            raise TikTokStatsUnavailable(
+                "TikTok per-video stats require the Display API `video.list` "
+                "scope. Apply for it on the TikTok developer portal."
+            )
         if r.status_code >= 400:
             raise PostingError(f"TikTok stats failed {r.status_code}: {r.text[:200]}")
         videos = ((r.json().get("data") or {}).get("videos")) or []

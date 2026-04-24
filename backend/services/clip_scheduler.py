@@ -523,6 +523,20 @@ async def poll_views_once() -> None:
                 if cp.get("artist_id"):
                     touched_artists.add(cp["artist_id"])
             except Exception as e:  # noqa: BLE001
+                # TikTok stats are scope-locked behind the Display API. If
+                # that's why the adapter failed, stamp view_count_updated_at
+                # so the poller moves past this row and silently skip — no
+                # point logging the same 401 every 15 minutes.
+                from services.posting.tiktok import TikTokStatsUnavailable
+                if isinstance(e, TikTokStatsUnavailable):
+                    try:
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count_updated_at=datetime.now(timezone.utc),
+                        )
+                    except Exception:
+                        pass
+                    continue
                 await db.log_error(
                     database, source=f"posting.{cp.get('platform')}.views",
                     message=str(e), traceback=traceback.format_exc(),
