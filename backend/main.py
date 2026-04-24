@@ -3379,6 +3379,7 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
             "SELECT COUNT(*) AS c, MIN(created_at) AS oldest FROM clip_caption_variants"
         )
         row = dict(await cur.fetchone())
+        last_diversify_at = (await db.get_site_config(database)).get("last_diversify_at")
     finally:
         await database.close()
 
@@ -3388,6 +3389,9 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
             "bytes": renders_bytes,
             "oldest": renders_oldest.isoformat() if renders_oldest else None,
             "newest": renders_newest.isoformat() if renders_newest else None,
+            # Persisted stamp from the scheduler on each successful diversify.
+            # Survives cache cleanup unlike file mtimes.
+            "last_run": last_diversify_at,
         },
         "caption_variants": {
             "count": int(row.get("c") or 0),

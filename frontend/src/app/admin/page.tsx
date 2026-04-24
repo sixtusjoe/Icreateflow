@@ -916,7 +916,10 @@ function CacheCleanupCard() {
             {stats ? `${stats.video_renders.count} files · ${fmtBytes(stats.video_renders.bytes)}` : "…"}
           </div>
           <div className="text-[11px] text-muted-foreground">
-            last render: {stats ? fmtDate(stats.video_renders.newest) : "…"}
+            last run: {stats ? fmtDate(stats.video_renders.last_run) : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            newest on disk: {stats ? fmtDate(stats.video_renders.newest) : "…"}
           </div>
           <div className="text-[11px] text-muted-foreground">
             oldest on disk: {stats ? fmtDate(stats.video_renders.oldest) : "…"}

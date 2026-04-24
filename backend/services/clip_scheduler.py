@@ -373,6 +373,15 @@ async def dispatch_due_once() -> None:
                             platform=platform,
                         )
                         source = diversify_svc.public_url_for(local, public_base)
+                        # Stamp last-success so admin stats survive cache cleanup.
+                        try:
+                            await db.set_site_config(
+                                database,
+                                "last_diversify_at",
+                                datetime.now(timezone.utc).isoformat(),
+                            )
+                        except Exception:
+                            pass
                     except Exception as de:
                         # Log but fall back to the raw source so a single bad
                         # diversification doesn't block the post.
