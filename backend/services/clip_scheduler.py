@@ -306,22 +306,32 @@ async def dispatch_due_once() -> None:
     """Post any clip_posts rows whose scheduled_for has passed."""
     database = await db.get_db()
     try:
+        # Atomic claim: flip status='scheduled' → 'posting' in a single
+        # UPDATE so only one worker ever gets each row. Without this, two
+        # gunicorn workers both SELECT, both UPDATE, and the clip gets
+        # posted twice per variation.
         cur = await database.execute(
             """
-            SELECT cp.* FROM clip_posts cp
-            JOIN artists a ON a.id = cp.artist_id
-            WHERE cp.status = 'scheduled' AND cp.scheduled_for IS NOT NULL
-              AND cp.scheduled_for <= NOW()
-              AND a.is_active = TRUE
-              AND a.paused_reason IS NULL
-            ORDER BY cp.scheduled_for ASC
-            LIMIT 50
+            UPDATE clip_posts SET status = 'posting'
+            WHERE id IN (
+                SELECT cp.id FROM clip_posts cp
+                JOIN artists a ON a.id = cp.artist_id
+                WHERE cp.status = 'scheduled' AND cp.scheduled_for IS NOT NULL
+                  AND cp.scheduled_for <= NOW()
+                  AND a.is_active = TRUE
+                  AND a.paused_reason IS NULL
+                ORDER BY cp.scheduled_for ASC
+                LIMIT 50
+                FOR UPDATE OF cp SKIP LOCKED
+            )
+            RETURNING *
             """
         )
         rows = [dict(r) for r in await cur.fetchall()]
+        await database.commit()
         for cp in rows:
             try:
-                await db.update_clip_post(database, cp["id"], status="posting")
+                # Row is already status='posting' thanks to the atomic claim.
 
                 clip = await db.get_clip(database, cp["clip_id"]) if cp.get("clip_id") else None
                 variation = await db.get_artist_account(database, cp["artist_account_id"])

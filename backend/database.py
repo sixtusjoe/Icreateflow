@@ -688,6 +688,8 @@ class Connection:
             return _Cursor([], lastrowid=lastrowid)
         if stripped.startswith(("SELECT", "WITH", "VALUES")):
             return _Cursor([Row(m) for m in result.mappings().all()])
+        if stripped.startswith("UPDATE") and "RETURNING" in stripped:
+            return _Cursor([Row(m) for m in result.mappings().all()])
         return _Cursor([])
 
     async def executescript(self, script: str) -> None:
