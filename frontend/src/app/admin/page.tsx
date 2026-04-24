@@ -612,6 +612,17 @@ function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: an
     catch { toast.error("Failed"); }
   };
 
+  const clearAll = async () => {
+    if (!confirm(`Clear ${platform} Client ID and Secret? Users won't be able to connect ${platform} until you set them again.`)) return;
+    try {
+      await updateOAuthApp(platform, { client_id: "", client_secret: "" });
+      setClientId("");
+      setClientSecret("");
+      toast.success(`${platform} credentials cleared`);
+      onReload();
+    } catch { toast.error("Failed to clear"); }
+  };
+
   const callback = redirectBase ? `${redirectBase.replace(/\/$/, "")}/api/oauth/${platform}/callback` : "(set redirect base first)";
   const metaHint =
     platform === "meta"
@@ -661,9 +672,19 @@ function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: an
           </select>
         </div>
       )}
-      <button onClick={save} className="mt-3 inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 text-sm font-medium text-background">
-        <Save className="h-4 w-4" /> Save {platform}
-      </button>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button onClick={save} className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 text-sm font-medium text-background">
+          <Save className="h-4 w-4" /> Save {platform}
+        </button>
+        {(data?.configured || data?.client_id || data?.client_secret_preview) && (
+          <button
+            onClick={clearAll}
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-destructive/40 px-4 text-sm font-medium text-destructive hover:bg-destructive/10"
+          >
+            Clear credentials
+          </button>
+        )}
+      </div>
     </div>
   );
 }
