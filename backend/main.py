@@ -761,11 +761,13 @@ async def admin_list_api_keys(admin: dict = Depends(admin_required)):
 
 # --- OAuth app configuration (admin) ---
 
-OAUTH_PLATFORMS = {"tiktok", "youtube", "meta"}
+OAUTH_PLATFORMS = {"tiktok", "youtube", "meta", "instagram"}
 OAUTH_CONFIG_KEYS = [
     "oauth_tiktok_client_id", "oauth_tiktok_client_secret",
     "oauth_youtube_client_id", "oauth_youtube_client_secret",
     "oauth_meta_client_id", "oauth_meta_client_secret",
+    # Standalone Instagram API with Instagram Login (separate from Meta/FB app).
+    "oauth_instagram_client_id", "oauth_instagram_client_secret",
     "oauth_google_drive_api_key",
     "oauth_redirect_base",
 ]
@@ -911,14 +913,22 @@ async def oauth_start(
     finally:
         await database.close()
 
-    client_id = cfg.get(f"oauth_{platform}_client_id", "")
     redirect_base = cfg.get("oauth_redirect_base", "")
+    # "instagram" tile: prefer the standalone Instagram Login app; fall back to
+    # the Meta FB-Login app if admin hasn't configured the IG app yet. This
+    # keeps existing Meta-only setups working while enabling users to connect
+    # IG without Facebook once the IG app is configured.
+    effective_platform = platform
+    if platform == "instagram" and not cfg.get("oauth_instagram_client_id"):
+        effective_platform = "meta"
+
+    client_id = cfg.get(f"oauth_{effective_platform}_client_id", "")
     if not client_id or not redirect_base:
         raise HTTPException(400, f"{platform} OAuth app not configured by admin")
 
-    redirect_uri = oauth_svc.build_redirect_uri(redirect_base, platform)
-    state = oauth_svc.sign_state(user["id"], target_id, platform, kind=kind)
-    auth_url = oauth_svc.build_authorize_url(platform, client_id, redirect_uri, state)
+    redirect_uri = oauth_svc.build_redirect_uri(redirect_base, effective_platform)
+    state = oauth_svc.sign_state(user["id"], target_id, effective_platform, kind=kind)
+    auth_url = oauth_svc.build_authorize_url(effective_platform, client_id, redirect_uri, state)
     return {"authorize_url": auth_url}
 
 
@@ -959,7 +969,10 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(tokens["expires_in"]))
             expires_at = expires_at.isoformat()
 
-        # Meta flow populates BOTH instagram_ and facebook_ columns
+        # Meta flow populates BOTH instagram_ and facebook_ columns (FB Login
+        # covers IG-linked-to-Page + Page). Standalone "instagram" flow writes
+        # only to instagram_ columns — users who don't link to Facebook can
+        # still connect Instagram directly.
         target_platforms = ["instagram", "facebook"] if platform == "meta" else [platform]
         updates: dict = {}
         for p in target_platforms:
@@ -2108,7 +2121,17 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                         pass
                 if not needs_refresh or not refresh:
                     return token_local
-                provider = "meta" if platform_name in ("instagram", "facebook") else platform_name
+                # Heuristic for which app owns this token:
+                #   - facebook_* is always Meta (FB Login).
+                #   - instagram_* is Meta if a sibling facebook_token exists
+                #     (came from FB Login fan-out); otherwise it's the
+                #     standalone Instagram Login app.
+                if platform_name == "facebook":
+                    provider = "meta"
+                elif platform_name == "instagram":
+                    provider = "meta" if account.get("facebook_token") else "instagram"
+                else:
+                    provider = platform_name
                 cid = cfg.get(f"oauth_{provider}_client_id", "")
                 csec = cfg.get(f"oauth_{provider}_client_secret", "")
                 if not cid or not csec:
@@ -2787,12 +2810,17 @@ async def refresh_variation_profile(variation_id: int, user: dict = Depends(get_
 
         status: dict[str, dict] = {}
         updates: dict = {}
-        # Meta flow covers IG+FB in one call via facebook_token.
+        # Meta FB Login flow covers IG+FB in one call via facebook_token.
+        # Standalone IG Login returns only an instagram_token with no FB page
+        # — query graph.instagram.com/me via the "instagram" provider branch.
         platform_specs = [
             ("tiktok", "tiktok", v.get("tiktok_token")),
             ("youtube", "youtube", v.get("youtube_token")),
-            ("meta", "facebook", v.get("facebook_token") or v.get("instagram_token")),
         ]
+        if v.get("facebook_token"):
+            platform_specs.append(("meta", "facebook", v.get("facebook_token")))
+        elif v.get("instagram_token"):
+            platform_specs.append(("instagram", "instagram", v.get("instagram_token")))
         for api_platform, display_key, token in platform_specs:
             if not token:
                 status[display_key] = {"status": "skipped", "reason": "not connected"}
@@ -3100,10 +3128,17 @@ async def _promotion_preflight(database, artist_id: int) -> list[str]:
 
     # OAuth app credentials check — if any platform is in use, its client id/secret must exist.
     cfg = await db.get_site_config(database)
-    platform_key = {"tiktok": "tiktok", "youtube": "youtube", "instagram": "meta", "facebook": "meta"}
+    # Instagram can be served by EITHER the Meta FB-Login app OR the standalone
+    # Instagram Login app — accept whichever is configured.
+    platform_key = {
+        "tiktok":    ["tiktok"],
+        "youtube":   ["youtube"],
+        "facebook":  ["meta"],
+        "instagram": ["meta", "instagram"],
+    }
     for p in connected_platforms:
-        k = platform_key[p]
-        if not (cfg.get(f"oauth_{k}_client_id") and cfg.get(f"oauth_{k}_client_secret")):
+        candidates = platform_key[p]
+        if not any(cfg.get(f"oauth_{k}_client_id") and cfg.get(f"oauth_{k}_client_secret") for k in candidates):
             errors.append(f"{p.capitalize()} OAuth app credentials not configured in admin settings.")
 
     # Google Drive key required if any clip is sourced from Drive.

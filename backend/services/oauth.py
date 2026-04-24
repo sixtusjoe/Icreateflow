@@ -17,9 +17,12 @@ import secrets
 from typing import Any
 from urllib.parse import urlencode
 
+import logging
 import httpx
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
+
+log = logging.getLogger(__name__)
 
 from services.auth import SECRET_KEY, ALGORITHM
 
@@ -27,20 +30,34 @@ from services.auth import SECRET_KEY, ALGORITHM
 AUTHORIZE_URLS = {
     "tiktok": "https://www.tiktok.com/v2/auth/authorize/",
     "youtube": "https://accounts.google.com/o/oauth2/v2/auth",
-    # Meta app covers both Instagram Business + Facebook Pages in one flow
+    # Meta app covers Facebook Pages (and legacy IG-via-FB-login when present)
     "meta": "https://www.facebook.com/v19.0/dialog/oauth",
+    # Newer standalone "Instagram API with Instagram Login" flow — separate app
+    # credentials, separate consent screen, separate scopes.
+    "instagram": "https://www.instagram.com/oauth/authorize",
 }
 
 TOKEN_URLS = {
     "tiktok": "https://open.tiktokapis.com/v2/oauth/token/",
     "youtube": "https://oauth2.googleapis.com/token",
     "meta": "https://graph.facebook.com/v19.0/oauth/access_token",
+    # IG Login: short-lived code→token at api.instagram.com, then exchange for
+    # long-lived (60d) via graph.instagram.com/access_token.
+    "instagram": "https://api.instagram.com/oauth/access_token",
 }
 
 _DEFAULT_TIKTOK_SCOPES = "user.info.basic,video.publish,video.upload"
 _DEFAULT_YOUTUBE_SCOPES = (
     "https://www.googleapis.com/auth/youtube.upload "
     "https://www.googleapis.com/auth/youtube.readonly"
+)
+_DEFAULT_INSTAGRAM_SCOPES = (
+    # Instagram API with Instagram Login (standalone IG app, NOT Facebook Login).
+    #   instagram_business_basic             — IG identity/profile
+    #   instagram_business_content_publish   — publish reels/posts
+    #   instagram_business_manage_insights   — read post insights (plays/views)
+    "instagram_business_basic,instagram_business_content_publish,"
+    "instagram_business_manage_insights"
 )
 _DEFAULT_META_SCOPES = (
     # Post + read-views on FB Pages and IG Business accounts.
@@ -64,9 +81,10 @@ SCOPES = {
     # scopes on the portal side (e.g. user.info.stats, or video.list once
     # the Display API product is approved).
     #   export TIKTOK_SCOPES="user.info.basic,video.publish,video.upload,user.info.stats"
-    "tiktok":  os.environ.get("TIKTOK_SCOPES",  _DEFAULT_TIKTOK_SCOPES),
-    "youtube": os.environ.get("YOUTUBE_SCOPES", _DEFAULT_YOUTUBE_SCOPES),
-    "meta":    os.environ.get("META_SCOPES",    _DEFAULT_META_SCOPES),
+    "tiktok":    os.environ.get("TIKTOK_SCOPES",    _DEFAULT_TIKTOK_SCOPES),
+    "youtube":   os.environ.get("YOUTUBE_SCOPES",   _DEFAULT_YOUTUBE_SCOPES),
+    "meta":      os.environ.get("META_SCOPES",      _DEFAULT_META_SCOPES),
+    "instagram": os.environ.get("INSTAGRAM_SCOPES", _DEFAULT_INSTAGRAM_SCOPES),
 }
 
 
@@ -137,11 +155,21 @@ def build_authorize_url(
             "prompt": "consent",
             "include_granted_scopes": "true",
         }
-    else:  # meta
+    elif platform == "meta":
         params = {
             "client_id": client_id,
             "response_type": "code",
             "scope": SCOPES["meta"],
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+    else:  # instagram (standalone IG Login)
+        params = {
+            "client_id": client_id,
+            "response_type": "code",
+            # IG Login expects space- or comma-separated scopes; use comma
+            # to match our stored convention.
+            "scope": SCOPES["instagram"],
             "redirect_uri": redirect_uri,
             "state": state,
         }
@@ -202,6 +230,49 @@ async def exchange_code(
                 "scope": data.get("scope"),
                 "platform_user_id": None,
                 "raw": data,
+            }
+
+        if platform == "instagram":
+            # Step 1: short-lived token at api.instagram.com
+            resp = await client.post(
+                TOKEN_URLS["instagram"],
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            short = resp.json() or {}
+            short_token = short.get("access_token")
+            ig_user_id = short.get("user_id")
+            long_token = None
+            long_expires_in = None
+            if short_token:
+                # Step 2: exchange short-lived → long-lived (~60d) at graph.instagram.com
+                try:
+                    r2 = await client.get(
+                        "https://graph.instagram.com/access_token",
+                        params={
+                            "grant_type": "ig_exchange_token",
+                            "client_secret": client_secret,
+                            "access_token": short_token,
+                        },
+                    )
+                    long_data = r2.json() or {}
+                    long_token = long_data.get("access_token")
+                    long_expires_in = long_data.get("expires_in")
+                except Exception:
+                    long_data = {}
+            return {
+                "access_token": long_token or short_token,
+                "refresh_token": None,  # IG uses long-lived + refresh via /refresh_access_token
+                "expires_in": long_expires_in,
+                "scope": SCOPES["instagram"],
+                "platform_user_id": str(ig_user_id) if ig_user_id else None,
+                "raw": {"short": short, "long": long_data if short_token else None},
             }
 
         # meta
@@ -271,6 +342,21 @@ async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[
             name = snip.get("customUrl") or snip.get("title")
             return {"youtube_handle": name} if name else {}
 
+        if platform == "instagram":
+            # Standalone IG Login — query /me on graph.instagram.com
+            r = await client.get(
+                "https://graph.instagram.com/v19.0/me",
+                params={
+                    "fields": "username",
+                    "access_token": access_token,
+                },
+            )
+            if r.status_code >= 400:
+                raise ProfileFetchError(f"instagram {r.status_code}: {r.text[:200]}")
+            data = r.json() or {}
+            name = data.get("username")
+            return {"instagram_handle": name} if name else {}
+
         if platform == "meta":
             r = await client.get(
                 "https://graph.facebook.com/v19.0/me/accounts",
@@ -304,7 +390,10 @@ async def fetch_profile_handles(platform: str, access_token: str) -> dict[str, s
     """
     try:
         return await _fetch_profile_handles_impl(platform, access_token)
-    except Exception:
+    except Exception as e:
+        # Don't block the OAuth callback, but surface why usernames
+        # weren't auto-filled so admins can diagnose in server logs.
+        log.warning("fetch_profile_handles(%s) failed: %s", platform, e)
         return {}
 
 
@@ -354,6 +443,27 @@ async def refresh_access_token(
             return {
                 "access_token": data.get("access_token"),
                 "refresh_token": refresh_token,
+                "expires_in": data.get("expires_in"),
+                "raw": data,
+            }
+        if platform == "instagram":
+            # IG long-lived tokens are refreshed by calling /refresh_access_token
+            # with the CURRENT long-lived token (we stash it in refresh_token
+            # column since there's no separate refresh secret).
+            r = await client.get(
+                "https://graph.instagram.com/refresh_access_token",
+                params={
+                    "grant_type": "ig_refresh_token",
+                    "access_token": refresh_token,
+                },
+            )
+            data = r.json() or {}
+            new_token = data.get("access_token")
+            return {
+                "access_token": new_token,
+                # Keep the newly-refreshed long-lived token as the "refresh"
+                # source for the next rotation.
+                "refresh_token": new_token or refresh_token,
                 "expires_in": data.get("expires_in"),
                 "raw": data,
             }

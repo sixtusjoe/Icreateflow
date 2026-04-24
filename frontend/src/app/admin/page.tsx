@@ -561,7 +561,7 @@ function OAuthTab({ oauth, onReload }: any) {
           </button>
         </div>
       </div>
-      {["tiktok", "youtube", "meta"].map((p) => <OAuthCard key={p} platform={p} data={oauth[p]} redirectBase={redirectBase} tiktokPrivacy={oauth.tiktok_privacy_level} onReload={onReload} />)}
+      {["tiktok", "youtube", "meta", "instagram"].map((p) => <OAuthCard key={p} platform={p} data={oauth[p]} redirectBase={redirectBase} tiktokPrivacy={oauth.tiktok_privacy_level} onReload={onReload} />)}
       <GoogleDriveCard data={oauth.google_drive} onReload={onReload} />
     </div>
   );
@@ -613,7 +613,12 @@ function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: an
   };
 
   const callback = redirectBase ? `${redirectBase.replace(/\/$/, "")}/api/oauth/${platform}/callback` : "(set redirect base first)";
-  const metaHint = platform === "meta" ? "Single app grants both Instagram Business + Facebook Page access" : "";
+  const metaHint =
+    platform === "meta"
+      ? "Facebook Login app — grants Facebook Pages + linked Instagram Business in one flow."
+      : platform === "instagram"
+      ? "Standalone Instagram Login app — for users who don't link Instagram to a Facebook Page."
+      : "";
 
   return (
     <div className="rounded-2xl bg-card p-4 md:p-6">

@@ -14,11 +14,13 @@ const PLATFORM_LABELS: Record<PlatformKey, string> = {
   facebook: "Facebook",
 };
 
-// One Meta OAuth flow grants both IG and FB. YouTube uses the "youtube" OAuth platform.
-const OAUTH_PLATFORM_FOR: Record<PlatformKey, "tiktok" | "youtube" | "meta"> = {
+// The Instagram tile asks for "instagram" — backend transparently falls
+// back to the Meta FB-Login app if the standalone Instagram app isn't
+// configured, so existing deployments keep working.
+const OAUTH_PLATFORM_FOR: Record<PlatformKey, "tiktok" | "youtube" | "meta" | "instagram"> = {
   tiktok: "tiktok",
   youtube: "youtube",
-  instagram: "meta",
+  instagram: "instagram",
   facebook: "meta",
 };
 
