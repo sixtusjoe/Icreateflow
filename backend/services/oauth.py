@@ -37,20 +37,26 @@ TOKEN_URLS = {
     "meta": "https://graph.facebook.com/v19.0/oauth/access_token",
 }
 
+_DEFAULT_TIKTOK_SCOPES = "user.info.basic,video.publish,video.upload"
+_DEFAULT_YOUTUBE_SCOPES = (
+    "https://www.googleapis.com/auth/youtube.upload "
+    "https://www.googleapis.com/auth/youtube.readonly"
+)
+_DEFAULT_META_SCOPES = (
+    "instagram_basic,instagram_content_publish,"
+    "pages_show_list,pages_manage_posts,pages_read_engagement,business_management"
+)
+
 SCOPES = {
-    # Only scopes the TikTok app is actually approved for. `username` (the
-    # @handle) requires `user.info.profile` which isn't enabled on our app,
-    # so we fall back to display_name in fetch_profile_handles and let the
-    # user override via the Edit button if they want the real @handle.
-    # Per-video stats via /v2/video/query/ would need the `video.list`
-    # scope, which is only granted to apps approved for the Display API.
-    # We don't request it here — reconnecting accounts would fail.
-    "tiktok": "user.info.basic,video.publish,video.upload",
-    "youtube": "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
-    "meta": (
-        "instagram_basic,instagram_content_publish,"
-        "pages_show_list,pages_manage_posts,pages_read_engagement,business_management"
-    ),
+    # TikTok: only scopes the app is approved for on the TikTok developer
+    # portal can be requested here — unknown scopes make the consent screen
+    # fail. Override via env (no code deploy) when you enable additional
+    # scopes on the portal side (e.g. user.info.stats, or video.list once
+    # the Display API product is approved).
+    #   export TIKTOK_SCOPES="user.info.basic,video.publish,video.upload,user.info.stats"
+    "tiktok":  os.environ.get("TIKTOK_SCOPES",  _DEFAULT_TIKTOK_SCOPES),
+    "youtube": os.environ.get("YOUTUBE_SCOPES", _DEFAULT_YOUTUBE_SCOPES),
+    "meta":    os.environ.get("META_SCOPES",    _DEFAULT_META_SCOPES),
 }
 
 
