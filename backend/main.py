@@ -3019,8 +3019,10 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             c = await db.get_campaign(database, current_cid)
             campaign = row_to_dict(c) if c else None
 
-        # View-poller heartbeat for the dashboard countdown.
-        from services.clip_scheduler import VIEW_POLL_INTERVAL_SECONDS
+        # View-poller heartbeat for the dashboard countdown. Interval is
+        # admin-configurable via site_config.view_poll_interval_seconds.
+        from services.clip_scheduler import get_view_poll_interval
+        poll_interval = await get_view_poll_interval(database)
         cur = await database.execute(
             "SELECT MAX(view_count_updated_at) AS last_polled_at "
             "FROM clip_posts WHERE artist_id = ? AND status = ?",
@@ -3031,9 +3033,9 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         if last_polled_at is not None:
             if last_polled_at.tzinfo is None:
                 last_polled_at = last_polled_at.replace(tzinfo=timezone.utc)
-            next_poll_at = last_polled_at + timedelta(seconds=VIEW_POLL_INTERVAL_SECONDS)
+            next_poll_at = last_polled_at + timedelta(seconds=poll_interval)
         else:
-            next_poll_at = datetime.now(timezone.utc) + timedelta(seconds=VIEW_POLL_INTERVAL_SECONDS)
+            next_poll_at = datetime.now(timezone.utc) + timedelta(seconds=poll_interval)
 
         return {
             "variations_count": len(variations),
@@ -3052,7 +3054,7 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             "view_target": artist_d.get("view_target"),
             "current_campaign": campaign,
             "poll": {
-                "interval_seconds": VIEW_POLL_INTERVAL_SECONDS,
+                "interval_seconds": poll_interval,
                 "last_polled_at": last_polled_at.isoformat() if last_polled_at else None,
                 "next_poll_at": next_poll_at.isoformat(),
             },

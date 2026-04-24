@@ -707,8 +707,49 @@ function BrandingTab({ siteConfig, setSiteConfig }: any) {
       </div>
 
       <CaptionVariantToggle siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
+      <PollIntervalCard siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <CacheCleanupCard />
       <BrandCacheCleanupCard />
+    </div>
+  );
+}
+
+function PollIntervalCard({ siteConfig, setSiteConfig }: any) {
+  const options = [
+    { value: "60",   label: "1 minute" },
+    { value: "120",  label: "2 minutes" },
+    { value: "300",  label: "5 minutes (default)" },
+    { value: "600",  label: "10 minutes" },
+    { value: "900",  label: "15 minutes" },
+    { value: "1800", label: "30 minutes" },
+    { value: "3600", label: "1 hour" },
+  ];
+  const current = String(siteConfig.view_poll_interval_seconds ?? "300");
+  return (
+    <div className="rounded-2xl bg-card p-4 md:p-6">
+      <h2 className="mb-2 text-base font-semibold">View poll cadence</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        How often the backend refreshes view counts for posted clips across TikTok & YouTube.
+        Changes take effect on the next poll cycle — no restart needed.
+      </p>
+      <select
+        value={current}
+        onChange={async (e) => {
+          const v = e.target.value;
+          setSiteConfig((s: any) => ({ ...s, view_poll_interval_seconds: v }));
+          try {
+            await updateSiteConfig("view_poll_interval_seconds", v);
+            toast.success("Poll cadence saved");
+          } catch {
+            toast.error("Failed to save");
+          }
+        }}
+        className="min-h-[44px] w-full max-w-xs rounded-lg border border-border bg-background px-3 text-sm"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
     </div>
   );
 }

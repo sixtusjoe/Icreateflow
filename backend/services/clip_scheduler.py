@@ -466,9 +466,28 @@ async def dispatch_due_once() -> None:
         await database.close()
 
 
-#: How often the view poller runs, in seconds. Also the "freshness" cutoff
-#: for the SELECT below — rows polled more recently than this are skipped.
-VIEW_POLL_INTERVAL_SECONDS = 300  # 5 minutes
+#: Default cadence for the view poller, in seconds. Admins can override this
+#: live via site_config key ``view_poll_interval_seconds`` — see
+#: ``get_view_poll_interval``. Floor is 60s so we don't rate-limit ourselves.
+DEFAULT_VIEW_POLL_INTERVAL_SECONDS = 300  # 5 minutes
+VIEW_POLL_INTERVAL_SECONDS = DEFAULT_VIEW_POLL_INTERVAL_SECONDS  # legacy alias
+
+
+async def get_view_poll_interval(database) -> int:
+    """Read the live poll cadence from site_config; clamp to [60, 3600]."""
+    try:
+        cfg = await db.get_site_config(database)
+        raw = (cfg or {}).get("view_poll_interval_seconds")
+        if raw is None or raw == "":
+            return DEFAULT_VIEW_POLL_INTERVAL_SECONDS
+        n = int(raw)
+        if n < 60:
+            return 60
+        if n > 3600:
+            return 3600
+        return n
+    except Exception:
+        return DEFAULT_VIEW_POLL_INTERVAL_SECONDS
 
 
 async def poll_views_once() -> None:
@@ -476,12 +495,13 @@ async def poll_views_once() -> None:
     then re-check pause."""
     database = await db.get_db()
     try:
+        interval = await get_view_poll_interval(database)
         cur = await database.execute(
             f"""
             SELECT * FROM clip_posts
             WHERE status = 'posted' AND platform_post_id IS NOT NULL
               AND (view_count_updated_at IS NULL
-                   OR view_count_updated_at < NOW() - INTERVAL '{VIEW_POLL_INTERVAL_SECONDS} seconds')
+                   OR view_count_updated_at < NOW() - INTERVAL '{interval} seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
             LIMIT 100
             """
@@ -604,10 +624,30 @@ async def _loop(fn, every_seconds: int, label: str) -> None:
         await asyncio.sleep(every_seconds)
 
 
+async def _poll_views_loop() -> None:
+    """View-poll loop with per-iteration cadence lookup from site_config."""
+    await asyncio.sleep(10)
+    while True:
+        try:
+            await poll_views_once()
+        except Exception:
+            traceback.print_exc()
+        # Re-read every iteration so admin changes take effect without restart.
+        try:
+            database = await db.get_db()
+            try:
+                delay = await get_view_poll_interval(database)
+            finally:
+                await database.close()
+        except Exception:
+            delay = DEFAULT_VIEW_POLL_INTERVAL_SECONDS
+        await asyncio.sleep(delay)
+
+
 async def start_background_tasks() -> list[asyncio.Task]:
     """Kick off the three loops. Call from FastAPI lifespan startup."""
     return [
         asyncio.create_task(_loop(plan_slots_once, 300, "plan_slots")),
         asyncio.create_task(_loop(dispatch_due_once, 60, "dispatch")),
-        asyncio.create_task(_loop(poll_views_once, VIEW_POLL_INTERVAL_SECONDS, "poll_views")),
+        asyncio.create_task(_poll_views_loop()),
     ]
