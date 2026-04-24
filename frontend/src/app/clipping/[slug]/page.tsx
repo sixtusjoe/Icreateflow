@@ -82,6 +82,11 @@ type Dashboard = {
   paused_reason?: string | null;
   view_target?: number | null;
   current_campaign?: Campaign | null;
+  poll?: {
+    interval_seconds: number;
+    last_polled_at: string | null;
+    next_poll_at: string;
+  } | null;
 };
 
 type Campaign = {
@@ -452,6 +457,9 @@ export default function ArtistPage({
           />
         </div>
       )}
+
+      {/* View-poll countdown */}
+      {dashboard?.poll && <PollCountdown poll={dashboard.poll} />}
 
       {/* Per-platform */}
       {dashboard && (
@@ -1020,6 +1028,76 @@ function StatCard({
         {icon} {label}
       </div>
       <div className="mt-1 text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
+/**
+ * Countdown to the next view-poll tick. The backend returns the poller's
+ * interval + last/next poll ISO; we tick every second to animate.
+ */
+function PollCountdown({
+  poll,
+}: {
+  poll: {
+    interval_seconds: number;
+    last_polled_at: string | null;
+    next_poll_at: string;
+  };
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const nextAt = new Date(poll.next_poll_at).getTime();
+  const lastAt = poll.last_polled_at ? new Date(poll.last_polled_at).getTime() : null;
+  const remaining = Math.max(0, Math.ceil((nextAt - now) / 1000));
+  const pct =
+    Math.min(
+      100,
+      Math.max(
+        0,
+        poll.interval_seconds > 0
+          ? ((poll.interval_seconds - remaining) / poll.interval_seconds) * 100
+          : 0,
+      ),
+    );
+  const mm = Math.floor(remaining / 60);
+  const ss = String(remaining % 60).padStart(2, "0");
+
+  const lastAgo = (() => {
+    if (!lastAt) return "never";
+    const s = Math.max(0, Math.floor((now - lastAt) / 1000));
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
+  })();
+
+  return (
+    <div className="rounded-xl bg-card p-3">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <RefreshCw className="h-3.5 w-3.5" />
+          <span>View poll</span>
+          <span className="text-[10px] uppercase tracking-wider opacity-70">
+            every {Math.round(poll.interval_seconds / 60)}m
+          </span>
+        </div>
+        <div className="flex items-center gap-3 font-medium">
+          <span className="tabular-nums">
+            {remaining === 0 ? "refreshing…" : `next in ${mm}:${ss}`}
+          </span>
+          <span className="text-muted-foreground">last: {lastAgo}</span>
+        </div>
+      </div>
+      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full bg-primary transition-[width] duration-1000 ease-linear"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
     </div>
   );
 }

@@ -466,15 +466,22 @@ async def dispatch_due_once() -> None:
         await database.close()
 
 
+#: How often the view poller runs, in seconds. Also the "freshness" cutoff
+#: for the SELECT below — rows polled more recently than this are skipped.
+VIEW_POLL_INTERVAL_SECONDS = 300  # 5 minutes
+
+
 async def poll_views_once() -> None:
-    """Refresh view counts for posted rows older than 15 minutes, then re-check pause."""
+    """Refresh view counts for posted rows older than VIEW_POLL_INTERVAL_SECONDS,
+    then re-check pause."""
     database = await db.get_db()
     try:
         cur = await database.execute(
-            """
+            f"""
             SELECT * FROM clip_posts
             WHERE status = 'posted' AND platform_post_id IS NOT NULL
-              AND (view_count_updated_at IS NULL OR view_count_updated_at < NOW() - INTERVAL '15 minutes')
+              AND (view_count_updated_at IS NULL
+                   OR view_count_updated_at < NOW() - INTERVAL '{VIEW_POLL_INTERVAL_SECONDS} seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
             LIMIT 100
             """
@@ -575,5 +582,5 @@ async def start_background_tasks() -> list[asyncio.Task]:
     return [
         asyncio.create_task(_loop(plan_slots_once, 300, "plan_slots")),
         asyncio.create_task(_loop(dispatch_due_once, 60, "dispatch")),
-        asyncio.create_task(_loop(poll_views_once, 900, "poll_views")),
+        asyncio.create_task(_loop(poll_views_once, VIEW_POLL_INTERVAL_SECONDS, "poll_views")),
     ]

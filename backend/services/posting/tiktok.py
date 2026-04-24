@@ -142,12 +142,33 @@ class TikTokStatsUnavailable(PostingError):
     """
 
 
+def _normalize_tiktok_video_id(raw: str) -> str:
+    """Extract the bare integer video id.
+
+    TikTok's /post/publish/status/fetch/ sometimes returns only a publish_id
+    like ``v_pub_url~v2-1.7632224784536864782`` when the post isn't publicly
+    available (SELF_ONLY drafts). That string isn't a valid input to
+    /v2/video/query/ — it wants just the trailing integer. Strip the
+    ``v_pub_url~v2-N.`` prefix, keep only the digits.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return s
+    # Everything after the final '.' when the string starts with v_pub_url~
+    if s.startswith("v_pub_url~") and "." in s:
+        tail = s.rsplit(".", 1)[-1]
+        if tail.isdigit():
+            return tail
+    return s
+
+
 async def get_view_count(access_token: str, platform_post_id: str) -> int:
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    video_id = _normalize_tiktok_video_id(platform_post_id)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             f"{API_BASE}/video/query/?fields=view_count",
-            json={"filters": {"video_ids": [platform_post_id]}},
+            json={"filters": {"video_ids": [video_id]}},
             headers=headers,
         )
         if r.status_code == 401 and "scope_not_authorized" in r.text:
