@@ -46,10 +46,12 @@ export default function PrivacyPage() {
           <ul className="list-disc space-y-2 pl-6">
             <li><strong>Account details</strong>: name, email address, password (stored hashed), and optional profile information.</li>
             <li><strong>Artist, brand, and campaign content</strong>: artist names, brand names, handles, timezones, posting windows, view targets, uploaded clips, captions, artwork, trailers, episodes, and other promotional material.</li>
-            <li><strong>Connected account credentials</strong>: OAuth tokens and optional API keys for the TikTok, YouTube, Instagram, Facebook, and Google Drive accounts you link to the Service. These are stored encrypted and used only to perform the distribution tasks you configure.</li>
             <li><strong>Communications</strong>: messages you send to support, feedback, clearance and takedown correspondence, and survey responses.</li>
             <li><strong>Billing information</strong>: handled by our payment processor; we receive only limited details (such as the last four digits of your card and billing country) needed to operate your subscription.</li>
           </ul>
+          <p className="mt-3 text-sm text-muted-foreground">
+            <strong>Note on platform credentials.</strong> Icreateflow does not collect or store your personal OAuth tokens, API keys, or app credentials for TikTok, YouTube, Instagram, Facebook, or Google Drive. Connections to those platforms are made through applications owned and operated by your workspace administrator; Icreateflow itself never receives your platform login, password, or developer keys.
+          </p>
         </div>
 
         <div>
@@ -173,6 +175,13 @@ export default function PrivacyPage() {
             privacy@icreateflow.com
           </a>
           . We may need to verify your identity before fulfilling a request.
+        </p>
+        <p className="mt-3">
+          <strong>User data deletion.</strong> You may delete your account and all associated personal data at any time from your account settings, or by emailing{" "}
+          <a href="mailto:privacy@icreateflow.com" className="font-medium underline underline-offset-2 hover:text-foreground">
+            privacy@icreateflow.com
+          </a>
+          {" "}with the subject line &ldquo;Delete my account.&rdquo; On receipt of a verified request, we will permanently remove your profile, uploaded clips, campaign history, and related records from our production systems within 30 days. Residual copies may persist in encrypted backups for a limited retention window before being overwritten, and we may retain minimal records where required by law (e.g. tax or anti-fraud obligations).
         </p>
       </Section>
 
