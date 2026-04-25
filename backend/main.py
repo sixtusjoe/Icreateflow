@@ -1950,22 +1950,42 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
 
         music_path = await _music_path_for(database, dict(post), data.platform)
 
-        # Re-render the per-account 9:16 slides from the CURRENT master /
-        # variation images before stitching. Without this, an edit the user
-        # makes via /api/posts/{id}/slides/{n}/image (which writes the new
-        # master to uploads/ and updates slides.master_image_path) would not
-        # show up in the regenerated video, because the video was being
-        # stitched from the stale per-account slide cache on disk.
-        from services.generator import render_account_slides
-
+        # Stitch from the per-account slide cache as it sits on disk RIGHT
+        # NOW. The cache is what the user sees in the Preview & Downloads
+        # panel — it reflects every slide-level edit they've made via the
+        # slide editor (text, font, position, style). Re-rendering from
+        # master here would silently destroy those edits, since slide
+        # overlay params are not persisted to the DB. If the user wants the
+        # latest master image to flow into the video, they regenerate the
+        # individual slide first, then regenerate the video.
         slides_for_post = await db.get_slides(database, post_id)
         if not slides_for_post:
             raise HTTPException(400, "No slides on this post — generate it first")
 
-        slides_dir, slide_paths = await render_account_slides(
-            database, dict(post), dict(brand), dict(account), slides_for_post,
+        out_dir = (
+            Path("output")
+            / brand["slug"]
+            / post["date"]
+            / account["name"]
+            / f"post_{post['post_number']}"
         )
-        out_dir = slides_dir.parent
+        slides_dir = out_dir / "slides"
+
+        slide_paths = []
+        for slide in slides_for_post:
+            cache_9x16 = slides_dir / f"slide_{slide['slide_number']:02d}_9x16.png"
+            if cache_9x16.exists():
+                slide_paths.append(str(cache_9x16))
+
+        if len(slide_paths) < 2:
+            # Cache is missing or stale — fall back to a full re-render so
+            # the user isn't blocked. This path runs when a post hasn't been
+            # generated yet for this account, or the output dir was wiped.
+            from services.generator import render_account_slides
+            slides_dir, slide_paths = await render_account_slides(
+                database, dict(post), dict(brand), dict(account), slides_for_post,
+            )
+            out_dir = slides_dir.parent
 
         if len(slide_paths) < 2:
             raise HTTPException(400, f"Need at least 2 slides to build a video (found {len(slide_paths)})")
