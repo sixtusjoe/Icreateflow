@@ -408,6 +408,8 @@ export const startPromotion = (
 ) => api.post(`/api/artists/${artistId}/promotion/start`, data).then((r) => r.data);
 export const stopPromotion = (artistId: number) =>
   api.post(`/api/artists/${artistId}/promotion/stop`).then((r) => r.data);
+export const togglePausePromotion = (artistId: number) =>
+  api.post(`/api/artists/${artistId}/promotion/toggle-pause`).then((r) => r.data);
 export const resetPromotion = (
   artistId: number,
   data: { view_target?: number; campaign_name?: string; delete_clips?: boolean },

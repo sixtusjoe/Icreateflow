@@ -3095,8 +3095,21 @@ async def sync_gdrive_clips(artist_id: int, data: GdriveSyncReq, user: dict = De
         if added:
             try:
                 await clip_scheduler.maybe_resume_on_new_clip(database, artist_id)
-            except Exception:
-                pass
+            except Exception as _resume_exc:
+                # Surface in error_logs so an unpause failure stops being
+                # silent. The sync still succeeds; admin can manually unpause
+                # if this fires.
+                import traceback as _tb_local
+                try:
+                    await db.log_error(
+                        database,
+                        source="scheduler.maybe_resume_on_new_clip",
+                        message=str(_resume_exc),
+                        traceback=_tb_local.format_exc(),
+                        context=f"artist_id={artist_id} added={added}",
+                    )
+                except Exception:
+                    pass
         clips = await db.get_clips(database, artist_id)
         return {"added": added, "total": len(clips), "clips": rows_to_list(clips)}
     finally:
@@ -3345,6 +3358,23 @@ async def promotion_stop(artist_id: int, user: dict = Depends(get_current_user))
                 views_total=views, posts_total=posts_total,
             )
         return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists/{artist_id}/promotion/toggle-pause")
+async def promotion_toggle_pause(artist_id: int, user: dict = Depends(get_current_user)):
+    """Manual pause/resume toggle. If currently running, pause with reason='manual'.
+    If currently paused (for any reason), clear paused_reason and resume.
+    No-op when the campaign isn't active (use /promotion/start for that)."""
+    artist = await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        if not artist.get("is_active"):
+            return {"ok": True, "is_active": False, "paused_reason": artist.get("paused_reason")}
+        new_reason = None if artist.get("paused_reason") else clip_scheduler.PAUSE_MANUAL
+        await db.update_artist(database, artist_id, paused_reason=new_reason)
+        return {"ok": True, "is_active": True, "paused_reason": new_reason}
     finally:
         await database.close()
 

@@ -42,6 +42,7 @@ import {
   getArtistDashboard,
   startPromotion,
   stopPromotion,
+  togglePausePromotion,
   resetPromotion,
   listCampaigns,
   downloadStatsCsv,
@@ -196,6 +197,11 @@ export default function ArtistPage({
   const [resetTarget, setResetTarget] = useState<string>("");
   const [resetName, setResetName] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  // Heartbeat: timestamp of the last successful dashboard refresh, used to
+  // render "Updated Ns ago" so the user can see the poll loop is alive even
+  // when the underlying numbers haven't changed.
+  const [lastDashboardAt, setLastDashboardAt] = useState<number | null>(null);
+  const [pollNow, setPollNow] = useState(() => Date.now());
 
   const [settings, setSettings] = useState({
     posts_per_day: 3,
@@ -218,7 +224,12 @@ export default function ArtistPage({
           window_end: a.window_end ?? "21:00",
           timezone: a.timezone ?? "US/Eastern",
         });
-        getArtistDashboard(a.id).then(setDashboard).catch(() => {});
+        getArtistDashboard(a.id)
+          .then((d) => {
+            setDashboard(d);
+            setLastDashboardAt(Date.now());
+          })
+          .catch(() => {});
         listCampaigns(a.id).then(setCampaigns).catch(() => {});
       })
       .catch(() => toast.error("Failed to load artist"));
@@ -227,15 +238,33 @@ export default function ArtistPage({
   useEffect(() => {
     load();
     const iv = setInterval(() => {
-      if (id != null) getArtistDashboard(id).then(setDashboard).catch(() => {});
-    }, 60000);
-    return () => clearInterval(iv);
+      if (id != null) {
+        getArtistDashboard(id)
+          .then((d) => {
+            setDashboard(d);
+            setLastDashboardAt(Date.now());
+          })
+          .catch(() => {});
+      }
+    }, 30000);
+    // Tick the "updated Ns ago" label every second so it counts up smoothly
+    // between actual refreshes.
+    const tick = setInterval(() => setPollNow(Date.now()), 1000);
+    return () => {
+      clearInterval(iv);
+      clearInterval(tick);
+    };
   }, [id, load]);
 
   const refreshCampaigns = useCallback(() => {
     if (id == null) return;
     listCampaigns(id).then(setCampaigns).catch(() => {});
-    getArtistDashboard(id).then(setDashboard).catch(() => {});
+    getArtistDashboard(id)
+      .then((d) => {
+        setDashboard(d);
+        setLastDashboardAt(Date.now());
+      })
+      .catch(() => {});
   }, [id]);
 
   const handleStartPromotion = async () => {
@@ -482,14 +511,58 @@ export default function ArtistPage({
             <Target className="h-4 w-4" /> Campaign
           </h2>
           <div className="flex items-center gap-2">
-            {dashboard?.is_active ? (
-              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-600">
-                {dashboard.paused_reason === "target_reached"
-                  ? "Target reached"
-                  : dashboard.paused_reason === "directory_exhausted"
-                  ? "Paused — add clips"
-                  : "Running"}
+            {lastDashboardAt != null && (
+              <span
+                className="text-[10px] text-muted-foreground"
+                title={`Last refresh: ${new Date(lastDashboardAt).toLocaleTimeString()}`}
+              >
+                Updated {Math.max(0, Math.floor((pollNow - lastDashboardAt) / 1000))}s ago
               </span>
+            )}
+            {dashboard?.is_active ? (
+              (() => {
+                const reason = dashboard.paused_reason;
+                const isPaused = Boolean(reason);
+                const label = reason === "target_reached"
+                  ? "Target reached"
+                  : reason === "directory_exhausted"
+                  ? "Paused — add clips"
+                  : reason === "manual"
+                  ? "Paused"
+                  : "Running";
+                // target_reached and directory_exhausted are auto states — no manual toggle.
+                const clickable = !reason || reason === "manual";
+                const title = !clickable
+                  ? undefined
+                  : isPaused
+                  ? "Click to resume"
+                  : "Click to pause";
+                const handleClick = async () => {
+                  if (!clickable || !id) return;
+                  try {
+                    await togglePausePromotion(id);
+                    toast.success(isPaused ? "Resumed" : "Paused");
+                    refreshCampaigns();
+                  } catch {
+                    toast.error("Failed to toggle pause");
+                  }
+                };
+                return (
+                  <button
+                    type="button"
+                    disabled={!clickable}
+                    onClick={handleClick}
+                    title={title}
+                    className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition ${
+                      isPaused
+                        ? "bg-amber-500/15 text-amber-600 hover:bg-amber-500/25"
+                        : "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25"
+                    } ${clickable ? "cursor-pointer" : "cursor-default"}`}
+                  >
+                    {label}
+                  </button>
+                );
+              })()
             ) : (
               <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                 Stopped

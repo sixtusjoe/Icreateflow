@@ -1533,8 +1533,14 @@ async def create_clip_post(
     caption_snapshot: str | None = None,
 ):
     s = db.session
+    # Guard against the multi-worker race in plan_slots_once: if two workers
+    # both decide today's slots aren't materialised, both insert the same
+    # (artist_account_id, platform, scheduled_for, clip_id) row. The partial
+    # unique index `clip_posts_no_duplicate_slots` makes the second insert a
+    # silent no-op via ON CONFLICT so we don't double-post.
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     stmt = (
-        insert(ClipPost)
+        pg_insert(ClipPost)
         .values(
             clip_id=clip_id,
             artist_account_id=artist_account_id,
@@ -1546,9 +1552,16 @@ async def create_clip_post(
             clip_filename=clip_filename,
             caption_snapshot=caption_snapshot,
         )
+        .on_conflict_do_nothing(
+            index_elements=["artist_account_id", "platform", "scheduled_for", "clip_id"],
+            # Predicate must match the partial index literally for Postgres to
+            # use it; parameterised comparisons won't bind. text() emits the
+            # raw SQL fragment.
+            index_where=text("status = 'scheduled'"),
+        )
         .returning(ClipPost.id)
     )
-    pid = (await s.execute(stmt)).scalar_one()
+    pid = (await s.execute(stmt)).scalar_one_or_none()
     await s.commit()
     return pid
 
