@@ -8,6 +8,90 @@ from . import overlay, video
 import database as db
 
 
+async def render_account_slides(
+    database,
+    post: dict,
+    brand: dict,
+    account: dict,
+    slides: list[dict],
+) -> tuple[Path, list[str]]:
+    """Render all 9:16 slides for a single account from the current master /
+    variation images, writing them to the per-account output dir.
+
+    Returns (slides_dir, list_of_9x16_paths).
+
+    Always reads from `slides.master_image_path` (or the variation's
+    `replacement_image_path` when applicable), so any user edit to the
+    master image is reflected on the next render. Used both at first-time
+    generation (`generate_post`) and at video-regeneration time so the
+    cached slide PNGs never lag behind the master.
+    """
+    bg_color = "#000000"
+    is_master = account["role"] == "master"
+    out_dir = (
+        Path("output")
+        / brand["slug"]
+        / post["date"]
+        / account["name"]
+        / f"post_{post['post_number']}"
+    )
+    slides_dir = out_dir / "slides"
+    slides_dir.mkdir(parents=True, exist_ok=True)
+
+    variations = await db.get_variations(
+        database, post_id=post["id"], account_id=account["id"]
+    )
+    variation_map = {v["slide_id"]: v for v in variations}
+
+    slide_9x16_paths: list[str] = []
+    for slide in slides:
+        slide_num = slide["slide_number"]
+        var = variation_map.get(slide["id"])
+        has_replacement = (
+            var
+            and var["action"] in ("replace", "generate")
+            and var["replacement_image_path"]
+        )
+        if has_replacement:
+            source_image = var["replacement_image_path"]
+        else:
+            source_image = slide["master_image_path"]
+
+        if not source_image or not Path(source_image).exists():
+            continue
+
+        if is_master:
+            img = Image.open(source_image).convert("RGB")
+            img_3x4 = overlay.resize_to_3x4(img)
+            img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
+            out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
+            img_9x16.save(str(out_9x16), "PNG")
+            slide_9x16_paths.append(str(out_9x16))
+        elif has_replacement:
+            output_path = str(slides_dir / f"slide_{slide_num:02d}.png")
+            result = overlay.apply_overlay(
+                image_path=source_image,
+                slide_type=slide["type"],
+                output_path=output_path,
+                title_text=slide["title_text"],
+                body_text=slide["body_text"],
+                cta_text=slide["cta_text"],
+                bg_color=bg_color,
+            )
+            slide_9x16_paths.append(result["slide_9x16"])
+        else:
+            img = Image.open(source_image).convert("RGB")
+            img_3x4 = overlay.resize_to_3x4(img)
+            out_3x4 = slides_dir / f"slide_{slide_num:02d}.png"
+            img_3x4.save(str(out_3x4), "PNG")
+            img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
+            out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
+            img_9x16.save(str(out_9x16), "PNG")
+            slide_9x16_paths.append(str(out_9x16))
+
+    return slides_dir, slide_9x16_paths
+
+
 async def generate_post(post_id: int, database) -> dict:
     """
     Generate all outputs (slides + videos) for a post across all accounts.
@@ -64,71 +148,14 @@ async def generate_post(post_id: int, database) -> dict:
             account_id = account["id"]
             account_name = account["name"]
 
-            # Output directory
-            out_dir = Path("output") / brand["slug"] / post["date"] / account_name / f"post_{post['post_number']}"
-            slides_dir = out_dir / "slides"
-            slides_dir.mkdir(parents=True, exist_ok=True)
-
-            is_master = account["role"] == "master"
-
-            # Get variations for this account
-            variations = await db.get_variations(database, post_id=post_id, account_id=account_id)
-            variation_map = {}
-            for v in variations:
-                variation_map[v["slide_id"]] = v
-
-            # Process each slide
-            slide_9x16_paths = []
-
-            for slide in slides:
-                slide_num = slide["slide_number"]
-                var = variation_map.get(slide["id"])
-
-                # Determine source image
-                has_replacement = (var and var["action"] in ("replace", "generate")
-                                   and var["replacement_image_path"])
-                if has_replacement:
-                    source_image = var["replacement_image_path"]
-                else:
-                    source_image = slide["master_image_path"]
-
-                if not source_image or not Path(source_image).exists():
-                    continue
-
-                if is_master:
-                    # Master: resize to 9:16 only (no text overlay, no 3:4 output)
-                    # Master reposts original content — only needs video for YT/IG/FB
-                    img = Image.open(source_image).convert("RGB")
-                    img_3x4 = overlay.resize_to_3x4(img)
-                    img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-                    out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
-                    img_9x16.save(str(out_9x16), "PNG")
-                    slide_9x16_paths.append(str(out_9x16))
-
-                elif has_replacement:
-                    # Variation with replacement image: apply text overlay
-                    output_path = str(slides_dir / f"slide_{slide_num:02d}.png")
-                    result = overlay.apply_overlay(
-                        image_path=source_image,
-                        slide_type=slide["type"],
-                        output_path=output_path,
-                        title_text=slide["title_text"],
-                        body_text=slide["body_text"],
-                        cta_text=slide["cta_text"],
-                        bg_color=bg_color,
-                    )
-                    slide_9x16_paths.append(result["slide_9x16"])
-
-                else:
-                    # Using master image (already has text) — save as-is, no overlay
-                    img = Image.open(source_image).convert("RGB")
-                    img_3x4 = overlay.resize_to_3x4(img)
-                    out_3x4 = slides_dir / f"slide_{slide_num:02d}.png"
-                    img_3x4.save(str(out_3x4), "PNG")
-                    img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-                    out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
-                    img_9x16.save(str(out_9x16), "PNG")
-                    slide_9x16_paths.append(str(out_9x16))
+            # Render this account's 9:16 slides from the current master /
+            # variation images. Shared with regenerate_single_video so any
+            # edit the user makes to a master image flows through to the
+            # next video render.
+            slides_dir, slide_9x16_paths = await render_account_slides(
+                database, dict(post), dict(brand), dict(account), slides,
+            )
+            out_dir = slides_dir.parent
 
             # Build video from 9:16 slides. Always produce legacy video.mp4 for
             # backward compatibility, plus per-platform renders (YT/IG/FB) with

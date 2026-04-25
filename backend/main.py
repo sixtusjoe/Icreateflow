@@ -1950,16 +1950,22 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
 
         music_path = await _music_path_for(database, dict(post), data.platform)
 
-        out_dir = Path("output") / brand["slug"] / post["date"] / account["name"] / f"post_{post['post_number']}"
-        slides_dir = out_dir / "slides"
-        if not slides_dir.exists():
-            raise HTTPException(400, "No slides directory found — generate the post first")
+        # Re-render the per-account 9:16 slides from the CURRENT master /
+        # variation images before stitching. Without this, an edit the user
+        # makes via /api/posts/{id}/slides/{n}/image (which writes the new
+        # master to uploads/ and updates slides.master_image_path) would not
+        # show up in the regenerated video, because the video was being
+        # stitched from the stale per-account slide cache on disk.
+        from services.generator import render_account_slides
 
-        # Collect 9:16 slide files in order
-        slide_paths = []
-        for f in sorted(slides_dir.iterdir()):
-            if f.suffix.lower() in (".png", ".jpg", ".jpeg") and "_9x16" in f.stem:
-                slide_paths.append(str(f))
+        slides_for_post = await db.get_slides(database, post_id)
+        if not slides_for_post:
+            raise HTTPException(400, "No slides on this post — generate it first")
+
+        slides_dir, slide_paths = await render_account_slides(
+            database, dict(post), dict(brand), dict(account), slides_for_post,
+        )
+        out_dir = slides_dir.parent
 
         if len(slide_paths) < 2:
             raise HTTPException(400, f"Need at least 2 slides to build a video (found {len(slide_paths)})")
