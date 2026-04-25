@@ -269,6 +269,19 @@ class SiteConfig(Base):
     value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class MetaPendingAssignment(Base):
+    """Short-lived (~15 min) handoff between the Meta OAuth callback and the
+    follow-up /api/oauth/meta/assign POST. Was an in-memory dict, but with
+    multiple gunicorn workers the callback's worker rarely matches the assign
+    POST's worker — so 50% of assignments returned 404. Move to the DB so any
+    worker can read it.
+    """
+    __tablename__ = "meta_pending_assignments"
+    token: Mapped[str] = mapped_column(Text, primary_key=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
 # --- Clipping: Artists, Variations, Clips, ClipPosts ------------------------
 
 

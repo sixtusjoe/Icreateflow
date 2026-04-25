@@ -4,6 +4,7 @@ ICREATEFLOW API — FastAPI backend for content scaling platform.
 import os
 import sys
 import shutil
+import json
 import secrets
 import asyncio
 from pathlib import Path
@@ -1029,19 +1030,32 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
                     "No Pages or Instagram accounts were granted. Reconnect and tick at least one Page or IG.",
                 ))
             assign_token = secrets.token_urlsafe(24)
-            _PENDING_META_ASSIGNMENTS[assign_token] = {
+            payload_json = json.dumps({
                 "user_token": tokens["access_token"],
                 "user_token_expires_at": expires_at,
                 "scope": tokens.get("scope"),
                 "assets": assets,
                 "target_id": target_id,
                 "kind": kind,
-                "created_at": datetime.now(timezone.utc),
-            }
-            # Drop expired entries opportunistically.
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
-            for k in [k for k, v in _PENDING_META_ASSIGNMENTS.items() if v["created_at"] < cutoff]:
-                _PENDING_META_ASSIGNMENTS.pop(k, None)
+            })
+            # Persist to DB so the assign POST (which may land on a different
+            # gunicorn worker) can find it. Was an in-memory dict; under
+            # `-w 2` workers the assign endpoint hit a different worker ~50%
+            # of the time and returned 404.
+            db_assign = await db.get_db()
+            try:
+                await db_assign.execute(
+                    "INSERT INTO meta_pending_assignments (token, payload) VALUES (?, ?)",
+                    (assign_token, payload_json),
+                )
+                # Drop expired entries opportunistically (>15 min old).
+                await db_assign.execute(
+                    "DELETE FROM meta_pending_assignments "
+                    "WHERE created_at < NOW() - INTERVAL '15 minutes'"
+                )
+                await db_assign.commit()
+            finally:
+                await db_assign.close()
             return HTMLResponse(_oauth_pick_asset_html(assign_token, assets, target_id, kind))
 
         # ========== non-Meta platforms keep the original direct-write flow ==========
@@ -1087,9 +1101,21 @@ async def oauth_meta_assign(payload: MetaAssignAsset, user: dict = Depends(get_c
     variation/account that initiated the connect. Called by the frontend
     after the popup posts the asset list.
     """
-    pending = _PENDING_META_ASSIGNMENTS.pop(payload.assign_token, None)
-    if not pending:
+    db_pop = await db.get_db()
+    try:
+        cur = await db_pop.execute(
+            "DELETE FROM meta_pending_assignments WHERE token = ? "
+            "AND created_at >= NOW() - INTERVAL '15 minutes' "
+            "RETURNING payload",
+            (payload.assign_token,),
+        )
+        row = await cur.fetchone()
+        await db_pop.commit()
+    finally:
+        await db_pop.close()
+    if not row:
         raise HTTPException(404, "Assignment expired or unknown — reconnect")
+    pending = json.loads(row["payload"])
 
     target_id = pending["target_id"]
     kind = pending["kind"]
