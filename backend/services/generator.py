@@ -162,6 +162,17 @@ async def generate_post(post_id: int, database) -> dict:
             or music_path
         )
 
+    # If the legacy music slot is empty, fall back to any per-platform
+    # selection (in priority order). This keeps video.mp4 from rendering
+    # silent when the user has only set per-platform music — the preview
+    # in the dashboard uses video.mp4 as a fallback when a platform path
+    # isn't present, so a silent legacy file looks like "no audio anywhere".
+    if not music_path:
+        for plat in ("youtube", "instagram", "facebook"):
+            if platform_music.get(plat):
+                music_path = platform_music[plat]
+                break
+
     bg_color = "#000000"  # Always black for 9:16 canvas bars
     results = {}
 

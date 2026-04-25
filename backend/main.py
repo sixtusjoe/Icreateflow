@@ -1911,11 +1911,21 @@ class RegenerateVideo(BaseModel):
 
 
 async def _music_path_for(database, post: dict, platform: Optional[str]) -> Optional[str]:
-    """Resolve the music file path for a post/platform, falling back to legacy."""
+    """Resolve the music file path for a post/platform, falling back to legacy.
+
+    Order:
+      1. The exact platform's track (if `platform` is set)
+      2. The legacy `music_track_id`
+      3. Any other per-platform track that's set (so the legacy regenerate
+         picks up audio when only the per-platform slots have been filled)
+    """
     candidates = []
     if platform:
         candidates.append(post.get(f"{platform}_music_track_id"))
     candidates.append(post.get("music_track_id"))
+    for plat in ("youtube", "instagram", "facebook"):
+        if platform != plat:
+            candidates.append(post.get(f"{plat}_music_track_id"))
     for tid in candidates:
         if not tid:
             continue
