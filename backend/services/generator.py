@@ -57,14 +57,22 @@ async def render_account_slides(
         else:
             source_image = slide["master_image_path"]
 
+        out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
+
+        # If the source master/replacement image is missing on disk (e.g. a
+        # tiktok_scraper temp dir was cleaned up after first render), keep
+        # using the previously-rendered 9:16 cache file if it exists. That
+        # way regenerate-video on older posts still works — we only LOSE a
+        # slide when both the source AND the cache are gone.
         if not source_image or not Path(source_image).exists():
+            if out_9x16.exists():
+                slide_9x16_paths.append(str(out_9x16))
             continue
 
         if is_master:
             img = Image.open(source_image).convert("RGB")
             img_3x4 = overlay.resize_to_3x4(img)
             img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-            out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
             img_9x16.save(str(out_9x16), "PNG")
             slide_9x16_paths.append(str(out_9x16))
         elif has_replacement:
@@ -85,7 +93,6 @@ async def render_account_slides(
             out_3x4 = slides_dir / f"slide_{slide_num:02d}.png"
             img_3x4.save(str(out_3x4), "PNG")
             img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-            out_9x16 = slides_dir / f"slide_{slide_num:02d}_9x16.png"
             img_9x16.save(str(out_9x16), "PNG")
             slide_9x16_paths.append(str(out_9x16))
 
