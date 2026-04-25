@@ -67,16 +67,20 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
 
 
 async def get_view_count(access_token: str, platform_post_id: str) -> int:
+    # Meta deprecated `plays` in Graph API v22.0+. The supported view-equivalent
+    # metric for Reels is now `views`. Fall back to `plays` for the v19-and-below
+    # window in case the app gets pinned to an older version.
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            f"{GRAPH}/{platform_post_id}/insights",
-            params={"metric": "plays", "access_token": access_token},
-        )
-        if r.status_code >= 400:
-            return 0
-        for row in r.json().get("data") or []:
-            if row.get("name") == "plays":
-                values = row.get("values") or []
-                if values:
-                    return int(values[0].get("value") or 0)
+        for metric in ("views", "plays"):
+            r = await client.get(
+                f"{GRAPH}/{platform_post_id}/insights",
+                params={"metric": metric, "access_token": access_token},
+            )
+            if r.status_code >= 400:
+                continue
+            for row in r.json().get("data") or []:
+                if row.get("name") == metric:
+                    values = row.get("values") or []
+                    if values:
+                        return int(values[0].get("value") or 0)
         return 0
