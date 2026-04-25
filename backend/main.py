@@ -3408,7 +3408,8 @@ async def promotion_toggle_pause(artist_id: int, user: dict = Depends(get_curren
     try:
         if not artist.get("is_active"):
             return {"ok": True, "is_active": False, "paused_reason": artist.get("paused_reason")}
-        new_reason = None if artist.get("paused_reason") else clip_scheduler.PAUSE_MANUAL
+        from services.clip_scheduler import PAUSE_MANUAL
+        new_reason = None if artist.get("paused_reason") else PAUSE_MANUAL
         await db.update_artist(database, artist_id, paused_reason=new_reason)
         return {"ok": True, "is_active": True, "paused_reason": new_reason}
     finally:
