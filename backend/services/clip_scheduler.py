@@ -599,12 +599,20 @@ async def poll_views_once() -> None:
     database = await db.get_db()
     try:
         interval = await get_view_poll_interval(database)
+        # Staleness gate uses interval - 30s, NOT the full interval. The loop
+        # sleeps `interval` seconds between ticks, so rows refreshed at the
+        # previous tick are exactly `interval` seconds old when this query
+        # runs — and `view_count_updated_at < NOW() - INTERVAL 'N seconds'`
+        # is strictly less than, so they fail the gate and only get picked up
+        # on the *next* tick. That doubled the effective cadence (15min →
+        # 30min). The 30s buffer ensures every loop tick actually refreshes.
+        gate = max(30, interval - 30)
         cur = await database.execute(
             f"""
             SELECT * FROM clip_posts
             WHERE status = 'posted' AND platform_post_id IS NOT NULL
               AND (view_count_updated_at IS NULL
-                   OR view_count_updated_at < NOW() - INTERVAL '{interval} seconds')
+                   OR view_count_updated_at < NOW() - INTERVAL '{gate} seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
             LIMIT 100
             """
@@ -738,23 +746,33 @@ async def _loop(fn, every_seconds: int, label: str) -> None:
 
 
 async def _poll_views_loop() -> None:
-    """View-poll loop with per-iteration cadence lookup from site_config."""
+    """View-poll loop with per-iteration cadence lookup from site_config.
+
+    Sleeps in 30-second chunks (re-reading the interval each chunk) so an
+    admin lowering the cadence — say 1 hour → 15 min — takes effect within
+    ~30s instead of waiting out the previous, longer sleep.
+    """
     await asyncio.sleep(10)
     while True:
         try:
             await poll_views_once()
         except Exception:
             traceback.print_exc()
-        # Re-read every iteration so admin changes take effect without restart.
-        try:
-            database = await db.get_db()
+        last_run = datetime.now(timezone.utc)
+        while True:
             try:
-                delay = await get_view_poll_interval(database)
-            finally:
-                await database.close()
-        except Exception:
-            delay = DEFAULT_VIEW_POLL_INTERVAL_SECONDS
-        await asyncio.sleep(delay)
+                database = await db.get_db()
+                try:
+                    delay = await get_view_poll_interval(database)
+                finally:
+                    await database.close()
+            except Exception:
+                delay = DEFAULT_VIEW_POLL_INTERVAL_SECONDS
+            elapsed = (datetime.now(timezone.utc) - last_run).total_seconds()
+            remaining = delay - elapsed
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(30, remaining))
 
 
 async def start_background_tasks() -> list[asyncio.Task]:
