@@ -67,24 +67,28 @@ def build_video(slide_paths: list[str], output_path: str,
 
     filter_complex = ";".join(filter_parts)
 
-    # Base command
-    cmd = [
-        "ffmpeg", "-y",
-        *inputs,
+    # Build command. ffmpeg argument order matters: ALL -i inputs first,
+    # then -filter_complex, then -map directives, then output options, then
+    # the output file. The previous version placed `-i music` after
+    # `-map [outv]`, which made ffmpeg fail with "Option map ... cannot be
+    # applied to input url" — and silently produced an audio-less video.
+    has_music = bool(music_path) and Path(music_path).exists()
+
+    cmd = ["ffmpeg", "-y", *inputs]
+    if has_music:
+        cmd.extend(["-i", str(music_path)])
+
+    cmd.extend([
         "-filter_complex", filter_complex,
         "-map", "[outv]",
-    ]
+    ])
 
-    # Add music if provided
-    if music_path and Path(music_path).exists():
-        # Calculate total video duration
+    if has_music:
         total_duration = (n * slide_duration) - ((n - 1) * transition_duration)
-
         cmd.extend([
-            "-i", str(music_path),
             "-map", f"{n}:a",
             "-shortest",
-            "-af", f"afade=t=out:st={total_duration - 1}:d=1",
+            "-af", f"afade=t=out:st={max(total_duration - 1, 0)}:d=1",
         ])
 
     cmd.extend([
