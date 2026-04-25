@@ -570,10 +570,11 @@ export default function ArtistPage({
             )}
             <button
               onClick={() => handleDownloadStats()}
-              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              className="inline-flex items-center justify-center rounded-lg border border-border p-1.5 hover:bg-muted"
               title="Download all stats for this artist"
+              aria-label="Download stats"
             >
-              <Download className="h-3 w-3" /> Download stats
+              <Download className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
