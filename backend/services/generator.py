@@ -69,6 +69,24 @@ async def render_account_slides(
                 slide_9x16_paths.append(str(out_9x16))
             continue
 
+        # Skip re-rendering when the cached 9:16 is newer than the source —
+        # this preserves any per-slide edits the user made via
+        # `regenerate_single_slide` (custom y_ratio, text_style, font_weight,
+        # etc.). Those edits live only on disk as the rendered PNG; the DB
+        # has no record of them. We only re-render when the SOURCE image is
+        # actually newer (e.g. user uploaded a new master via
+        # /api/posts/{id}/slides/{n}/image), so master-edit propagation
+        # still works.
+        try:
+            if (
+                out_9x16.exists()
+                and out_9x16.stat().st_mtime >= Path(source_image).stat().st_mtime
+            ):
+                slide_9x16_paths.append(str(out_9x16))
+                continue
+        except OSError:
+            pass
+
         if is_master:
             img = Image.open(source_image).convert("RGB")
             img_3x4 = overlay.resize_to_3x4(img)
