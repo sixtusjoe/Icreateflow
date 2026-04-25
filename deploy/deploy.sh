@@ -59,10 +59,16 @@ sudo -u $USER bash -c "cd $FRONTEND && npm run build"
 # ---------------------------------------------------------------------------
 # Generated-content directories (persist across deploys)
 # ---------------------------------------------------------------------------
-install -d -o $USER -g $USER "$APP_DIR/data/output" "$APP_DIR/data/uploads"
-# Symlink backend's expected output paths → persistent data dir
-ln -sfn "$APP_DIR/data/output"  "$BACKEND/output"
-ln -sfn "$APP_DIR/data/uploads" "$BACKEND/uploads"
+install -d -o $USER -g $USER "$APP_DIR/data/output" "$APP_DIR/data/uploads" "$APP_DIR/data/music"
+# Symlink backend's expected paths → persistent data dir.
+# Each path is removed first in case rsync recreated it as a regular dir
+# (ln -sfn won't overwrite an existing directory, only a symlink).
+for d in output uploads music; do
+    if [ -d "$BACKEND/$d" ] && [ ! -L "$BACKEND/$d" ]; then
+        rm -rf "$BACKEND/$d"
+    fi
+    ln -sfn "$APP_DIR/data/$d" "$BACKEND/$d"
+done
 
 # ---------------------------------------------------------------------------
 # Restart services
