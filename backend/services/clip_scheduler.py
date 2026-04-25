@@ -598,21 +598,20 @@ async def poll_views_once() -> None:
     then re-check pause."""
     database = await db.get_db()
     try:
-        interval = await get_view_poll_interval(database)
-        # Staleness gate uses interval - 30s, NOT the full interval. The loop
-        # sleeps `interval` seconds between ticks, so rows refreshed at the
-        # previous tick are exactly `interval` seconds old when this query
-        # runs — and `view_count_updated_at < NOW() - INTERVAL 'N seconds'`
-        # is strictly less than, so they fail the gate and only get picked up
-        # on the *next* tick. That doubled the effective cadence (15min →
-        # 30min). The 30s buffer ensures every loop tick actually refreshes.
-        gate = max(30, interval - 30)
+        # The loop interval is the rate limiter. The SQL staleness gate only
+        # exists to dedupe within a single tick (so we don't re-poll a row
+        # we just refreshed seconds ago via a manual trigger). A small fixed
+        # gate of 30s is enough — using the full interval here meant that a
+        # tick fired right after a process restart, while rows were still
+        # young, would skip the entire batch and force the user to wait out
+        # the next sleep. Refresh on every tick; the asyncio.sleep below
+        # paces things.
         cur = await database.execute(
-            f"""
+            """
             SELECT * FROM clip_posts
             WHERE status = 'posted' AND platform_post_id IS NOT NULL
               AND (view_count_updated_at IS NULL
-                   OR view_count_updated_at < NOW() - INTERVAL '{gate} seconds')
+                   OR view_count_updated_at < NOW() - INTERVAL '30 seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
             LIMIT 100
             """
