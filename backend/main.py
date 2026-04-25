@@ -1103,14 +1103,20 @@ async def oauth_meta_assign(payload: MetaAssignAsset, user: dict = Depends(get_c
     """
     db_pop = await db.get_db()
     try:
+        # The DB wrapper doesn't surface rows from DELETE ... RETURNING — it
+        # only handles INSERT/UPDATE returning. So SELECT first, then DELETE.
         cur = await db_pop.execute(
-            "DELETE FROM meta_pending_assignments WHERE token = ? "
-            "AND created_at >= NOW() - INTERVAL '15 minutes' "
-            "RETURNING payload",
+            "SELECT payload FROM meta_pending_assignments WHERE token = ? "
+            "AND created_at >= NOW() - INTERVAL '15 minutes'",
             (payload.assign_token,),
         )
         row = await cur.fetchone()
-        await db_pop.commit()
+        if row:
+            await db_pop.execute(
+                "DELETE FROM meta_pending_assignments WHERE token = ?",
+                (payload.assign_token,),
+            )
+            await db_pop.commit()
     finally:
         await db_pop.close()
     if not row:
