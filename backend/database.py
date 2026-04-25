@@ -277,7 +277,8 @@ class MetaPendingAssignment(Base):
     worker can read it.
     """
     __tablename__ = "meta_pending_assignments"
-    token: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
