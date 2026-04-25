@@ -286,10 +286,34 @@ async def exchange_code(
             },
         )
         data = resp.json()
+        short_user_token = data.get("access_token")
+        # Step 2: short-lived (~1h) → long-lived (~60d) user token. Long-lived
+        # user tokens mint long-lived Page access tokens that survive
+        # subsequent user re-authentications. Without this, every new variation
+        # connect on the same FB user invalidates the prior variations' tokens.
+        long_user_token = short_user_token
+        long_expires_in = data.get("expires_in")
+        if short_user_token:
+            try:
+                ll = await client.get(
+                    TOKEN_URLS["meta"],
+                    params={
+                        "grant_type": "fb_exchange_token",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "fb_exchange_token": short_user_token,
+                    },
+                )
+                ll_data = ll.json() or {}
+                if ll_data.get("access_token"):
+                    long_user_token = ll_data["access_token"]
+                    long_expires_in = ll_data.get("expires_in") or long_expires_in
+            except Exception:
+                pass
         return {
-            "access_token": data.get("access_token"),
+            "access_token": long_user_token,
             "refresh_token": None,
-            "expires_in": data.get("expires_in"),
+            "expires_in": long_expires_in,
             "scope": None,
             "platform_user_id": None,
             "raw": data,
@@ -306,7 +330,12 @@ class ProfileFetchError(Exception):
     """
 
 
-async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[str, str]:
+async def _fetch_profile_handles_impl(
+    platform: str,
+    access_token: str,
+    prefer_page_id: str | None = None,
+    prefer_ig_id: str | None = None,
+) -> dict[str, str]:
     async with httpx.AsyncClient(timeout=15) as client:
         if platform == "tiktok":
             # `username` needs user.info.profile; `display_name` only needs
@@ -381,9 +410,23 @@ async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[
                 elif scope == "instagram_basic":
                     ig_ids = [str(t) for t in tids]
             out: dict[str, str] = {}
+            # Pick the page that matches the variation's stored facebook_user_id
+            # (if any). Falls back to first page when no preference or no match.
+            chosen_page_id: str | None = None
             if page_ids:
+                if prefer_page_id and prefer_page_id in page_ids:
+                    chosen_page_id = prefer_page_id
+                else:
+                    chosen_page_id = page_ids[0]
+            chosen_ig_id: str | None = None
+            if ig_ids:
+                if prefer_ig_id and prefer_ig_id in ig_ids:
+                    chosen_ig_id = prefer_ig_id
+                else:
+                    chosen_ig_id = ig_ids[0]
+            if chosen_page_id:
                 pr = await client.get(
-                    f"https://graph.facebook.com/v19.0/{page_ids[0]}",
+                    f"https://graph.facebook.com/v19.0/{chosen_page_id}",
                     params={
                         # Request the Page-scoped access_token too — posting
                         # to /{page_id}/videos needs a Page token, not the
@@ -396,7 +439,7 @@ async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[
                     pd = pr.json() or {}
                     if pd.get("name"):
                         out["facebook_handle"] = pd["name"]
-                    out["facebook_user_id"] = str(page_ids[0])
+                    out["facebook_user_id"] = str(chosen_page_id)
                     if pd.get("access_token"):
                         out["facebook_page_access_token"] = pd["access_token"]
                     ig_edge = pd.get("instagram_business_account") or {}
@@ -405,29 +448,117 @@ async def _fetch_profile_handles_impl(platform: str, access_token: str) -> dict[
                     if ig_edge.get("id"):
                         out["instagram_user_id"] = str(ig_edge["id"])
             # Fallback: IG was granted but no Page (standalone IG-via-Meta case).
-            if not out.get("instagram_handle") and ig_ids:
+            if not out.get("instagram_handle") and chosen_ig_id:
                 ir = await client.get(
-                    f"https://graph.facebook.com/v19.0/{ig_ids[0]}",
+                    f"https://graph.facebook.com/v19.0/{chosen_ig_id}",
                     params={"fields": "username", "access_token": access_token},
                 )
                 if ir.status_code < 400:
                     idata = ir.json() or {}
                     if idata.get("username"):
                         out["instagram_handle"] = idata["username"]
-                    out["instagram_user_id"] = str(ig_ids[0])
+                    out["instagram_user_id"] = str(chosen_ig_id)
             return out
         return {}
 
 
-async def fetch_profile_handles(platform: str, access_token: str) -> dict[str, str]:
+async def fetch_meta_assets(access_token: str) -> list[dict]:
+    """Return EVERY asset granted to this Meta user token.
+
+    Used by the multi-asset OAuth flow: one OAuth grant can authorize multiple
+    Pages + IG accounts; the admin then picks which asset belongs to which
+    variation. Each entry in the returned list has:
+      - page_id, page_name, page_access_token (long-lived if user token is)
+      - ig_user_id, ig_handle (when the Page has a linked IG Business account)
+
+    Pages with no linked IG still appear (ig_user_id=None). Standalone IG
+    accounts granted without a Page also appear (page_id=None).
+    """
+    out: list[dict] = []
+    seen_ig: set[str] = set()
+    async with httpx.AsyncClient(timeout=20) as client:
+        dbg = await client.get(
+            "https://graph.facebook.com/debug_token",
+            params={"input_token": access_token, "access_token": access_token},
+        )
+        if dbg.status_code >= 400:
+            raise ProfileFetchError(f"meta debug_token {dbg.status_code}: {dbg.text[:200]}")
+        granular = ((dbg.json() or {}).get("data") or {}).get("granular_scopes") or []
+        page_ids: list[str] = []
+        ig_ids: list[str] = []
+        for g in granular:
+            scope = g.get("scope")
+            tids = g.get("target_ids") or []
+            if scope == "pages_show_list":
+                page_ids = [str(t) for t in tids]
+            elif scope == "instagram_basic":
+                ig_ids = [str(t) for t in tids]
+        for pid in page_ids:
+            pr = await client.get(
+                f"https://graph.facebook.com/v19.0/{pid}",
+                params={
+                    "fields": "name,access_token,instagram_business_account{username,id}",
+                    "access_token": access_token,
+                },
+            )
+            if pr.status_code >= 400:
+                continue
+            pd = pr.json() or {}
+            ig_edge = pd.get("instagram_business_account") or {}
+            ig_uid = str(ig_edge.get("id")) if ig_edge.get("id") else None
+            entry = {
+                "page_id": pid,
+                "page_name": pd.get("name"),
+                "page_access_token": pd.get("access_token"),
+                "ig_user_id": ig_uid,
+                "ig_handle": ig_edge.get("username"),
+            }
+            out.append(entry)
+            if ig_uid:
+                seen_ig.add(ig_uid)
+        # Standalone IG accounts granted without a Page wrapper.
+        for iid in ig_ids:
+            if iid in seen_ig:
+                continue
+            ir = await client.get(
+                f"https://graph.facebook.com/v19.0/{iid}",
+                params={"fields": "username", "access_token": access_token},
+            )
+            if ir.status_code >= 400:
+                continue
+            idata = ir.json() or {}
+            out.append({
+                "page_id": None,
+                "page_name": None,
+                "page_access_token": None,
+                "ig_user_id": iid,
+                "ig_handle": idata.get("username"),
+            })
+    return out
+
+
+async def fetch_profile_handles(
+    platform: str,
+    access_token: str,
+    prefer_page_id: str | None = None,
+    prefer_ig_id: str | None = None,
+) -> dict[str, str]:
     """Return {'{platform}_handle': name} discovered from the connected account.
 
     Best-effort: swallows all errors so an OAuth callback never fails because
     of profile-lookup issues. Use `fetch_profile_handles_strict` if you want
     the platform error surfaced (e.g. the refresh-profile endpoint).
+
+    For Meta: when the granular-permission consent grants multiple Pages or IG
+    accounts, `prefer_page_id` / `prefer_ig_id` pick the matching one (e.g. the
+    Page that this variation was previously connected to). Falls back to the
+    first granted asset.
     """
     try:
-        return await _fetch_profile_handles_impl(platform, access_token)
+        return await _fetch_profile_handles_impl(
+            platform, access_token,
+            prefer_page_id=prefer_page_id, prefer_ig_id=prefer_ig_id,
+        )
     except Exception as e:
         # Don't block the OAuth callback, but surface why usernames
         # weren't auto-filled so admins can diagnose in server logs.
@@ -435,9 +566,17 @@ async def fetch_profile_handles(platform: str, access_token: str) -> dict[str, s
         return {}
 
 
-async def fetch_profile_handles_strict(platform: str, access_token: str) -> dict[str, str]:
+async def fetch_profile_handles_strict(
+    platform: str,
+    access_token: str,
+    prefer_page_id: str | None = None,
+    prefer_ig_id: str | None = None,
+) -> dict[str, str]:
     """Raise ProfileFetchError on platform failure instead of swallowing."""
-    return await _fetch_profile_handles_impl(platform, access_token)
+    return await _fetch_profile_handles_impl(
+        platform, access_token,
+        prefer_page_id=prefer_page_id, prefer_ig_id=prefer_ig_id,
+    )
 
 
 async def refresh_access_token(

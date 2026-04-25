@@ -4,6 +4,7 @@ ICREATEFLOW API — FastAPI backend for content scaling platform.
 import os
 import sys
 import shutil
+import secrets
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, time as dtime
@@ -848,6 +849,47 @@ async def admin_update_oauth_app(
 # OAUTH CONNECT FLOWS (TikTok / YouTube / Meta)
 # =============================================
 
+# In-memory store of pending Meta OAuth grants awaiting variation→Page
+# assignment. Keyed by a short-lived token returned to the popup; the popup
+# posts the choice back through the parent window, which calls
+# /api/oauth/meta/assign. Entries expire after 15 minutes (cleaned on each
+# new write). Process-local: fine for single-worker dev; for multi-worker
+# prod we'd swap to Redis or a DB row, but the assignment happens within
+# seconds of the OAuth callback so a single worker is the realistic case.
+_PENDING_META_ASSIGNMENTS: dict[str, dict] = {}
+
+
+def _oauth_pick_asset_html(assign_token: str, assets: list[dict], target_id: int, kind: str) -> str:
+    """Popup HTML that postMessages the asset list to the opener and closes.
+
+    Frontend listens for `{type:'oauth', status:'pick_asset', ...}` and shows
+    a modal letting the admin pick which Page/IG belongs to this variation.
+    """
+    import json as _json
+    payload = _json.dumps({
+        "type": "oauth",
+        "status": "pick_asset",
+        "assign_token": assign_token,
+        "target_id": target_id,
+        "kind": kind,
+        "assets": assets,
+    })
+    return f"""<!doctype html><html><head><meta charset=utf-8><title>OAuth — pick page</title>
+<style>body{{font-family:system-ui;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}</style>
+</head><body>
+<div style="text-align:center">
+  <h2>Connected!</h2>
+  <p>Pick which Page belongs to this variation in the previous window…</p>
+</div>
+<script>
+try {{
+  if (window.opener) {{ window.opener.postMessage({payload}, '*'); }}
+}} catch(e) {{}}
+setTimeout(function(){{ try{{ window.close(); }}catch(e){{}} }}, 800);
+</script>
+</body></html>"""
+
+
 def _oauth_close_html(success: bool, message: str = "") -> str:
     status = "success" if success else "error"
     safe = message.replace("</", "<\\/").replace("'", "\\'")
@@ -969,11 +1011,41 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(tokens["expires_in"]))
             expires_at = expires_at.isoformat()
 
-        # Meta flow populates BOTH instagram_ and facebook_ columns (FB Login
-        # covers IG-linked-to-Page + Page). Standalone "instagram" flow writes
-        # only to instagram_ columns — users who don't link to Facebook can
-        # still connect Instagram directly.
-        target_platforms = ["instagram", "facebook"] if platform == "meta" else [platform]
+        # =====================================================================
+        # Meta multi-asset flow: a single OAuth grant can authorize multiple
+        # Pages + IG accounts. Don't write to the variation here — fetch the
+        # full asset list, stash it under a short-lived token, and tell the
+        # popup to ask the admin which asset belongs to this variation. The
+        # frontend then POSTs to /api/oauth/meta/assign with the chosen page.
+        # =====================================================================
+        if platform == "meta":
+            try:
+                assets = await oauth_svc.fetch_meta_assets(tokens["access_token"])
+            except Exception as e:
+                return HTMLResponse(_oauth_close_html(False, f"Asset discovery failed: {e}"))
+            if not assets:
+                return HTMLResponse(_oauth_close_html(
+                    False,
+                    "No Pages or Instagram accounts were granted. Reconnect and tick at least one Page or IG.",
+                ))
+            assign_token = secrets.token_urlsafe(24)
+            _PENDING_META_ASSIGNMENTS[assign_token] = {
+                "user_token": tokens["access_token"],
+                "user_token_expires_at": expires_at,
+                "scope": tokens.get("scope"),
+                "assets": assets,
+                "target_id": target_id,
+                "kind": kind,
+                "created_at": datetime.now(timezone.utc),
+            }
+            # Drop expired entries opportunistically.
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+            for k in [k for k, v in _PENDING_META_ASSIGNMENTS.items() if v["created_at"] < cutoff]:
+                _PENDING_META_ASSIGNMENTS.pop(k, None)
+            return HTMLResponse(_oauth_pick_asset_html(assign_token, assets, target_id, kind))
+
+        # ========== non-Meta platforms keep the original direct-write flow ==========
+        target_platforms = [platform]
         updates: dict = {}
         for p in target_platforms:
             updates[f"{p}_token"] = tokens["access_token"]
@@ -986,17 +1058,8 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
             if tokens.get("platform_user_id"):
                 updates[f"{p}_user_id"] = str(tokens["platform_user_id"])
 
-        # Auto-fill *_handle / *_user_id fields from the connected account.
-        # For the Meta flow, fetch_profile_handles also returns a Page-scoped
-        # access token — we swap that into facebook_token so downstream
-        # posting uses a Page token (required by /{page_id}/videos) instead
-        # of the user token we just got from the code exchange.
-        # Best-effort: failures here never block the OAuth success.
         try:
             handles = await oauth_svc.fetch_profile_handles(platform, tokens["access_token"])
-            page_token = handles.pop("facebook_page_access_token", None)
-            if page_token and "facebook" in target_platforms:
-                updates["facebook_token"] = page_token
             for k, v in handles.items():
                 if v:
                     updates[k] = v
@@ -1008,6 +1071,82 @@ async def oauth_callback(platform: str, code: Optional[str] = None, state: Optio
         else:
             await db.update_account(database, target_id, **updates)
         return HTMLResponse(_oauth_close_html(True))
+    finally:
+        await database.close()
+
+
+class MetaAssignAsset(BaseModel):
+    assign_token: str
+    page_id: Optional[str] = None  # Page-based: gets FB Page + linked IG
+    ig_user_id: Optional[str] = None  # Standalone IG (no Page) fallback
+
+
+@app.post("/api/oauth/meta/assign")
+async def oauth_meta_assign(payload: MetaAssignAsset, user: dict = Depends(get_current_user)):
+    """Finalize a Meta OAuth grant by assigning a chosen Page/IG to the
+    variation/account that initiated the connect. Called by the frontend
+    after the popup posts the asset list.
+    """
+    pending = _PENDING_META_ASSIGNMENTS.pop(payload.assign_token, None)
+    if not pending:
+        raise HTTPException(404, "Assignment expired or unknown — reconnect")
+
+    target_id = pending["target_id"]
+    kind = pending["kind"]
+    assets = pending["assets"]
+    user_token = pending["user_token"]
+    user_token_expires_at = pending.get("user_token_expires_at")
+
+    # Find the chosen asset by id (page first, IG fallback for standalone case).
+    chosen = None
+    if payload.page_id:
+        chosen = next((a for a in assets if a.get("page_id") == payload.page_id), None)
+    if not chosen and payload.ig_user_id:
+        chosen = next((a for a in assets if a.get("ig_user_id") == payload.ig_user_id), None)
+    if not chosen:
+        raise HTTPException(400, "Selected asset not in the granted set")
+
+    # Build column updates. The Page access token replaces facebook_token so
+    # downstream posting uses a long-lived Page token. We also stash the
+    # long-lived USER token in facebook_refresh_token / instagram_refresh_token
+    # so we can re-exchange it before its 60d window closes (handled by the
+    # token refresh path).
+    updates: dict = {}
+    if chosen.get("page_id"):
+        if chosen.get("page_access_token"):
+            updates["facebook_token"] = chosen["page_access_token"]
+        updates["facebook_user_id"] = chosen["page_id"]
+        if chosen.get("page_name"):
+            updates["facebook_handle"] = chosen["page_name"]
+        # Stash long-lived user token for future Page-token re-mints / refreshes.
+        updates["facebook_refresh_token"] = user_token
+        if user_token_expires_at:
+            updates["facebook_expires_at"] = user_token_expires_at
+    if chosen.get("ig_user_id"):
+        # IG Business posts via the same FB Page token, so reuse it.
+        if chosen.get("page_access_token"):
+            updates["instagram_token"] = chosen["page_access_token"]
+        elif user_token:
+            updates["instagram_token"] = user_token
+        updates["instagram_user_id"] = chosen["ig_user_id"]
+        if chosen.get("ig_handle"):
+            updates["instagram_handle"] = chosen["ig_handle"]
+        updates["instagram_refresh_token"] = user_token
+        if user_token_expires_at:
+            updates["instagram_expires_at"] = user_token_expires_at
+
+    database = await db.get_db()
+    try:
+        if kind == "variation":
+            await db.update_artist_account(database, target_id, **updates)
+        else:
+            await db.update_account(database, target_id, **updates)
+        return {"ok": True, "assigned": {
+            "page_id": chosen.get("page_id"),
+            "page_name": chosen.get("page_name"),
+            "ig_user_id": chosen.get("ig_user_id"),
+            "ig_handle": chosen.get("ig_handle"),
+        }}
     finally:
         await database.close()
 

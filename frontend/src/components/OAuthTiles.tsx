@@ -3,7 +3,12 @@
 import { useState } from "react";
 import { Check, Link2, Unlink } from "lucide-react";
 import { toast } from "sonner";
-import { startOAuth, disconnectOAuth } from "@/lib/api";
+import {
+  startOAuth,
+  disconnectOAuth,
+  assignMetaAsset,
+  type MetaAsset,
+} from "@/lib/api";
 
 type PlatformKey = "tiktok" | "youtube" | "instagram" | "facebook";
 
@@ -40,8 +45,16 @@ function isConnected(account: OAuthTilesProps["account"], p: PlatformKey): boole
   );
 }
 
+type PickState = {
+  assets: MetaAsset[];
+  assignToken: string;
+  platformLabel: string;
+} | null;
+
 export default function OAuthTiles({ account, onChange, kind = "account" }: OAuthTilesProps) {
   const [busy, setBusy] = useState<PlatformKey | null>(null);
+  const [pick, setPick] = useState<PickState>(null);
+  const [submittingAsset, setSubmittingAsset] = useState(false);
 
   const handleConnect = async (p: PlatformKey) => {
     setBusy(p);
@@ -55,6 +68,18 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
       }
       const listener = (ev: MessageEvent) => {
         if (ev.data?.type !== "oauth") return;
+        if (ev.data.status === "pick_asset") {
+          // Multi-asset grant — show selection modal. Don't clear listener
+          // yet, popup might also send a final status.
+          window.removeEventListener("message", listener);
+          setBusy(null);
+          setPick({
+            assets: ev.data.assets || [],
+            assignToken: ev.data.assign_token,
+            platformLabel: PLATFORM_LABELS[p],
+          });
+          return;
+        }
         window.removeEventListener("message", listener);
         setBusy(null);
         if (ev.data.status === "success") {
@@ -87,44 +112,103 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
     }
   };
 
+  const submitAssetChoice = async (asset: MetaAsset) => {
+    if (!pick) return;
+    setSubmittingAsset(true);
+    try {
+      await assignMetaAsset({
+        assign_token: pick.assignToken,
+        page_id: asset.page_id ?? undefined,
+        ig_user_id: asset.ig_user_id ?? undefined,
+      });
+      toast.success(`Connected ${asset.page_name || asset.ig_handle || "page"}`);
+      setPick(null);
+      onChange();
+    } catch {
+      toast.error("Failed to assign — reconnect and try again");
+    } finally {
+      setSubmittingAsset(false);
+    }
+  };
+
   return (
-    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-      {(Object.keys(PLATFORM_LABELS) as PlatformKey[]).map((p) => {
-        const connected = isConnected(account, p);
-        const handle = account[`${p}_handle`] as string | undefined;
-        return (
-          <div
-            key={p}
-            className={`rounded-lg border p-2.5 ${connected ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"}`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold">{PLATFORM_LABELS[p]}</span>
-              {connected ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : null}
-            </div>
-            {connected ? (
-              <>
-                <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                  {handle ? `@${handle.replace(/^@+/, "")}` : "Connected"}
-                </div>
+    <>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {(Object.keys(PLATFORM_LABELS) as PlatformKey[]).map((p) => {
+          const connected = isConnected(account, p);
+          const handle = account[`${p}_handle`] as string | undefined;
+          return (
+            <div
+              key={p}
+              className={`rounded-lg border p-2.5 ${connected ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold">{PLATFORM_LABELS[p]}</span>
+                {connected ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : null}
+              </div>
+              {connected ? (
+                <>
+                  <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                    {handle ? `@${handle.replace(/^@+/, "")}` : "Connected"}
+                  </div>
+                  <button
+                    onClick={() => handleDisconnect(p)}
+                    className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive"
+                  >
+                    <Unlink className="h-3 w-3" /> Disconnect
+                  </button>
+                </>
+              ) : (
                 <button
-                  onClick={() => handleDisconnect(p)}
-                  className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive"
+                  onClick={() => handleConnect(p)}
+                  disabled={busy === p}
+                  className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-foreground px-2 py-1 text-[11px] font-medium text-background disabled:opacity-50"
                 >
-                  <Unlink className="h-3 w-3" /> Disconnect
+                  <Link2 className="h-3 w-3" /> {busy === p ? "…" : "Connect"}
                 </button>
-              </>
-            ) : (
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {pick ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-background p-4 shadow-xl">
+            <h3 className="text-sm font-semibold">Pick a Page for this variation</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              You granted multiple Pages / Instagram accounts. Pick the one that belongs to <b>this</b> variation. Each variation needs its own connection — repeat for the others.
+            </p>
+            <div className="mt-3 space-y-2 max-h-80 overflow-auto">
+              {pick.assets.map((a, i) => (
+                <button
+                  key={`${a.page_id || a.ig_user_id || i}`}
+                  disabled={submittingAsset}
+                  onClick={() => submitAssetChoice(a)}
+                  className="w-full rounded-lg border border-border p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5 disabled:opacity-50"
+                >
+                  <div className="text-sm font-medium">
+                    {a.page_name || (a.ig_handle ? `@${a.ig_handle}` : "Untitled")}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {a.page_id ? `Page · ${a.page_id}` : "Standalone IG"}
+                    {a.ig_handle ? ` · IG @${a.ig_handle}` : ""}
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 flex justify-end">
               <button
-                onClick={() => handleConnect(p)}
-                disabled={busy === p}
-                className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-foreground px-2 py-1 text-[11px] font-medium text-background disabled:opacity-50"
+                onClick={() => setPick(null)}
+                disabled={submittingAsset}
+                className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
               >
-                <Link2 className="h-3 w-3" /> {busy === p ? "…" : "Connect"}
+                Cancel
               </button>
-            )}
+            </div>
           </div>
-        );
-      })}
-    </div>
+        </div>
+      ) : null}
+    </>
   );
 }

@@ -319,6 +319,23 @@ export const disconnectOAuth = (
   return api.post(`/api/oauth/${platform}/disconnect`, null, { params }).then((r) => r.data);
 };
 
+// --- Meta multi-asset assignment ---
+// One Meta OAuth grant can authorize multiple Pages + IG accounts. After the
+// popup posts the granted asset list, the user picks one and we finalize via
+// this endpoint.
+export type MetaAsset = {
+  page_id: string | null;
+  page_name: string | null;
+  page_access_token: string | null;
+  ig_user_id: string | null;
+  ig_handle: string | null;
+};
+export const assignMetaAsset = (data: {
+  assign_token: string;
+  page_id?: string | null;
+  ig_user_id?: string | null;
+}) => api.post(`/api/oauth/meta/assign`, data).then((r) => r.data);
+
 // --- Clipping: Artists ---
 export const getArtists = () => api.get("/api/artists").then((r) => r.data);
 export const getArtist = (id: number) => api.get(`/api/artists/${id}`).then((r) => r.data);
