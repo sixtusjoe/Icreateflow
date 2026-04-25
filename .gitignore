@@ -46,3 +46,8 @@ npm-debug.log*
 # Media uploads
 backend/uploads/
 backend/output/
+backend/music/
+
+# Claude transient state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
