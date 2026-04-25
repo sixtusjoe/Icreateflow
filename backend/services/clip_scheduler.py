@@ -657,17 +657,25 @@ async def poll_views_once() -> None:
                 # post is briefly invisible). Take MAX(prev, new) so the
                 # dashboard total only ever climbs.
                 if new_views < prev_views:
-                    await db.log_error(
-                        database, source=f"posting.{platform}.views",
-                        message=(
-                            f"adapter returned {new_views} views but previous "
-                            f"was {prev_views}; keeping previous"
-                        ),
-                        context=(
-                            f"clip_post_id={cp['id']} "
-                            f"platform_post_id={cp.get('platform_post_id')!r}"
-                        ),
-                    )
+                    # Small regressions are noise (rate-limit glitch, edge-cache
+                    # lag, brief propagation hiccup) and used to spam the error
+                    # feed every poll. Silently keep the previous count.
+                    #
+                    # The one case worth logging is a non-zero count dropping
+                    # to 0 — that often means the post was deleted/hidden on
+                    # the platform, which is actionable.
+                    if new_views == 0 and prev_views > 0:
+                        await db.log_error(
+                            database, source=f"posting.{platform}.views",
+                            message=(
+                                f"adapter returned 0 views but previous was "
+                                f"{prev_views}; post may be deleted/hidden"
+                            ),
+                            context=(
+                                f"clip_post_id={cp['id']} "
+                                f"platform_post_id={cp.get('platform_post_id')!r}"
+                            ),
+                        )
                     # Still bump the updated_at so the poller moves on.
                     await db.update_clip_post(
                         database, cp["id"],
