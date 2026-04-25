@@ -506,19 +506,19 @@ export default function ArtistPage({
 
       {/* Campaign / Promotion */}
       <section className="rounded-2xl bg-card p-4 md:p-5">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Target className="h-4 w-4" /> Campaign
-          </h2>
-          <div className="flex items-center gap-2">
             {lastDashboardAt != null && (
               <span
-                className="text-[10px] text-muted-foreground"
+                className="ml-1 text-[10px] font-normal text-muted-foreground"
                 title={`Last refresh: ${new Date(lastDashboardAt).toLocaleTimeString()}`}
               >
-                Updated {Math.max(0, Math.floor((pollNow - lastDashboardAt) / 1000))}s ago
+                · {Math.max(0, Math.floor((pollNow - lastDashboardAt) / 1000))}s ago
               </span>
             )}
+          </h2>
+          <div className="flex items-center gap-2">
             {dashboard?.is_active ? (
               (() => {
                 const reason = dashboard.paused_reason;
@@ -1154,9 +1154,6 @@ function PollCountdown({
         <div className="flex items-center gap-1.5 text-muted-foreground">
           <RefreshCw className="h-3.5 w-3.5" />
           <span>View poll</span>
-          <span className="text-[10px] uppercase tracking-wider opacity-70">
-            every {Math.round(poll.interval_seconds / 60)}m
-          </span>
         </div>
         <div className="flex items-center gap-3 font-medium">
           <span className="tabular-nums">
