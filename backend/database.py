@@ -71,6 +71,7 @@ _TIMESTAMP_COLUMNS = {
     "created_at", "last_login", "scheduled_at",
     "scheduled_for", "posted_at", "view_count_updated_at", "last_posted_at",
     "started_at", "ended_at", "next_scheduled_at",
+    "deleted_at",
 }
 
 # Columns that must always be coerced to real booleans regardless of input form.
@@ -434,6 +435,11 @@ class ClipPost(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     view_count: Mapped[int] = mapped_column(Integer, server_default="0")
     view_count_updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # Set when the view poller detects the post is gone from the platform
+    # (drop-to-zero from a non-zero count, or an explicit not-found from the
+    # adapter). NULL = alive; any value = deleted on the platform.
+    # Dashboard counts exclude rows where this is set.
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     __table_args__ = (
         CheckConstraint(
             "platform IN ('tiktok','youtube','instagram','facebook')",
@@ -770,6 +776,9 @@ async def _migrate_campaign_columns(conn) -> None:
         ("campaign_id", "INTEGER"),
         ("clip_filename", "TEXT"),
         ("caption_snapshot", "TEXT"),
+        # Set when the view poller detects the post is gone from the platform.
+        # Dashboard counts exclude rows where this is set.
+        ("deleted_at", "TIMESTAMP"),
     ]
     for name, typ in clip_post_cols:
         await conn.execute(text(f"ALTER TABLE clip_posts ADD COLUMN IF NOT EXISTS {name} {typ}"))

@@ -705,10 +705,14 @@ async def poll_views_once() -> None:
                                 f"platform_post_id={cp.get('platform_post_id')!r}"
                             ),
                         )
+                        # Mark the row deleted so the dashboard counts drop
+                        # on the next refresh. view_count=0 also stops the
+                        # log from re-firing on the next poll.
                         await db.update_clip_post(
                             database, cp["id"],
                             view_count=0,
                             view_count_updated_at=datetime.now(timezone.utc),
+                            deleted_at=datetime.now(timezone.utc),
                         )
                     else:
                         # Generic small regression — keep prev, just bump
@@ -737,6 +741,28 @@ async def poll_views_once() -> None:
                             database, cp["id"],
                             view_count_updated_at=datetime.now(timezone.utc),
                         )
+                    except Exception:
+                        pass
+                    continue
+                # Adapter explicitly told us the post is gone (404/empty
+                # items/Object-doesn't-exist). Mark deleted so the dashboard
+                # count drops on the next refresh, and log once.
+                from services.posting import PostDeletedError
+                if isinstance(e, PostDeletedError):
+                    try:
+                        already_deleted = bool(cp.get("deleted_at"))
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count_updated_at=datetime.now(timezone.utc),
+                            deleted_at=datetime.now(timezone.utc),
+                        )
+                        # Dedupe the log: only the first detection writes.
+                        if not already_deleted:
+                            await db.log_error(
+                                database, source=f"posting.{cp.get('platform')}.views",
+                                message=f"post deleted on platform: {str(e)[:200]}",
+                                context=f"clip_post_id={cp['id']} platform_post_id={cp.get('platform_post_id')!r}",
+                            )
                     except Exception:
                         pass
                     continue

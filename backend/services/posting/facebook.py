@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import httpx
 
-from . import PostingError
+from . import PostingError, PostDeletedError
 
 
 GRAPH = "https://graph.facebook.com/v19.0"
@@ -49,5 +49,18 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
             params={"fields": "views", "access_token": access_token},
         )
         if r.status_code >= 400:
+            # Sniff for the deleted-post signal Meta returns when the post
+            # id is gone. Same wording family as the IG adapter — match
+            # substrings to stay tolerant of API version drift.
+            text = (r.text or "")[:300]
+            low = text.lower()
+            if (
+                "does not exist" in low
+                or "unsupported get request" in low
+                or '"code":100' in text
+            ):
+                raise PostDeletedError(
+                    f"FB post id {platform_post_id!r} not found: {text[:200]}"
+                )
             return 0
         return int(r.json().get("views") or 0)

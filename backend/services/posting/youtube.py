@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import httpx
 
-from . import PostingError
+from . import PostingError, PostDeletedError
 
 
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
@@ -72,10 +72,9 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
         items = r.json().get("items") or []
         if not items:
             # Empty items = video doesn't exist at this ID (deleted, private,
-            # or platform_post_id is stale). Do NOT return 0 — that would
-            # silently clobber a real view count. Raise so the poller logs
-            # it and skips the update.
-            raise PostingError(
+            # or platform_post_id is stale). Raise PostDeletedError so the
+            # poller marks the row deleted_at and the dashboard count drops.
+            raise PostDeletedError(
                 f"YouTube stats: video id {platform_post_id!r} not found "
                 f"(deleted, private, or stored id is stale)"
             )

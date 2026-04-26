@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import httpx
 
-from . import PostingError
+from . import PostingError, PostDeletedError
 
 
 GRAPH = "https://graph.facebook.com/v19.0"
@@ -70,6 +70,7 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
     # Meta deprecated `plays` in Graph API v22.0+. The supported view-equivalent
     # metric for Reels is now `views`. Fall back to `plays` for the v19-and-below
     # window in case the app gets pinned to an older version.
+    last_err_text = ""
     async with httpx.AsyncClient(timeout=30) as client:
         for metric in ("views", "plays"):
             r = await client.get(
@@ -77,10 +78,28 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
                 params={"metric": metric, "access_token": access_token},
             )
             if r.status_code >= 400:
+                last_err_text = (r.text or "")[:300]
                 continue
             for row in r.json().get("data") or []:
                 if row.get("name") == metric:
                     values = row.get("values") or []
                     if values:
                         return int(values[0].get("value") or 0)
+        # Both metric attempts errored — sniff for the deleted-post signal
+        # Meta returns when the media id is gone. They use a few wordings:
+        #   - "Object with ID '...' does not exist"
+        #   - "Unsupported get request. Object with ID ..."
+        #   - error.code 100 + error_subcode 33 ("does not exist, cannot be
+        #     loaded due to missing permissions, or does not support this
+        #     operation")
+        # Match on substrings so we don't depend on exact JSON path.
+        low = last_err_text.lower()
+        if last_err_text and (
+            "does not exist" in low
+            or "unsupported get request" in low
+            or '"code":100' in last_err_text
+        ):
+            raise PostDeletedError(
+                f"IG media id {platform_post_id!r} not found: {last_err_text[:200]}"
+            )
         return 0

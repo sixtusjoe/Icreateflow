@@ -3253,7 +3253,9 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         for p in posts:
             platform = p.get("platform")
             status = p.get("status")
-            if status == "posted":
+            # Rows the view poller flagged as deleted on the platform should
+            # not inflate the dashboard counts even though status='posted'.
+            if status == "posted" and not p.get("deleted_at"):
                 posts_total += 1
                 if platform in by_platform:
                     by_platform[platform]["posted"] += 1
@@ -3624,6 +3626,47 @@ async def admin_clear_error_logs(admin: dict = Depends(admin_required)):
     try:
         await db.delete_old_error_logs(database, keep_last=0)
         return {"ok": True}
+    finally:
+        await database.close()
+
+
+# --- Deletion audit ---
+
+@app.post("/api/admin/clip-posts/audit-deleted")
+async def admin_audit_deleted(admin: dict = Depends(admin_required)):
+    """One-shot audit: re-poll every currently-posted clip_post and let the
+    view poller's deletion-detection logic mark rows as deleted_at where the
+    platform reports them gone (404 / 'object doesn't exist' / drop-to-zero
+    from non-zero). Used to clean up dashboard counts after bulk deletions
+    on the platforms.
+
+    Bypasses the staleness gate by clearing view_count_updated_at on every
+    live row so the next poll touches all of them.
+    """
+    database = await db.get_db()
+    try:
+        await database.execute(
+            "UPDATE clip_posts SET view_count_updated_at = NULL "
+            "WHERE status = 'posted' AND deleted_at IS NULL"
+        )
+        await database.commit()
+    finally:
+        await database.close()
+    from services.clip_scheduler import poll_views_once
+    await poll_views_once()
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT COUNT(*) AS n FROM clip_posts WHERE deleted_at IS NOT NULL"
+        )
+        row = await cur.fetchone()
+        deleted_total = int(row["n"]) if row else 0
+        cur = await database.execute(
+            "SELECT COUNT(*) AS n FROM clip_posts WHERE status = 'posted' AND deleted_at IS NULL"
+        )
+        row = await cur.fetchone()
+        alive_total = int(row["n"]) if row else 0
+        return {"ok": True, "alive": alive_total, "deleted": deleted_total}
     finally:
         await database.close()
 

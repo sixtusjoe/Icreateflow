@@ -18,3 +18,11 @@ error on the `clip_posts` row.
 
 class PostingError(Exception):
     """Raised by a platform adapter when a post/view call fails."""
+
+
+class PostDeletedError(PostingError):
+    """Raised by `get_view_count` when the platform reports the post as gone
+    (404, "Object with ID does not exist", empty items, etc). Subclasses
+    PostingError so existing catch-all handlers still work, but lets the
+    poller specifically mark the row as deleted_at instead of just logging.
+    """
