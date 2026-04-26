@@ -22,6 +22,7 @@ import database as db
 from services import tiktok_scraper, ocr, generator, overlay, video
 from services import flux
 from services import oauth as oauth_svc
+from services import clip_scheduler
 from services.auth import hash_password, verify_password, create_access_token, decode_token
 
 # --- App setup ---
