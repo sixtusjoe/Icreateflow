@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import httpx
 
-from . import PostingError
+from . import PostingError, PostDeletedError
 
 
 API_BASE = "https://open.tiktokapis.com/v2"
@@ -260,5 +260,15 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
             raise PostingError(f"TikTok stats failed {r.status_code}: {r.text[:200]}")
         videos = ((r.json().get("data") or {}).get("videos")) or []
         if not videos:
-            return 0
+            # TikTok returns 200 with empty videos[] when the video id is
+            # gone (deleted by user / removed by moderation / private). Raise
+            # PostDeletedError so the poller marks deleted_at and the
+            # dashboard count drops. Transient glitches (rate-limit, edge
+            # cache) are uncommon for the /video/query/ path; if they do
+            # happen, the recovery path in the poller un-marks deleted_at
+            # the next time the video shows up with a real view_count.
+            raise PostDeletedError(
+                f"TikTok video id {platform_post_id!r} not in query response "
+                f"(deleted, private, or moderated)"
+            )
         return int(videos[0].get("view_count") or 0)

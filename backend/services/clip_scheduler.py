@@ -722,11 +722,17 @@ async def poll_views_once() -> None:
                             view_count_updated_at=datetime.now(timezone.utc),
                         )
                 else:
-                    await db.update_clip_post(
-                        database, cp["id"],
-                        view_count=new_views,
-                        view_count_updated_at=datetime.now(timezone.utc),
-                    )
+                    # Real, non-regressing view_count came back. If the row
+                    # was previously flagged as deleted by a transient
+                    # glitch (rare), un-flag it so the dashboard count
+                    # bounces back. Cheap to include in the same update.
+                    fields = {
+                        "view_count": new_views,
+                        "view_count_updated_at": datetime.now(timezone.utc),
+                    }
+                    if cp.get("deleted_at"):
+                        fields["deleted_at"] = None
+                    await db.update_clip_post(database, cp["id"], **fields)
                 if cp.get("artist_id"):
                     touched_artists.add(cp["artist_id"])
             except Exception as e:  # noqa: BLE001
