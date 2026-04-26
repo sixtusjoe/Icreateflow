@@ -643,6 +643,29 @@ async def poll_views_once() -> None:
                 if not variation:
                     continue
                 platform = cp["platform"]
+
+                # Pre-token check: a TikTok row with a never-resolved
+                # publish_id and posted_at > 1h ago is dead regardless of
+                # whether the token is still attached. Mark deleted now so
+                # variations that disconnected their TT token still get
+                # their stale rows cleaned up. Real video_ids fall through
+                # to the normal poll path below.
+                if platform == "tiktok":
+                    from services.posting.tiktok import _is_publish_id
+                    pid = cp.get("platform_post_id")
+                    posted_at = cp.get("posted_at")
+                    if pid and _is_publish_id(pid) and posted_at:
+                        if posted_at.tzinfo is None:
+                            posted_at = posted_at.replace(tzinfo=timezone.utc)
+                        if (datetime.now(timezone.utc) - posted_at).total_seconds() > 3600:
+                            now = datetime.now(timezone.utc)
+                            await db.update_clip_post(
+                                database, cp["id"],
+                                view_count_updated_at=now,
+                                deleted_at=now,
+                            )
+                            continue
+
                 access_token = await _fresh_variation_token(database, variation, platform)
                 if not access_token:
                     continue
