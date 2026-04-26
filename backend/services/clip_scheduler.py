@@ -666,12 +666,29 @@ async def poll_views_once() -> None:
                             )
                             post_id = resolved
                         else:
-                            # Couldn't resolve — bump timestamp so the poller
-                            # moves on and we try again next cycle.
-                            await db.update_clip_post(
-                                database, cp["id"],
-                                view_count_updated_at=datetime.now(timezone.utc),
+                            # Couldn't resolve. If the row has been a
+                            # placeholder for >1 hour, the publish never
+                            # finalised on TikTok (upload failure, mod
+                            # rejection, deleted-during-publish) — mark it
+                            # deleted so it drops from the dashboard count.
+                            # Within the first hour, just bump updated_at so
+                            # the poller retries on the next cycle.
+                            now = datetime.now(timezone.utc)
+                            stale = posted_at is not None and (
+                                (now - (posted_at if posted_at.tzinfo
+                                        else posted_at.replace(tzinfo=timezone.utc))).total_seconds() > 3600
                             )
+                            if stale:
+                                await db.update_clip_post(
+                                    database, cp["id"],
+                                    view_count_updated_at=now,
+                                    deleted_at=now,
+                                )
+                            else:
+                                await db.update_clip_post(
+                                    database, cp["id"],
+                                    view_count_updated_at=now,
+                                )
                             continue
 
                 views = await adapter.get_view_count(access_token, post_id)
