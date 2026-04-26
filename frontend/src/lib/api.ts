@@ -51,7 +51,7 @@ export const updateSiteConfig = (key: string, value: string) =>
   api.put("/api/admin/site-config", { key, value }).then((r) => r.data);
 export const getAdminStats = () => api.get("/api/admin/stats").then((r) => r.data);
 export const getCacheStats = () => api.get("/api/admin/cache-stats").then((r) => r.data);
-export const clearCache = (target: "video_renders" | "caption_variants" | "all", older_than_days?: number) =>
+export const clearCache = (target: "video_renders" | "caption_variants" | "passthrough_clips" | "all", older_than_days?: number) =>
   api.post("/api/admin/cache/clear", { target, older_than_days: older_than_days ?? null }).then((r) => r.data);
 export const getBrandCacheStats = () => api.get("/api/admin/brand-cache-stats").then((r) => r.data);
 export const clearBrandCache = (target: "output" | "uploads" | "all", older_than_date?: string) =>

@@ -199,6 +199,9 @@ async def diversify(
         "-map_metadata", "-1",
         "-metadata", f"creation_time={creation_time}",
         "-movflags", "+faststart",
+        # Force MP4 muxer — ffmpeg infers format from extension, but our
+        # atomic-write path ends in `.partial` so it can't auto-pick one.
+        "-f", "mp4",
         str(partial),
     ]
 

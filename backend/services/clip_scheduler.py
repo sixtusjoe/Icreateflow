@@ -793,10 +793,72 @@ async def _poll_views_loop() -> None:
             await asyncio.sleep(min(30, remaining))
 
 
+async def sweep_clip_caches_once() -> None:
+    """Delete stale entries from uploads/variation_renders/ and
+    uploads/passthrough_clips/ — anything not accessed in the last
+    `cache_ttl_days` days (default 30). Disk usage grows slowly otherwise:
+    every (clip × variation × platform) leaves an mp4 behind, plus one
+    passthrough per clip. After ~6 months on a busy artist that's gigabytes.
+    """
+    from pathlib import Path as _P
+    import time as _time
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        try:
+            ttl_days = int(cfg.get("cache_ttl_days") or 30)
+        except Exception:
+            ttl_days = 30
+        ttl_days = max(1, min(365, ttl_days))
+    finally:
+        await database.close()
+
+    cutoff = _time.time() - (ttl_days * 86400)
+    deleted = 0
+    bytes_freed = 0
+    for root in (_P("uploads/variation_renders"), _P("uploads/passthrough_clips")):
+        if not root.exists():
+            continue
+        for f in root.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                st = f.stat()
+                # atime falls back to mtime on filesystems that don't track it.
+                # Use the larger of the two so a freshly-uploaded file isn't
+                # nuked just because nothing read it yet.
+                last_used = max(st.st_atime, st.st_mtime)
+                if last_used < cutoff:
+                    sz = st.st_size
+                    f.unlink(missing_ok=True)
+                    deleted += 1
+                    bytes_freed += sz
+            except Exception:
+                pass
+    if deleted:
+        try:
+            database = await db.get_db()
+            try:
+                await db.log_error(
+                    database, source="scheduler.cache_sweep",
+                    message=(
+                        f"deleted {deleted} cached file(s), freed "
+                        f"{bytes_freed / (1024 * 1024):.1f} MB "
+                        f"(ttl={ttl_days}d)"
+                    ),
+                )
+            finally:
+                await database.close()
+        except Exception:
+            pass
+
+
 async def start_background_tasks() -> list[asyncio.Task]:
-    """Kick off the three loops. Call from FastAPI lifespan startup."""
+    """Kick off the four loops. Call from FastAPI lifespan startup."""
     return [
         asyncio.create_task(_loop(plan_slots_once, 300, "plan_slots")),
         asyncio.create_task(_loop(dispatch_due_once, 60, "dispatch")),
         asyncio.create_task(_poll_views_loop()),
+        # Daily cache sweep — runs once on boot, then every 24h.
+        asyncio.create_task(_loop(sweep_clip_caches_once, 86400, "cache_sweep")),
     ]

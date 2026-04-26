@@ -3654,6 +3654,25 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
             if renders_newest is None or mtime > renders_newest:
                 renders_newest = mtime
 
+    pt_root = _P("uploads/passthrough_clips")
+    pt_bytes = 0
+    pt_count = 0
+    pt_oldest: Optional[datetime] = None
+    pt_newest: Optional[datetime] = None
+    if pt_root.exists():
+        for f in pt_root.rglob("*.mp4"):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            pt_count += 1
+            pt_bytes += st.st_size
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+            if pt_oldest is None or mtime < pt_oldest:
+                pt_oldest = mtime
+            if pt_newest is None or mtime > pt_newest:
+                pt_newest = mtime
+
     database = await db.get_db()
     try:
         cur = await database.execute(
@@ -3677,6 +3696,12 @@ async def admin_cache_stats(admin: dict = Depends(admin_required)):
         "caption_variants": {
             "count": int(row.get("c") or 0),
             "oldest": row.get("oldest").isoformat() if row.get("oldest") else None,
+        },
+        "passthrough_clips": {
+            "count": pt_count,
+            "bytes": pt_bytes,
+            "oldest": pt_oldest.isoformat() if pt_oldest else None,
+            "newest": pt_newest.isoformat() if pt_newest else None,
         },
     }
 
@@ -3702,7 +3727,7 @@ async def admin_clear_cache(data: CacheClearRequest, admin: dict = Depends(admin
     * `older_than_days`: if set, only drop entries older than N days
       (mtime for files, created_at for rows). If None, wipe everything.
     """
-    if data.target not in ("video_renders", "caption_variants", "all"):
+    if data.target not in ("video_renders", "caption_variants", "passthrough_clips", "all"):
         raise HTTPException(400, f"Invalid target: {data.target}")
 
     cutoff: Optional[datetime] = None
@@ -3711,7 +3736,11 @@ async def admin_clear_cache(data: CacheClearRequest, admin: dict = Depends(admin
             raise HTTPException(400, "older_than_days must be >= 0")
         cutoff = datetime.now(timezone.utc) - timedelta(days=data.older_than_days)
 
-    out = {"video_renders_deleted": 0, "caption_variants_deleted": 0}
+    out = {
+        "video_renders_deleted": 0,
+        "caption_variants_deleted": 0,
+        "passthrough_clips_deleted": 0,
+    }
 
     if data.target in ("video_renders", "all"):
         from pathlib import Path as _P
@@ -3738,6 +3767,28 @@ async def admin_clear_cache(data: CacheClearRequest, admin: dict = Depends(admin
                         d.rmdir()
                     except OSError:
                         pass
+
+    if data.target in ("passthrough_clips", "all"):
+        # Per-clip raw-source cache used when diversification is off (so
+        # TikTok still gets a verified-domain URL). Cleared with the same
+        # rules — older-than cutoff applies, otherwise wipe the dir.
+        from pathlib import Path as _P
+        pt_root = _P("uploads/passthrough_clips")
+        if pt_root.exists():
+            for f in list(pt_root.rglob("*.mp4")):
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if cutoff is not None:
+                    mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+                    if mtime >= cutoff:
+                        continue
+                try:
+                    f.unlink()
+                    out["passthrough_clips_deleted"] += 1
+                except OSError:
+                    pass
 
     if data.target in ("caption_variants", "all"):
         database = await db.get_db()

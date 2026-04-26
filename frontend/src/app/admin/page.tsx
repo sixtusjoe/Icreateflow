@@ -891,7 +891,7 @@ function BrandCacheCleanupCard() {
 
 function CacheCleanupCard() {
   const [stats, setStats] = useState<any>(null);
-  const [target, setTarget] = useState<"video_renders" | "caption_variants" | "all">("all");
+  const [target, setTarget] = useState<"video_renders" | "caption_variants" | "passthrough_clips" | "all">("all");
   const [days, setDays] = useState<string>("30");
   const [busy, setBusy] = useState(false);
 
@@ -911,6 +911,7 @@ function CacheCleanupCard() {
     const labels: Record<string, string> = {
       video_renders: "diversified video renders",
       caption_variants: "caption variants",
+      passthrough_clips: "passthrough clip downloads",
       all: "all caches",
     };
     const olderDays = wipeAll ? undefined : Math.max(0, parseInt(days || "0", 10));
@@ -919,7 +920,7 @@ function CacheCleanupCard() {
     setBusy(true);
     try {
       const r = await clearCache(target, wipeAll ? undefined : olderDays);
-      toast.success(`Deleted ${r.video_renders_deleted} files · ${r.caption_variants_deleted} rows`);
+      toast.success(`Deleted ${r.video_renders_deleted ?? 0} renders · ${r.passthrough_clips_deleted ?? 0} passthrough · ${r.caption_variants_deleted ?? 0} captions`);
       load();
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || "Failed to clear cache");
@@ -932,10 +933,10 @@ function CacheCleanupCard() {
     <div className="rounded-2xl bg-card p-4 md:p-6">
       <h2 className="mb-2 text-base font-semibold">Clipping — Cache cleanup</h2>
       <p className="mb-4 text-xs text-muted-foreground">
-        The diversified video renders and paraphrased captions are cached so re-posts are deterministic. They aren&apos;t auto-expired — delete old entries here to reclaim disk / DB space. FK cascades already clean these up when a clip or variation is deleted.
+        The diversified video renders, paraphrased captions, and passthrough clip downloads are cached so re-posts are deterministic and don&apos;t re-fetch the source from Google Drive every time. The scheduler also runs a nightly TTL sweep (default 30 days, configurable via <code>cache_ttl_days</code>). Use the controls below to clear manually.
       </p>
 
-      <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
         <div className="rounded-lg border border-border p-3">
           <div className="text-xs text-muted-foreground">Video renders</div>
           <div className="mt-1 text-sm font-semibold">
@@ -952,6 +953,18 @@ function CacheCleanupCard() {
           </div>
         </div>
         <div className="rounded-lg border border-border p-3">
+          <div className="text-xs text-muted-foreground">Passthrough clips</div>
+          <div className="mt-1 text-sm font-semibold">
+            {stats?.passthrough_clips ? `${stats.passthrough_clips.count} files · ${fmtBytes(stats.passthrough_clips.bytes)}` : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            newest on disk: {stats?.passthrough_clips ? fmtDate(stats.passthrough_clips.newest) : "…"}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            oldest on disk: {stats?.passthrough_clips ? fmtDate(stats.passthrough_clips.oldest) : "…"}
+          </div>
+        </div>
+        <div className="rounded-lg border border-border p-3">
           <div className="text-xs text-muted-foreground">Caption variants</div>
           <div className="mt-1 text-sm font-semibold">
             {stats ? `${stats.caption_variants.count} rows` : "…"}
@@ -965,8 +978,9 @@ function CacheCleanupCard() {
           <label className="mb-1 block text-xs font-medium">Target</label>
           <select value={target} onChange={(e) => setTarget(e.target.value as any)}
             className="w-full min-h-[44px] rounded-lg border border-border bg-background px-3 text-base sm:text-sm">
-            <option value="all">All (renders + captions)</option>
+            <option value="all">All (renders + passthrough + captions)</option>
             <option value="video_renders">Video renders only</option>
+            <option value="passthrough_clips">Passthrough clips only</option>
             <option value="caption_variants">Caption variants only</option>
           </select>
         </div>
