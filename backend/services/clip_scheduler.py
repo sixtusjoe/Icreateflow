@@ -684,12 +684,15 @@ async def poll_views_once() -> None:
                 # dashboard total only ever climbs.
                 if new_views < prev_views:
                     # Small regressions are noise (rate-limit glitch, edge-cache
-                    # lag, brief propagation hiccup) and used to spam the error
-                    # feed every poll. Silently keep the previous count.
+                    # lag, brief propagation hiccup) — keep the previous count
+                    # silently and move on.
                     #
-                    # The one case worth logging is a non-zero count dropping
-                    # to 0 — that often means the post was deleted/hidden on
-                    # the platform, which is actionable.
+                    # Drop-to-zero from a non-zero count is different: it
+                    # almost always means the post was deleted/hidden. We log
+                    # it once AND accept the 0, so the next poll has prev=0
+                    # and the log doesn't re-fire every cycle (which is what
+                    # was flooding the error feed with the same message every
+                    # 15 min for the same row).
                     if new_views == 0 and prev_views > 0:
                         await db.log_error(
                             database, source=f"posting.{platform}.views",
@@ -702,11 +705,18 @@ async def poll_views_once() -> None:
                                 f"platform_post_id={cp.get('platform_post_id')!r}"
                             ),
                         )
-                    # Still bump the updated_at so the poller moves on.
-                    await db.update_clip_post(
-                        database, cp["id"],
-                        view_count_updated_at=datetime.now(timezone.utc),
-                    )
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count=0,
+                            view_count_updated_at=datetime.now(timezone.utc),
+                        )
+                    else:
+                        # Generic small regression — keep prev, just bump
+                        # updated_at so the poller moves on.
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count_updated_at=datetime.now(timezone.utc),
+                        )
                 else:
                     await db.update_clip_post(
                         database, cp["id"],
