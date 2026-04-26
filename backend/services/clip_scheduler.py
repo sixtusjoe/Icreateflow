@@ -438,9 +438,14 @@ async def dispatch_due_once() -> None:
                     )
                     continue
 
-                # Per-(clip, variation, platform) diversification to dodge
-                # cross-account dupe detection. Admin can disable via the
-                # `clip_diversification_enabled` setting (default on).
+                # Source resolution. Three paths:
+                #   1. Diversification ON: per-(clip, variation, platform)
+                #      ffmpeg-rendered file under our verified domain.
+                #   2. Diversification OFF + remote source (e.g. GDrive):
+                #      passthrough — download once into a local cache, serve
+                #      from our verified domain. TikTok requires this; raw
+                #      GDrive links fail with `url_ownership_unverified`.
+                #   3. Diversification OFF + local source: leave as-is.
                 cfg = await db.get_site_config(database)
                 public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
                 diversify_on = (cfg.get("clip_diversification_enabled") or "1") not in ("0", "false", "False", "")
@@ -469,6 +474,20 @@ async def dispatch_due_once() -> None:
                             database, source=f"scheduler.diversify.{platform}",
                             message=str(de), traceback=traceback.format_exc(),
                             context=f"clip_post_id={cp['id']} clip_id={clip['id']} variation_id={variation['id']}",
+                        )
+                elif public_base and source.startswith(("http://", "https://")):
+                    # Passthrough: wrap remote source in our verified domain
+                    # without any ffmpeg work.
+                    try:
+                        local = await diversify_svc.passthrough_download(
+                            source=source, clip_id=clip["id"],
+                        )
+                        source = diversify_svc.public_url_for(local, public_base)
+                    except Exception as pe:
+                        await db.log_error(
+                            database, source=f"scheduler.passthrough.{platform}",
+                            message=str(pe), traceback=traceback.format_exc(),
+                            context=f"clip_post_id={cp['id']} clip_id={clip['id']}",
                         )
 
                 adapter = ADAPTERS[platform]

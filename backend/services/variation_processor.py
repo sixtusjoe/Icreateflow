@@ -134,7 +134,24 @@ async def diversify(
 
     out = output_path(clip_id, variation_id, platform)
     if out.exists() and out.stat().st_size > 0:
-        return out
+        # Sanity check: cached file must look like a complete MP4. ffmpeg
+        # finishes by writing the moov atom — `ffprobe -show_format` only
+        # succeeds on a fully-finalised file. If the file exists but isn't
+        # valid (e.g. left over from a crashed run), nuke it and re-render.
+        try:
+            probe = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "error", "-show_format", str(out),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            await probe.communicate()
+            if probe.returncode == 0:
+                return out
+        except Exception:
+            pass
+        try:
+            out.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -160,6 +177,14 @@ async def diversify(
     mn = rng.randint(0, 59)
     creation_time = f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{mn:02d}:00"
 
+    # Atomic write: ffmpeg streams output to a sibling .partial path, then we
+    # rename onto `out` once finished. Without this, a parallel dispatcher tick
+    # (different clip_post row, same cache key, e.g. catch-up + slot together)
+    # could read `out` while ffmpeg is mid-write — partial MP4 makes TikTok
+    # reject as corrupt and YouTube splice in stale atoms (the "image + clip"
+    # mash-up the user reported). os.replace is atomic on POSIX.
+    import os as _os
+    partial = out.with_suffix(out.suffix + ".partial")
     cmd = [
         "ffmpeg", "-y",
         "-i", str(src_path),
@@ -174,7 +199,7 @@ async def diversify(
         "-map_metadata", "-1",
         "-metadata", f"creation_time={creation_time}",
         "-movflags", "+faststart",
-        str(out),
+        str(partial),
     ]
 
     try:
@@ -185,13 +210,13 @@ async def diversify(
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            # Clean partial output so next run retries cleanly
             try:
-                out.unlink(missing_ok=True)
+                partial.unlink(missing_ok=True)
             except Exception:
                 pass
             tail = (stderr or b"").decode(errors="replace")[-500:]
             raise RuntimeError(f"ffmpeg diversify failed (rc={proc.returncode}): {tail}")
+        _os.replace(partial, out)
     finally:
         if tmp_download is not None:
             try:
@@ -199,6 +224,57 @@ async def diversify(
             except Exception:
                 pass
 
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Passthrough mode (no diversification)
+# ---------------------------------------------------------------------------
+# When clip_diversification_enabled=0, TikTok still requires the source URL
+# to be on a domain verified in TikTok's Developer Portal. Posting GDrive
+# direct-download links straight to TikTok fails with `url_ownership_unverified`.
+#
+# Solution: download the clip to a stable local cache path under our verified
+# domain (icreateflow.com), then return the public URL pointing at that file.
+# No ffmpeg, no perceptual changes — just a domain wrapper. Same clip serves
+# every variation/platform; cache is keyed by clip_id only.
+
+PASSTHROUGH_ROOT = Path("uploads/passthrough_clips")
+
+
+def passthrough_path(clip_id: int) -> Path:
+    return PASSTHROUGH_ROOT / f"{clip_id}.mp4"
+
+
+async def passthrough_download(source: str, clip_id: int) -> Path:
+    """Download `source` (a remote URL) to a stable local cache path and
+    return that Path. If the cache file already exists and is non-empty, skip
+    the download. Local source paths are returned unchanged.
+
+    Atomic via .partial + os.replace so concurrent ticks never see a half-
+    downloaded file.
+    """
+    if not source.startswith(("http://", "https://")):
+        # Already a local file
+        p = Path(source)
+        if not p.exists():
+            raise FileNotFoundError(f"Clip source not found: {source}")
+        return p
+
+    out = passthrough_path(clip_id)
+    if out.exists() and out.stat().st_size > 0:
+        return out
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    import os as _os
+    partial = out.with_suffix(out.suffix + ".partial")
+    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+        async with client.stream("GET", source) as r:
+            r.raise_for_status()
+            with partial.open("wb") as f:
+                async for chunk in r.aiter_bytes(1024 * 256):
+                    f.write(chunk)
+    _os.replace(partial, out)
     return out
 
 
