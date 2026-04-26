@@ -2875,8 +2875,14 @@ async def list_artists(user: dict = Depends(get_current_user)):
             variations = await db.get_artist_accounts(database, a["id"])
             clips = await db.get_clips(database, a["id"])
             posts = await db.get_clip_posts(database, artist_id=a["id"])
-            views_total = sum(int(p.get("view_count") or 0) for p in posts)
-            posts_total = sum(1 for p in posts if p.get("status") == "posted")
+            # Skip rows the view poller flagged as deleted on the platform —
+            # they shouldn't inflate either the post count or the views total.
+            views_total = sum(
+                int(p.get("view_count") or 0) for p in posts if not p.get("deleted_at")
+            )
+            posts_total = sum(
+                1 for p in posts if p.get("status") == "posted" and not p.get("deleted_at")
+            )
             result.append({
                 **dict(a),
                 "variations_count": len(variations),
@@ -3579,8 +3585,14 @@ async def admin_list_artists(admin: dict = Depends(admin_required)):
                 **dict(a),
                 "variations_count": len(variations),
                 "clips_count": len(clips),
-                "posts_count": sum(1 for p in posts if p.get("status") == "posted"),
-                "views_total": sum(int(p.get("view_count") or 0) for p in posts),
+                "posts_count": sum(
+                    1 for p in posts
+                    if p.get("status") == "posted" and not p.get("deleted_at")
+                ),
+                "views_total": sum(
+                    int(p.get("view_count") or 0) for p in posts
+                    if not p.get("deleted_at")
+                ),
                 "owner_email": dict(owner).get("email") if owner else None,
             })
         return result
