@@ -176,14 +176,16 @@ async def diversify(
     mn = rng.randint(0, 59)
     creation_time = f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{mn:02d}:00"
 
-    # Atomic write: ffmpeg streams output to a sibling .partial path, then we
-    # rename onto `out` once finished. Without this, a parallel dispatcher tick
-    # (different clip_post row, same cache key, e.g. catch-up + slot together)
-    # could read `out` while ffmpeg is mid-write — partial MP4 makes TikTok
-    # reject as corrupt and YouTube splice in stale atoms (the "image + clip"
-    # mash-up the user reported). os.replace is atomic on POSIX.
-    import os as _os
-    partial = out.with_suffix(out.suffix + ".partial")
+    # Atomic write: ffmpeg streams output to a UNIQUE per-run sibling
+    # `.partial.<uuid>` path, then we rename onto `out` once finished. Two
+    # concurrent dispatcher ticks racing the same cache key used to share
+    # the same `.partial` path — Worker A would replace partial→out, then
+    # Worker B's `os.replace(partial, out)` would FileNotFoundError because
+    # A had already moved the (shared) partial. Per-run uuid makes the
+    # partials non-colliding; either replace wins, the file is identical
+    # because the seed is the same.
+    import os as _os, uuid as _uuid
+    partial = out.with_suffix(out.suffix + f".partial.{_uuid.uuid4().hex[:8]}")
     cmd = [
         "ffmpeg", "-y",
         "-i", str(src_path),
