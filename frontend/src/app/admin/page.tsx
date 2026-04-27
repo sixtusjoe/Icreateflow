@@ -733,6 +733,7 @@ function BrandingTab({ siteConfig, setSiteConfig }: any) {
       </div>
 
       <CaptionVariantToggle siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
+      <CatchupToggle siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <PollIntervalCard siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <CacheCleanupCard />
       <BrandCacheCleanupCard />
@@ -1003,6 +1004,34 @@ function CacheCleanupCard() {
     </div>
   );
 }
+
+function CatchupToggle({ siteConfig, setSiteConfig }: any) {
+  // Default OFF — the planner stays strict and missed slots stay missed.
+  const on = ["1", "true", "True"].includes(siteConfig.catchup_enabled ?? "0");
+  return (
+    <div className="rounded-2xl bg-card p-4 md:p-6">
+      <h2 className="mb-2 text-base font-semibold">Clipping — Catch-up missed slots on resume</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        When the artist resumes from a pause (manual unpause OR auto-resume on a fresh clip upload), should the planner fire the day&apos;s already-passed slots? Off (default) means missed slots stay missed; the next post is the next future slot. On restores the legacy behaviour and inserts a now+30s catch-up — useful if you want a clip to start firing immediately after upload, but also a common cause of unexpected duplicate-fires.
+      </p>
+      <label className="inline-flex items-center gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={async (e) => {
+            const v = e.target.checked ? "1" : "0";
+            setSiteConfig((s: any) => ({ ...s, catchup_enabled: v }));
+            try { await updateSiteConfig("catchup_enabled", v); toast.success(e.target.checked ? "Catch-up enabled" : "Catch-up disabled"); }
+            catch { toast.error("Failed to save"); }
+          }}
+          className="h-4 w-4"
+        />
+        <span className="text-sm font-medium">{on ? "Enabled" : "Disabled"}</span>
+      </label>
+    </div>
+  );
+}
+
 
 function CaptionVariantToggle({ siteConfig, setSiteConfig }: any) {
   const on = !["0", "false", "False", ""].includes(siteConfig.clip_caption_variants_enabled ?? "1");

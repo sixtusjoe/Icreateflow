@@ -640,6 +640,7 @@ async def poll_views_once() -> None:
             """
             SELECT * FROM clip_posts
             WHERE status = 'posted' AND platform_post_id IS NOT NULL
+              AND deleted_at IS NULL
               AND (view_count_updated_at IS NULL
                    OR view_count_updated_at < NOW() - INTERVAL '30 seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
@@ -773,17 +774,19 @@ async def poll_views_once() -> None:
                             view_count_updated_at=datetime.now(timezone.utc),
                         )
                 else:
-                    # Real, non-regressing view_count came back. If the row
-                    # was previously flagged as deleted by a transient
-                    # glitch (rare), un-flag it so the dashboard count
-                    # bounces back. Cheap to include in the same update.
-                    fields = {
-                        "view_count": new_views,
-                        "view_count_updated_at": datetime.now(timezone.utc),
-                    }
-                    if cp.get("deleted_at"):
-                        fields["deleted_at"] = None
-                    await db.update_clip_post(database, cp["id"], **fields)
+                    # Real, non-regressing view_count. Stamp it. Note: we no
+                    # longer auto-clear deleted_at when an alive count comes
+                    # back. YouTube's stats endpoint flaps — empty items
+                    # (deleted) → real count → empty items — and the
+                    # auto-recovery let that flap re-fire the
+                    # 'may be deleted' log on every flip. Once a row is
+                    # marked deleted, only an explicit admin action should
+                    # un-mark it.
+                    await db.update_clip_post(
+                        database, cp["id"],
+                        view_count=new_views,
+                        view_count_updated_at=datetime.now(timezone.utc),
+                    )
                 if cp.get("artist_id"):
                     touched_artists.add(cp["artist_id"])
             except Exception as e:  # noqa: BLE001

@@ -783,6 +783,19 @@ async def _migrate_campaign_columns(conn) -> None:
     for name, typ in clip_post_cols:
         await conn.execute(text(f"ALTER TABLE clip_posts ADD COLUMN IF NOT EXISTS {name} {typ}"))
 
+    # Slot-level unique index (replaces the per-clip_id one). The old index
+    # let two planner ticks that picked different clips for the same
+    # (account, platform, slot) both insert — producing duplicate-fire days.
+    # Drop the old, create the new. IF NOT EXISTS / IF EXISTS make it idempotent.
+    await conn.execute(text(
+        "DROP INDEX IF EXISTS clip_posts_no_duplicate_slots"
+    ))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS clip_posts_no_dup_slot "
+        "ON clip_posts (artist_account_id, platform, scheduled_for) "
+        "WHERE status = 'scheduled'"
+    ))
+
     # Drop the clip_id FK so historical clip_posts can survive clip deletion
     # (post-reset). Safe to run repeatedly — the DROP CONSTRAINT IF EXISTS no-ops.
     await conn.execute(text(
@@ -1576,10 +1589,13 @@ async def create_clip_post(
             caption_snapshot=caption_snapshot,
         )
         .on_conflict_do_nothing(
-            index_elements=["artist_account_id", "platform", "scheduled_for", "clip_id"],
-            # Predicate must match the partial index literally for Postgres to
-            # use it; parameterised comparisons won't bind. text() emits the
-            # raw SQL fragment.
+            # Match the slot-level unique index. Including clip_id in the
+            # conflict key (the old behaviour) meant two planner ticks that
+            # picked DIFFERENT clips for the same (account, platform, slot)
+            # both inserted, producing the duplicate-fire chaos. Slot-level
+            # is the right granularity: at most one scheduled row per
+            # (account, platform, scheduled_for), period.
+            index_elements=["artist_account_id", "platform", "scheduled_for"],
             index_where=text("status = 'scheduled'"),
         )
         .returning(ClipPost.id)
