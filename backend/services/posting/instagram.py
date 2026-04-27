@@ -67,39 +67,45 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
 
 
 async def get_view_count(access_token: str, platform_post_id: str) -> int:
-    # Meta deprecated `plays` in Graph API v22.0+. The supported view-equivalent
-    # metric for Reels is now `views`. Fall back to `plays` for the v19-and-below
-    # window in case the app gets pinned to an older version.
-    last_err_text = ""
     async with httpx.AsyncClient(timeout=30) as client:
+        # Step 1: existence probe. GET /{media-id}?fields=id is the cheapest
+        # call we can make and it doesn't need insights permission. If the
+        # media is gone Meta returns 4xx with 'does not exist' or
+        # 'Unsupported get request' — we promote that to PostDeletedError.
+        # Doing this BEFORE the insights call lets us catch deletions even
+        # for accounts where insights are silently 0 (no view data populated
+        # yet, missing scope, etc.).
+        probe = await client.get(
+            f"{GRAPH}/{platform_post_id}",
+            params={"fields": "id", "access_token": access_token},
+        )
+        if probe.status_code >= 400:
+            text = (probe.text or "")[:300]
+            low = text.lower()
+            if (
+                "does not exist" in low
+                or "unsupported get request" in low
+                or '"code":100' in text
+            ):
+                raise PostDeletedError(
+                    f"IG media id {platform_post_id!r} not found: {text[:200]}"
+                )
+            # Other 4xx (rate limit, transient) — fall through; we'll return
+            # 0 below and the monotonic poller will keep the previous count.
+
+        # Step 2: insights for view count. Meta deprecated `plays` in Graph
+        # API v22.0+; supported view-equivalent for Reels is `views`. Fall
+        # back to `plays` for older API versions.
         for metric in ("views", "plays"):
             r = await client.get(
                 f"{GRAPH}/{platform_post_id}/insights",
                 params={"metric": metric, "access_token": access_token},
             )
             if r.status_code >= 400:
-                last_err_text = (r.text or "")[:300]
                 continue
             for row in r.json().get("data") or []:
                 if row.get("name") == metric:
                     values = row.get("values") or []
                     if values:
                         return int(values[0].get("value") or 0)
-        # Both metric attempts errored — sniff for the deleted-post signal
-        # Meta returns when the media id is gone. They use a few wordings:
-        #   - "Object with ID '...' does not exist"
-        #   - "Unsupported get request. Object with ID ..."
-        #   - error.code 100 + error_subcode 33 ("does not exist, cannot be
-        #     loaded due to missing permissions, or does not support this
-        #     operation")
-        # Match on substrings so we don't depend on exact JSON path.
-        low = last_err_text.lower()
-        if last_err_text and (
-            "does not exist" in low
-            or "unsupported get request" in low
-            or '"code":100' in last_err_text
-        ):
-            raise PostDeletedError(
-                f"IG media id {platform_post_id!r} not found: {last_err_text[:200]}"
-            )
         return 0

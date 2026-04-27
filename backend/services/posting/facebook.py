@@ -44,14 +44,15 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
 
 async def get_view_count(access_token: str, platform_post_id: str) -> int:
     async with httpx.AsyncClient(timeout=30) as client:
+        # Single call covers both: existence probe + view count. If the
+        # post is gone Meta 4xx's with 'does not exist' / 'unsupported get
+        # request' / code:100 — promote to PostDeletedError. If alive, the
+        # `views` field gives us the count (same response).
         r = await client.get(
             f"{GRAPH}/{platform_post_id}",
-            params={"fields": "views", "access_token": access_token},
+            params={"fields": "id,views", "access_token": access_token},
         )
         if r.status_code >= 400:
-            # Sniff for the deleted-post signal Meta returns when the post
-            # id is gone. Same wording family as the IG adapter — match
-            # substrings to stay tolerant of API version drift.
             text = (r.text or "")[:300]
             low = text.lower()
             if (
