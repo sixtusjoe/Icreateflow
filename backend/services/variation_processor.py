@@ -103,21 +103,15 @@ def _build_filters(rng: random.Random, audio_rate: int) -> tuple[str, str, int]:
         f"hue=h={hue:.2f}"
     )
 
-    # Audio: tiny pitch shift (±25 cents = ±0.25 semitones, inaudible) via
-    # asetrate then atempo back to near-original speed. This moves the audio
-    # fingerprint off the original without sounding chipmunk-ish.
-    # Ratio per cent: 2 ** (cents / 1200)
-    cents = rng.uniform(-25.0, 25.0)
-    pitch_ratio = 2 ** (cents / 1200.0)
-    # Extra tempo nudge ±1%
-    tempo_nudge = rng.uniform(0.99, 1.01)
-    # atempo expects 0.5–2.0. Combined atempo = tempo_nudge / pitch_ratio.
-    atempo = tempo_nudge / pitch_ratio
-    af = (
-        f"asetrate={audio_rate}*{pitch_ratio:.6f},"
-        f"aresample={audio_rate},"
-        f"atempo={atempo:.6f}"
-    )
+    # Audio: NO modifications. Earlier we did asetrate * pitch + atempo to
+    # nudge the audio fingerprint, but the combination of resampling and
+    # tempo correction introduced subtle A/V drift that TikTok's player
+    # rendered as 'pausing and playing' (the user's exact words). The
+    # video filter alone produces a distinct enough fingerprint for
+    # cross-account dedup; nudging audio buys us very little extra at
+    # the cost of breaking playback. Pass audio through unchanged with
+    # a no-op filter so the af pipeline stays valid.
+    af = "anull"
 
     crf = rng.randint(22, 26)
     return vf, af, crf

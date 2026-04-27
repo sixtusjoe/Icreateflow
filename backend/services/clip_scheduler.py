@@ -778,56 +778,30 @@ async def poll_views_once() -> None:
                 # post is briefly invisible). Take MAX(prev, new) so the
                 # dashboard total only ever climbs.
                 if new_views < prev_views:
-                    # Small regressions are noise (rate-limit glitch, edge-cache
-                    # lag, brief propagation hiccup) — keep the previous count
-                    # silently and move on.
+                    # MONOTONIC view counts: never write a lower number than
+                    # what's stored. Platforms (especially Meta) blip and
+                    # return 0 transiently — the previous behaviour treated
+                    # any drop-to-zero as a deletion, wiped the count, and
+                    # logged a noisy 'may be deleted/hidden' error. The user
+                    # then lost all FB views overnight to one bad poll cycle.
                     #
-                    # Drop-to-zero from a non-zero count is different: it
-                    # almost always means the post was deleted/hidden. We log
-                    # it once AND accept the 0, so the next poll has prev=0
-                    # and the log doesn't re-fire every cycle (which is what
-                    # was flooding the error feed with the same message every
-                    # 15 min for the same row).
-                    if new_views == 0 and prev_views > 0:
-                        await db.log_error(
-                            database, source=f"posting.{platform}.views",
-                            message=(
-                                f"adapter returned 0 views but previous was "
-                                f"{prev_views}; post may be deleted/hidden"
-                            ),
-                            context=(
-                                f"clip_post_id={cp['id']} "
-                                f"platform_post_id={cp.get('platform_post_id')!r}"
-                            ),
-                        )
-                        # Mark the row deleted so the dashboard counts drop
-                        # on the next refresh. view_count=0 also stops the
-                        # log from re-firing on the next poll.
-                        await db.update_clip_post(
-                            database, cp["id"],
-                            view_count=0,
-                            view_count_updated_at=datetime.now(timezone.utc),
-                            deleted_at=datetime.now(timezone.utc),
-                        )
-                    else:
-                        # Generic small regression — keep prev, just bump
-                        # updated_at so the poller moves on.
-                        await db.update_clip_post(
-                            database, cp["id"],
-                            view_count_updated_at=datetime.now(timezone.utc),
-                        )
-                else:
-                    # Real, non-regressing view_count. Stamp it. Note: we no
-                    # longer auto-clear deleted_at when an alive count comes
-                    # back. YouTube's stats endpoint flaps — empty items
-                    # (deleted) → real count → empty items — and the
-                    # auto-recovery let that flap re-fire the
-                    # 'may be deleted' log on every flip. Once a row is
-                    # marked deleted, only an explicit admin action should
-                    # un-mark it.
+                    # Now: keep the previous count, bump updated_at, no log.
+                    # Real deletions are still caught — the adapter raises
+                    # PostDeletedError when the platform explicitly says the
+                    # post is gone (404, 'does not exist'), and the
+                    # exception handler below sets deleted_at.
                     await db.update_clip_post(
                         database, cp["id"],
-                        view_count=new_views,
+                        view_count_updated_at=datetime.now(timezone.utc),
+                    )
+                else:
+                    # new_views >= prev_views. Write the new count. Belt-and
+                    # -braces guard with max() so we never accidentally
+                    # decrease (defensive against future refactors of the
+                    # if-branch above).
+                    await db.update_clip_post(
+                        database, cp["id"],
+                        view_count=max(new_views, prev_views),
                         view_count_updated_at=datetime.now(timezone.utc),
                     )
                 if cp.get("artist_id"):
@@ -847,25 +821,19 @@ async def poll_views_once() -> None:
                     except Exception:
                         pass
                     continue
-                # Adapter explicitly told us the post is gone (404/empty
-                # items/Object-doesn't-exist). Mark deleted so the dashboard
-                # count drops on the next refresh, and log once.
+                # Adapter explicitly told us the post is gone (404 / empty
+                # items / 'Object with ID does not exist'). Mark deleted_at
+                # so the dashboard count drops on the next refresh. NO log
+                # entry — the user explicitly asked never to see deletion
+                # logs. Dashboard count drop IS the signal.
                 from services.posting import PostDeletedError
                 if isinstance(e, PostDeletedError):
                     try:
-                        already_deleted = bool(cp.get("deleted_at"))
                         await db.update_clip_post(
                             database, cp["id"],
                             view_count_updated_at=datetime.now(timezone.utc),
                             deleted_at=datetime.now(timezone.utc),
                         )
-                        # Dedupe the log: only the first detection writes.
-                        if not already_deleted:
-                            await db.log_error(
-                                database, source=f"posting.{cp.get('platform')}.views",
-                                message=f"post deleted on platform: {str(e)[:200]}",
-                                context=f"clip_post_id={cp['id']} platform_post_id={cp.get('platform_post_id')!r}",
-                            )
                     except Exception:
                         pass
                     continue
