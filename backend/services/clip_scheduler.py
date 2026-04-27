@@ -303,13 +303,24 @@ async def plan_slots_once() -> None:
                 future = [s for s in missing if s > now_utc]
                 past_missing = [s for s in missing if s <= now_utc]
                 now_naive = now_utc.replace(tzinfo=None)
-                if past_missing and not any(
+                # Catch-up gate. When the artist resumes after a gap (manual
+                # un-pause OR maybe_resume_on_new_clip from a fresh upload),
+                # the planner sees today's already-passed slots as "missed"
+                # and inserts a now+30s row to fire them. That surprised the
+                # user when an upload triggered an immediate fire instead of
+                # waiting for tomorrow's 8am slot — and on resume from a long
+                # gap it can fire MULTIPLE missed slots back-to-back.
+                #
+                # Admin-toggle the behaviour via site_config.catchup_enabled.
+                # Off (default) = missed slots stay missed; only future slots
+                # get planned. On = old behaviour, fire one catch-up.
+                _cfg = await db.get_site_config(database)
+                catchup_on = (_cfg.get("catchup_enabled") or "0") not in ("0", "false", "False", "")
+                if catchup_on and past_missing and not any(
                     t > now_naive - timedelta(minutes=2)
                     and t <= now_naive + timedelta(minutes=5)
                     for t in existing_times
                 ):
-                    # Only insert a "now+30s" catch-up if we don't already
-                    # have a near-now slot pending (avoids double catch-ups).
                     future = [now_utc + timedelta(seconds=30)] + future
                 slots = future
                 if not slots:
