@@ -693,7 +693,6 @@ function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: an
  * BRANDING
  * ============================================================ */
 function BrandingTab({ siteConfig, setSiteConfig }: any) {
-  const diversifyOn = !["0", "false", "False", ""].includes(siteConfig.clip_diversification_enabled ?? "1");
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-card p-4 md:p-6">
@@ -711,29 +710,6 @@ function BrandingTab({ siteConfig, setSiteConfig }: any) {
         </div>
       </div>
 
-      <div className="rounded-2xl bg-card p-4 md:p-6">
-        <h2 className="mb-2 text-base font-semibold">Clipping — Per-variation video diversification</h2>
-        <p className="mb-4 text-xs text-muted-foreground">
-          Re-encodes each clip with imperceptible video/audio changes per (clip, variation, platform) so the same clip posted across variations looks different to platform reuse detection. Turn off to post raw clips.
-        </p>
-        <label className="inline-flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={diversifyOn}
-            onChange={async (e) => {
-              const v = e.target.checked ? "1" : "0";
-              setSiteConfig((s: any) => ({ ...s, clip_diversification_enabled: v }));
-              try { await updateSiteConfig("clip_diversification_enabled", v); toast.success(e.target.checked ? "Diversification enabled" : "Diversification disabled"); }
-              catch { toast.error("Failed to save"); }
-            }}
-            className="h-4 w-4"
-          />
-          <span className="text-sm font-medium">{diversifyOn ? "Enabled" : "Disabled"}</span>
-        </label>
-      </div>
-
-      <CaptionVariantToggle siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
-      <CatchupToggle siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <PollIntervalCard siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <CacheCleanupCard />
       <BrandCacheCleanupCard />
@@ -1005,59 +981,8 @@ function CacheCleanupCard() {
   );
 }
 
-function CatchupToggle({ siteConfig, setSiteConfig }: any) {
-  // Default OFF — the planner stays strict and missed slots stay missed.
-  const on = ["1", "true", "True"].includes(siteConfig.catchup_enabled ?? "0");
-  return (
-    <div className="rounded-2xl bg-card p-4 md:p-6">
-      <h2 className="mb-2 text-base font-semibold">Clipping — Catch-up missed slots on resume</h2>
-      <p className="mb-4 text-xs text-muted-foreground">
-        When the artist resumes from a pause (manual unpause OR auto-resume on a fresh clip upload), should the planner fire the day&apos;s already-passed slots? Off (default) means missed slots stay missed; the next post is the next future slot. On restores the legacy behaviour and inserts a now+30s catch-up — useful if you want a clip to start firing immediately after upload, but also a common cause of unexpected duplicate-fires.
-      </p>
-      <label className="inline-flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={on}
-          onChange={async (e) => {
-            const v = e.target.checked ? "1" : "0";
-            setSiteConfig((s: any) => ({ ...s, catchup_enabled: v }));
-            try { await updateSiteConfig("catchup_enabled", v); toast.success(e.target.checked ? "Catch-up enabled" : "Catch-up disabled"); }
-            catch { toast.error("Failed to save"); }
-          }}
-          className="h-4 w-4"
-        />
-        <span className="text-sm font-medium">{on ? "Enabled" : "Disabled"}</span>
-      </label>
-    </div>
-  );
-}
-
-
-function CaptionVariantToggle({ siteConfig, setSiteConfig }: any) {
-  const on = !["0", "false", "False", ""].includes(siteConfig.clip_caption_variants_enabled ?? "1");
-  return (
-    <div className="rounded-2xl bg-card p-4 md:p-6">
-      <h2 className="mb-2 text-base font-semibold">Clipping — Per-variation caption paraphrasing</h2>
-      <p className="mb-4 text-xs text-muted-foreground">
-        Uses Claude to rewrite each clip's caption per (clip, variation, platform) so the text fingerprint differs across accounts. Results are cached, so each combo generates once and re-uses the same paraphrase. Requires an Anthropic API key in Settings. Turn off to post the raw caption.
-      </p>
-      <label className="inline-flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={on}
-          onChange={async (e) => {
-            const v = e.target.checked ? "1" : "0";
-            setSiteConfig((s: any) => ({ ...s, clip_caption_variants_enabled: v }));
-            try { await updateSiteConfig("clip_caption_variants_enabled", v); toast.success(e.target.checked ? "Caption variants enabled" : "Caption variants disabled"); }
-            catch { toast.error("Failed to save"); }
-          }}
-          className="h-4 w-4"
-        />
-        <span className="text-sm font-medium">{on ? "Enabled" : "Disabled"}</span>
-      </label>
-    </div>
-  );
-}
+// Diversification, caption-variants, and catch-up toggles moved to user
+// settings (/settings) so each user controls their own posting behaviour.
 
 /* ============================================================
  * Small table helpers

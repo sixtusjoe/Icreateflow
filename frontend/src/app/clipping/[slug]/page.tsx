@@ -530,12 +530,20 @@ export default function ArtistPage({
                   : reason === "manual"
                   ? "Paused"
                   : "Running";
-                // target_reached and directory_exhausted are auto states — no manual toggle.
-                const clickable = !reason || reason === "manual";
-                const title = !clickable
-                  ? undefined
-                  : isPaused
-                  ? "Click to resume"
+                // All paused reasons are clickable — clicking clears
+                // paused_reason and resumes. directory_exhausted/target_reached
+                // were originally non-clickable (theory: "add a clip" or
+                // "new campaign" was the only valid escape) but that left
+                // users stuck when the auto-resume hook hadn't run yet
+                // (e.g. silent NameError, or queued rows from before the
+                // re-pause that they want to fire now).
+                const clickable = true;
+                const title = isPaused
+                  ? reason === "directory_exhausted"
+                    ? "Click to resume — fires queued slots until paused again"
+                    : reason === "target_reached"
+                    ? "Click to resume — view target already met"
+                    : "Click to resume"
                   : "Click to pause";
                 const handleClick = async () => {
                   if (!clickable || !id) return;

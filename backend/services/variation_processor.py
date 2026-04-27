@@ -80,22 +80,27 @@ def _build_filters(rng: random.Random, audio_rate: int) -> tuple[str, str, int]:
     # to a human, completely breaks frame-level pHash/dHash.
     crop_pct = rng.uniform(0.97, 0.99)
 
-    # Subtle color jitter
-    brightness = rng.uniform(-0.03, 0.03)
-    saturation = rng.uniform(0.97, 1.03)
-    contrast = rng.uniform(0.98, 1.02)
-    hue = rng.uniform(-2.0, 2.0)
+    # Very subtle color jitter — values tightened so output is visually
+    # indistinguishable from the source. The earlier (looser) values plus
+    # the noise filter below produced visibly grainy / posterised output
+    # on TikTok's player. Crop+scale+seeded metadata changes are plenty to
+    # defeat content-id checks; the jitter only needs to nudge.
+    brightness = rng.uniform(-0.01, 0.01)
+    saturation = rng.uniform(0.99, 1.01)
+    contrast = rng.uniform(0.995, 1.005)
+    hue = rng.uniform(-0.5, 0.5)
 
-    # Very low-amplitude noise. noise=alls must be an integer.
-    noise = rng.randint(3, 7)
+    # NOTE: dropped the `noise=alls=N:allf=t` filter that used to live
+    # here. It worked great for breaking pHash but at our CRF (22–26) it
+    # made the output look unmistakably grainy on platform players —
+    # especially TikTok, which post-encodes our upload at lower bit-rates
+    # and amplified the artefacts.
 
-    # Force even output dimensions — libx264/yuv420p requires mod-2 width/height.
     vf = (
         f"crop=trunc(iw*{crop_pct:.4f}/2)*2:trunc(ih*{crop_pct:.4f}/2)*2,"
         f"scale=trunc(iw/{crop_pct:.4f}/2)*2:trunc(ih/{crop_pct:.4f}/2)*2,"
         f"eq=brightness={brightness:.4f}:saturation={saturation:.4f}:contrast={contrast:.4f},"
-        f"hue=h={hue:.2f},"
-        f"noise=alls={noise}:allf=t"
+        f"hue=h={hue:.2f}"
     )
 
     # Audio: tiny pitch shift (±25 cents = ±0.25 semitones, inaudible) via
@@ -249,6 +254,54 @@ def passthrough_path(clip_id: int) -> Path:
     return PASSTHROUGH_ROOT / f"{clip_id}.mp4"
 
 
+async def _probe_video_codec(path: Path) -> str:
+    """Return the video codec_name (e.g. 'h264', 'hevc'). Empty string on error."""
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "default=nk=1:nw=1",
+        str(path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return (out or b"").decode().strip().lower()
+
+
+async def _transcode_to_h264(src: Path, dst: Path) -> None:
+    """Re-encode src → dst as H.264 / AAC, preserving dimensions and duration.
+    Atomic via .partial + os.replace.
+    """
+    import os as _os
+    partial = dst.with_suffix(dst.suffix + ".partial")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(src),
+        "-c:v", "libx264",
+        "-crf", "20",
+        "-preset", "veryfast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        str(partial),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        try:
+            partial.unlink(missing_ok=True)
+        except Exception:
+            pass
+        tail = (stderr or b"").decode(errors="replace")[-500:]
+        raise RuntimeError(f"ffmpeg passthrough transcode failed (rc={proc.returncode}): {tail}")
+    _os.replace(partial, dst)
+
+
 async def passthrough_download(source: str, clip_id: int) -> Path:
     """Download `source` (a remote URL) to a stable local cache path and
     return that Path. If the cache file already exists and is non-empty, skip
@@ -256,6 +309,12 @@ async def passthrough_download(source: str, clip_id: int) -> Path:
 
     Atomic via .partial + os.replace so concurrent ticks never see a half-
     downloaded file.
+
+    If the downloaded source is HEVC (H.265) we transcode in place to H.264.
+    TikTok accepts H.265 at the upload API but its player renders it glitchy
+    — the diversifier always re-encodes to H.264 so this only matters in
+    passthrough mode, but it's the kind of bug that's invisible until it
+    isn't.
     """
     if not source.startswith(("http://", "https://")):
         # Already a local file
@@ -266,7 +325,15 @@ async def passthrough_download(source: str, clip_id: int) -> Path:
 
     out = passthrough_path(clip_id)
     if out.exists() and out.stat().st_size > 0:
-        return out
+        # Cached — but verify it's H.264. If a previous version saved HEVC
+        # (the bug we're fixing), nuke the cache and re-pull.
+        codec = await _probe_video_codec(out)
+        if codec == "h264":
+            return out
+        try:
+            out.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     out.parent.mkdir(parents=True, exist_ok=True)
     import os as _os
@@ -277,7 +344,19 @@ async def passthrough_download(source: str, clip_id: int) -> Path:
             with partial.open("wb") as f:
                 async for chunk in r.aiter_bytes(1024 * 256):
                     f.write(chunk)
-    _os.replace(partial, out)
+
+    # Probe what we just downloaded. H.264 → keep as-is. Anything else
+    # (HEVC, VP9, etc.) → transcode to H.264.
+    codec = await _probe_video_codec(partial)
+    if codec == "h264":
+        _os.replace(partial, out)
+    else:
+        # Transcode partial → out, then unlink the original partial.
+        await _transcode_to_h264(partial, out)
+        try:
+            partial.unlink(missing_ok=True)
+        except Exception:
+            pass
     return out
 
 

@@ -135,6 +135,42 @@ async def _fresh_variation_token(database, variation: dict, platform: str) -> st
     return new_token
 
 
+async def _user_or_site_setting(database, user_id: int | None, key: str, default: str = "1") -> str:
+    """Resolve a clipping toggle. Reads `key` from the artist owner's
+    user_settings first; falls back to site_config; finally `default`.
+
+    The three clipping toggles (clip_diversification_enabled,
+    clip_caption_variants_enabled, catchup_enabled) used to live in
+    site_config (admin-only). They moved to per-user settings so each user
+    can configure their own posting behaviour. Old site_config values are
+    still honoured as a fallback so existing installs keep working without
+    a migration step.
+    """
+    if user_id:
+        try:
+            us = await db.get_user_settings(database, user_id)
+            v = us.get(key) if us else None
+            if v is not None and v != "":
+                return v
+        except Exception:
+            pass
+    try:
+        cfg = await db.get_site_config(database)
+        v = cfg.get(key) if cfg else None
+        if v is not None and v != "":
+            return v
+    except Exception:
+        pass
+    return default
+
+
+def _toggle_on(value: str, default_on: bool = True) -> bool:
+    """Standard truthy parse for toggle strings: '0', 'false', 'False', '' = off."""
+    if value is None:
+        return default_on
+    return value not in ("0", "false", "False", "")
+
+
 def _clip_video_source(clip: dict) -> str | None:
     """Return a URL or local path suitable for a posting adapter."""
     if clip.get("source") == "gdrive" and clip.get("gdrive_file_id"):
@@ -311,11 +347,12 @@ async def plan_slots_once() -> None:
                 # waiting for tomorrow's 8am slot — and on resume from a long
                 # gap it can fire MULTIPLE missed slots back-to-back.
                 #
-                # Admin-toggle the behaviour via site_config.catchup_enabled.
-                # Off (default) = missed slots stay missed; only future slots
-                # get planned. On = old behaviour, fire one catch-up.
-                _cfg = await db.get_site_config(database)
-                catchup_on = (_cfg.get("catchup_enabled") or "0") not in ("0", "false", "False", "")
+                # Per-user toggle (artist owner's user_settings) with
+                # site_config fallback. Default off.
+                _catchup_raw = await _user_or_site_setting(
+                    database, artist.get("user_id"), "catchup_enabled", "0"
+                )
+                catchup_on = _toggle_on(_catchup_raw, default_on=False)
                 if catchup_on and past_missing and not any(
                     t > now_naive - timedelta(minutes=2)
                     and t <= now_naive + timedelta(minutes=5)
@@ -459,7 +496,12 @@ async def dispatch_due_once() -> None:
                 #   3. Diversification OFF + local source: leave as-is.
                 cfg = await db.get_site_config(database)
                 public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
-                diversify_on = (cfg.get("clip_diversification_enabled") or "1") not in ("0", "false", "False", "")
+                # Per-user toggle (artist owner's user_settings) with
+                # site_config fallback. Default on.
+                _artist_for_toggle = await db.get_artist(database, cp["artist_id"]) if cp.get("artist_id") else None
+                _owner_id = dict(_artist_for_toggle).get("user_id") if _artist_for_toggle else None
+                _div_raw = await _user_or_site_setting(database, _owner_id, "clip_diversification_enabled", "1")
+                diversify_on = _toggle_on(_div_raw)
                 if diversify_on and public_base:
                     try:
                         local = await diversify_svc.diversify(
@@ -516,7 +558,8 @@ async def dispatch_due_once() -> None:
                 # (default on). Falls back to the raw base caption if
                 # disabled, if no API key is configured, or on any error.
                 base_caption = dict(clip).get("caption") or ""
-                caption_on = (cfg.get("clip_caption_variants_enabled") or "1") not in ("0", "false", "False", "")
+                _cap_raw = await _user_or_site_setting(database, _owner_id, "clip_caption_variants_enabled", "1")
+                caption_on = _toggle_on(_cap_raw)
                 caption_to_post = base_caption
                 if caption_on and base_caption:
                     try:

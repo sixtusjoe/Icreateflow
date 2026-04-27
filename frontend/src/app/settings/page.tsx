@@ -4,7 +4,28 @@ import { useEffect, useState } from "react";
 import { Save, Eye, EyeOff, Link2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { getSettings, updateSetting } from "@/lib/api";
+import { getSettings, updateSetting, getUserSettings, updateUserSetting } from "@/lib/api";
+
+function ToggleRow({ title, desc, on, onToggle }: {
+  title: string; desc: string; on: boolean; onToggle: (v: boolean) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="mb-1 text-sm font-medium">{title}</div>
+      <p className="mb-3 text-xs text-muted-foreground">{desc}</p>
+      <label className="inline-flex cursor-pointer items-center gap-3">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="h-4 w-4"
+        />
+        <span className="text-sm font-medium">{on ? "Enabled" : "Disabled"}</span>
+      </label>
+    </div>
+  );
+}
+
 
 function SecretField({ label, value, onChange, onSave, placeholder, hint }: {
   label: string; value: string;
@@ -43,14 +64,29 @@ function SecretField({ label, value, onChange, onSave, placeholder, hint }: {
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({});
+  const [userSettings, setUserSettings] = useState<Record<string, string>>({});
 
   useEffect(() => {
     getSettings().then(setSettings).catch(() => {});
+    getUserSettings().then(setUserSettings).catch(() => {});
   }, []);
 
   const saveGlobal = async (key: string, value: string) => {
     try { await updateSetting(key, value); toast.success("Saved"); }
     catch { toast.error("Failed to save"); }
+  };
+
+  const saveUser = async (key: string, value: string) => {
+    setUserSettings((s) => ({ ...s, [key]: value }));
+    try { await updateUserSetting(key, value); }
+    catch { toast.error("Failed to save"); }
+  };
+
+  // Truthy parse — default ON for diversify/captions, OFF for catchup.
+  const isOn = (key: string, defaultOn: boolean) => {
+    const v = userSettings[key];
+    if (v === undefined || v === null) return defaultOn;
+    return !["0", "false", "False", ""].includes(v);
   };
 
   const val = (key: string, fallback = "") => settings[key] ?? fallback;
@@ -84,6 +120,31 @@ export default function SettingsPage() {
             onSave={() => saveGlobal("replicate_api_token", settings["replicate_api_token"] || "")}
             placeholder="r8_..."
             hint="For AI face generation in variations."
+          />
+        </div>
+      </div>
+
+      {/* Clipping toggles (per-user) */}
+      <div className="mb-6 rounded-2xl bg-card p-4 md:p-6">
+        <h2 className="mb-5 text-base font-semibold">Clipping behaviour</h2>
+        <div className="space-y-5">
+          <ToggleRow
+            title="Per-variation video diversification"
+            desc="Re-encodes each clip with imperceptible video/audio changes per (clip, variation, platform) so the same clip posted across variations looks different to platform reuse detection. Turn off to post raw clips."
+            on={isOn("clip_diversification_enabled", true)}
+            onToggle={(v) => saveUser("clip_diversification_enabled", v ? "1" : "0")}
+          />
+          <ToggleRow
+            title="Per-variation caption paraphrasing"
+            desc="Uses Claude to rewrite each clip's caption per (clip, variation, platform) so the text fingerprint differs across accounts. Cached, so each combo generates once. Requires an Anthropic API key above."
+            on={isOn("clip_caption_variants_enabled", true)}
+            onToggle={(v) => saveUser("clip_caption_variants_enabled", v ? "1" : "0")}
+          />
+          <ToggleRow
+            title="Catch-up missed slots on resume"
+            desc="When you resume from a pause (manual unpause OR auto-resume on a fresh upload), should the planner fire the day's already-passed slots? Off (default) means missed slots stay missed; the next post is the next future slot. On inserts a now+30s catch-up — useful if you want a clip to start firing immediately after upload, but a common cause of unexpected duplicate fires."
+            on={isOn("catchup_enabled", false)}
+            onToggle={(v) => saveUser("catchup_enabled", v ? "1" : "0")}
           />
         </div>
       </div>
