@@ -140,12 +140,6 @@ export default function SettingsPage() {
             on={isOn("clip_caption_variants_enabled", true)}
             onToggle={(v) => saveUser("clip_caption_variants_enabled", v ? "1" : "0")}
           />
-          <ToggleRow
-            title="Catch-up missed slots on resume"
-            desc="When you resume from a pause (manual unpause OR auto-resume on a fresh upload), should the planner fire the day's already-passed slots? Off (default) means missed slots stay missed; the next post is the next future slot. On inserts a now+30s catch-up — useful if you want a clip to start firing immediately after upload, but a common cause of unexpected duplicate fires."
-            on={isOn("catchup_enabled", false)}
-            onToggle={(v) => saveUser("catchup_enabled", v ? "1" : "0")}
-          />
         </div>
       </div>
 

@@ -7,9 +7,6 @@ import {
   Plus,
   Trash2,
   Edit2,
-  Upload,
-  Link2 as LinkIcon,
-  Film,
   Users,
   Eye,
   BarChart3,
@@ -35,8 +32,6 @@ import {
   updateArtistVariation,
   deleteArtistVariation,
   refreshVariationProfile,
-  uploadClip,
-  syncGdriveClips,
   uploadVariationClip,
   syncVariationGdriveClips,
   catchupTodayPromotion,
@@ -154,10 +149,7 @@ export default function ArtistPage({
     instagram_handle: "",
     facebook_handle: "",
   });
-  const [gdriveUrl, setGdriveUrl] = useState("");
-  const [syncing, setSyncing] = useState(false);
   const [variationsOpen, setVariationsOpen] = useState(true);
-  const [clipsOpen, setClipsOpen] = useState(true);
 
   const [editingVarId, setEditingVarId] = useState<number | null>(null);
   const [editVar, setEditVar] = useState({
@@ -224,7 +216,6 @@ export default function ArtistPage({
         setId(a.id);
         setVariations(a.variations || []);
         setClips(a.clips || []);
-        setGdriveUrl(a.gdrive_folder_url || "");
         setSettings({
           posts_per_day: a.posts_per_day ?? 3,
           window_start: a.window_start ?? "09:00",
@@ -393,36 +384,6 @@ export default function ArtistPage({
       toast.success("Variation deleted");
     } catch {
       toast.error("Failed to delete");
-    }
-  };
-
-  const handleUpload = async (files: FileList | null) => {
-    if (id == null) return;
-    if (!files || files.length === 0) return;
-    try {
-      for (const f of Array.from(files)) {
-        await uploadClip(id, f, "");
-      }
-      toast.success(`Uploaded ${files.length} clip${files.length === 1 ? "" : "s"}`);
-      load();
-    } catch {
-      toast.error("Upload failed");
-    }
-  };
-
-  const handleGdriveSync = async () => {
-    if (id == null) return;
-    if (!gdriveUrl.trim()) return toast.error("Paste a Drive folder URL");
-    setSyncing(true);
-    try {
-      const res = await syncGdriveClips(id, gdriveUrl.trim());
-      toast.success(`Synced — ${res.added} new clip${res.added === 1 ? "" : "s"} (total ${res.total})`);
-      load();
-    } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(msg || "Drive sync failed");
-    } finally {
-      setSyncing(false);
     }
   };
 
@@ -968,116 +929,21 @@ export default function ArtistPage({
                   <OAuthTiles account={v as unknown as Record<string, unknown> & { id: number }} kind="variation" onChange={load} />
                   <VariationExtras
                     v={v}
-                    clipCount={clips.filter((c) => c.artist_account_id === v.id).length}
+                    clips={clips.filter((c) => c.artist_account_id === v.id)}
                     onChange={load}
+                    editingClipId={editingClipId}
+                    clipCaption={clipCaption}
+                    onStartEditClip={startEditClip}
+                    onChangeCaption={setClipCaption}
+                    onSaveCaption={saveClipCaption}
+                    onDeleteClip={handleDeleteClip}
+                    inputClass={inputClass}
                   />
                 </div>
               )
             ))}
           </div>
         ))}
-      </section>
-
-      {/* Clips */}
-      <section className="rounded-2xl bg-card p-4 md:p-5">
-        <div className={clipsOpen ? "mb-4 flex items-center justify-between" : "flex items-center justify-between"}>
-          <button
-            onClick={() => setClipsOpen((v) => !v)}
-            className="flex items-center gap-2 text-base font-semibold hover:opacity-80"
-            aria-expanded={clipsOpen}
-          >
-            {clipsOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-            <Film className="h-4 w-4" /> Video directory ({clips.length})
-          </button>
-          {clipsOpen && (
-            <label className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted cursor-pointer">
-              <Upload className="h-3 w-3" /> Upload MP4
-              <input
-                type="file"
-                multiple
-                accept="video/mp4,video/*"
-                onChange={(e) => handleUpload(e.target.files)}
-                className="hidden"
-              />
-            </label>
-          )}
-        </div>
-
-        {clipsOpen && (<>
-        <p className="mb-2 text-[11px] text-muted-foreground">
-          Shared pool — clips here are available to every variation. For
-          variation-specific clips, use the Drive folder field on each
-          variation card above.
-        </p>
-        <div className="mb-4 flex flex-col gap-2 sm:flex-row">
-          <input
-            value={gdriveUrl}
-            onChange={(e) => setGdriveUrl(e.target.value)}
-            className={inputClass}
-            placeholder="Public Google Drive folder URL (shared pool)"
-          />
-          <button
-            onClick={handleGdriveSync}
-            disabled={syncing}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background disabled:opacity-50"
-          >
-            <LinkIcon className="h-4 w-4" /> {syncing ? "Syncing…" : "Sync Drive"}
-          </button>
-        </div>
-
-        {clips.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No clips yet. Upload MP4s or sync a Drive folder.</p>
-        ) : (
-          <div className="space-y-2">
-            {clips.map((c) => (
-              <div key={c.id} className="rounded-xl bg-muted/50 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{c.filename}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {c.source} · posted {c.times_posted}×
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => startEditClip(c)}
-                      className="text-muted-foreground hover:text-foreground p-1"
-                    >
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteClip(c.id)}
-                      className="text-muted-foreground hover:text-destructive p-1"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-                {editingClipId === c.id ? (
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={clipCaption}
-                      onChange={(e) => setClipCaption(e.target.value)}
-                      className={inputClass}
-                      placeholder="Caption to post with this clip"
-                    />
-                    <button
-                      onClick={saveClipCaption}
-                      className="rounded-lg bg-foreground px-3 py-2 text-xs text-background"
-                    >
-                      <Save className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ) : (
-                  c.caption && (
-                    <div className="mt-1 text-xs text-muted-foreground">{c.caption}</div>
-                  )
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        </>)}
       </section>
 
       {/* Settings */}
@@ -1135,17 +1001,32 @@ export default function ArtistPage({
 
 function VariationExtras({
   v,
-  clipCount,
+  clips,
   onChange,
+  editingClipId,
+  clipCaption,
+  onStartEditClip,
+  onChangeCaption,
+  onSaveCaption,
+  onDeleteClip,
+  inputClass,
 }: {
   v: Variation;
-  clipCount: number;
+  clips: Clip[];
   onChange: () => void;
+  editingClipId: number | null;
+  clipCaption: string;
+  onStartEditClip: (c: Clip) => void;
+  onChangeCaption: (s: string) => void;
+  onSaveCaption: () => void;
+  onDeleteClip: (id: number) => void;
+  inputClass: string;
 }) {
   const [folder, setFolder] = useState(v.gdrive_folder_url || "");
   const [proxy, setProxy] = useState(v.proxy_url || "");
   const [syncing, setSyncing] = useState(false);
   const [savingProxy, setSavingProxy] = useState(false);
+  const [clipsOpen, setClipsOpen] = useState(false);
 
   const onSync = async () => {
     if (!folder.trim()) return toast.error("Paste a Drive folder URL");
@@ -1211,7 +1092,7 @@ function VariationExtras({
 
       <div>
         <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-          Drive folder for this variation ({clipCount} clip{clipCount === 1 ? "" : "s"})
+          Drive folder for this variation
         </label>
         <div className="flex gap-2">
           <input
@@ -1238,6 +1119,75 @@ function VariationExtras({
             />
           </label>
         </div>
+      </div>
+
+      {/* Per-variation video directory: collapsed by default to keep the
+          page short when an artist has many variations × many clips. */}
+      <div>
+        <button
+          onClick={() => setClipsOpen((s) => !s)}
+          className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+          aria-expanded={clipsOpen}
+        >
+          {clipsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          Video directory ({clips.length} clip{clips.length === 1 ? "" : "s"})
+        </button>
+        {clipsOpen && (
+          clips.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              No clips for this variation yet. Sync a Drive folder above or upload an MP4.
+            </p>
+          ) : (
+            <div className="mt-2 space-y-2">
+              {clips.map((c) => (
+                <div key={c.id} className="rounded-lg bg-background/50 p-2 border border-border/50">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium">{c.filename}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {c.source} · posted {c.times_posted}×
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => onStartEditClip(c)}
+                        className="text-muted-foreground hover:text-foreground p-1"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={() => onDeleteClip(c.id)}
+                        className="text-muted-foreground hover:text-destructive p-1"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                  {editingClipId === c.id ? (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={clipCaption}
+                        onChange={(e) => onChangeCaption(e.target.value)}
+                        className={inputClass}
+                        placeholder="Caption to post with this clip"
+                      />
+                      <button
+                        onClick={onSaveCaption}
+                        className="rounded-lg bg-foreground px-3 py-2 text-xs text-background"
+                      >
+                        <Save className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    c.caption && (
+                      <div className="mt-1 text-[11px] text-muted-foreground">{c.caption}</div>
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        )}
       </div>
 
       <div>

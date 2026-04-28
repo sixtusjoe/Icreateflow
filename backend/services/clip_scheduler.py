@@ -439,6 +439,21 @@ async def plan_slots_once() -> None:
                 if not variations:
                     continue
 
+                # Re-evaluate pause state on every planner tick. Without this,
+                # an artist whose directory has gone fully exhausted between
+                # ticks stays `is_active=true` because the only other places
+                # evaluate_pause runs (post success, view poll) require a
+                # post or a poll to fire — neither happens on an exhausted
+                # campaign. Run BEFORE the slot computation so the early
+                # `if not slots: continue` below can't skip the eval.
+                await evaluate_pause(database, dict(artist))
+                # Re-fetch: evaluate_pause may have just paused the artist.
+                fresh = await db.get_artist(database, artist["id"])
+                if fresh and dict(fresh).get("paused_reason"):
+                    continue
+                if fresh:
+                    artist = dict(fresh)
+
                 # Per-slot dedup: figure out which of today's slot times still
                 # need rows. Previously this was per-day ("any row for today?")
                 # which meant a deleted future slot couldn't be re-planned and
@@ -474,30 +489,14 @@ async def plan_slots_once() -> None:
                 # Remove already-filled slots; only future or catch-up slots
                 # for today get planned.
                 missing = [s for s in all_slots if _naive(s) not in existing_times]
-                future = [s for s in missing if s > now_utc]
-                past_missing = [s for s in missing if s <= now_utc]
-                now_naive = now_utc.replace(tzinfo=None)
-                # Catch-up gate. When the artist resumes after a gap (manual
-                # un-pause OR maybe_resume_on_new_clip from a fresh upload),
-                # the planner sees today's already-passed slots as "missed"
-                # and inserts a now+30s row to fire them. That surprised the
-                # user when an upload triggered an immediate fire instead of
-                # waiting for tomorrow's 8am slot — and on resume from a long
-                # gap it can fire MULTIPLE missed slots back-to-back.
-                #
-                # Per-user toggle (artist owner's user_settings) with
-                # site_config fallback. Default off.
-                _catchup_raw = await _user_or_site_setting(
-                    database, artist.get("user_id"), "catchup_enabled", "0"
-                )
-                catchup_on = _toggle_on(_catchup_raw, default_on=False)
-                if catchup_on and past_missing and not any(
-                    t > now_naive - timedelta(minutes=2)
-                    and t <= now_naive + timedelta(minutes=5)
-                    for t in existing_times
-                ):
-                    future = [now_utc + timedelta(seconds=30)] + future
-                slots = future
+                # Auto-catchup of past-missed slots was removed because it
+                # could surprise users on resume — uploading a clip triggered
+                # an immediate post instead of waiting for the next slot, and
+                # a long gap could fire multiple back-to-back. Recovery is
+                # now an explicit dashboard action: POST
+                # /api/artists/{id}/promotion/catchup (the "Catch up missed
+                # slots" button on the campaign card).
+                slots = [s for s in missing if s > now_utc]
                 if not slots:
                     continue
 
@@ -543,7 +542,6 @@ async def plan_slots_once() -> None:
                     # already-queued clips (in _pick_next_clip) is what now
                     # prevents the same clip being chosen twice in a single
                     # plan run.
-                await evaluate_pause(database, artist)
             except Exception as e:
                 await db.log_error(
                     database, source="scheduler.plan",

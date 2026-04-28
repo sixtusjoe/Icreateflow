@@ -9,6 +9,7 @@ import secrets
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, time as dtime
+from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -3367,7 +3368,18 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         clips = await db.get_clips(database, artist_id)
         posts = await db.get_clip_posts(database, artist_id=artist_id)
 
-        today = datetime.now(timezone.utc).date().isoformat()
+        # Load artist first so we can compute "today" in the artist's
+        # configured timezone. Using UTC midnight here surfaces yesterday's
+        # late posts as "today's" on the dashboard whenever the artist
+        # window crosses UTC midnight (the common case for US/Eastern).
+        artist_row = await db.get_artist(database, artist_id)
+        artist_d = dict(artist_row) if artist_row else {}
+        try:
+            tz = ZoneInfo(artist_d.get("timezone") or "US/Eastern")
+        except Exception:
+            tz = ZoneInfo("US/Eastern")
+        today = datetime.now(tz).date()
+
         posts_today = 0
         posts_total = 0
         by_platform = {
@@ -3387,16 +3399,18 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                     by_platform[platform]["posted"] += 1
                     by_platform[platform]["views"] += int(p.get("view_count") or 0)
                 posted_at = p.get("posted_at")
-                if isinstance(posted_at, datetime) and posted_at.date().isoformat() == today:
-                    posts_today += 1
+                if isinstance(posted_at, datetime):
+                    # DB stores naive UTC; treat as UTC then convert to artist tz.
+                    if posted_at.tzinfo is None:
+                        posted_at = posted_at.replace(tzinfo=timezone.utc)
+                    if posted_at.astimezone(tz).date() == today:
+                        posts_today += 1
             elif status == "scheduled":
                 sch = p.get("scheduled_for")
                 if isinstance(sch, datetime):
                     if next_scheduled_at is None or sch < next_scheduled_at:
                         next_scheduled_at = sch
 
-        artist_row = await db.get_artist(database, artist_id)
-        artist_d = dict(artist_row) if artist_row else {}
         current_cid = artist_d.get("current_campaign_id")
         campaign = None
         if current_cid:
