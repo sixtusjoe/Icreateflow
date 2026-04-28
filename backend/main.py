@@ -9,6 +9,7 @@ import secrets
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, time as dtime
+from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -253,6 +254,8 @@ class VariationUpdateArtist(BaseModel):
     youtube_handle: Optional[str] = None
     instagram_handle: Optional[str] = None
     facebook_handle: Optional[str] = None
+    proxy_url: Optional[str] = None
+    paused_reason: Optional[str] = None
 
 
 class ClipUpdate(BaseModel):
@@ -3191,6 +3194,124 @@ async def sync_gdrive_clips(artist_id: int, data: GdriveSyncReq, user: dict = De
         await database.close()
 
 
+@app.post("/api/variations/{variation_id}/clips/upload")
+async def upload_variation_clip(
+    variation_id: int,
+    file: UploadFile = File(...),
+    caption: str = Form(""),
+    user: dict = Depends(get_current_user),
+):
+    """Variation-scoped manual upload — clip is only postable by this variation."""
+    database = await db.get_db()
+    try:
+        var = await db.get_artist_account(database, variation_id)
+        if not var:
+            raise HTTPException(404, "Variation not found")
+        artist = await _verify_artist_ownership(var["artist_id"], user)
+        directory = _artist_upload_dir(artist) / f"v{variation_id}"
+        directory.mkdir(parents=True, exist_ok=True)
+        filename = Path(file.filename or "clip.mp4").name
+        clip_id = await db.create_clip(
+            database, artist_id=var["artist_id"], source="upload",
+            filename=filename, caption=caption or None,
+            artist_account_id=variation_id,
+        )
+        ext = Path(filename).suffix.lower() or ".mp4"
+        dest = directory / f"{clip_id}{ext}"
+        content = await file.read()
+        dest.write_bytes(content)
+        await db.update_clip(database, clip_id, local_path=str(dest))
+        try:
+            await clip_scheduler.maybe_resume_on_new_clip(
+                database, var["artist_id"], variation_id
+            )
+        except Exception:
+            pass
+        clip = await db.get_clip(database, clip_id)
+        return row_to_dict(clip)
+    finally:
+        await database.close()
+
+
+@app.post("/api/variations/{variation_id}/clips/gdrive")
+async def sync_variation_gdrive_clips(
+    variation_id: int, data: GdriveSyncReq, user: dict = Depends(get_current_user)
+):
+    """Sync a Drive folder into one variation's clip pool.
+
+    Mirrors `/api/artists/{id}/clips/gdrive` but tags every new clip with
+    `artist_account_id=variation_id` so only that variation will pick it up.
+    The shared-pool endpoint is still available for clips usable by every
+    variation."""
+    database = await db.get_db()
+    try:
+        var = await db.get_artist_account(database, variation_id)
+        if not var:
+            raise HTTPException(404, "Variation not found")
+        await _verify_artist_ownership(var["artist_id"], user)
+        folder_id = gdrive_svc.parse_folder_id(data.folder_url)
+        if not folder_id:
+            raise HTTPException(400, "Couldn't parse a Drive folder id from that URL")
+
+        cfg = await db.get_site_config(database)
+        api_key = cfg.get("oauth_google_drive_api_key") or await db.get_setting(database, "google_api_key")
+        if not api_key:
+            raise HTTPException(400, "Google Drive API key not configured — set it in Admin → OAuth Apps")
+        try:
+            files = await gdrive_svc.list_video_files(folder_id, api_key)
+        except gdrive_svc.GDriveError as e:
+            raise HTTPException(400, str(e))
+
+        existing = await db.get_clips(database, var["artist_id"])
+        # Dedup on (artist_account_id, gdrive_file_id) — a file present in
+        # both the shared pool and this variation's folder stays distinct,
+        # but the same file synced twice into THIS variation only counts once.
+        existing_by_id = {
+            c.get("gdrive_file_id"): c for c in existing
+            if c.get("gdrive_file_id") and c.get("artist_account_id") == variation_id
+        }
+
+        added = 0
+        for f in files:
+            fid = f.get("id")
+            if not fid or fid in existing_by_id:
+                continue
+            await db.create_clip(
+                database, artist_id=var["artist_id"], source="gdrive",
+                filename=f.get("name", "clip.mp4"), gdrive_file_id=fid,
+                artist_account_id=variation_id,
+            )
+            added += 1
+
+        await db.update_artist_account(
+            database, variation_id,
+            gdrive_folder_url=data.folder_url, gdrive_folder_id=folder_id,
+        )
+
+        if added:
+            try:
+                await clip_scheduler.maybe_resume_on_new_clip(
+                    database, var["artist_id"], variation_id
+                )
+            except Exception as _resume_exc:
+                import traceback as _tb_local
+                try:
+                    await db.log_error(
+                        database,
+                        source="scheduler.maybe_resume_on_new_clip",
+                        message=str(_resume_exc),
+                        traceback=_tb_local.format_exc(),
+                        context=f"variation_id={variation_id} added={added}",
+                    )
+                except Exception:
+                    pass
+        clips = await db.get_clips(database, var["artist_id"])
+        var_clips = [c for c in clips if c.get("artist_account_id") == variation_id]
+        return {"added": added, "total": len(var_clips), "clips": rows_to_list(var_clips)}
+    finally:
+        await database.close()
+
+
 @app.put("/api/clips/{clip_id}")
 async def update_clip_route(clip_id: int, data: ClipUpdate, user: dict = Depends(get_current_user)):
     database = await db.get_db()
@@ -3247,7 +3368,18 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         clips = await db.get_clips(database, artist_id)
         posts = await db.get_clip_posts(database, artist_id=artist_id)
 
-        today = datetime.now(timezone.utc).date().isoformat()
+        # Load artist first so we can compute "today" in the artist's
+        # configured timezone. Using UTC midnight here surfaces yesterday's
+        # late posts as "today's" on the dashboard whenever the artist
+        # window crosses UTC midnight (the common case for US/Eastern).
+        artist_row = await db.get_artist(database, artist_id)
+        artist_d = dict(artist_row) if artist_row else {}
+        try:
+            tz = ZoneInfo(artist_d.get("timezone") or "US/Eastern")
+        except Exception:
+            tz = ZoneInfo("US/Eastern")
+        today = datetime.now(tz).date()
+
         posts_today = 0
         posts_total = 0
         by_platform = {
@@ -3267,16 +3399,18 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                     by_platform[platform]["posted"] += 1
                     by_platform[platform]["views"] += int(p.get("view_count") or 0)
                 posted_at = p.get("posted_at")
-                if isinstance(posted_at, datetime) and posted_at.date().isoformat() == today:
-                    posts_today += 1
+                if isinstance(posted_at, datetime):
+                    # DB stores naive UTC; treat as UTC then convert to artist tz.
+                    if posted_at.tzinfo is None:
+                        posted_at = posted_at.replace(tzinfo=timezone.utc)
+                    if posted_at.astimezone(tz).date() == today:
+                        posts_today += 1
             elif status == "scheduled":
                 sch = p.get("scheduled_for")
                 if isinstance(sch, datetime):
                     if next_scheduled_at is None or sch < next_scheduled_at:
                         next_scheduled_at = sch
 
-        artist_row = await db.get_artist(database, artist_id)
-        artist_d = dict(artist_row) if artist_row else {}
         current_cid = artist_d.get("current_campaign_id")
         campaign = None
         if current_cid:
@@ -3453,6 +3587,23 @@ async def promotion_toggle_pause(artist_id: int, user: dict = Depends(get_curren
         new_reason = None if artist.get("paused_reason") else PAUSE_MANUAL
         await db.update_artist(database, artist_id, paused_reason=new_reason)
         return {"ok": True, "is_active": True, "paused_reason": new_reason}
+    finally:
+        await database.close()
+
+
+@app.post("/api/artists/{artist_id}/promotion/catchup")
+async def promotion_catchup(artist_id: int, user: dict = Depends(get_current_user)):
+    """One-shot: plan a now+30s slot for today's missed posts.
+
+    Recovery for the case where the planner first ran late (e.g. after a
+    13:00 deploy when the 09:00/11:00 slots were already past). Single
+    deliberate user action — does NOT flip `catchup_enabled` on globally.
+    """
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        inserted = await clip_scheduler.catchup_today_once(database, artist_id)
+        return {"ok": True, "inserted": inserted}
     finally:
         await database.close()
 

@@ -367,12 +367,23 @@ class ArtistAccount(Base):
     facebook_expires_at:     Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     facebook_scopes:         Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     facebook_user_id:        Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Per-variation Drive folder, optional residential proxy, and per-variation
+    # pause (also declared on DB via _migrate_per_variation_columns).
+    gdrive_folder_url:       Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    gdrive_folder_id:        Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    proxy_url:               Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    paused_reason:           Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class Clip(Base):
     __tablename__ = "clips"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), nullable=False)
+    # NULL = "shared pool" (legacy artist-level clips, usable by every
+    # variation). Non-NULL = scoped to one variation only.
+    artist_account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("artist_accounts.id", ondelete="SET NULL"), nullable=True
+    )
     source: Mapped[str] = mapped_column(Text, nullable=False)
     local_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     gdrive_file_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -841,6 +852,41 @@ async def _migrate_per_platform_post_columns(conn) -> None:
     ))
 
 
+async def _migrate_per_variation_columns(conn) -> None:
+    """Add per-variation GDrive + proxy + pause columns and clips.artist_account_id.
+
+    Idempotent. After the column is added, backfills every pre-existing
+    clip's artist_account_id to that artist's lowest-id variation
+    (vibesofmoon, in production). New shared-pool clips stay NULL.
+    """
+    for col in ("gdrive_folder_url", "gdrive_folder_id", "proxy_url", "paused_reason"):
+        await conn.execute(
+            text(f"ALTER TABLE artist_accounts ADD COLUMN IF NOT EXISTS {col} TEXT")
+        )
+    await conn.execute(text(
+        "ALTER TABLE clips ADD COLUMN IF NOT EXISTS artist_account_id INTEGER "
+        "REFERENCES artist_accounts(id) ON DELETE SET NULL"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS clips_artist_account_idx "
+        "ON clips(artist_account_id)"
+    ))
+    # Backfill: assign every legacy clip to its artist's first variation.
+    # Per user request — they want the existing 100+ clips locked to
+    # variation 1 (vibesofmoon) rather than left in the shared pool.
+    await conn.execute(text(
+        "UPDATE clips SET artist_account_id = ("
+        "  SELECT id FROM artist_accounts "
+        "  WHERE artist_id = clips.artist_id "
+        "  ORDER BY id ASC LIMIT 1"
+        ") "
+        "WHERE artist_account_id IS NULL "
+        "  AND EXISTS ("
+        "    SELECT 1 FROM artist_accounts WHERE artist_id = clips.artist_id"
+        "  )"
+    ))
+
+
 async def _migrate_user_status_pending(conn) -> None:
     """Expand users.status CHECK to include 'pending' (added for admin-approved registration)."""
     # Drop old constraint if present, re-add expanded one. IF EXISTS makes it idempotent.
@@ -858,6 +904,7 @@ async def init_db() -> None:
         await _migrate_artist_oauth_columns(conn)
         await _migrate_campaign_columns(conn)
         await _migrate_per_platform_post_columns(conn)
+        await _migrate_per_variation_columns(conn)
         await _migrate_user_status_pending(conn)
     db = await get_db()
     try:
@@ -1458,6 +1505,7 @@ async def create_clip(
     gdrive_file_id: str | None = None,
     caption: str | None = None,
     duration_s: float | None = None,
+    artist_account_id: int | None = None,
 ):
     s = db.session
     stmt = (
@@ -1466,6 +1514,7 @@ async def create_clip(
             artist_id=artist_id, source=source, filename=filename,
             local_path=local_path, gdrive_file_id=gdrive_file_id,
             caption=caption, duration_s=duration_s,
+            artist_account_id=artist_account_id,
         )
         .returning(Clip.id)
     )

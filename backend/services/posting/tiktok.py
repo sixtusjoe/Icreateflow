@@ -10,7 +10,10 @@ from . import PostingError, PostDeletedError
 API_BASE = "https://open.tiktokapis.com/v2"
 
 
-async def upload_video(access_token: str, video_source: str, caption: str, **kwargs) -> dict:
+async def upload_video(
+    access_token: str, video_source: str, caption: str,
+    proxy_url: str | None = None, **kwargs,
+) -> dict:
     """Publish a video to TikTok via the PULL_FROM_URL flow.
 
     `video_source` must be a publicly-reachable URL (e.g. a Drive direct-download
@@ -29,7 +32,7 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
     }
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, proxy=proxy_url) as client:
         r = await client.post(
             f"{API_BASE}/post/publish/video/init/", json=init_body, headers=headers
         )
@@ -67,6 +70,7 @@ async def upload_photo_slideshow(
     caption: str,
     privacy_level: str = "SELF_ONLY",
     auto_add_music: bool = True,
+    proxy_url: str | None = None,
     **kwargs,
 ) -> dict:
     """Publish a swipeable photo slideshow via TikTok's content/init endpoint.
@@ -101,7 +105,7 @@ async def upload_photo_slideshow(
     }
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, proxy=proxy_url) as client:
         r = await client.post(
             f"{API_BASE}/post/publish/content/init/", json=init_body, headers=headers
         )
@@ -187,6 +191,7 @@ async def resolve_video_id(
     access_token: str,
     stored_id: str,
     posted_at_epoch: int | None = None,
+    proxy_url: str | None = None,
 ) -> str | None:
     """Upgrade a stored publish_id to a real video_id.
 
@@ -211,7 +216,7 @@ async def resolve_video_id(
     if not _is_publish_id(s):
         return s  # already a real id
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
         vid = await _fetch_publicly_available_post_id(client, access_token, s)
         if vid:
             return vid
@@ -234,7 +239,9 @@ async def resolve_video_id(
         return str(videos[0].get("id")) if videos[0].get("id") else None
 
 
-async def get_view_count(access_token: str, platform_post_id: str) -> int:
+async def get_view_count(
+    access_token: str, platform_post_id: str, proxy_url: str | None = None,
+) -> int:
     """Look up view_count for a bare video_id.
 
     Caller is responsible for resolving publish_ids → video_ids via
@@ -245,7 +252,7 @@ async def get_view_count(access_token: str, platform_post_id: str) -> int:
         # Nothing we can do here — the caller should have resolved upstream.
         return 0
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
         r = await client.post(
             f"{API_BASE}/video/query/?fields=view_count",
             json={"filters": {"video_ids": [platform_post_id]}},
