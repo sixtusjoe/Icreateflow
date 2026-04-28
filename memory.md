@@ -23,6 +23,28 @@ frontend, gunicorn + uvicorn workers, all on a single VPS at
 
 ---
 
+## 1b. Two products in one repo
+
+This repo runs **two distinct pipelines** that share auth, DB, OAuth,
+posting adapters, and the frontend shell. They are NOT alternative
+descriptions of the same thing — past Claude sessions kept conflating
+the two and rewriting one to look like the other. Don't.
+
+| | Brands | Clipping |
+|---|---|---|
+| Source content | TikTok slideshow URL or uploaded slides | Short video clips (Google Drive sync or upload) |
+| Pipeline | OCR → text edits → per-account variation (keep/replace/Flux) → text overlay → 9:16 video → schedule | Plan slots → diversify (or passthrough) → upload → poll views → auto-pause |
+| Trigger | User-driven; no auto-dispatcher loop | 3 async loops in `services/clip_scheduler.py` (planner / dispatcher / view poller) |
+| Tables | `brands`, `accounts`, `posts`, `slides`, `variations`, `outputs`, `music_tracks` | `artists`, `campaigns`, `artist_accounts`, `clips`, `clip_posts`, `clip_caption_variants` |
+| Backend services | `services/{ocr,overlay,generator,video,flux,tiktok_scraper}.py` | `services/{clip_scheduler,variation_processor,gdrive,caption_variants}.py` |
+| Frontend dashboard | `frontend/src/app/{brands,posts,posts/new,music,schedule}/` | `frontend/src/app/clipping/[slug]/` |
+| Shared | `users`, `settings`, `user_settings`, `site_config`, `meta_pending_assignments`, `error_logs`, `services/{auth,oauth,posting/*}.py` |
+
+§§3–13 below cover the **Clipping** side (the operationally heavy one).
+§13b at the end is the **Brands** side.
+
+---
+
 ## 2. Repo layout
 
 ```
@@ -426,6 +448,92 @@ WHERE aa.id IN ({var_ids}) AND aa.{platform}_token IS NOT NULL;
 UPDATE artists SET paused_reason=NULL WHERE id={artist_id};
 -- Wait 60-300s for dispatcher; then verify and re-pause
 ```
+
+---
+
+## 13b. Brands-side reference
+
+The slideshow-scaling pipeline. Independent code path from Clipping —
+no shared schema, no shared scheduler.
+
+### Pipeline
+
+```
+TikTok URL ──▶ tiktok_scraper.py ──┐
+   OR                               ├──▶ slides table (master_image_path)
+   manual upload ──▶ /upload-slides ┘
+                                     │
+                                     ▼
+                          services/ocr.py (Claude vision)
+                          → title_text / body_text / cta_text
+                                     │
+                                     ▼
+                  user edits slide type (hook/content/cta) + has_face
+                                     │
+                                     ▼
+                  per (slide × account) → variations table:
+                      action = keep | replace | generate
+                      generate → services/flux.py (Replicate Flux)
+                                     │
+                                     ▼
+                  POST /api/posts/{id}/generate
+                      → services/generator.py
+                          → services/overlay.py  (Pillow text overlay)
+                          → services/video.py    (ffmpeg 9:16 + music)
+                              uses PLATFORM_PROFILES per platform
+                      writes outputs.{video_path,youtube_video_path,...}
+                                     │
+                                     ▼
+                  PUT /api/posts/{id}/schedule
+                      sets posts.scheduled_time + per-platform sub-times
+                                     │
+                                     ▼
+                  user fires posts manually (no Brands dispatcher loop)
+                  → adapter.upload_video() in services/posting/{tt,yt,ig,fb}.py
+```
+
+**Key difference vs Clipping**: there is NO automated background loop
+that picks up `posts.status='scheduled'` and fires them. Brands posts
+are dispatched via direct user action / endpoint calls. If you need
+auto-dispatch for Brands later, add it to the lifespan in `main.py:31`
+alongside the existing `clip_scheduler.start_background_tasks()`.
+
+### Critical files
+
+| Path | What's there |
+|------|--------------|
+| `backend/services/ocr.py` | Claude-vision OCR. Reads `ANTHROPIC_API_KEY` env var. Returns title/body/cta per slide. |
+| `backend/services/overlay.py` | Pillow text overlay. Reads overlay defaults from the `settings` table. |
+| `backend/services/video.py` | ffmpeg 9:16 video assembly. `PLATFORM_PROFILES` caps per platform (YT Shorts ≤60s, IG/FB Reels ≤90s, TT no hard cap). |
+| `backend/services/flux.py` | Replicate Flux face-replacement. Reads `REPLICATE_API_TOKEN` env var. |
+| `backend/services/generator.py` | Orchestrates the full post-generation pipeline (overlay → video for all variations). |
+| `backend/services/tiktok_scraper.py` | TikTok slideshow URL → slide images. yt-dlp fallback. |
+| `frontend/src/app/brands/page.tsx` | Brand + account management. |
+| `frontend/src/app/posts/page.tsx` | Posts library. |
+| `frontend/src/app/posts/new/page.tsx` | 4-step create/edit wizard (import → edit → variations → generate+schedule). |
+| `frontend/src/app/music/page.tsx` | Music library upload + listing. |
+| `frontend/src/app/schedule/page.tsx` | Calendar view of scheduled posts. |
+
+### Data model
+
+| Table | Notes |
+|------|-------|
+| `brands` | `(id, user_id, name, slug, background_color, timezone, default_post_times)`. `slug` is unique. `default_post_times` is comma-sep HH:MM. |
+| `accounts` | Per-brand sub-account, one row per platform handle. `role ∈ ('master','variation')`. Holds OAuth tokens + scopes per platform. |
+| `posts` | `(brand_id, date, post_number, caption, scheduled_time, scheduled_at, status)`. `status ∈ ('draft','scheduled','generating','posting','posted','failed')`. Per-platform `*_music_track_id` FKs. |
+| `slides` | `(post_id, slide_number, type, has_face, title_text, body_text, cta_text, master_image_path)`. `type ∈ ('hook','content','cta')`. |
+| `variations` | `(slide_id, account_id, action, replacement_image_path, generated_prompt, status)`. `action ∈ ('keep','replace','generate')`. `status ∈ ('pending','generated','approved')`. |
+| `outputs` | `(post_id, account_id, slides_dir, video_path, youtube_video_path, instagram_video_path, facebook_video_path, posting_status, *_posted)`. One row per (post × account). |
+| `music_tracks` | `(user_id, name, genre, file_path, duration, is_custom, is_public, platforms_allowed)`. |
+
+### Brands ≠ Clipping notes
+
+- **No FK overlap.** Brands lives in `brands/accounts/posts/slides/variations/outputs`; Clipping lives in `artists/artist_accounts/clips/clip_posts/campaigns`. Both reference `users.id` — that's the only join.
+- **OAuth tokens live in two parallel column sets** — `accounts.tiktok_token` etc. for Brands, `artist_accounts.tiktok_token` etc. for Clipping. Connecting a platform on the Brands side does NOT auto-connect it on the Clipping side and vice versa. Same OAuth code path (`services/oauth.py`), separate persistence.
+- **Posting adapters are shared.** `services/posting/{tiktok,youtube,instagram,facebook}.py` are called by both sides. `PostingError` / `PostDeletedError` are the common error types.
+- **Scheduler reach is one-sided.** `services/clip_scheduler.py` only reads the Clipping tables. It will never plan, dispatch, or poll views for a Brands `Post`.
+- **Music library is Brands-only** — `music_tracks` is referenced by `posts.*_music_track_id`. The Clipping pipeline doesn't touch it; clips bring their own audio.
+- **Settings split is the same on both sides.** Per-user toggles in `user_settings`; global in `site_config`; legacy API keys / overlay defaults in `settings`. See §6.
 
 ---
 
