@@ -542,6 +542,32 @@ async def dispatch_due_once() -> None:
                             message=str(pe), traceback=traceback.format_exc(),
                             context=f"clip_post_id={cp['id']} clip_id={clip['id']}",
                         )
+                        # Don't fall through with a raw GDrive URL.
+                        # TikTok rejects unverified domains
+                        # (`url_ownership_unverified`); other platforms
+                        # may accept it but produce inconsistent results.
+                        await db.update_clip_post(
+                            database, cp["id"], status="failed",
+                            error=f"passthrough failed: {pe}",
+                        )
+                        continue
+
+                # Defense in depth: TikTok will reject any URL not under
+                # our verified domain. If neither diversify nor passthrough
+                # rewrote `source`, refuse to call the adapter rather than
+                # log `url_ownership_unverified` after the fact.
+                if platform == "tiktok" and source.startswith(("http://", "https://")):
+                    if not public_base or not source.startswith(public_base):
+                        err = "tiktok requires verified-domain source (passthrough/diversify off or misconfigured)"
+                        await db.update_clip_post(
+                            database, cp["id"], status="failed", error=err,
+                        )
+                        await db.log_error(
+                            database, source="scheduler.dispatch.tiktok",
+                            message=err,
+                            context=f"clip_post_id={cp['id']} source={source}",
+                        )
+                        continue
 
                 adapter = ADAPTERS[platform]
                 kwargs = {}
@@ -692,6 +718,52 @@ async def poll_views_once() -> None:
         )
         rows = [dict(r) for r in await cur.fetchall()]
         touched_artists: set[int] = set()
+
+        # Pre-batch YouTube view-count requests. Per-row `videos.list?id=X`
+        # costs 1 quota unit and we get ~14k/day with 30 rows polled every
+        # 180s — well over the 10k/day default cap. `videos.list?id=a,b,c`
+        # accepts up to 50 IDs for the same 1 unit, dropping daily usage to
+        # well under 300. Group by access_token (variations have distinct
+        # tokens) and stash results for the inner loop to read instead of
+        # making its own per-row API call.
+        yt_views: dict[str, int] = {}  # platform_post_id -> views (from batch)
+        yt_attempted: set[str] = set()  # IDs we asked for; missing => deleted
+        try:
+            from services.posting.youtube import get_view_counts_batch
+            yt_groups: dict[str, list[str]] = {}  # access_token -> [video_id...]
+            for cp in rows:
+                if cp["platform"] != "youtube":
+                    continue
+                pid = cp.get("platform_post_id")
+                if not pid:
+                    continue
+                v = await db.get_artist_account(database, cp["artist_account_id"])
+                if not v:
+                    continue
+                tok = await _fresh_variation_token(database, v, "youtube")
+                if not tok:
+                    continue
+                yt_groups.setdefault(tok, []).append(pid)
+                yt_attempted.add(pid)
+            for tok, ids in yt_groups.items():
+                try:
+                    yt_views.update(await get_view_counts_batch(tok, ids))
+                except Exception as be:
+                    # On batch failure, leave yt_attempted populated but
+                    # yt_views empty for these IDs — the inner loop will
+                    # fall back to per-row `adapter.get_view_count`.
+                    await db.log_error(
+                        database, source="posting.youtube.views_batch",
+                        message=str(be), traceback=traceback.format_exc(),
+                    )
+                    for pid in ids:
+                        yt_attempted.discard(pid)
+        except Exception:
+            # Pre-batch failed entirely; leave caches empty and let the
+            # inner loop run as before.
+            yt_attempted.clear()
+            yt_views.clear()
+
         for cp in rows:
             try:
                 variation = await db.get_artist_account(database, cp["artist_account_id"])
@@ -769,7 +841,19 @@ async def poll_views_once() -> None:
                                 )
                             continue
 
-                views = await adapter.get_view_count(access_token, post_id)
+                if platform == "youtube" and post_id in yt_attempted:
+                    # Pre-batched above. If the ID came back, use that count;
+                    # if it didn't, the video is deleted/private/stale.
+                    if post_id in yt_views:
+                        views = yt_views[post_id]
+                    else:
+                        from services.posting import PostDeletedError as _PDE
+                        raise _PDE(
+                            f"YouTube stats: video id {post_id!r} not found "
+                            f"(deleted, private, or stored id is stale)"
+                        )
+                else:
+                    views = await adapter.get_view_count(access_token, post_id)
                 new_views = int(views or 0)
                 prev_views = int(cp.get("view_count") or 0)
                 # Never let a real, observed view count regress. Platforms

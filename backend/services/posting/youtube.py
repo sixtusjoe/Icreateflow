@@ -59,23 +59,57 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
         }
 
 
-async def get_view_count(access_token: str, platform_post_id: str) -> int:
+async def get_view_counts_batch(
+    access_token: str,
+    video_ids: list[str],
+    proxy_url: str | None = None,
+) -> dict[str, int]:
+    """Fetch view counts for many video IDs in one (or few) calls.
+
+    `videos.list?id=a,b,c` accepts up to 50 IDs and costs 1 quota unit per call,
+    versus 1 unit per single-ID call. With ~30 YouTube rows polled every 180s
+    this drops quota usage from ~14k/day to <300/day.
+
+    Returns ``{video_id: view_count}`` for IDs the API returned. IDs missing
+    from the result are deleted/private/stale; callers should raise
+    PostDeletedError for those.
+    """
+    if not video_ids:
+        return {}
     headers = {"Authorization": f"Bearer {access_token}"}
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            API_URL,
-            params={"part": "statistics", "id": platform_post_id},
-            headers=headers,
-        )
-        if r.status_code >= 400:
-            raise PostingError(f"YouTube stats failed {r.status_code}: {r.text[:200]}")
-        items = r.json().get("items") or []
-        if not items:
-            # Empty items = video doesn't exist at this ID (deleted, private,
-            # or platform_post_id is stale). Raise PostDeletedError so the
-            # poller marks the row deleted_at and the dashboard count drops.
-            raise PostDeletedError(
-                f"YouTube stats: video id {platform_post_id!r} not found "
-                f"(deleted, private, or stored id is stale)"
+    out: dict[str, int] = {}
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+        for i in range(0, len(video_ids), 50):
+            chunk = video_ids[i : i + 50]
+            r = await client.get(
+                API_URL,
+                params={"part": "statistics", "id": ",".join(chunk)},
+                headers=headers,
             )
-        return int((items[0].get("statistics") or {}).get("viewCount") or 0)
+            if r.status_code >= 400:
+                raise PostingError(
+                    f"YouTube stats failed {r.status_code}: {r.text[:200]}"
+                )
+            for item in r.json().get("items") or []:
+                vid = item.get("id")
+                if not vid:
+                    continue
+                out[vid] = int((item.get("statistics") or {}).get("viewCount") or 0)
+    return out
+
+
+async def get_view_count(
+    access_token: str,
+    platform_post_id: str,
+    proxy_url: str | None = None,
+) -> int:
+    counts = await get_view_counts_batch(access_token, [platform_post_id], proxy_url)
+    if platform_post_id not in counts:
+        # Empty items = video doesn't exist at this ID (deleted, private,
+        # or platform_post_id is stale). Raise PostDeletedError so the
+        # poller marks the row deleted_at and the dashboard count drops.
+        raise PostDeletedError(
+            f"YouTube stats: video id {platform_post_id!r} not found "
+            f"(deleted, private, or stored id is stale)"
+        )
+    return counts[platform_post_id]
