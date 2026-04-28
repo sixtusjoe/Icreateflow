@@ -580,14 +580,15 @@ async def fetch_profile_handles_strict(
 
 
 async def refresh_access_token(
-    platform: str, refresh_token: str, client_id: str, client_secret: str
+    platform: str, refresh_token: str, client_id: str, client_secret: str,
+    proxy_url: str | None = None,
 ) -> dict[str, Any]:
     """Exchange a refresh_token for a fresh access_token.
 
     TikTok and Google (youtube) issue expiring access tokens with refresh tokens.
     Meta's long-lived page tokens don't rotate, so this is a no-op there.
     """
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=20, proxy=proxy_url) as client:
         if platform == "tiktok":
             resp = await client.post(
                 TOKEN_URLS["tiktok"],

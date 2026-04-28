@@ -11,9 +11,9 @@ UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 API_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 
-async def _fetch_bytes(source: str) -> bytes:
+async def _fetch_bytes(source: str, proxy_url: str | None = None) -> bytes:
     if source.startswith("http"):
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True, proxy=proxy_url) as client:
             r = await client.get(source)
             if r.status_code >= 400:
                 raise PostingError(f"Could not fetch source URL ({r.status_code})")
@@ -23,7 +23,13 @@ async def _fetch_bytes(source: str) -> bytes:
         return f.read()
 
 
-async def upload_video(access_token: str, video_source: str, caption: str, **kwargs) -> dict:
+async def upload_video(
+    access_token: str, video_source: str, caption: str,
+    proxy_url: str | None = None, **kwargs,
+) -> dict:
+    # Source fetch can stay direct (YouTube doesn't see this hop), but the
+    # actual upload needs to go through the per-variation residential proxy
+    # so YT sees a stable origin for this account.
     body = await _fetch_bytes(video_source)
     metadata = {
         "snippet": {"title": (caption or "Clip")[:100], "description": caption or ""},
@@ -35,7 +41,7 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
         "X-Upload-Content-Type": "video/*",
         "X-Upload-Content-Length": str(len(body)),
     }
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=300, proxy=proxy_url) as client:
         r = await client.post(
             f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
             headers=headers,

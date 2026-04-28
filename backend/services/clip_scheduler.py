@@ -116,7 +116,9 @@ async def _fresh_variation_token(database, variation: dict, platform: str) -> st
     if not cid or not csec:
         return token
     try:
-        refreshed = await oauth_svc.refresh_access_token(provider, refresh, cid, csec)
+        refreshed = await oauth_svc.refresh_access_token(
+            provider, refresh, cid, csec, proxy_url=v.get("proxy_url"),
+        )
     except Exception:
         return token
     new_token = refreshed.get("access_token")
@@ -178,28 +180,43 @@ def _clip_video_source(clip: dict) -> str | None:
     return clip.get("local_path")
 
 
-async def _pick_next_clip(database, artist_id: int) -> dict | None:
-    """Round-robin: least-posted clip, tie-broken by oldest last_posted_at.
+async def _pick_next_clip(database, artist_id: int, artist_account_id: int) -> dict | None:
+    """Round-robin within ONE variation's scope.
 
-    Excludes clips that already have a pending (scheduled/posting) clip_post
-    so the planner can't queue the same clip twice in the same batch — and so
-    a fresh clip added between two plan slots gets preferred over one already
-    sitting in the queue."""
+    Scope = clips assigned to this variation (`clips.artist_account_id = var`)
+    PLUS shared-pool clips (`artist_account_id IS NULL`). Picks the least-
+    posted-by-this-variation clip, tie-broken by oldest last_posted (within
+    this variation). Excludes any clip already queued for this variation
+    (status scheduled/posting), so the planner can't queue the same clip
+    twice in a row for the same variation — and a fresh upload preempts
+    queued ones in the next slot.
+
+    Note: posts/last fall back to clip_posts (the real post log) instead of
+    clips.times_posted, because times_posted is a global aggregate that
+    doesn't track per-variation balance."""
     clips = await database.execute(
         """
-        SELECT c.* FROM clips c
+        SELECT c.*,
+               COUNT(cp.id) FILTER (WHERE cp.status = 'posted') AS _posts_in_var,
+               MAX(cp.posted_at)  FILTER (WHERE cp.status = 'posted') AS _last_in_var
+        FROM clips c
+        LEFT JOIN clip_posts cp
+          ON cp.clip_id = c.id AND cp.artist_account_id = ?
         WHERE c.artist_id = ?
+          AND (c.artist_account_id = ? OR c.artist_account_id IS NULL)
           AND NOT EXISTS (
-            SELECT 1 FROM clip_posts cp
-            WHERE cp.clip_id = c.id
-              AND cp.status IN ('scheduled', 'posting')
+            SELECT 1 FROM clip_posts cp2
+            WHERE cp2.clip_id = c.id
+              AND cp2.artist_account_id = ?
+              AND cp2.status IN ('scheduled', 'posting')
           )
-        ORDER BY c.times_posted ASC,
-                 COALESCE(c.last_posted_at, '1970-01-01') ASC,
+        GROUP BY c.id
+        ORDER BY _posts_in_var ASC,
+                 _last_in_var ASC NULLS FIRST,
                  c.id ASC
         LIMIT 1
         """,
-        (artist_id,),
+        (artist_account_id, artist_id, artist_account_id, artist_account_id),
     )
     row = await clips.fetchone()
     return dict(row) if row else None
@@ -214,23 +231,39 @@ async def _artist_views_total(database, artist_id: int) -> int:
     return int(r["v"] or 0) if r else 0
 
 
-async def _has_unposted_clip(database, artist_id: int) -> bool:
-    """True if any clip has no successful post yet — meaning the directory
-    isn't actually exhausted. Reads from clip_posts (real post status) instead
-    of clips.times_posted so a clip that's merely queued doesn't get counted
-    as 'already posted' (that misread is what caused the false-pause and
-    stalled the dispatcher)."""
+async def _has_unposted_clip_for_variation(
+    database, artist_id: int, artist_account_id: int
+) -> bool:
+    """True if this variation has any in-scope clip without a successful post."""
     cur = await database.execute(
         """
         SELECT 1 FROM clips c
         WHERE c.artist_id = ?
+          AND (c.artist_account_id = ? OR c.artist_account_id IS NULL)
           AND NOT EXISTS (
             SELECT 1 FROM clip_posts cp
-            WHERE cp.clip_id = c.id AND cp.status = 'posted'
+            WHERE cp.clip_id = c.id
+              AND cp.artist_account_id = ?
+              AND cp.status = 'posted'
           )
         LIMIT 1
         """,
-        (artist_id,),
+        (artist_id, artist_account_id, artist_account_id),
+    )
+    return bool(await cur.fetchone())
+
+
+async def _any_clip_for_variation(
+    database, artist_id: int, artist_account_id: int
+) -> bool:
+    cur = await database.execute(
+        """
+        SELECT 1 FROM clips
+        WHERE artist_id = ?
+          AND (artist_account_id = ? OR artist_account_id IS NULL)
+        LIMIT 1
+        """,
+        (artist_id, artist_account_id),
     )
     return bool(await cur.fetchone())
 
@@ -242,8 +275,35 @@ async def _any_clip(database, artist_id: int) -> bool:
     return bool(await cur.fetchone())
 
 
+async def evaluate_variation_pause(database, variation: dict) -> None:
+    """Set/clear `artist_accounts.paused_reason='directory_exhausted'`.
+
+    Variation is exhausted when it has any clip in scope (its own folder OR
+    the shared pool) but every one of those has been posted at least once
+    by THIS variation. Clears the pause when a fresh unposted clip appears."""
+    var_id = variation["id"]
+    artist_id = variation["artist_id"]
+    has_any = await _any_clip_for_variation(database, artist_id, var_id)
+    has_unposted = await _has_unposted_clip_for_variation(database, artist_id, var_id)
+    current = (variation.get("paused_reason") or None)
+    if has_any and not has_unposted:
+        if current != PAUSE_DIRECTORY_EXHAUSTED:
+            await db.update_artist_account(
+                database, var_id, paused_reason=PAUSE_DIRECTORY_EXHAUSTED
+            )
+    else:
+        if current == PAUSE_DIRECTORY_EXHAUSTED:
+            await db.update_artist_account(database, var_id, paused_reason=None)
+
+
 async def evaluate_pause(database, artist: dict) -> None:
-    """Check whether the artist should be paused. Mutates DB if so."""
+    """Check whether the artist should be paused. Mutates DB if so.
+
+    Two artist-wide pause causes survive here:
+    1. `target_reached` — view target hit.
+    2. `directory_exhausted` — only applied at the artist level when EVERY
+       variation is also exhausted (used for backwards-compat dashboard
+       rendering; per-variation pause is the new source of truth)."""
     # Never overwrite a manual pause. The user clicked Pause; only an explicit
     # un-pause click (which clears paused_reason) should resume them — not
     # auto-detection of view-target or directory-exhausted.
@@ -264,13 +324,34 @@ async def evaluate_pause(database, artist: dict) -> None:
                 )
             return
 
-    # Directory exhaustion: every clip has been posted at least once.
-    if await _any_clip(database, aid) and not await _has_unposted_clip(database, aid):
-        await db.update_artist(database, aid, paused_reason=PAUSE_DIRECTORY_EXHAUSTED)
+    # Per-variation evaluation, then artist-wide rollup.
+    variations = await db.get_artist_accounts(database, aid)
+    if not variations:
+        return
+    for v in variations:
+        await evaluate_variation_pause(database, dict(v))
+    # Re-fetch (paused_reason was just mutated).
+    variations = [dict(v) for v in await db.get_artist_accounts(database, aid)]
+    all_exhausted = all(
+        v.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED for v in variations
+    )
+    if all_exhausted and await _any_clip(database, aid):
+        if artist.get("paused_reason") != PAUSE_DIRECTORY_EXHAUSTED:
+            await db.update_artist(database, aid, paused_reason=PAUSE_DIRECTORY_EXHAUSTED)
+    elif artist.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+        # Some variation is no longer exhausted — clear the artist roll-up.
+        await db.update_artist(database, aid, paused_reason=None)
 
 
-async def maybe_resume_on_new_clip(database, artist_id: int) -> None:
+async def maybe_resume_on_new_clip(
+    database, artist_id: int, artist_account_id: int | None = None
+) -> None:
     """Clear directory_exhausted pause if a fresh unposted clip exists.
+
+    `artist_account_id`:
+      - None or NULL clip → re-evaluate every variation (shared-pool addition
+        unblocks all of them).
+      - Specific variation → only re-evaluate that one.
 
     Manual pauses are never auto-cleared — the user has to un-pause from the
     dashboard to resume."""
@@ -279,8 +360,65 @@ async def maybe_resume_on_new_clip(database, artist_id: int) -> None:
         return
     if artist.get("paused_reason") == PAUSE_MANUAL:
         return
-    if artist.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED and await _has_unposted_clip(database, artist_id):
-        await db.update_artist(database, artist_id, paused_reason=None)
+    if artist_account_id is not None:
+        v = await db.get_artist_account(database, artist_account_id)
+        if v:
+            await evaluate_variation_pause(database, dict(v))
+    else:
+        for v in await db.get_artist_accounts(database, artist_id):
+            await evaluate_variation_pause(database, dict(v))
+    # Roll the artist-level pause up after per-variation eval.
+    artist = await db.get_artist(database, artist_id)
+    if artist:
+        await evaluate_pause(database, dict(artist))
+
+
+async def catchup_today_once(database, artist_id: int) -> int:
+    """One-shot recovery for missed slots today.
+
+    Plans a single now+30s clip_post for the given artist, distributing
+    across every connected, non-paused variation × platform — same shape
+    as a normal slot insert from `plan_slots_once`. Returns the number of
+    rows inserted. Used by the dashboard "Catch up missed slots" button so
+    the user can opt in to recovering today's drops without flipping the
+    catchup_enabled toggle on globally.
+    """
+    artist = await db.get_artist(database, artist_id)
+    if not artist:
+        return 0
+    artist = dict(artist)
+    if not artist.get("is_active") or artist.get("paused_reason"):
+        return 0
+    variations = await db.get_artist_accounts(database, artist_id)
+    if not variations:
+        return 0
+    slot = datetime.now(timezone.utc) + timedelta(seconds=30)
+    campaign_id = artist.get("current_campaign_id")
+    inserted = 0
+    for var in variations:
+        var_d = dict(var)
+        if var_d.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+            continue
+        clip = await _pick_next_clip(database, artist_id, var_d["id"])
+        if not clip:
+            continue
+        for platform in ("tiktok", "youtube", "instagram", "facebook"):
+            if not var_d.get(f"{platform}_token"):
+                continue
+            await db.create_clip_post(
+                database,
+                clip_id=clip["id"],
+                artist_account_id=var_d["id"],
+                platform=platform,
+                scheduled_for=slot,
+                status="scheduled",
+                artist_id=artist_id,
+                campaign_id=campaign_id,
+                clip_filename=clip.get("filename"),
+                caption_snapshot=clip.get("caption"),
+            )
+            inserted += 1
+    return inserted
 
 
 async def plan_slots_once() -> None:
@@ -365,17 +503,26 @@ async def plan_slots_once() -> None:
 
                 campaign_id = artist.get("current_campaign_id")
                 for slot in slots:
-                    clip = await _pick_next_clip(database, artist["id"])
-                    if not clip:
-                        break
+                    # Per-variation picker: each variation pulls from its own
+                    # folder + the shared pool, so two variations on the same
+                    # slot can post different clips. Skip variations that hit
+                    # directory_exhausted independently.
+                    any_planned = False
                     for var in variations:
+                        var_d = dict(var)
+                        if var_d.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+                            continue
+                        clip = await _pick_next_clip(database, artist["id"], var_d["id"])
+                        if not clip:
+                            continue
+                        any_planned = True
                         for platform in ("tiktok", "youtube", "instagram", "facebook"):
-                            if not dict(var).get(f"{platform}_token"):
+                            if not var_d.get(f"{platform}_token"):
                                 continue
                             await db.create_clip_post(
                                 database,
                                 clip_id=clip["id"],
-                                artist_account_id=var["id"],
+                                artist_account_id=var_d["id"],
                                 platform=platform,
                                 scheduled_for=slot,
                                 status="scheduled",
@@ -384,6 +531,9 @@ async def plan_slots_once() -> None:
                                 clip_filename=clip.get("filename"),
                                 caption_snapshot=clip.get("caption"),
                             )
+                    if not any_planned:
+                        # No variation has a postable clip — stop planning.
+                        break
                     # Note: times_posted / last_posted_at are bumped by the
                     # dispatcher on successful post, NOT here at plan time.
                     # Bumping at plan time used to mark queued-but-not-fired
@@ -444,10 +594,12 @@ async def dispatch_due_once() -> None:
             WHERE id IN (
                 SELECT cp.id FROM clip_posts cp
                 JOIN artists a ON a.id = cp.artist_id
+                LEFT JOIN artist_accounts aa ON aa.id = cp.artist_account_id
                 WHERE cp.status = 'scheduled' AND cp.scheduled_for IS NOT NULL
                   AND cp.scheduled_for <= NOW()
                   AND a.is_active = TRUE
                   AND a.paused_reason IS NULL
+                  AND (aa.id IS NULL OR aa.paused_reason IS NULL)
                 ORDER BY cp.scheduled_for ASC
                 LIMIT 50
                 FOR UPDATE OF cp SKIP LOCKED
@@ -571,6 +723,13 @@ async def dispatch_due_once() -> None:
 
                 adapter = ADAPTERS[platform]
                 kwargs = {}
+                # Per-variation residential proxy. None/empty → posts go
+                # direct (current behavior); a non-empty string is passed
+                # straight to httpx so all platform calls for this variation
+                # share one exit IP.
+                _proxy = dict(variation).get("proxy_url") or None
+                if _proxy:
+                    kwargs["proxy_url"] = _proxy
                 if platform == "instagram":
                     kwargs["ig_user_id"] = dict(variation).get("instagram_user_id")
                 if platform == "facebook":
@@ -745,9 +904,23 @@ async def poll_views_once() -> None:
                     continue
                 yt_groups.setdefault(tok, []).append(pid)
                 yt_attempted.add(pid)
+            # Capture proxy per token so the batched call goes through the
+            # same residential IP as that variation's posts.
+            yt_proxy_for_token: dict[str, str | None] = {}
+            for cp in rows:
+                if cp["platform"] != "youtube":
+                    continue
+                v = await db.get_artist_account(database, cp["artist_account_id"])
+                if not v:
+                    continue
+                tok = await _fresh_variation_token(database, dict(v), "youtube")
+                if tok and tok in yt_groups:
+                    yt_proxy_for_token.setdefault(tok, dict(v).get("proxy_url") or None)
             for tok, ids in yt_groups.items():
                 try:
-                    yt_views.update(await get_view_counts_batch(tok, ids))
+                    yt_views.update(await get_view_counts_batch(
+                        tok, ids, proxy_url=yt_proxy_for_token.get(tok),
+                    ))
                 except Exception as be:
                     # On batch failure, leave yt_attempted populated but
                     # yt_views empty for these IDs — the inner loop will
@@ -809,7 +982,10 @@ async def poll_views_once() -> None:
                     if _is_publish_id(post_id):
                         posted_at = cp.get("posted_at")
                         posted_epoch = int(posted_at.timestamp()) if posted_at else None
-                        resolved = await resolve_video_id(access_token, post_id, posted_epoch)
+                        resolved = await resolve_video_id(
+                            access_token, post_id, posted_epoch,
+                            proxy_url=dict(variation).get("proxy_url") or None,
+                        )
                         if resolved and resolved != post_id:
                             await db.update_clip_post(
                                 database, cp["id"], platform_post_id=resolved,
@@ -853,7 +1029,10 @@ async def poll_views_once() -> None:
                             f"(deleted, private, or stored id is stale)"
                         )
                 else:
-                    views = await adapter.get_view_count(access_token, post_id)
+                    views = await adapter.get_view_count(
+                        access_token, post_id,
+                        proxy_url=dict(variation).get("proxy_url") or None,
+                    )
                 new_views = int(views or 0)
                 prev_views = int(cp.get("view_count") or 0)
                 # Never let a real, observed view count regress. Platforms

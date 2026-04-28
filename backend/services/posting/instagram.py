@@ -15,14 +15,17 @@ from . import PostingError, PostDeletedError
 GRAPH = "https://graph.facebook.com/v19.0"
 
 
-async def upload_video(access_token: str, video_source: str, caption: str, **kwargs) -> dict:
+async def upload_video(
+    access_token: str, video_source: str, caption: str,
+    proxy_url: str | None = None, **kwargs,
+) -> dict:
     ig_user_id = kwargs.get("ig_user_id")
     if not ig_user_id:
         raise PostingError("Instagram requires ig_user_id (IG Business Account id)")
     if not video_source.startswith("http"):
         raise PostingError("Instagram requires a public video_url — upload the clip to Drive first")
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, proxy=proxy_url) as client:
         # Create container
         r = await client.post(
             f"{GRAPH}/{ig_user_id}/media",
@@ -66,8 +69,10 @@ async def upload_video(access_token: str, video_source: str, caption: str, **kwa
         return {"platform_post_id": media_id, "permalink": None}
 
 
-async def get_view_count(access_token: str, platform_post_id: str) -> int:
-    async with httpx.AsyncClient(timeout=30) as client:
+async def get_view_count(
+    access_token: str, platform_post_id: str, proxy_url: str | None = None,
+) -> int:
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
         # Step 1: existence probe. GET /{media-id}?fields=id is the cheapest
         # call we can make and it doesn't need insights permission. If the
         # media is gone Meta returns 4xx with 'does not exist' or
