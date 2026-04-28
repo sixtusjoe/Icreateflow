@@ -24,10 +24,33 @@ jobs:
 
       - name: Set up SSH
         run: |
+          set -e
           mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "::error::VPS_SSH_KEY secret is empty or unset"
+            exit 2
+          fi
+          if [ -z "${{ secrets.VPS_HOST }}" ]; then
+            echo "::error::VPS_HOST secret is empty or unset"
+            exit 2
+          fi
+          if [ -z "${{ secrets.VPS_USER }}" ]; then
+            echo "::error::VPS_USER secret is empty or unset"
+            exit 2
+          fi
+          # Strip CRLF that may sneak in from a Windows paste.
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # Verify the key parses before we try to use it.
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null 2>&1; then
+            echo "::error::Private key in VPS_SSH_KEY is invalid (header/footer missing or whitespace mangled)"
+            head -1 ~/.ssh/id_ed25519
+            tail -1 ~/.ssh/id_ed25519
+            wc -l ~/.ssh/id_ed25519
+            exit 3
+          fi
+          ssh-keyscan -p 22 "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>&1
+          echo "SSH set up OK."
 
       - name: Rsync source to VPS
         run: |
