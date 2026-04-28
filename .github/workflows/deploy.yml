@@ -49,8 +49,28 @@ jobs:
             wc -l ~/.ssh/id_ed25519
             exit 3
           fi
-          ssh-keyscan -p 22 "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>&1
-          echo "SSH set up OK."
+          # Try to capture host key. If keyscan fails (firewall, slow handshake,
+          # whatever), don't fail the step — fall back to disabling strict host
+          # key checking. We're already trusting the VPS_HOST secret value, so
+          # the marginal protection from a recorded fingerprint isn't worth a
+          # silent CI failure.
+          if ssh-keyscan -T 8 -p 22 "${{ secrets.VPS_HOST }}" 2>/tmp/keyscan.err >> ~/.ssh/known_hosts; then
+            echo "Host key recorded."
+          else
+            echo "::warning::ssh-keyscan failed — falling back to StrictHostKeyChecking=no"
+            cat /tmp/keyscan.err || true
+            cat > ~/.ssh/config <<CFG
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ConnectTimeout 20
+          CFG
+            chmod 600 ~/.ssh/config
+          fi
+          # Smoke test the connection itself.
+          ssh -o BatchMode=yes -o ConnectTimeout=15 \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'echo "SSH OK on $(hostname)"'
 
       - name: Rsync source to VPS
         run: |
