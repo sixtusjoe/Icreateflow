@@ -385,6 +385,14 @@ export const uploadClip = (artistId: number, file: File, caption = "") => {
 };
 export const syncGdriveClips = (artistId: number, folder_url: string) =>
   api.post(`/api/artists/${artistId}/clips/gdrive`, { folder_url }).then((r) => r.data);
+export const uploadVariationClip = (variationId: number, file: File, caption = "") => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("caption", caption);
+  return api.post(`/api/variations/${variationId}/clips/upload`, form).then((r) => r.data);
+};
+export const syncVariationGdriveClips = (variationId: number, folder_url: string) =>
+  api.post(`/api/variations/${variationId}/clips/gdrive`, { folder_url }).then((r) => r.data);
 export const updateClip = (id: number, data: { caption?: string }) =>
   api.put(`/api/clips/${id}`, data).then((r) => r.data);
 export const deleteClip = (id: number) =>
@@ -410,6 +418,8 @@ export const stopPromotion = (artistId: number) =>
   api.post(`/api/artists/${artistId}/promotion/stop`).then((r) => r.data);
 export const togglePausePromotion = (artistId: number) =>
   api.post(`/api/artists/${artistId}/promotion/toggle-pause`).then((r) => r.data);
+export const catchupTodayPromotion = (artistId: number) =>
+  api.post(`/api/artists/${artistId}/promotion/catchup`).then((r) => r.data);
 export const resetPromotion = (
   artistId: number,
   data: { view_target?: number; campaign_name?: string; delete_clips?: boolean },

@@ -37,6 +37,9 @@ import {
   refreshVariationProfile,
   uploadClip,
   syncGdriveClips,
+  uploadVariationClip,
+  syncVariationGdriveClips,
+  catchupTodayPromotion,
   updateClip,
   deleteClip,
   getArtistDashboard,
@@ -59,6 +62,9 @@ type Variation = {
   youtube_connected?: boolean;
   instagram_connected?: boolean;
   facebook_connected?: boolean;
+  gdrive_folder_url?: string | null;
+  proxy_url?: string | null;
+  paused_reason?: string | null;
 };
 
 type Clip = {
@@ -69,6 +75,7 @@ type Clip = {
   times_posted: number;
   local_path?: string;
   gdrive_file_id?: string;
+  artist_account_id?: number | null;
 };
 
 type Dashboard = {
@@ -636,6 +643,27 @@ export default function ArtistPage({
                 <Square className="h-3.5 w-3.5" /> Stop
               </button>
               <button
+                onClick={async () => {
+                  if (id == null) return;
+                  try {
+                    const r = await catchupTodayPromotion(id);
+                    if (r.inserted > 0) {
+                      toast.success(`Catching up — ${r.inserted} post${r.inserted === 1 ? "" : "s"} queued`);
+                    } else {
+                      toast(`No catch-up posts queued (paused or no clip available).`);
+                    }
+                    load();
+                  } catch (e: unknown) {
+                    const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+                    toast.error(msg || "Catch-up failed");
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
+                title="Plan a single now+30s post for today's missed slot(s)"
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> Catch up missed slots
+              </button>
+              <button
                 onClick={() => setShowReset((s) => !s)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
@@ -938,6 +966,11 @@ export default function ArtistPage({
                     </div>
                   </div>
                   <OAuthTiles account={v as unknown as Record<string, unknown> & { id: number }} kind="variation" onChange={load} />
+                  <VariationExtras
+                    v={v}
+                    clipCount={clips.filter((c) => c.artist_account_id === v.id).length}
+                    onChange={load}
+                  />
                 </div>
               )
             ))}
@@ -971,12 +1004,17 @@ export default function ArtistPage({
         </div>
 
         {clipsOpen && (<>
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          Shared pool — clips here are available to every variation. For
+          variation-specific clips, use the Drive folder field on each
+          variation card above.
+        </p>
         <div className="mb-4 flex flex-col gap-2 sm:flex-row">
           <input
             value={gdriveUrl}
             onChange={(e) => setGdriveUrl(e.target.value)}
             className={inputClass}
-            placeholder="Public Google Drive folder URL"
+            placeholder="Public Google Drive folder URL (shared pool)"
           />
           <button
             onClick={handleGdriveSync}
@@ -1091,6 +1129,137 @@ export default function ArtistPage({
           <Save className="h-4 w-4" /> Save
         </button>
       </section>
+    </div>
+  );
+}
+
+function VariationExtras({
+  v,
+  clipCount,
+  onChange,
+}: {
+  v: Variation;
+  clipCount: number;
+  onChange: () => void;
+}) {
+  const [folder, setFolder] = useState(v.gdrive_folder_url || "");
+  const [proxy, setProxy] = useState(v.proxy_url || "");
+  const [syncing, setSyncing] = useState(false);
+  const [savingProxy, setSavingProxy] = useState(false);
+
+  const onSync = async () => {
+    if (!folder.trim()) return toast.error("Paste a Drive folder URL");
+    setSyncing(true);
+    try {
+      const r = await syncVariationGdriveClips(v.id, folder.trim());
+      toast.success(`Synced — ${r.added} new (${r.total} in this variation)`);
+      onChange();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(msg || "Drive sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const onUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    try {
+      for (const f of Array.from(files)) await uploadVariationClip(v.id, f, "");
+      toast.success(`Uploaded ${files.length} to ${v.name}`);
+      onChange();
+    } catch {
+      toast.error("Upload failed");
+    }
+  };
+
+  const onSaveProxy = async () => {
+    setSavingProxy(true);
+    try {
+      // Empty string clears the proxy. The PUT endpoint persists "" as NULL via
+      // the existing model_dump filter — it sends through.
+      await updateArtistVariation(v.id, { proxy_url: proxy });
+      toast.success(proxy ? "Proxy saved" : "Proxy cleared");
+      onChange();
+    } catch {
+      toast.error("Could not save proxy");
+    } finally {
+      setSavingProxy(false);
+    }
+  };
+
+  const onResume = async () => {
+    try {
+      await updateArtistVariation(v.id, { paused_reason: "" });
+      toast.success(`${v.name} resumed`);
+      onChange();
+    } catch {
+      toast.error("Could not resume");
+    }
+  };
+
+  return (
+    <div className="mt-3 space-y-2 border-t border-border pt-3">
+      {v.paused_reason === "directory_exhausted" && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <span>This variation has posted every clip at least once.</span>
+          <button onClick={onResume} className="font-medium underline-offset-2 hover:underline">
+            Resume
+          </button>
+        </div>
+      )}
+
+      <div>
+        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
+          Drive folder for this variation ({clipCount} clip{clipCount === 1 ? "" : "s"})
+        </label>
+        <div className="flex gap-2">
+          <input
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+            placeholder="https://drive.google.com/drive/folders/..."
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-xs outline-none focus:border-foreground"
+          />
+          <button
+            onClick={onSync}
+            disabled={syncing}
+            className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {syncing ? "Syncing…" : "Sync"}
+          </button>
+          <label className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted cursor-pointer">
+            Upload
+            <input
+              type="file"
+              multiple
+              accept="video/mp4,video/*"
+              onChange={(e) => onUpload(e.target.files)}
+              className="hidden"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
+          Residential proxy URL (optional — leave empty to post direct)
+        </label>
+        <div className="flex gap-2">
+          <input
+            value={proxy}
+            onChange={(e) => setProxy(e.target.value)}
+            placeholder="http://user-session-abc:pass@gate.smartproxy.com:7000"
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-xs outline-none focus:border-foreground"
+          />
+          <button
+            onClick={onSaveProxy}
+            disabled={savingProxy}
+            className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {savingProxy ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
