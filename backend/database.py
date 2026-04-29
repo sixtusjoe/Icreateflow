@@ -1742,7 +1742,13 @@ async def get_clip_posts(
     s = db.session
     stmt = select(ClipPost)
     if artist_id:
-        stmt = stmt.join(Clip, ClipPost.clip_id == Clip.id).where(Clip.artist_id == artist_id)
+        # Filter by clip_posts.artist_id directly. Don't join to Clip — an
+        # inner join silently drops historical rows whose clip_id points
+        # at a deleted clip (the FK was intentionally removed so post
+        # history survives directory cleanup, but an inner join undoes
+        # that). Migration backfilled clip_posts.artist_id, and
+        # create_clip_post sets it on insert, so this column is reliable.
+        stmt = stmt.where(ClipPost.artist_id == artist_id)
     if clip_id:
         stmt = stmt.where(ClipPost.clip_id == clip_id)
     if status:
