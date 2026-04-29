@@ -172,24 +172,37 @@ def _clip_video_source(clip: dict) -> str | None:
 
 
 async def _pick_next_clip(database, artist_id: int, artist_account_id: int) -> dict | None:
-    """Round-robin within ONE variation's scope.
+    """Round-robin within ONE variation's scope, biased toward
+    globally-unposted clips.
 
     Scope = clips assigned to this variation (`clips.artist_account_id = var`)
-    PLUS shared-pool clips (`artist_account_id IS NULL`). Picks the least-
-    posted-by-this-variation clip, tie-broken by oldest last_posted (within
-    this variation). Excludes any clip already queued for this variation
-    (status scheduled/posting), so the planner can't queue the same clip
-    twice in a row for the same variation — and a fresh upload preempts
-    queued ones in the next slot.
+    PLUS shared-pool clips (`artist_account_id IS NULL`). Excludes any clip
+    already queued for this variation (status scheduled/posting), so the
+    planner can't queue the same clip twice in a row for the same variation
+    — and a fresh upload preempts queued ones in the next slot.
 
-    Note: posts/last fall back to clip_posts (the real post log) instead of
-    clips.times_posted, because times_posted is a global aggregate that
-    doesn't track per-variation balance."""
+    Order:
+      1. `_posts_global` ASC — prefer clips no variation has posted yet,
+         so a freshly-uploaded Vid11 beats a previously-posted Vid1 even
+         though both have 0 per-variation posts. Matches the global
+         `directory_exhausted` semantics: until every clip in the pool
+         has been posted somewhere on the campaign, the picker keeps
+         finding fresh ones.
+      2. `_posts_in_var` ASC — per-variation balance once everything has
+         been posted globally at least once.
+      3. `_last_in_var` ASC NULLS FIRST — variations that haven't posted
+         this clip yet jump ahead of ones that posted it long ago.
+      4. `c.id` ASC — final stable tie-break.
+    """
     clips = await database.execute(
         """
         SELECT c.*,
                COUNT(cp.id) FILTER (WHERE cp.status = 'posted') AS _posts_in_var,
-               MAX(cp.posted_at)  FILTER (WHERE cp.status = 'posted') AS _last_in_var
+               MAX(cp.posted_at)  FILTER (WHERE cp.status = 'posted') AS _last_in_var,
+               (SELECT COUNT(*) FROM clip_posts cp_g
+                WHERE cp_g.clip_id = c.id
+                  AND cp_g.status = 'posted'
+                  AND cp_g.deleted_at IS NULL) AS _posts_global
         FROM clips c
         LEFT JOIN clip_posts cp
           ON cp.clip_id = c.id AND cp.artist_account_id = ?
@@ -202,7 +215,8 @@ async def _pick_next_clip(database, artist_id: int, artist_account_id: int) -> d
               AND cp2.status IN ('scheduled', 'posting')
           )
         GROUP BY c.id
-        ORDER BY _posts_in_var ASC,
+        ORDER BY _posts_global ASC,
+                 _posts_in_var ASC,
                  _last_in_var ASC NULLS FIRST,
                  c.id ASC
         LIMIT 1
