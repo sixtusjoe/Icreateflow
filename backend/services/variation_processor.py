@@ -268,9 +268,16 @@ async def _probe_video_codec(path: Path) -> str:
 async def _transcode_to_h264(src: Path, dst: Path) -> None:
     """Re-encode src → dst as H.264 / AAC, preserving dimensions and duration.
     Atomic via .partial + os.replace.
+
+    Uses a uniquely-named scratch file so it can't collide with the caller's
+    partial. `passthrough_download` already passes `<dst>.partial` AS the
+    src, and a naive `dst + ".partial"` here produced the same path → ffmpeg
+    refused with "cannot edit existing files in-place" and every passthrough
+    failed.
     """
     import os as _os
-    partial = dst.with_suffix(dst.suffix + ".partial")
+    from uuid import uuid4
+    partial = dst.with_suffix(dst.suffix + f".transcode.{uuid4().hex[:8]}.partial")
     cmd = [
         "ffmpeg", "-y",
         "-i", str(src),
