@@ -19,18 +19,83 @@ async def upload_video(
     `video_source` must be a publicly-reachable URL (e.g. a Drive direct-download
     link). Local uploads are not supported by this adapter in v1.
 
-    Pass `privacy_level` via kwargs to override the default. While a TikTok app
-    is unaudited, PUBLIC_TO_EVERYONE is rejected — only SELF_ONLY is allowed.
+    Recognised kwargs:
+      post_mode: "DIRECT_POST" (default) publishes immediately. "INBOX" sends
+        the video to the user's TikTok inbox as a draft — they compose the
+        caption / privacy / disclosure inside the TikTok app. INBOX skips
+        every `post_info` field (TikTok ignores them for drafts).
+      privacy_level: per `creator_info/query` `privacy_level_options` for
+        this account. Required for DIRECT_POST.
+      disable_duet, disable_stitch, disable_comment: bool, default False.
+      brand_content_toggle: bool. True = third-party promotion.
+        Forbidden combo: True + privacy_level=SELF_ONLY (TikTok rejects).
+      brand_organic_toggle: bool. True = creator's own brand.
+      video_cover_timestamp_ms: int, optional. Cover frame offset.
     """
     if not video_source.startswith("http"):
         raise PostingError("TikTok adapter only supports URL video sources in v1")
 
+    post_mode = (kwargs.get("post_mode") or "DIRECT_POST").upper()
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    if post_mode == "INBOX":
+        # Inbox uploads are TikTok's "save as draft" path. The user composes
+        # caption / privacy / disclosure inside their TikTok app once it
+        # arrives. We send only the source — every `post_info` field is
+        # ignored by this endpoint.
+        init_body = {
+            "source_info": {"source": "PULL_FROM_URL", "video_url": video_source},
+        }
+        async with httpx.AsyncClient(timeout=60, proxy=proxy_url) as client:
+            r = await client.post(
+                f"{API_BASE}/post/publish/inbox/video/init/",
+                json=init_body,
+                headers=headers,
+            )
+            if r.status_code >= 400:
+                raise PostingError(
+                    f"TikTok inbox init failed {r.status_code}: {r.text[:200]}"
+                )
+            data = r.json().get("data") or {}
+            publish_id = data.get("publish_id")
+            if not publish_id:
+                raise PostingError(
+                    f"TikTok inbox init missing publish_id: {r.text[:200]}"
+                )
+            # Drafts have no public post id until the user publishes from
+            # their app. Skip status polling — the row is "done" from our
+            # side once TikTok accepted the upload init.
+            return {
+                "platform_post_id": publish_id,
+                "permalink": None,
+                "draft": True,
+            }
+
     privacy_level = kwargs.get("privacy_level") or "SELF_ONLY"
+    brand_content_toggle = bool(kwargs.get("brand_content_toggle"))
+    if brand_content_toggle and privacy_level == "SELF_ONLY":
+        # TikTok rejects this combo. Fail fast with a clear error rather
+        # than waste a round-trip and surface TikTok's 4xx text.
+        raise PostingError(
+            "TikTok rejects branded content with SELF_ONLY privacy — "
+            "set privacy to PUBLIC_TO_EVERYONE (or any non-private level) "
+            "before posting branded content."
+        )
+    post_info = {
+        "title": (caption or "")[:2200],
+        "privacy_level": privacy_level,
+        "disable_duet": bool(kwargs.get("disable_duet", False)),
+        "disable_stitch": bool(kwargs.get("disable_stitch", False)),
+        "disable_comment": bool(kwargs.get("disable_comment", False)),
+        "brand_content_toggle": brand_content_toggle,
+        "brand_organic_toggle": bool(kwargs.get("brand_organic_toggle", False)),
+    }
+    if kwargs.get("video_cover_timestamp_ms") is not None:
+        post_info["video_cover_timestamp_ms"] = int(kwargs["video_cover_timestamp_ms"])
     init_body = {
-        "post_info": {"title": (caption or "")[:2200], "privacy_level": privacy_level},
+        "post_info": post_info,
         "source_info": {"source": "PULL_FROM_URL", "video_url": video_source},
     }
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=60, proxy=proxy_url) as client:
         r = await client.post(
