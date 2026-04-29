@@ -1105,7 +1105,7 @@ function VariationExtras({
             value={folder}
             onChange={(e) => setFolder(e.target.value)}
             placeholder="https://drive.google.com/drive/folders/..."
-            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-xs outline-none focus:border-foreground"
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
           />
           <button
             onClick={onSync}
@@ -1205,7 +1205,7 @@ function VariationExtras({
             value={proxy}
             onChange={(e) => setProxy(e.target.value)}
             placeholder="http://user-session-abc:pass@gate.smartproxy.com:7000"
-            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-xs outline-none focus:border-foreground"
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
           />
           <button
             onClick={onSaveProxy}
