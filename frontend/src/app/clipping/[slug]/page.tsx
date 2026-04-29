@@ -1110,11 +1110,11 @@ function VariationExtras({
           <button
             onClick={onSync}
             disabled={syncing}
-            className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
             {syncing ? "Syncing…" : "Sync"}
           </button>
-          <label className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted cursor-pointer">
+          <label className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted cursor-pointer">
             Upload
             <input
               type="file"
@@ -1210,7 +1210,7 @@ function VariationExtras({
           <button
             onClick={onSaveProxy}
             disabled={savingProxy}
-            className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
             {savingProxy ? "Saving…" : "Save"}
           </button>
