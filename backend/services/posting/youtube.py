@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import httpx
 
-from . import PostingError, PostDeletedError
+from . import PostingError, PostDeletedError, YouTubeQuotaExhausted
 
 
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
@@ -93,8 +93,19 @@ async def get_view_counts_batch(
                 headers=headers,
             )
             if r.status_code >= 400:
+                # 403 with reason=quotaExceeded means the project's daily
+                # Data API allotment is gone. Surface a distinct exception
+                # so the poller can stop hammering until midnight Pacific
+                # instead of logging the same 403 for every queued row.
+                body = r.text or ""
+                if r.status_code == 403 and (
+                    "quotaExceeded" in body or "quota" in body.lower()
+                ):
+                    raise YouTubeQuotaExhausted(
+                        f"YouTube Data API quota exhausted: {body[:200]}"
+                    )
                 raise PostingError(
-                    f"YouTube stats failed {r.status_code}: {r.text[:200]}"
+                    f"YouTube stats failed {r.status_code}: {body[:200]}"
                 )
             for item in r.json().get("items") or []:
                 vid = item.get("id")

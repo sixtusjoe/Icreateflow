@@ -860,6 +860,23 @@ async def get_view_poll_interval(database) -> int:
         return DEFAULT_VIEW_POLL_INTERVAL_SECONDS
 
 
+# Process-level backoff for YouTube Data API quota exhaustion. When the
+# poller sees a 403 quotaExceeded, it sets this to "next midnight Pacific"
+# and skips ALL YouTube rows (batch + per-row fallback) until then. Without
+# this, a single quota event spams the error log with one 403 per queued
+# YouTube clip every poll cycle (we saw 500+ identical entries in prod).
+_yt_quota_exhausted_until: datetime | None = None
+
+
+def _next_midnight_pacific() -> datetime:
+    """Google's Data API daily quota resets at midnight US/Pacific."""
+    pacific = ZoneInfo("US/Pacific")
+    now_p = datetime.now(pacific)
+    tomorrow = (now_p + timedelta(days=1)).date()
+    midnight = datetime.combine(tomorrow, dtime(0, 0), tzinfo=pacific)
+    return midnight.astimezone(timezone.utc)
+
+
 async def poll_views_once() -> None:
     """Refresh view counts for posted rows older than VIEW_POLL_INTERVAL_SECONDS,
     then re-check pause."""
@@ -894,60 +911,120 @@ async def poll_views_once() -> None:
         # well under 300. Group by access_token (variations have distinct
         # tokens) and stash results for the inner loop to read instead of
         # making its own per-row API call.
+        global _yt_quota_exhausted_until
         yt_views: dict[str, int] = {}  # platform_post_id -> views (from batch)
         yt_attempted: set[str] = set()  # IDs we asked for; missing => deleted
+        # Determined per cycle: when the daily quota is gone we skip YT
+        # rows entirely in the inner loop (no batch, no fallback, no logs).
+        yt_quota_blocked = (
+            _yt_quota_exhausted_until is not None
+            and datetime.now(timezone.utc) < _yt_quota_exhausted_until
+        )
+        if yt_quota_blocked:
+            # Stamp every YouTube row's view_count_updated_at so the 30s
+            # cooldown filter pushes them past the LIMIT 100 — keeps the
+            # poller working on TikTok/IG/FB rows instead of spinning on
+            # ones we can't refresh anyway.
+            now = datetime.now(timezone.utc)
+            for cp in rows:
+                if cp["platform"] == "youtube":
+                    try:
+                        await db.update_clip_post(
+                            database, cp["id"], view_count_updated_at=now,
+                        )
+                    except Exception:
+                        pass
         try:
-            from services.posting.youtube import get_view_counts_batch
-            yt_groups: dict[str, list[str]] = {}  # access_token -> [video_id...]
-            for cp in rows:
-                if cp["platform"] != "youtube":
-                    continue
-                pid = cp.get("platform_post_id")
-                if not pid:
-                    continue
-                v = await db.get_artist_account(database, cp["artist_account_id"])
-                if not v:
-                    continue
-                tok = await _fresh_variation_token(database, v, "youtube")
-                if not tok:
-                    continue
-                yt_groups.setdefault(tok, []).append(pid)
-                yt_attempted.add(pid)
-            # Capture proxy per token so the batched call goes through the
-            # same residential IP as that variation's posts.
-            yt_proxy_for_token: dict[str, str | None] = {}
-            for cp in rows:
-                if cp["platform"] != "youtube":
-                    continue
-                v = await db.get_artist_account(database, cp["artist_account_id"])
-                if not v:
-                    continue
-                tok = await _fresh_variation_token(database, dict(v), "youtube")
-                if tok and tok in yt_groups:
-                    yt_proxy_for_token.setdefault(tok, dict(v).get("proxy_url") or None)
-            for tok, ids in yt_groups.items():
-                try:
-                    yt_views.update(await get_view_counts_batch(
-                        tok, ids, proxy_url=yt_proxy_for_token.get(tok),
-                    ))
-                except Exception as be:
-                    # On batch failure, leave yt_attempted populated but
-                    # yt_views empty for these IDs — the inner loop will
-                    # fall back to per-row `adapter.get_view_count`.
-                    await db.log_error(
-                        database, source="posting.youtube.views_batch",
-                        message=str(be), traceback=traceback.format_exc(),
-                    )
-                    for pid in ids:
-                        yt_attempted.discard(pid)
+            if not yt_quota_blocked:
+                from services.posting.youtube import get_view_counts_batch
+                from services.posting import YouTubeQuotaExhausted
+                yt_groups: dict[str, list[str]] = {}  # access_token -> [video_id...]
+                for cp in rows:
+                    if cp["platform"] != "youtube":
+                        continue
+                    pid = cp.get("platform_post_id")
+                    if not pid:
+                        continue
+                    v = await db.get_artist_account(database, cp["artist_account_id"])
+                    if not v:
+                        continue
+                    tok = await _fresh_variation_token(database, v, "youtube")
+                    if not tok:
+                        continue
+                    yt_groups.setdefault(tok, []).append(pid)
+                    yt_attempted.add(pid)
+                # Capture proxy per token so the batched call goes through the
+                # same residential IP as that variation's posts.
+                yt_proxy_for_token: dict[str, str | None] = {}
+                for cp in rows:
+                    if cp["platform"] != "youtube":
+                        continue
+                    v = await db.get_artist_account(database, cp["artist_account_id"])
+                    if not v:
+                        continue
+                    tok = await _fresh_variation_token(database, dict(v), "youtube")
+                    if tok and tok in yt_groups:
+                        yt_proxy_for_token.setdefault(tok, dict(v).get("proxy_url") or None)
+                for tok, ids in yt_groups.items():
+                    try:
+                        yt_views.update(await get_view_counts_batch(
+                            tok, ids, proxy_url=yt_proxy_for_token.get(tok),
+                        ))
+                    except YouTubeQuotaExhausted as qe:
+                        # Daily Data API quota gone. Set the process-level
+                        # backoff to next midnight Pacific (Google's reset)
+                        # and treat ALL YouTube rows this cycle as blocked.
+                        _yt_quota_exhausted_until = _next_midnight_pacific()
+                        yt_quota_blocked = True
+                        await db.log_error(
+                            database, source="posting.youtube.views_batch",
+                            message=(
+                                f"YouTube Data API quota exhausted; pausing "
+                                f"YouTube view polling until "
+                                f"{_yt_quota_exhausted_until.isoformat()}. "
+                                f"Original error: {qe}"
+                            ),
+                        )
+                        # Stamp updated_at on the YT rows so they fall out
+                        # of the 30s-cooldown window and we don't reselect
+                        # them every minute.
+                        now = datetime.now(timezone.utc)
+                        for cp in rows:
+                            if cp["platform"] == "youtube":
+                                try:
+                                    await db.update_clip_post(
+                                        database, cp["id"], view_count_updated_at=now,
+                                    )
+                                except Exception:
+                                    pass
+                        yt_attempted.clear()
+                        yt_views.clear()
+                        break
+                    except Exception as be:
+                        # Non-quota batch failure (network blip, transient
+                        # 5xx): clear attempted set for these IDs so the
+                        # inner loop doesn't mis-treat them as deleted, and
+                        # let it fall back to per-row.
+                        await db.log_error(
+                            database, source="posting.youtube.views_batch",
+                            message=str(be), traceback=traceback.format_exc(),
+                        )
+                        for pid in ids:
+                            yt_attempted.discard(pid)
         except Exception:
-            # Pre-batch failed entirely; leave caches empty and let the
-            # inner loop run as before.
+            # Pre-batch setup failed entirely; leave caches empty and let
+            # the inner loop run as before (per-row fallback).
             yt_attempted.clear()
             yt_views.clear()
 
         for cp in rows:
             try:
+                # Quota-blocked YouTube rows: skip entirely. The pre-batch
+                # block above already stamped view_count_updated_at, so
+                # they'll fall outside the 30s cooldown filter on the next
+                # selection.
+                if yt_quota_blocked and cp["platform"] == "youtube":
+                    continue
                 variation = await db.get_artist_account(database, cp["artist_account_id"])
                 if not variation:
                     continue

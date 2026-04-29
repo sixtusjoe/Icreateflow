@@ -26,3 +26,12 @@ class PostDeletedError(PostingError):
     PostingError so existing catch-all handlers still work, but lets the
     poller specifically mark the row as deleted_at instead of just logging.
     """
+
+
+class YouTubeQuotaExhausted(PostingError):
+    """Raised by the YouTube adapter when the Data API returns 403 with a
+    `quotaExceeded` reason. Distinct from PostingError so the view poller
+    can short-circuit the entire YouTube branch (skip the batch AND the
+    per-row fallback) until the daily quota resets at midnight Pacific —
+    avoiding the 100+ identical 403 entries that flooded the error log.
+    """
