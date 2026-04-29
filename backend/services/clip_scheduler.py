@@ -50,6 +50,7 @@ ADAPTERS = {
 
 PAUSE_TARGET_REACHED = "target_reached"
 PAUSE_DIRECTORY_EXHAUSTED = "directory_exhausted"
+PAUSE_NO_CLIPS = "no_clips"
 PAUSE_MANUAL = "manual"
 
 
@@ -234,7 +235,12 @@ async def _artist_views_total(database, artist_id: int) -> int:
 async def _has_unposted_clip_for_variation(
     database, artist_id: int, artist_account_id: int
 ) -> bool:
-    """True if this variation has any in-scope clip without a successful post."""
+    """True if this variation has any in-scope clip that has never been
+    posted by ANY variation. "Posted" is global — once a clip has fired
+    once on the campaign, it counts toward "directory used up." That
+    matches the user-facing notion: when every video in the directory
+    has gone out at least once, the campaign is done.
+    """
     cur = await database.execute(
         """
         SELECT 1 FROM clips c
@@ -243,12 +249,12 @@ async def _has_unposted_clip_for_variation(
           AND NOT EXISTS (
             SELECT 1 FROM clip_posts cp
             WHERE cp.clip_id = c.id
-              AND cp.artist_account_id = ?
               AND cp.status = 'posted'
+              AND cp.deleted_at IS NULL
           )
         LIMIT 1
         """,
-        (artist_id, artist_account_id, artist_account_id),
+        (artist_id, artist_account_id),
     )
     return bool(await cur.fetchone())
 
@@ -276,24 +282,30 @@ async def _any_clip(database, artist_id: int) -> bool:
 
 
 async def evaluate_variation_pause(database, variation: dict) -> None:
-    """Set/clear `artist_accounts.paused_reason='directory_exhausted'`.
+    """Set/clear the variation's `paused_reason`.
 
-    Variation is exhausted when it has any clip in scope (its own folder OR
-    the shared pool) but every one of those has been posted at least once
-    by THIS variation. Clears the pause when a fresh unposted clip appears."""
+    Three auto states:
+      - directory_exhausted: variation has clips in scope and every one
+        has already been posted (globally). Pool is used up.
+      - no_clips: variation has nothing in scope (no per-variation folder,
+        no shared-pool clips). Without this, an empty variation sat
+        silently as "Running" while never posting.
+      - None: a postable clip exists.
+
+    Never overwrites a manual pause."""
     var_id = variation["id"]
     artist_id = variation["artist_id"]
-    has_any = await _any_clip_for_variation(database, artist_id, var_id)
-    has_unposted = await _has_unposted_clip_for_variation(database, artist_id, var_id)
     current = (variation.get("paused_reason") or None)
-    if has_any and not has_unposted:
-        if current != PAUSE_DIRECTORY_EXHAUSTED:
-            await db.update_artist_account(
-                database, var_id, paused_reason=PAUSE_DIRECTORY_EXHAUSTED
-            )
+    if current == PAUSE_MANUAL:
+        return
+    has_any = await _any_clip_for_variation(database, artist_id, var_id)
+    if not has_any:
+        target = PAUSE_NO_CLIPS
     else:
-        if current == PAUSE_DIRECTORY_EXHAUSTED:
-            await db.update_artist_account(database, var_id, paused_reason=None)
+        has_unposted = await _has_unposted_clip_for_variation(database, artist_id, var_id)
+        target = None if has_unposted else PAUSE_DIRECTORY_EXHAUSTED
+    if current != target:
+        await db.update_artist_account(database, var_id, paused_reason=target)
 
 
 async def evaluate_pause(database, artist: dict) -> None:
@@ -332,10 +344,14 @@ async def evaluate_pause(database, artist: dict) -> None:
         await evaluate_variation_pause(database, dict(v))
     # Re-fetch (paused_reason was just mutated).
     variations = [dict(v) for v in await db.get_artist_accounts(database, aid)]
-    all_exhausted = all(
-        v.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED for v in variations
-    )
-    if all_exhausted and await _any_clip(database, aid):
+    # Roll up to artist-level pause when no variation can post anything:
+    # every variation is either out of new clips (directory_exhausted) or
+    # has no clips at all (no_clips). The artist-level reason is
+    # directory_exhausted so the existing dashboard chip / resume flow
+    # keeps working uniformly.
+    blocking_reasons = {PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS}
+    all_blocked = all(v.get("paused_reason") in blocking_reasons for v in variations)
+    if all_blocked and await _any_clip(database, aid):
         if artist.get("paused_reason") != PAUSE_DIRECTORY_EXHAUSTED:
             await db.update_artist(database, aid, paused_reason=PAUSE_DIRECTORY_EXHAUSTED)
     elif artist.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
@@ -397,7 +413,9 @@ async def catchup_today_once(database, artist_id: int) -> int:
     inserted = 0
     for var in variations:
         var_d = dict(var)
-        if var_d.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+        if var_d.get("paused_reason") in (
+            PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS, PAUSE_MANUAL,
+        ):
             continue
         clip = await _pick_next_clip(database, artist_id, var_d["id"])
         if not clip:
@@ -509,7 +527,9 @@ async def plan_slots_once() -> None:
                     any_planned = False
                     for var in variations:
                         var_d = dict(var)
-                        if var_d.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+                        if var_d.get("paused_reason") in (
+                            PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS, PAUSE_MANUAL,
+                        ):
                             continue
                         clip = await _pick_next_clip(database, artist["id"], var_d["id"])
                         if not clip:
