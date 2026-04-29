@@ -855,9 +855,11 @@ async def _migrate_per_platform_post_columns(conn) -> None:
 async def _migrate_per_variation_columns(conn) -> None:
     """Add per-variation GDrive + proxy + pause columns and clips.artist_account_id.
 
-    Idempotent. After the column is added, backfills every pre-existing
-    clip's artist_account_id to that artist's lowest-id variation
-    (vibesofmoon, in production). New shared-pool clips stay NULL.
+    Idempotent. Legacy clips (created before this column existed) keep
+    `artist_account_id = NULL`, which the picker treats as the shared
+    pool — every variation can draw from them. We do NOT backfill them
+    onto a single variation: that strands the other variations with
+    empty pools, which is what happened on the production rollout.
     """
     for col in ("gdrive_folder_url", "gdrive_folder_id", "proxy_url", "paused_reason"):
         await conn.execute(
@@ -870,20 +872,6 @@ async def _migrate_per_variation_columns(conn) -> None:
     await conn.execute(text(
         "CREATE INDEX IF NOT EXISTS clips_artist_account_idx "
         "ON clips(artist_account_id)"
-    ))
-    # Backfill: assign every legacy clip to its artist's first variation.
-    # Per user request — they want the existing 100+ clips locked to
-    # variation 1 (vibesofmoon) rather than left in the shared pool.
-    await conn.execute(text(
-        "UPDATE clips SET artist_account_id = ("
-        "  SELECT id FROM artist_accounts "
-        "  WHERE artist_id = clips.artist_id "
-        "  ORDER BY id ASC LIMIT 1"
-        ") "
-        "WHERE artist_account_id IS NULL "
-        "  AND EXISTS ("
-        "    SELECT 1 FROM artist_accounts WHERE artist_id = clips.artist_id"
-        "  )"
     ))
 
 
