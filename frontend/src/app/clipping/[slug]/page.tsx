@@ -1100,30 +1100,32 @@ function VariationExtras({
         <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
           Drive folder for this variation
         </label>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <input
             value={folder}
             onChange={(e) => setFolder(e.target.value)}
             placeholder="https://drive.google.com/drive/folders/..."
-            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
+            className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
           />
-          <button
-            onClick={onSync}
-            disabled={syncing}
-            className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted disabled:opacity-50"
-          >
-            {syncing ? "Syncing…" : "Sync"}
-          </button>
-          <label className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted cursor-pointer">
-            Upload
-            <input
-              type="file"
-              multiple
-              accept="video/mp4,video/*"
-              onChange={(e) => onUpload(e.target.files)}
-              className="hidden"
-            />
-          </label>
+          <div className="flex gap-2">
+            <button
+              onClick={onSync}
+              disabled={syncing}
+              className="flex-1 rounded-lg border border-border px-3 py-2 text-base sm:flex-none sm:text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {syncing ? "Syncing…" : "Sync"}
+            </button>
+            <label className="flex flex-1 items-center justify-center rounded-lg border border-border px-3 py-2 text-base sm:flex-none sm:text-xs font-medium hover:bg-muted cursor-pointer">
+              Upload
+              <input
+                type="file"
+                multiple
+                accept="video/mp4,video/*"
+                onChange={(e) => onUpload(e.target.files)}
+                className="hidden"
+              />
+            </label>
+          </div>
         </div>
       </div>
 
@@ -1205,7 +1207,7 @@ function VariationExtras({
             value={proxy}
             onChange={(e) => setProxy(e.target.value)}
             placeholder="http://user-session-abc:pass@gate.smartproxy.com:7000"
-            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
+            className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
           />
           <button
             onClick={onSaveProxy}
