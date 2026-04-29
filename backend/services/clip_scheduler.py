@@ -138,16 +138,13 @@ async def _fresh_variation_token(database, variation: dict, platform: str) -> st
     return new_token
 
 
-async def _user_or_site_setting(database, user_id: int | None, key: str, default: str = "1") -> str:
-    """Resolve a clipping toggle. Reads `key` from the artist owner's
-    user_settings first; falls back to site_config; finally `default`.
+async def _user_setting(database, user_id: int | None, key: str, default: str = "1") -> str:
+    """Resolve a per-user clipping toggle from user_settings only.
 
-    The three clipping toggles (clip_diversification_enabled,
-    clip_caption_variants_enabled, catchup_enabled) used to live in
-    site_config (admin-only). They moved to per-user settings so each user
-    can configure their own posting behaviour. Old site_config values are
-    still honoured as a fallback so existing installs keep working without
-    a migration step.
+    No site_config fallback by design — each user controls their own
+    posting behaviour, and an admin-set site_config row should NOT
+    silently override an unset user toggle. If the user has no row,
+    return the hard-coded `default`.
     """
     if user_id:
         try:
@@ -157,13 +154,6 @@ async def _user_or_site_setting(database, user_id: int | None, key: str, default
                 return v
         except Exception:
             pass
-    try:
-        cfg = await db.get_site_config(database)
-        v = cfg.get(key) if cfg else None
-        if v is not None and v != "":
-            return v
-    except Exception:
-        pass
     return default
 
 
@@ -666,11 +656,11 @@ async def dispatch_due_once() -> None:
                 #   3. Diversification OFF + local source: leave as-is.
                 cfg = await db.get_site_config(database)
                 public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
-                # Per-user toggle (artist owner's user_settings) with
-                # site_config fallback. Default on.
+                # Per-user toggle (artist owner's user_settings only, no
+                # site_config fallback). Default on if the user has no row.
                 _artist_for_toggle = await db.get_artist(database, cp["artist_id"]) if cp.get("artist_id") else None
                 _owner_id = dict(_artist_for_toggle).get("user_id") if _artist_for_toggle else None
-                _div_raw = await _user_or_site_setting(database, _owner_id, "clip_diversification_enabled", "1")
+                _div_raw = await _user_setting(database, _owner_id, "clip_diversification_enabled", "1")
                 diversify_on = _toggle_on(_div_raw)
                 if diversify_on and public_base:
                     try:
@@ -757,11 +747,12 @@ async def dispatch_due_once() -> None:
                     kwargs["privacy_level"] = (cfg_tt.get("tiktok_privacy_level") or "SELF_ONLY").upper()
 
                 # Phase 2: per-(clip, variation, platform) caption paraphrase.
-                # Kill switch: site-config `clip_caption_variants_enabled`
-                # (default on). Falls back to the raw base caption if
-                # disabled, if no API key is configured, or on any error.
+                # Per-user toggle: user_settings.clip_caption_variants_enabled
+                # (default on, no site_config fallback). Falls back to the
+                # raw base caption if disabled, if no API key is configured,
+                # or on any error.
                 base_caption = dict(clip).get("caption") or ""
-                _cap_raw = await _user_or_site_setting(database, _owner_id, "clip_caption_variants_enabled", "1")
+                _cap_raw = await _user_setting(database, _owner_id, "clip_caption_variants_enabled", "1")
                 caption_on = _toggle_on(_cap_raw)
                 caption_to_post = base_caption
                 if caption_on and base_caption:
