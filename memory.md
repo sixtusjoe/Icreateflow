@@ -118,9 +118,9 @@ off from FastAPI's lifespan startup hook in `main.py`.
 | `backend/services/oauth.py` | OAuth scopes per platform. `SCOPES["meta"]` includes `pages_read_engagement,pages_manage_posts,pages_show_list,instagram_basic,instagram_content_publish,instagram_manage_insights`. |
 | `backend/services/generator.py` | Brand-side post generator (slides + video). Separate code path from clipping. |
 | `backend/services/video.py` | ffmpeg builder for branded videos with platform-specific caps (`PLATFORM_PROFILES`). |
-| `frontend/src/app/clipping/[slug]/page.tsx` | Campaign dashboard. `formatInArtistTz` helper at top. Heartbeat in campaign card. Pause/resume chip is clickable for ALL paused reasons (including auto-paused ones). |
+| `frontend/src/app/clipping/[slug]/page.tsx` | Campaign dashboard. `formatInArtistTz` helper at top. Heartbeat in campaign card. Pause/resume chip is clickable for ALL paused reasons. Each variation card has a collapsible "Video directory (N clips)" subsection with edit/delete/caption-edit; the artist-level shared-pool section was removed. |
 | `frontend/src/app/admin/page.tsx` | Admin: cache stats, audit-deleted button, view-poll cadence. |
-| `frontend/src/app/settings/page.tsx` | Per-user settings: API keys, overlay defaults, AND clipping toggles (diversification, captions, catchup). |
+| `frontend/src/app/settings/page.tsx` | Per-user settings: API keys, overlay defaults, AND clipping toggles (diversification, captions). Catch-up toggle was removed — the dashboard "Catch up missed slots" button replaces it. |
 | `frontend/src/components/OAuthTiles.tsx` | Connect/disconnect UI. Meta picker shows pages/IG accounts after callback. |
 | `deploy/sync.sh` | Rsync laptop → `/srv/icreateflow/src/`. |
 | `deploy/deploy.sh` | Server-side: copy src into app dirs, symlink uploads/output/music → `/srv/icreateflow/data/*`, install backend deps, init DB schema, build frontend, `systemctl restart`. |
@@ -133,15 +133,35 @@ off from FastAPI's lifespan startup hook in `main.py`.
 - `timezone` — IANA (e.g. `Africa/Lagos`); falls back to `US/Eastern` if unset.
 - `posts_per_day` (default 3), `window_start` / `window_end` (HH:MM, 09:00–21:00 default).
 - `paused_reason`: NULL | `manual` | `directory_exhausted` | `target_reached`.
+  Artist-level rolls up from variations: when EVERY variation is in
+  `directory_exhausted` OR `no_clips`, the artist flips to
+  `directory_exhausted`. Auto-cleared when any variation becomes
+  postable again.
 - `is_active` boolean. `current_campaign_id`. `view_target`.
 
 ### `artist_accounts` (variations)
 Per-platform: `*_token`, `*_refresh_token`, `*_expires_at`, `*_user_id`,
 `*_handle`, `*_scopes` (column exists; not yet always persisted on
 assign — see "Open follow-ups").
+Per-variation extras (added during the per-variation rollout):
+- `gdrive_folder_url` / `gdrive_folder_id` — each variation has its own
+  Drive folder. Sync via `POST /api/artists/{id}/variations/{vid}/clips/gdrive`
+  tags clips with `clips.artist_account_id = vid`.
+- `proxy_url` — per-variation residential proxy. Threaded through every
+  posting adapter, OAuth refresh, and view-count call.
+- `paused_reason`: NULL | `manual` | `directory_exhausted` | `no_clips`.
+  `no_clips` = variation has nothing in scope (no own folder, shared
+  pool empty). Surfaces an amber chip on the dashboard so the user
+  notices instead of seeing the campaign run silently with no posts.
 
 ### `clips`
 - `source` ∈ `gdrive` | `upload`.
+- `artist_account_id` (nullable FK to `artist_accounts`). NULL = shared
+  pool (every variation can draw from it). Set = exclusive to that
+  variation. Legacy artist-level clips are backfilled to the artist's
+  lowest-id variation by `_migrate_per_variation_columns` — the
+  backfill is idempotent and intentionally locks legacy clips to a
+  single variation rather than the shared pool (per user request).
 - `gdrive_file_id`, `local_path`, `filename`, `caption`.
 - `times_posted`, `last_posted_at` — bumped post-dispatch only (not at
   plan time; bumping at plan time previously caused false
@@ -169,8 +189,8 @@ gunicorn workers (50% miss rate). Columns: `id`, `token`, `payload`
 ### Settings tables (3, by purpose)
 | Table | Scope | What's in it |
 |------|-------|--------------|
-| `user_settings` | per-user | `clip_diversification_enabled`, `clip_caption_variants_enabled`, `catchup_enabled`. Read in scheduler via `_user_or_site_setting()`. |
-| `site_config` | global, admin-only | `view_poll_interval_seconds`, `cache_ttl_days`, `tiktok_privacy_level`, `oauth_redirect_base`, `oauth_google_drive_api_key`, fallback for clipping toggles. |
+| `user_settings` | per-user | `clip_diversification_enabled`, `clip_caption_variants_enabled`. Read in scheduler via `_user_setting()` — user_settings ONLY, no site_config fallback (admin-set rows must not silently override unset user toggles). |
+| `site_config` | global, admin-only | `view_poll_interval_seconds`, `cache_ttl_days`, `tiktok_privacy_level`, `oauth_redirect_base`, `oauth_google_drive_api_key`. Old `clip_diversification_enabled` / `clip_caption_variants_enabled` / `catchup_enabled` rows here are inert — no longer read. |
 | `settings` | global, legacy | API keys (`anthropic_api_key`, `replicate_api_token`), overlay defaults, video defaults. Read by `/settings` page. |
 
 ---
@@ -179,12 +199,18 @@ gunicorn workers (50% miss rate). Columns: `id`, `token`, `payload`
 
 Read pattern in scheduler (works for any clipping toggle):
 ```python
-raw = await _user_or_site_setting(database, artist.user_id, "clip_diversification_enabled", "1")
+raw = await _user_setting(database, artist.user_id, "clip_diversification_enabled", "1")
 on = _toggle_on(raw)
 ```
-Resolution order: `user_settings(artist.user_id, key)` → `site_config(key)`
-→ default. `_toggle_on()` returns False for `"0"|"false"|"False"|""`, True
-otherwise.
+Resolution order: `user_settings(artist.user_id, key)` → hard-coded default.
+**No site_config fallback** for these per-user toggles by design —
+admin-set rows must not silently override an unset user toggle.
+`_toggle_on()` returns False for `"0"|"false"|"False"|""`, True otherwise.
+
+Removed toggles (do not re-add):
+- `catchup_enabled` — replaced by the explicit dashboard "Catch up
+  missed slots" button (`POST /promotion/catchup`). Auto-catchup on
+  resume was a footgun that fired surprise `now+30s` posts.
 
 UI placement:
 - Per-user toggles: `frontend/src/app/settings/page.tsx`.
@@ -196,9 +222,34 @@ UI placement:
 
 | Loop | Cadence | What it does |
 |------|---------|--------------|
-| Planner | 300s | Materializes today's slots per active artist. Skips if `paused_reason` set. Catch-up `now+30s` synthetic slot inserted ONLY when `catchup_enabled='1'` (default off). |
+| Planner | 300s | Materializes today's slots per active artist. Skips if `paused_reason` set. **Calls `evaluate_pause` BEFORE the early-exit when there are no slots** — so an artist whose pool went exhausted between ticks gets paused on the next planner cycle (no post needed). Auto-catchup is gone; missed slots stay missed unless the user clicks "Catch up missed slots". |
 | Dispatcher | 60s | Stale-claim recovery flips `posting` rows >30m old back to `scheduled`. Atomic claim (`SKIP LOCKED`) up to 50 rows/tick. After each successful post calls `evaluate_pause`. |
-| View poller | `view_poll_interval_seconds` (default 180, clamped 60–3600) | Refreshes view counts. Sleeps in 30s chunks so admin changes propagate fast. Staleness gate fixed at 30s — decoupled from interval to avoid 2x cadence drift. SKIPS rows where `deleted_at IS NOT NULL`. |
+| View poller | `view_poll_interval_seconds` (default 180, clamped 60–3600) | Refreshes view counts. Sleeps in 30s chunks so admin changes propagate fast. Staleness gate fixed at 30s — decoupled from interval to avoid 2x cadence drift. SKIPS rows where `deleted_at IS NOT NULL`. **YouTube quota backoff**: on 403 `quotaExceeded`, sets a process-level `_yt_quota_exhausted_until = next midnight US/Pacific` and skips ALL YouTube rows (batch + per-row fallback) until then — prevents the 100+ identical-error log spam we saw in prod. Other platforms keep refreshing. |
+
+---
+
+## 7b. Per-variation fan-out (planner shape)
+
+For each slot, for each variation that isn't paused
+(`directory_exhausted` / `no_clips` / `manual`):
+
+1. `_pick_next_clip(artist_id, variation_id)` returns ONE clip from the
+   variation's scope: `clips.artist_account_id = variation_id` OR
+   `clips.artist_account_id IS NULL` (shared pool). Order:
+   least-posted-by-this-variation first, tie-broken by oldest
+   `last_posted_at` for this variation, then `c.id` ASC. Excludes
+   clips already queued (status in `scheduled|posting`) for the same
+   variation.
+2. That same clip is scheduled across **every platform** the variation
+   has tokens for — TikTok, YouTube, Instagram, Facebook.
+
+So a 5-variation artist with all 4 platforms connected per variation
+fires up to **5 unique clips × 4 platforms = 20 posts per slot**. Same
+clip across one variation's 4 socials (the "brand identity" idea);
+different clips across different variations (look like independent
+accounts to platform reuse-detection). Diversification adds a
+re-encoding layer on top so the same clip on a different variation
+fingerprints differently to the platform.
 
 ---
 
@@ -377,20 +428,21 @@ sudo setquota -u icreateflow 10485760 10485760 0 0 /dev/sda4
 
 ## 12. Open follow-ups
 
-1. **Residential proxy per variation** — DESIGNED, NOT IMPLEMENTED.
-   Add `proxy_url` column to `artist_accounts`. Thread proxy through
-   every `httpx.AsyncClient` in posting adapters + OAuth refresh + view
-   poller. Per-variation field in UI. Provider TBD (Smartproxy or
-   IPRoyal recommended; ~$1.7–$3.5/GB). Sticky sessions are critical —
-   each account needs a stable IP for at least a day. Likely the
-   single highest-leverage change for view counts since same-IP
-   fingerprinting across 5 accounts is the dominant suppression
-   signal.
+1. **Residential proxy per variation** — IMPLEMENTED. `proxy_url`
+   column on `artist_accounts`, threaded through every
+   `httpx.AsyncClient` in posting adapters + OAuth refresh + view
+   poller. Per-variation UI on the campaign dashboard. Provider choice
+   still up to operator (Smartproxy / IPRoyal etc.). Sticky session per
+   account is the operational requirement.
 2. **Persist OAuth granted scopes** on the variation row reliably so
    we can flag missing-scope tokens up-front instead of silently
    returning 0 views.
 3. **TLS fingerprint hardening (curl-cffi)** — speculative, only
    needed if TikTok escalates beyond IP-based blocking.
+4. **YouTube Data API quota raise** — default 10k/day works while the
+   batched poll keeps daily usage <300, but a multi-artist deploy will
+   hit the wall. The quota-exhausted backoff prevents log spam, but
+   the cure is a quota increase request via Google Cloud Console.
 
 ---
 
@@ -404,6 +456,25 @@ recovery (top of `dispatch_due_once`). No action needed.
 - UI: click the chip on the dashboard (clickable for ALL paused
   reasons as of recent fix).
 - DB: `UPDATE artists SET paused_reason=NULL WHERE id=X;`
+
+### Variation stuck in `no_clips`
+The variation has no per-variation Drive folder AND the shared pool is
+empty. Two ways out:
+- Set the variation's Drive folder URL on the dashboard and click Sync.
+- Or upload an MP4 directly via the per-variation Upload button.
+The planner clears the pause within one tick once a postable clip
+appears (via `maybe_resume_on_new_clip` → `evaluate_variation_pause`).
+
+### YouTube view polling silently stalled
+Check the process-level backoff:
+```bash
+journalctl -u icreateflow-backend | grep "quota exhausted; pausing YouTube"
+```
+The flag lives in process memory and clears at the next midnight US/Pacific
+or on a backend restart. To force-clear before reset:
+```bash
+sudo systemctl restart icreateflow-backend
+```
 
 ### False bulk deletions (e.g. Meta returned 0 spuriously)
 ```sql
@@ -570,11 +641,40 @@ alongside the existing `clip_scheduler.start_background_tasks()`.
   exactly `interval` old at the next tick and get excluded by the
   strict `<` comparison — effective cadence becomes 2× configured.
   Fixed at 30s buffer.
-- **Catch-up logic on resume can fire a clip you didn't expect.**
-  When you wipe today's queue and then unpause (or auto-resume on a
-  new clip upload), the planner sees today's slots as "missed" and
-  inserts a `now+30s` row. Default catch-up to OFF;
-  `catchup_enabled='1'` opt-in only.
+- **Auto-catchup on resume was removed.** Earlier we had a
+  `catchup_enabled` toggle that inserted a `now+30s` row when the
+  planner saw today's slots as "missed". It surprised users on every
+  resume (manual unpause OR fresh-clip auto-resume). Replaced by the
+  explicit dashboard "Catch up missed slots" button — opt-in per click,
+  not a global toggle.
+- **Per-variation pause must be evaluated EVERY planner tick, not just
+  after a post.** `evaluate_pause` used to run only post-success and
+  post-poll. Once a campaign was exhausted (no posts firing), nothing
+  triggered the pause flip — the dashboard sat on "Running" forever.
+  Now hoisted to the top of `plan_slots_once` per artist.
+- **`directory_exhausted` uses the GLOBAL post log, not per-variation.**
+  `_has_unposted_clip_for_variation` previously asked "has THIS
+  variation posted this clip?" — which kept Vibesofmoon "running"
+  even when every clip had been posted by SOME variation. The user-
+  facing notion of "directory used up" is global across the campaign.
+- **A variation with no in-scope clips needs an explicit `no_clips`
+  pause.** Previously it just sat silently as "Running" while never
+  posting. Now flagged with an amber chip; rolls up to artist-level
+  `directory_exhausted` alongside actually-exhausted variations.
+- **Per-user toggles must NOT fall back to site_config.** The old
+  `_user_or_site_setting` helper let admin-set site_config rows
+  silently override unset user toggles. Renamed to `_user_setting`,
+  user_settings only, hard-coded default if unset.
+- **Dashboard "Posts today" must use the artist's timezone.** Computing
+  `today` as `datetime.now(timezone.utc).date()` made yesterday's late
+  posts in US/Eastern show up as "today" until UTC midnight rolled
+  over. Use `ZoneInfo(artist.timezone)`.
+- **YouTube quota errors must be suppressed at the source, not by
+  log-volume gating.** Once the daily 10k Data API quota is gone, the
+  view poller hits 403 on every queued YT row. Solution: a dedicated
+  `YouTubeQuotaExhausted` exception + process-level
+  `_yt_quota_exhausted_until` set to next midnight US/Pacific. Skips
+  ALL YouTube polling until reset; logs ONCE per quota event.
 - **Meta APIs sometimes return 0 for working posts.** Never wipe a
   view_count on drop-to-zero — keep the previous higher value. Real
   deletions are caught via the existence probe (`?fields=id`) before
