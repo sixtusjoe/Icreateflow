@@ -1089,6 +1089,12 @@ function VariationExtras({
           </button>
         </div>
       )}
+      {v.paused_reason === "no_clips" && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          No clips assigned to this variation and the shared pool is empty.
+          Sync a Drive folder above (or upload an MP4) to give it something to post.
+        </div>
+      )}
 
       <div>
         <label className="mb-1 block text-[11px] font-medium text-muted-foreground">

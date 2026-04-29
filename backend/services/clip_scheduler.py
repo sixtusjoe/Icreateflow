@@ -50,6 +50,7 @@ ADAPTERS = {
 
 PAUSE_TARGET_REACHED = "target_reached"
 PAUSE_DIRECTORY_EXHAUSTED = "directory_exhausted"
+PAUSE_NO_CLIPS = "no_clips"
 PAUSE_MANUAL = "manual"
 
 
@@ -137,16 +138,13 @@ async def _fresh_variation_token(database, variation: dict, platform: str) -> st
     return new_token
 
 
-async def _user_or_site_setting(database, user_id: int | None, key: str, default: str = "1") -> str:
-    """Resolve a clipping toggle. Reads `key` from the artist owner's
-    user_settings first; falls back to site_config; finally `default`.
+async def _user_setting(database, user_id: int | None, key: str, default: str = "1") -> str:
+    """Resolve a per-user clipping toggle from user_settings only.
 
-    The three clipping toggles (clip_diversification_enabled,
-    clip_caption_variants_enabled, catchup_enabled) used to live in
-    site_config (admin-only). They moved to per-user settings so each user
-    can configure their own posting behaviour. Old site_config values are
-    still honoured as a fallback so existing installs keep working without
-    a migration step.
+    No site_config fallback by design — each user controls their own
+    posting behaviour, and an admin-set site_config row should NOT
+    silently override an unset user toggle. If the user has no row,
+    return the hard-coded `default`.
     """
     if user_id:
         try:
@@ -156,13 +154,6 @@ async def _user_or_site_setting(database, user_id: int | None, key: str, default
                 return v
         except Exception:
             pass
-    try:
-        cfg = await db.get_site_config(database)
-        v = cfg.get(key) if cfg else None
-        if v is not None and v != "":
-            return v
-    except Exception:
-        pass
     return default
 
 
@@ -234,7 +225,12 @@ async def _artist_views_total(database, artist_id: int) -> int:
 async def _has_unposted_clip_for_variation(
     database, artist_id: int, artist_account_id: int
 ) -> bool:
-    """True if this variation has any in-scope clip without a successful post."""
+    """True if this variation has any in-scope clip that has never been
+    posted by ANY variation. "Posted" is global — once a clip has fired
+    once on the campaign, it counts toward "directory used up." That
+    matches the user-facing notion: when every video in the directory
+    has gone out at least once, the campaign is done.
+    """
     cur = await database.execute(
         """
         SELECT 1 FROM clips c
@@ -243,12 +239,12 @@ async def _has_unposted_clip_for_variation(
           AND NOT EXISTS (
             SELECT 1 FROM clip_posts cp
             WHERE cp.clip_id = c.id
-              AND cp.artist_account_id = ?
               AND cp.status = 'posted'
+              AND cp.deleted_at IS NULL
           )
         LIMIT 1
         """,
-        (artist_id, artist_account_id, artist_account_id),
+        (artist_id, artist_account_id),
     )
     return bool(await cur.fetchone())
 
@@ -276,24 +272,30 @@ async def _any_clip(database, artist_id: int) -> bool:
 
 
 async def evaluate_variation_pause(database, variation: dict) -> None:
-    """Set/clear `artist_accounts.paused_reason='directory_exhausted'`.
+    """Set/clear the variation's `paused_reason`.
 
-    Variation is exhausted when it has any clip in scope (its own folder OR
-    the shared pool) but every one of those has been posted at least once
-    by THIS variation. Clears the pause when a fresh unposted clip appears."""
+    Three auto states:
+      - directory_exhausted: variation has clips in scope and every one
+        has already been posted (globally). Pool is used up.
+      - no_clips: variation has nothing in scope (no per-variation folder,
+        no shared-pool clips). Without this, an empty variation sat
+        silently as "Running" while never posting.
+      - None: a postable clip exists.
+
+    Never overwrites a manual pause."""
     var_id = variation["id"]
     artist_id = variation["artist_id"]
-    has_any = await _any_clip_for_variation(database, artist_id, var_id)
-    has_unposted = await _has_unposted_clip_for_variation(database, artist_id, var_id)
     current = (variation.get("paused_reason") or None)
-    if has_any and not has_unposted:
-        if current != PAUSE_DIRECTORY_EXHAUSTED:
-            await db.update_artist_account(
-                database, var_id, paused_reason=PAUSE_DIRECTORY_EXHAUSTED
-            )
+    if current == PAUSE_MANUAL:
+        return
+    has_any = await _any_clip_for_variation(database, artist_id, var_id)
+    if not has_any:
+        target = PAUSE_NO_CLIPS
     else:
-        if current == PAUSE_DIRECTORY_EXHAUSTED:
-            await db.update_artist_account(database, var_id, paused_reason=None)
+        has_unposted = await _has_unposted_clip_for_variation(database, artist_id, var_id)
+        target = None if has_unposted else PAUSE_DIRECTORY_EXHAUSTED
+    if current != target:
+        await db.update_artist_account(database, var_id, paused_reason=target)
 
 
 async def evaluate_pause(database, artist: dict) -> None:
@@ -332,10 +334,14 @@ async def evaluate_pause(database, artist: dict) -> None:
         await evaluate_variation_pause(database, dict(v))
     # Re-fetch (paused_reason was just mutated).
     variations = [dict(v) for v in await db.get_artist_accounts(database, aid)]
-    all_exhausted = all(
-        v.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED for v in variations
-    )
-    if all_exhausted and await _any_clip(database, aid):
+    # Roll up to artist-level pause when no variation can post anything:
+    # every variation is either out of new clips (directory_exhausted) or
+    # has no clips at all (no_clips). The artist-level reason is
+    # directory_exhausted so the existing dashboard chip / resume flow
+    # keeps working uniformly.
+    blocking_reasons = {PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS}
+    all_blocked = all(v.get("paused_reason") in blocking_reasons for v in variations)
+    if all_blocked and await _any_clip(database, aid):
         if artist.get("paused_reason") != PAUSE_DIRECTORY_EXHAUSTED:
             await db.update_artist(database, aid, paused_reason=PAUSE_DIRECTORY_EXHAUSTED)
     elif artist.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
@@ -397,7 +403,9 @@ async def catchup_today_once(database, artist_id: int) -> int:
     inserted = 0
     for var in variations:
         var_d = dict(var)
-        if var_d.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+        if var_d.get("paused_reason") in (
+            PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS, PAUSE_MANUAL,
+        ):
             continue
         clip = await _pick_next_clip(database, artist_id, var_d["id"])
         if not clip:
@@ -509,7 +517,9 @@ async def plan_slots_once() -> None:
                     any_planned = False
                     for var in variations:
                         var_d = dict(var)
-                        if var_d.get("paused_reason") == PAUSE_DIRECTORY_EXHAUSTED:
+                        if var_d.get("paused_reason") in (
+                            PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS, PAUSE_MANUAL,
+                        ):
                             continue
                         clip = await _pick_next_clip(database, artist["id"], var_d["id"])
                         if not clip:
@@ -646,11 +656,11 @@ async def dispatch_due_once() -> None:
                 #   3. Diversification OFF + local source: leave as-is.
                 cfg = await db.get_site_config(database)
                 public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
-                # Per-user toggle (artist owner's user_settings) with
-                # site_config fallback. Default on.
+                # Per-user toggle (artist owner's user_settings only, no
+                # site_config fallback). Default on if the user has no row.
                 _artist_for_toggle = await db.get_artist(database, cp["artist_id"]) if cp.get("artist_id") else None
                 _owner_id = dict(_artist_for_toggle).get("user_id") if _artist_for_toggle else None
-                _div_raw = await _user_or_site_setting(database, _owner_id, "clip_diversification_enabled", "1")
+                _div_raw = await _user_setting(database, _owner_id, "clip_diversification_enabled", "1")
                 diversify_on = _toggle_on(_div_raw)
                 if diversify_on and public_base:
                     try:
@@ -737,11 +747,12 @@ async def dispatch_due_once() -> None:
                     kwargs["privacy_level"] = (cfg_tt.get("tiktok_privacy_level") or "SELF_ONLY").upper()
 
                 # Phase 2: per-(clip, variation, platform) caption paraphrase.
-                # Kill switch: site-config `clip_caption_variants_enabled`
-                # (default on). Falls back to the raw base caption if
-                # disabled, if no API key is configured, or on any error.
+                # Per-user toggle: user_settings.clip_caption_variants_enabled
+                # (default on, no site_config fallback). Falls back to the
+                # raw base caption if disabled, if no API key is configured,
+                # or on any error.
                 base_caption = dict(clip).get("caption") or ""
-                _cap_raw = await _user_or_site_setting(database, _owner_id, "clip_caption_variants_enabled", "1")
+                _cap_raw = await _user_setting(database, _owner_id, "clip_caption_variants_enabled", "1")
                 caption_on = _toggle_on(_cap_raw)
                 caption_to_post = base_caption
                 if caption_on and base_caption:
@@ -849,6 +860,23 @@ async def get_view_poll_interval(database) -> int:
         return DEFAULT_VIEW_POLL_INTERVAL_SECONDS
 
 
+# Process-level backoff for YouTube Data API quota exhaustion. When the
+# poller sees a 403 quotaExceeded, it sets this to "next midnight Pacific"
+# and skips ALL YouTube rows (batch + per-row fallback) until then. Without
+# this, a single quota event spams the error log with one 403 per queued
+# YouTube clip every poll cycle (we saw 500+ identical entries in prod).
+_yt_quota_exhausted_until: datetime | None = None
+
+
+def _next_midnight_pacific() -> datetime:
+    """Google's Data API daily quota resets at midnight US/Pacific."""
+    pacific = ZoneInfo("US/Pacific")
+    now_p = datetime.now(pacific)
+    tomorrow = (now_p + timedelta(days=1)).date()
+    midnight = datetime.combine(tomorrow, dtime(0, 0), tzinfo=pacific)
+    return midnight.astimezone(timezone.utc)
+
+
 async def poll_views_once() -> None:
     """Refresh view counts for posted rows older than VIEW_POLL_INTERVAL_SECONDS,
     then re-check pause."""
@@ -883,60 +911,120 @@ async def poll_views_once() -> None:
         # well under 300. Group by access_token (variations have distinct
         # tokens) and stash results for the inner loop to read instead of
         # making its own per-row API call.
+        global _yt_quota_exhausted_until
         yt_views: dict[str, int] = {}  # platform_post_id -> views (from batch)
         yt_attempted: set[str] = set()  # IDs we asked for; missing => deleted
+        # Determined per cycle: when the daily quota is gone we skip YT
+        # rows entirely in the inner loop (no batch, no fallback, no logs).
+        yt_quota_blocked = (
+            _yt_quota_exhausted_until is not None
+            and datetime.now(timezone.utc) < _yt_quota_exhausted_until
+        )
+        if yt_quota_blocked:
+            # Stamp every YouTube row's view_count_updated_at so the 30s
+            # cooldown filter pushes them past the LIMIT 100 — keeps the
+            # poller working on TikTok/IG/FB rows instead of spinning on
+            # ones we can't refresh anyway.
+            now = datetime.now(timezone.utc)
+            for cp in rows:
+                if cp["platform"] == "youtube":
+                    try:
+                        await db.update_clip_post(
+                            database, cp["id"], view_count_updated_at=now,
+                        )
+                    except Exception:
+                        pass
         try:
-            from services.posting.youtube import get_view_counts_batch
-            yt_groups: dict[str, list[str]] = {}  # access_token -> [video_id...]
-            for cp in rows:
-                if cp["platform"] != "youtube":
-                    continue
-                pid = cp.get("platform_post_id")
-                if not pid:
-                    continue
-                v = await db.get_artist_account(database, cp["artist_account_id"])
-                if not v:
-                    continue
-                tok = await _fresh_variation_token(database, v, "youtube")
-                if not tok:
-                    continue
-                yt_groups.setdefault(tok, []).append(pid)
-                yt_attempted.add(pid)
-            # Capture proxy per token so the batched call goes through the
-            # same residential IP as that variation's posts.
-            yt_proxy_for_token: dict[str, str | None] = {}
-            for cp in rows:
-                if cp["platform"] != "youtube":
-                    continue
-                v = await db.get_artist_account(database, cp["artist_account_id"])
-                if not v:
-                    continue
-                tok = await _fresh_variation_token(database, dict(v), "youtube")
-                if tok and tok in yt_groups:
-                    yt_proxy_for_token.setdefault(tok, dict(v).get("proxy_url") or None)
-            for tok, ids in yt_groups.items():
-                try:
-                    yt_views.update(await get_view_counts_batch(
-                        tok, ids, proxy_url=yt_proxy_for_token.get(tok),
-                    ))
-                except Exception as be:
-                    # On batch failure, leave yt_attempted populated but
-                    # yt_views empty for these IDs — the inner loop will
-                    # fall back to per-row `adapter.get_view_count`.
-                    await db.log_error(
-                        database, source="posting.youtube.views_batch",
-                        message=str(be), traceback=traceback.format_exc(),
-                    )
-                    for pid in ids:
-                        yt_attempted.discard(pid)
+            if not yt_quota_blocked:
+                from services.posting.youtube import get_view_counts_batch
+                from services.posting import YouTubeQuotaExhausted
+                yt_groups: dict[str, list[str]] = {}  # access_token -> [video_id...]
+                for cp in rows:
+                    if cp["platform"] != "youtube":
+                        continue
+                    pid = cp.get("platform_post_id")
+                    if not pid:
+                        continue
+                    v = await db.get_artist_account(database, cp["artist_account_id"])
+                    if not v:
+                        continue
+                    tok = await _fresh_variation_token(database, v, "youtube")
+                    if not tok:
+                        continue
+                    yt_groups.setdefault(tok, []).append(pid)
+                    yt_attempted.add(pid)
+                # Capture proxy per token so the batched call goes through the
+                # same residential IP as that variation's posts.
+                yt_proxy_for_token: dict[str, str | None] = {}
+                for cp in rows:
+                    if cp["platform"] != "youtube":
+                        continue
+                    v = await db.get_artist_account(database, cp["artist_account_id"])
+                    if not v:
+                        continue
+                    tok = await _fresh_variation_token(database, dict(v), "youtube")
+                    if tok and tok in yt_groups:
+                        yt_proxy_for_token.setdefault(tok, dict(v).get("proxy_url") or None)
+                for tok, ids in yt_groups.items():
+                    try:
+                        yt_views.update(await get_view_counts_batch(
+                            tok, ids, proxy_url=yt_proxy_for_token.get(tok),
+                        ))
+                    except YouTubeQuotaExhausted as qe:
+                        # Daily Data API quota gone. Set the process-level
+                        # backoff to next midnight Pacific (Google's reset)
+                        # and treat ALL YouTube rows this cycle as blocked.
+                        _yt_quota_exhausted_until = _next_midnight_pacific()
+                        yt_quota_blocked = True
+                        await db.log_error(
+                            database, source="posting.youtube.views_batch",
+                            message=(
+                                f"YouTube Data API quota exhausted; pausing "
+                                f"YouTube view polling until "
+                                f"{_yt_quota_exhausted_until.isoformat()}. "
+                                f"Original error: {qe}"
+                            ),
+                        )
+                        # Stamp updated_at on the YT rows so they fall out
+                        # of the 30s-cooldown window and we don't reselect
+                        # them every minute.
+                        now = datetime.now(timezone.utc)
+                        for cp in rows:
+                            if cp["platform"] == "youtube":
+                                try:
+                                    await db.update_clip_post(
+                                        database, cp["id"], view_count_updated_at=now,
+                                    )
+                                except Exception:
+                                    pass
+                        yt_attempted.clear()
+                        yt_views.clear()
+                        break
+                    except Exception as be:
+                        # Non-quota batch failure (network blip, transient
+                        # 5xx): clear attempted set for these IDs so the
+                        # inner loop doesn't mis-treat them as deleted, and
+                        # let it fall back to per-row.
+                        await db.log_error(
+                            database, source="posting.youtube.views_batch",
+                            message=str(be), traceback=traceback.format_exc(),
+                        )
+                        for pid in ids:
+                            yt_attempted.discard(pid)
         except Exception:
-            # Pre-batch failed entirely; leave caches empty and let the
-            # inner loop run as before.
+            # Pre-batch setup failed entirely; leave caches empty and let
+            # the inner loop run as before (per-row fallback).
             yt_attempted.clear()
             yt_views.clear()
 
         for cp in rows:
             try:
+                # Quota-blocked YouTube rows: skip entirely. The pre-batch
+                # block above already stamped view_count_updated_at, so
+                # they'll fall outside the 30s cooldown filter on the next
+                # selection.
+                if yt_quota_blocked and cp["platform"] == "youtube":
+                    continue
                 variation = await db.get_artist_account(database, cp["artist_account_id"])
                 if not variation:
                     continue
