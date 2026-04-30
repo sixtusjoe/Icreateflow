@@ -561,7 +561,7 @@ function OAuthTab({ oauth, onReload }: any) {
           </button>
         </div>
       </div>
-      {["tiktok", "youtube", "meta", "instagram"].map((p) => <OAuthCard key={p} platform={p} data={oauth[p]} redirectBase={redirectBase} tiktokPrivacy={oauth.tiktok_privacy_level} onReload={onReload} />)}
+      {["tiktok", "youtube", "meta", "instagram"].map((p) => <OAuthCard key={p} platform={p} data={oauth[p]} redirectBase={redirectBase} onReload={onReload} />)}
       <GoogleDriveCard data={oauth.google_drive} onReload={onReload} />
     </div>
   );
@@ -597,17 +597,14 @@ function GoogleDriveCard({ data, onReload }: any) {
   );
 }
 
-function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: any) {
+function OAuthCard({ platform, data, redirectBase, onReload }: any) {
   const [clientId, setClientId] = useState(data?.client_id || "");
   const [clientSecret, setClientSecret] = useState("");
-  const [privacy, setPrivacy] = useState(tiktokPrivacy || "SELF_ONLY");
   useEffect(() => { setClientId(data?.client_id || ""); }, [data]);
-  useEffect(() => { if (tiktokPrivacy) setPrivacy(tiktokPrivacy); }, [tiktokPrivacy]);
 
   const save = async () => {
     const payload: any = { client_id: clientId };
     if (clientSecret) payload.client_secret = clientSecret;
-    if (platform === "tiktok") payload.tiktok_privacy_level = privacy;
     try { await updateOAuthApp(platform, payload); toast.success(`${platform} saved`); setClientSecret(""); onReload(); }
     catch { toast.error("Failed"); }
   };
@@ -658,20 +655,11 @@ function OAuthCard({ platform, data, redirectBase, tiktokPrivacy, onReload }: an
         <label className="mb-1 block text-xs text-muted-foreground">Redirect URI (paste this into the {platform} developer console)</label>
         <code className="block break-all rounded-lg border border-border bg-background px-3 py-2 text-xs">{callback}</code>
       </div>
-      {platform === "tiktok" && (
-        <div className="mt-3">
-          <label className="mb-1 block text-xs text-muted-foreground">
-            Default privacy level — unaudited apps must use SELF_ONLY. Switch to PUBLIC_TO_EVERYONE after TikTok approves your app.
-          </label>
-          <select value={privacy} onChange={(e) => setPrivacy(e.target.value)}
-            className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 text-base sm:text-sm">
-            <option value="SELF_ONLY">SELF_ONLY (private — required while unaudited)</option>
-            <option value="MUTUAL_FOLLOW_FRIENDS">MUTUAL_FOLLOW_FRIENDS</option>
-            <option value="FOLLOWER_OF_CREATOR">FOLLOWER_OF_CREATOR</option>
-            <option value="PUBLIC_TO_EVERYONE">PUBLIC_TO_EVERYONE (requires audited app)</option>
-          </select>
-        </div>
-      )}
+      {/* TikTok privacy used to live here as a global default. TikTok's
+          UX rules require the user to manually pick privacy on every
+          flow with no default value, so the setting moved per-(post,
+          variation) on the Brand Generate tab and per-variation on the
+          Clipping dashboard. The admin tile is intentionally gone. */}
       <div className="mt-3 flex flex-wrap gap-2">
         <button onClick={save} className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 text-sm font-medium text-background">
           <Save className="h-4 w-4" /> Save {platform}

@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -840,11 +840,14 @@ async def admin_update_oauth_app(
                 await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id)
             if data.client_secret is not None:
                 await db.set_site_config(database, f"oauth_{platform}_client_secret", data.client_secret)
-            if platform == "tiktok" and data.tiktok_privacy_level is not None:
-                lvl = data.tiktok_privacy_level.upper()
-                if lvl not in {"SELF_ONLY", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "PUBLIC_TO_EVERYONE"}:
-                    raise HTTPException(400, "Invalid tiktok_privacy_level")
-                await db.set_site_config(database, "tiktok_privacy_level", lvl)
+            # Note: tiktok_privacy_level used to live in site_config as a
+            # global default. Per TikTok's UX rules ("Users must manually
+            # select the privacy status from a dropdown and there should
+            # be no default value"), there can't be a global default —
+            # privacy is now picked per-(post, variation) on the Brand
+            # Generate tab and per-variation on the Clipping dashboard.
+            # The old site_config row is left in place for back-compat
+            # but is no longer read; admins can ignore it.
         return {"ok": True}
     finally:
         await database.close()
@@ -927,6 +930,143 @@ async def _verify_artist_ownership(artist_id: int, user: dict) -> dict:
         return dict(artist)
     finally:
         await database.close()
+
+
+# --- TikTok creator_info passthrough ---
+#
+# TikTok requires the post-to-TikTok UI to query creator_info on render so
+# the privacy dropdown options, interaction defaults, and creator-blocked
+# state are fresh. This endpoint refreshes the access token for the row
+# (Brand `accounts` or Clipping `artist_accounts`), calls the adapter's
+# get_creator_info, and caches the result for 5 minutes per row to keep
+# fiddly UI re-renders from blowing the rate limit.
+
+_TIKTOK_CREATOR_INFO_CACHE: dict[tuple[str, int], tuple[datetime, dict]] = {}
+_TIKTOK_CREATOR_INFO_TTL_SECONDS = 300
+
+
+async def _refresh_tiktok_token_for_row(
+    database, row: dict, kind: str, cfg: dict,
+) -> Optional[str]:
+    """Refresh `tiktok_token` on an accounts or artist_accounts row when
+    near expiry. Returns the (possibly refreshed) access token, or None
+    when no token / no refresh capability.
+
+    Mirrors the in-closure refresher in `post_now` and the
+    `_fresh_variation_token` in clip_scheduler — kept here so the
+    creator-info endpoint can serve both pipelines without circular
+    imports.
+    """
+    token_local = row.get("tiktok_token")
+    if not token_local:
+        return None
+    exp = row.get("tiktok_expires_at")
+    refresh = row.get("tiktok_refresh_token")
+    needs_refresh = False
+    if exp:
+        try:
+            exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if exp_dt <= datetime.now(timezone.utc) + timedelta(minutes=2):
+                needs_refresh = True
+        except Exception:
+            pass
+    if not needs_refresh or not refresh:
+        return token_local
+    cid = cfg.get("oauth_tiktok_client_id", "")
+    csec = cfg.get("oauth_tiktok_client_secret", "")
+    if not cid or not csec:
+        return token_local
+    try:
+        refreshed = await oauth_svc.refresh_access_token("tiktok", refresh, cid, csec)
+    except Exception:
+        return token_local
+    new_token = refreshed.get("access_token")
+    if not new_token:
+        return token_local
+    updates: dict = {"tiktok_token": new_token}
+    if refreshed.get("refresh_token"):
+        updates["tiktok_refresh_token"] = refreshed["refresh_token"]
+    if refreshed.get("expires_in"):
+        new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(refreshed["expires_in"]))
+        updates["tiktok_expires_at"] = new_exp.isoformat()
+    try:
+        if kind == "variation":
+            await db.update_artist_account(database, row["id"], **updates)
+        else:
+            await db.update_account(database, row["id"], **updates)
+    except Exception:
+        pass
+    return new_token
+
+
+@app.get("/api/oauth/tiktok/creator-info")
+async def tiktok_creator_info(
+    account_id: int,
+    kind: str = "variation",
+    user: dict = Depends(get_current_user),
+):
+    """Fetch TikTok creator_info for either a Brand account or a Clipping
+    variation. Required by TikTok's UX rules — the post-to-TikTok page
+    MUST call this on render to populate the privacy dropdown options,
+    surface the creator's nickname, and detect creator-blocked state.
+
+    Cached for 5 minutes per row. The UI invalidates by passing
+    `?refresh=1` (TODO if needed); current callers tolerate the TTL.
+    """
+    if kind not in ("variation", "brand_account"):
+        raise HTTPException(400, "kind must be 'variation' or 'brand_account'")
+
+    cache_key = (kind, account_id)
+    cached = _TIKTOK_CREATOR_INFO_CACHE.get(cache_key)
+    now = datetime.now(timezone.utc)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    database = await db.get_db()
+    try:
+        if kind == "variation":
+            row = await db.get_artist_account(database, account_id)
+            if not row:
+                raise HTTPException(404, "Variation not found")
+            await _verify_artist_ownership(row["artist_id"], user)
+            row_d = dict(row)
+            proxy_url = row_d.get("proxy_url") or None
+        else:
+            row = await db.get_account(database, account_id)
+            if not row:
+                raise HTTPException(404, "Account not found")
+            row_d = dict(row)
+            # Brand account ownership: the brand's owning user must match.
+            brand = await db.get_brand(database, row_d.get("brand_id"))
+            if not brand:
+                raise HTTPException(404, "Brand not found")
+            if user.get("role") != "admin" and brand.get("user_id") != user["id"]:
+                raise HTTPException(403, "Access denied")
+            proxy_url = None
+
+        cfg = await db.get_site_config(database)
+        token = await _refresh_tiktok_token_for_row(database, row_d, kind, cfg)
+        if not token:
+            raise HTTPException(409, "TikTok is not connected on this account")
+
+        from services.posting.tiktok import get_creator_info as _get_creator_info
+        from services.posting import TikTokCreatorBlocked as _TikTokCreatorBlocked
+        try:
+            data = await _get_creator_info(token, proxy_url=proxy_url)
+        except _TikTokCreatorBlocked as e:
+            # 423 Locked is a closer fit than 4xx-Bad-Request for "the
+            # creator can't post right now". The UI renders a clear
+            # try-again-later block.
+            return JSONResponse(
+                status_code=423,
+                content={"detail": str(e), "creator_blocked": True},
+            )
+    finally:
+        await database.close()
+
+    expires = now + timedelta(seconds=_TIKTOK_CREATOR_INFO_TTL_SECONDS)
+    _TIKTOK_CREATOR_INFO_CACHE[cache_key] = (expires, data)
+    return data
 
 
 @app.get("/api/oauth/{platform}/start")
