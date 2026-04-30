@@ -31,6 +31,7 @@ from typing import Any, Iterable, Optional, Sequence
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    DateTime,
     Double,
     ForeignKey,
     Integer,
@@ -247,6 +248,19 @@ class Output(Base):
     youtube_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
     instagram_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
     facebook_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # TikTok Direct Post per-(post, variation) settings — see
+    # _migrate_per_variation_columns. All booleans default false; the
+    # privacy_level column has no default by TikTok rule (user must pick).
+    tiktok_post_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_disclosure_enabled: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_disclose_your_brand: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_disclose_branded_content: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_allow_comment: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_allow_duet: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_allow_stitch: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_privacy_level: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tiktok_consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    posted_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
 
 
 class Setting(Base):
@@ -373,6 +387,18 @@ class ArtistAccount(Base):
     gdrive_folder_id:        Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     proxy_url:               Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paused_reason:           Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # TikTok Direct Post per-variation settings — see
+    # _migrate_per_variation_columns. The dispatcher reads these and
+    # converts allow_* → disable_* at adapter call time.
+    tiktok_post_as_draft:            Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_disclosure_enabled:       Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_disclose_your_brand:      Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_disclose_branded_content: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_allow_comment:            Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_allow_duet:               Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_allow_stitch:             Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_privacy_level:            Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tiktok_consent_at:               Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Clip(Base):
@@ -885,6 +911,43 @@ async def _migrate_per_variation_columns(conn) -> None:
         "    SELECT 1 FROM artist_accounts WHERE artist_id = clips.artist_id"
         "  )"
     ))
+
+    # TikTok Direct Post API per-(post,variation) settings on `outputs`
+    # (Brand pipeline) and per-variation on `artist_accounts` (Clipping
+    # pipeline). All NULL / FALSE by default — TikTok requires the user
+    # to actively pick privacy and disclosure on every flow, so no
+    # column has a meaningful default.
+    _tt_bool_cols = (
+        "tiktok_post_as_draft",
+        "tiktok_disclosure_enabled",
+        "tiktok_disclose_your_brand",
+        "tiktok_disclose_branded_content",
+        "tiktok_allow_comment",
+        "tiktok_allow_duet",
+        "tiktok_allow_stitch",
+    )
+    for col in _tt_bool_cols:
+        await conn.execute(text(
+            f"ALTER TABLE outputs ADD COLUMN IF NOT EXISTS {col} BOOLEAN DEFAULT FALSE"
+        ))
+        await conn.execute(text(
+            f"ALTER TABLE artist_accounts ADD COLUMN IF NOT EXISTS {col} BOOLEAN DEFAULT FALSE"
+        ))
+    for tbl in ("outputs", "artist_accounts"):
+        await conn.execute(text(
+            f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS tiktok_privacy_level TEXT"
+        ))
+        await conn.execute(text(
+            f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS tiktok_consent_at TIMESTAMP"
+        ))
+
+    # Posted-as-draft flag on the per-row history. View poller skips
+    # drafts (no public stats until the user publishes from their inbox)
+    # and the dashboard renders a "draft" pill.
+    for tbl in ("clip_posts", "outputs"):
+        await conn.execute(text(
+            f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS posted_as_draft BOOLEAN DEFAULT FALSE"
+        ))
 
 
 async def _migrate_user_status_pending(conn) -> None:

@@ -4,10 +4,65 @@ from __future__ import annotations
 import asyncio
 import httpx
 
-from . import PostingError, PostDeletedError
+from . import PostingError, PostDeletedError, TikTokCreatorBlocked
 
 
 API_BASE = "https://open.tiktokapis.com/v2"
+
+
+async def get_creator_info(
+    access_token: str, proxy_url: str | None = None,
+) -> dict:
+    """Fetch creator state for the post-to-TikTok UI.
+
+    Required by TikTok's UX rules: the post-to-TikTok page MUST query this
+    when it renders, display the creator's nickname so the user knows which
+    account they're posting to, and block submission when the creator can't
+    post right now (rate-limit / cooldown / account in violation).
+
+    Returns the `data` block from `/v2/post/publish/creator_info/query/`:
+        creator_avatar_url, creator_username, creator_nickname,
+        privacy_level_options, comment_disabled, duet_disabled,
+        stitch_disabled, max_video_post_duration_sec.
+
+    Raises:
+        TikTokCreatorBlocked when TikTok signals the creator can't post
+            (HTTP 4xx with a recognised "creator_*" or "spam_risk_*" code).
+        PostingError on any other failure.
+    """
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+        r = await client.post(
+            f"{API_BASE}/post/publish/creator_info/query/",
+            json={},
+            headers=headers,
+        )
+        body = r.text or ""
+        if r.status_code >= 400:
+            # TikTok surfaces creator-side blocks as 4xx with codes like
+            # "creator_in_audit", "spam_risk_user_banned",
+            # "user_blocked_from_post", "creator_in_post_cooldown". Treat
+            # the whole 4xx-with-code family as a blocked-creator signal.
+            blocked_markers = (
+                "creator_in_audit", "creator_in_post_cooldown",
+                "user_blocked_from_post", "spam_risk", "creator_blocked",
+            )
+            if any(m in body for m in blocked_markers):
+                raise TikTokCreatorBlocked(
+                    f"TikTok creator cannot post right now: {body[:300]}"
+                )
+            raise PostingError(
+                f"TikTok creator_info failed {r.status_code}: {body[:300]}"
+            )
+        data = (r.json().get("data") or {})
+        # Normalise: TikTok returns an empty options array when the creator
+        # is locked out without a 4xx. Treat that as a block too.
+        if not data.get("privacy_level_options"):
+            raise TikTokCreatorBlocked(
+                f"TikTok creator_info returned no privacy options "
+                f"(creator may be locked from posting): {body[:300]}"
+            )
+        return data
 
 
 async def upload_video(
@@ -143,12 +198,65 @@ async def upload_photo_slideshow(
     `photo_urls` must all be publicly-reachable HTTPS URLs. TikTok will pull
     each image and stitch them into a slideshow post. Stats are queried via
     the same /v2/video/query/ endpoint as videos (slideshows share the ID space).
+
+    Recognised kwargs (mirrors `upload_video`):
+      post_mode: "DIRECT_POST" (default) publishes immediately. "MEDIA_UPLOAD"
+        sends to the user's TikTok inbox as a draft — they edit privacy and
+        compose inside the TikTok app. MEDIA_UPLOAD strips every `post_info`
+        field except the source.
+      disable_comment: bool. Photos cannot be Duet'd or Stitched, so those
+        flags don't apply.
+      brand_content_toggle, brand_organic_toggle: same semantics as video.
+        Branded + SELF_ONLY is rejected pre-call.
     """
     if not photo_urls:
         raise PostingError("TikTok slideshow needs at least one photo URL")
     for u in photo_urls:
         if not u.startswith("http"):
             raise PostingError("TikTok slideshow requires public URLs, not local paths")
+
+    post_mode = (kwargs.get("post_mode") or "DIRECT_POST").upper()
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    if post_mode == "MEDIA_UPLOAD":
+        # Inbox / draft path. The slideshow lands in the creator's TikTok
+        # inbox; they pick caption / privacy / disclosure inside the app.
+        init_body = {
+            "source_info": {
+                "source": "PULL_FROM_URL",
+                "photo_cover_index": 0,
+                "photo_images": photo_urls,
+            },
+            "post_mode": "MEDIA_UPLOAD",
+            "media_type": "PHOTO",
+        }
+        async with httpx.AsyncClient(timeout=60, proxy=proxy_url) as client:
+            r = await client.post(
+                f"{API_BASE}/post/publish/content/init/", json=init_body, headers=headers
+            )
+            if r.status_code >= 400:
+                raise PostingError(
+                    f"TikTok slideshow inbox init failed {r.status_code}: {r.text[:300]}"
+                )
+            data = r.json().get("data") or {}
+            publish_id = data.get("publish_id")
+            if not publish_id:
+                raise PostingError(
+                    f"TikTok slideshow inbox init missing publish_id: {r.text[:200]}"
+                )
+            return {
+                "platform_post_id": publish_id,
+                "permalink": None,
+                "draft": True,
+            }
+
+    brand_content_toggle = bool(kwargs.get("brand_content_toggle"))
+    if brand_content_toggle and privacy_level == "SELF_ONLY":
+        raise PostingError(
+            "TikTok rejects branded content with SELF_ONLY privacy — "
+            "set privacy to PUBLIC_TO_EVERYONE (or any non-private level) "
+            "before posting branded content."
+        )
 
     # TikTok renders both `title` and `description` on slideshows — putting the
     # caption in both duplicates it. Leave title empty; use description only.
@@ -157,8 +265,10 @@ async def upload_photo_slideshow(
             "title": "",
             "description": (caption or "")[:4000],
             "privacy_level": privacy_level,
-            "disable_comment": False,
+            "disable_comment": bool(kwargs.get("disable_comment", False)),
             "auto_add_music": auto_add_music,
+            "brand_content_toggle": brand_content_toggle,
+            "brand_organic_toggle": bool(kwargs.get("brand_organic_toggle", False)),
         },
         "source_info": {
             "source": "PULL_FROM_URL",
@@ -168,7 +278,6 @@ async def upload_photo_slideshow(
         "post_mode": "DIRECT_POST",
         "media_type": "PHOTO",
     }
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=60, proxy=proxy_url) as client:
         r = await client.post(

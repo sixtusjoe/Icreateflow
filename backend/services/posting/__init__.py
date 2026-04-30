@@ -35,3 +35,11 @@ class YouTubeQuotaExhausted(PostingError):
     per-row fallback) until the daily quota resets at midnight Pacific —
     avoiding the 100+ identical 403 entries that flooded the error log.
     """
+
+
+class TikTokCreatorBlocked(PostingError):
+    """Raised when `creator_info/query` reports the creator can't post right
+    now (cooldown, rate-limit, account in violation, etc.). Distinct from
+    PostingError so the UI can render a clear "try again later" message and
+    block the post-to-TikTok flow per TikTok's required UX rule.
+    """
