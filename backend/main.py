@@ -214,6 +214,22 @@ class PostMusic(BaseModel):
     instagram_music_track_id: Optional[int] = None
     facebook_music_track_id: Optional[int] = None
 
+class OutputTikTokSettings(BaseModel):
+    """Per-(post, variation) TikTok Direct Post API settings.
+
+    All fields optional — UI sends a partial PATCH on Save and stamps
+    `tiktok_consent_at` server-side at the same moment (the music-usage
+    acknowledgement). Privacy has no default value (TikTok rule).
+    """
+    tiktok_post_as_draft: Optional[bool] = None
+    tiktok_privacy_level: Optional[str] = None
+    tiktok_disclosure_enabled: Optional[bool] = None
+    tiktok_disclose_your_brand: Optional[bool] = None
+    tiktok_disclose_branded_content: Optional[bool] = None
+    tiktok_allow_comment: Optional[bool] = None
+    tiktok_allow_duet: Optional[bool] = None
+    tiktok_allow_stitch: Optional[bool] = None
+
 class SettingUpdate(BaseModel):
     key: str
     value: str
@@ -2635,6 +2651,72 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 pass
 
         return {"ok": any_success, "results": results}
+    finally:
+        await database.close()
+
+
+@app.patch("/api/outputs/{output_id}/tiktok")
+async def update_output_tiktok(
+    output_id: int,
+    data: OutputTikTokSettings,
+    user: dict = Depends(get_current_user),
+):
+    """Save per-(post, variation) TikTok Direct Post API settings.
+
+    Stamps `tiktok_consent_at = now()` on every save: TikTok requires the
+    Music Usage Confirmation declaration to appear before the publish
+    button, and the user clicking Save here is the moment they "agree to
+    TikTok's Music Usage Confirmation" (and Branded Content Policy when
+    that disclosure option is on).
+    """
+    database = await db.get_db()
+    try:
+        # Load output → post → brand for ownership.
+        from sqlalchemy import select as _select
+        from database import Output as _Output
+        rows = await database.session.execute(
+            _select(_Output).where(_Output.id == output_id)
+        )
+        out_row = rows.scalar_one_or_none()
+        if not out_row:
+            raise HTTPException(404, "Output not found")
+        out_d = {c.name: getattr(out_row, c.name) for c in out_row.__table__.columns}
+        post = await db.get_post(database, out_d["post_id"])
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        updates: dict = {}
+        for field, value in data.model_dump(exclude_unset=True).items():
+            updates[field] = value
+
+        # Validate privacy when set; ignore null (no-default rule).
+        if "tiktok_privacy_level" in updates and updates["tiktok_privacy_level"] is not None:
+            lvl = updates["tiktok_privacy_level"].upper()
+            if lvl not in {"SELF_ONLY", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "PUBLIC_TO_EVERYONE"}:
+                raise HTTPException(400, "Invalid tiktok_privacy_level")
+            updates["tiktok_privacy_level"] = lvl
+
+        # Cross-rule guard: branded content cannot ride with SELF_ONLY.
+        # Read the merged final state (current + incoming) so a partial
+        # PATCH can't sneak past.
+        merged = {**out_d, **updates}
+        if (
+            merged.get("tiktok_disclose_branded_content")
+            and (merged.get("tiktok_privacy_level") or "").upper() == "SELF_ONLY"
+        ):
+            raise HTTPException(
+                400,
+                "TikTok rejects branded content with SELF_ONLY privacy. "
+                "Pick a non-private level or uncheck Branded content.",
+            )
+
+        # Stamp the consent moment. The UI surfaces the music-usage /
+        # branded-content declarations directly above the Save button.
+        updates["tiktok_consent_at"] = datetime.now(timezone.utc)
+
+        await db.update_output(database, output_id, **updates)
+        return {"ok": True}
     finally:
         await database.close()
 
