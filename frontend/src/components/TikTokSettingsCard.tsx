@@ -82,6 +82,7 @@ export function TikTokSettingsCard({
   onSave,
   onValidityChange,
   defaultOpen = false,
+  mediaType = "video",
 }: {
   /** Stable id for the card; used as key in onValidityChange. */
   entityId: number;
@@ -92,6 +93,13 @@ export function TikTokSettingsCard({
   /** Whether the creator_info call queries Brand `accounts` or Clipping
    *  `artist_accounts`. */
   creatorInfoKind: "brand_account" | "variation";
+  /** Per TikTok's required UX: photo posts cannot be Duet'd or Stitched,
+   *  so those toggles must NOT appear at all on photo flows. Brand TikTok
+   *  always posts as a slideshow (photo); Clipping posts videos.
+   *  Defaults to "video" for back-compat with the original Clipping
+   *  callsite.
+   */
+  mediaType?: "video" | "photo";
   /** Initial state from the row (null for unset). */
   initialValues: TikTokSettingsValues;
   /** Save handler — parent decides which endpoint to call. */
@@ -117,6 +125,22 @@ export function TikTokSettingsCard({
   const [allowDuet, setAllowDuet] = useState(!!initialValues.tiktok_allow_duet);
   const [allowStitch, setAllowStitch] = useState(!!initialValues.tiktok_allow_stitch);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(initialValues.tiktok_consent_at || null);
+
+  // Snapshot of values at the last successful Save (or initial mount).
+  // The reported validity is anchored to this snapshot, NOT the live
+  // form state — so Post Now stays disabled until the user clicks Save,
+  // even if the form has typed in valid values. Re-locks on any edit.
+  const [savedSnapshot, setSavedSnapshot] = useState({
+    postAsDraft: !!initialValues.tiktok_post_as_draft,
+    privacy: initialValues.tiktok_privacy_level || "",
+    discloseOn: !!initialValues.tiktok_disclosure_enabled,
+    yourBrand: !!initialValues.tiktok_disclose_your_brand,
+    brandedContent: !!initialValues.tiktok_disclose_branded_content,
+    allowComment: !!initialValues.tiktok_allow_comment,
+    allowDuet: !!initialValues.tiktok_allow_duet,
+    allowStitch: !!initialValues.tiktok_allow_stitch,
+    consentAt: initialValues.tiktok_consent_at || null,
+  });
 
   useEffect(() => {
     if (!open || info || infoLoading || infoError) return;
@@ -144,16 +168,49 @@ export function TikTokSettingsCard({
     }
   }, [discloseOn]);
 
-  const isValid = (() => {
+  // Form-level validity: does the CURRENT in-form state pass TikTok's UX
+  // rules? Used to enable/disable the Save button itself.
+  const formValid = (() => {
     if (postAsDraft) return true;
     if (!privacy) return false;
     if (discloseOn && !yourBrand && !brandedContent) return false;
     if (brandedContent && privacy === "SELF_ONLY") return false;
     return true;
   })();
+
+  // Has the user edited anything since the last successful Save? While
+  // dirty, Post Now stays locked even if the form is "valid" — TikTok
+  // requires consent be captured at the moment of Save (the consent_at
+  // stamp is the music-usage acknowledgement).
+  const dirty = (
+    postAsDraft     !== savedSnapshot.postAsDraft     ||
+    privacy         !== savedSnapshot.privacy         ||
+    discloseOn      !== savedSnapshot.discloseOn      ||
+    yourBrand       !== savedSnapshot.yourBrand       ||
+    brandedContent  !== savedSnapshot.brandedContent  ||
+    allowComment    !== savedSnapshot.allowComment    ||
+    allowDuet       !== savedSnapshot.allowDuet       ||
+    allowStitch     !== savedSnapshot.allowStitch
+  );
+
+  // Persisted-validity: does the LAST SAVED state pass the rules? This
+  // is the value parents (Brand /posts/new) gate Post Now / Save Schedule
+  // on. We treat "saved" as "consent_at set on the snapshot."
+  const persistedValid = (() => {
+    if (!savedSnapshot.consentAt) return false;
+    if (savedSnapshot.postAsDraft) return true;
+    if (!savedSnapshot.privacy) return false;
+    if (savedSnapshot.discloseOn && !savedSnapshot.yourBrand && !savedSnapshot.brandedContent) return false;
+    if (savedSnapshot.brandedContent && savedSnapshot.privacy === "SELF_ONLY") return false;
+    return true;
+  })();
+
+  // What we report up: only valid when the saved row is valid AND the
+  // user hasn't dirtied it since.
+  const reportedValid = persistedValid && !dirty;
   useEffect(() => {
-    onValidityChange(entityId, isValid);
-  }, [isValid, entityId, onValidityChange]);
+    onValidityChange(entityId, reportedValid);
+  }, [reportedValid, entityId, onValidityChange]);
 
   const privacyOptions = (info?.privacy_level_options || []).filter((opt) => {
     if (brandedContent && opt === "SELF_ONLY") return false;
@@ -196,11 +253,27 @@ export function TikTokSettingsCard({
         tiktok_disclose_your_brand: discloseOn ? yourBrand : false,
         tiktok_disclose_branded_content: discloseOn ? brandedContent : false,
         tiktok_allow_comment: allowComment,
-        tiktok_allow_duet: allowDuet,
-        tiktok_allow_stitch: allowStitch,
+        // Photo posts can't be Duet'd or Stitched. Don't send anything
+        // that implies the user opted into them.
+        tiktok_allow_duet:   mediaType === "video" ? allowDuet   : false,
+        tiktok_allow_stitch: mediaType === "video" ? allowStitch : false,
       };
       await onSave(payload);
-      setLastSavedAt(new Date().toISOString());
+      const stampIso = new Date().toISOString();
+      setLastSavedAt(stampIso);
+      // Re-anchor the persisted snapshot so dirty=false and reportedValid
+      // re-evaluates against what's now in the DB. Post Now unlocks here.
+      setSavedSnapshot({
+        postAsDraft,
+        privacy: postAsDraft ? "" : privacy,
+        discloseOn,
+        yourBrand: discloseOn ? yourBrand : false,
+        brandedContent: discloseOn ? brandedContent : false,
+        allowComment,
+        allowDuet:   mediaType === "video" ? allowDuet   : false,
+        allowStitch: mediaType === "video" ? allowStitch : false,
+        consentAt: stampIso,
+      });
       toast.success(`TikTok settings saved for ${entityLabel}`);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -221,9 +294,10 @@ export function TikTokSettingsCard({
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           TikTok posting settings — {entityLabel}
         </span>
-        {!isValid && (
+        {!reportedValid && (
           <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400">
-            <AlertCircle className="h-3 w-3" /> needs setup
+            <AlertCircle className="h-3 w-3" />
+            {dirty ? "unsaved changes" : "needs setup"}
           </span>
         )}
       </button>
@@ -287,8 +361,13 @@ export function TikTokSettingsCard({
                 <label className="mb-1 block text-xs font-medium">Allow users to</label>
                 <div className="flex flex-wrap gap-3">
                   <Toggle label="Comment" checked={allowComment} disabled={!!info.comment_disabled} onChange={setAllowComment} />
-                  <Toggle label="Duet"    checked={allowDuet}    disabled={!!info.duet_disabled}    onChange={setAllowDuet} />
-                  <Toggle label="Stitch"  checked={allowStitch}  disabled={!!info.stitch_disabled}  onChange={setAllowStitch} />
+                  {/* Duet/Stitch don't apply to photo posts per TikTok's UX rules. */}
+                  {mediaType === "video" && (
+                    <>
+                      <Toggle label="Duet"    checked={allowDuet}    disabled={!!info.duet_disabled}    onChange={setAllowDuet} />
+                      <Toggle label="Stitch"  checked={allowStitch}  disabled={!!info.stitch_disabled}  onChange={setAllowStitch} />
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -377,12 +456,17 @@ export function TikTokSettingsCard({
 
           <button
             onClick={onSaveClick}
-            disabled={!isValid || saving || infoLoading}
+            disabled={!formValid || saving || infoLoading}
             className="inline-flex min-h-[36px] items-center gap-2 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             Save TikTok settings
           </button>
+          {dirty && persistedValid && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              Unsaved changes — Post Now stays disabled until you click Save.
+            </p>
+          )}
           {lastSavedAt && (
             <p className="text-[10px] text-muted-foreground">
               Last saved {new Date(lastSavedAt).toLocaleString()}

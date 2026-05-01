@@ -826,6 +826,7 @@ function NewPostPageInner() {
                     entityLabel={acc.name || `Account ${acc.id}`}
                     creatorInfoAccountId={acc.id}
                     creatorInfoKind="brand_account"
+                    mediaType="photo"
                     initialValues={out}
                     onSave={(payload) => updateOutputTiktokSettings(out.id, payload).then(() => {})}
                     onValidityChange={onTiktokValidity}

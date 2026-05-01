@@ -7,6 +7,7 @@ import shutil
 import json
 import secrets
 import asyncio
+import traceback
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, time as dtime
 from zoneinfo import ZoneInfo
@@ -93,6 +94,18 @@ async def admin_required(user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(403, "Admin access required")
     return user
+
+
+def _naive_utc_now() -> datetime:
+    """Return UTC `now` as a tz-naive datetime.
+
+    Several DB columns (e.g. `tiktok_consent_at`, `clip_posts.posted_at`)
+    are `TIMESTAMP WITHOUT TIME ZONE`. asyncpg refuses to bind a tz-aware
+    datetime into a naive column with a `can't subtract offset-naive and
+    offset-aware datetimes` error. Stamp via this helper to keep the
+    convention consistent across endpoints.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def verify_brand_ownership(brand_id: int, user: dict):
@@ -2718,9 +2731,24 @@ async def update_output_tiktok(
 
         # Stamp the consent moment. The UI surfaces the music-usage /
         # branded-content declarations directly above the Save button.
-        updates["tiktok_consent_at"] = datetime.now(timezone.utc)
+        # MUST be naive UTC — the column is TIMESTAMP WITHOUT TIME ZONE.
+        updates["tiktok_consent_at"] = _naive_utc_now()
 
-        await db.update_output(database, output_id, **updates)
+        try:
+            await db.update_output(database, output_id, **updates)
+        except Exception as e:
+            # Log full error to error_logs; surface a short detail in the
+            # response so the toast on the client says something useful.
+            await db.log_error(
+                database, source="api",
+                message=f"PATCH /api/outputs/{output_id}/tiktok: {e}",
+                traceback=traceback.format_exc(),
+                user_id=user.get("id"),
+            )
+            raise HTTPException(
+                500,
+                f"Save failed: {str(e)[:160]} (see /admin → Errors for full traceback)",
+            )
         return {"ok": True}
     finally:
         await database.close()
@@ -3341,8 +3369,21 @@ async def update_variation_tiktok(
                 "Pick a non-private level or uncheck Branded content.",
             )
 
-        updates["tiktok_consent_at"] = datetime.now(timezone.utc)
-        await db.update_artist_account(database, variation_id, **updates)
+        # MUST be naive UTC — tiktok_consent_at is TIMESTAMP WITHOUT TIME ZONE.
+        updates["tiktok_consent_at"] = _naive_utc_now()
+        try:
+            await db.update_artist_account(database, variation_id, **updates)
+        except Exception as e:
+            await db.log_error(
+                database, source="api",
+                message=f"PATCH /api/variations/{variation_id}/tiktok: {e}",
+                traceback=traceback.format_exc(),
+                user_id=user.get("id"),
+            )
+            raise HTTPException(
+                500,
+                f"Save failed: {str(e)[:160]} (see /admin → Errors for full traceback)",
+            )
         fresh = await db.get_artist_account(database, variation_id)
         return _artist_account_dict(fresh)
     finally:
