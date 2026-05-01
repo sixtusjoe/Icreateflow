@@ -350,6 +350,7 @@ export default function BrandsPage() {
                         </div>
                       </div>
                       <OAuthTiles account={acc} onChange={load} />
+                      <AccountProxyField account={acc} onSaved={load} />
                     </div>
                   )
                 ))}
@@ -396,6 +397,59 @@ export default function BrandsPage() {
               </>)}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function AccountProxyField({ account, onSaved }: { account: any; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [proxy, setProxy] = useState<string>(account?.proxy_url || "");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      // Empty string is treated server-side as falsy → no proxy. The
+      // updateAccount type doesn't include null, so coerce here.
+      await updateAccount(account.id, { proxy_url: proxy.trim() });
+      toast.success("Proxy saved");
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to save proxy");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="mt-2 rounded-xl border border-border bg-muted/30 p-3">
+      <button onClick={() => setOpen((s) => !s)}
+        className="flex w-full items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+        aria-expanded={open}>
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        Residential proxy URL {account?.proxy_url ? "(set)" : "(optional)"}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <p className="text-[11px] text-muted-foreground">
+            Optional. When set, every TikTok / YouTube / Instagram / Facebook call for this account routes through the proxy. Critical for US-targeted accounts: use a US residential session.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={proxy}
+              onChange={(e) => setProxy(e.target.value)}
+              placeholder="http://user-session-abc:pass@gate.smartproxy.com:7000"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
+            />
+            <button
+              onClick={save}
+              disabled={saving}
+              className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
         </div>
       )}
     </div>

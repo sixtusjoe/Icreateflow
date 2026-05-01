@@ -175,6 +175,7 @@ class AccountUpdate(BaseModel):
     youtube_handle: Optional[str] = None
     instagram_handle: Optional[str] = None
     facebook_handle: Optional[str] = None
+    proxy_url: Optional[str] = None
 
 class PostImport(BaseModel):
     tiktok_url: str
@@ -2528,7 +2529,13 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 if not cid or not csec:
                     return token_local
                 try:
-                    refreshed = await oauth_svc.refresh_access_token(provider, refresh, cid, csec)
+                    # Route the OAuth refresh through the account's
+                    # residential proxy (when set) so the refresh's origin
+                    # IP matches every other call this account makes.
+                    refreshed = await oauth_svc.refresh_access_token(
+                        provider, refresh, cid, csec,
+                        proxy_url=account.get("proxy_url") or None,
+                    )
                 except Exception:
                     return token_local
                 new_token = refreshed.get("access_token")
@@ -2602,6 +2609,13 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                     )
                 return kwargs, None
 
+            # Per-account residential proxy: when set, every adapter call
+            # AND the OAuth refresh above route through this URL so TikTok
+            # / YT / IG / FB see a stable residential origin for this
+            # account (especially important for US-targeted accounts on
+            # platforms that deprioritise datacenter IPs).
+            account_proxy = account.get("proxy_url") or None
+
             per_platform: dict = {}
             for name, adapter, token in targets:
                 if not token:
@@ -2621,20 +2635,29 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                                 if k not in ("disable_duet", "disable_stitch")
                             }
                             res = await _tt.upload_photo_slideshow(
-                                token, slide_urls, caption, **slideshow_kwargs
+                                token, slide_urls, caption,
+                                proxy_url=account_proxy,
+                                **slideshow_kwargs,
                             )
                         else:
                             plat_url = _public_video_url(None)
                             if not plat_url:
                                 per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
                                 continue
-                            res = await adapter.upload_video(token, plat_url, caption, **tt_kwargs)
+                            res = await adapter.upload_video(
+                                token, plat_url, caption,
+                                proxy_url=account_proxy,
+                                **tt_kwargs,
+                            )
                     else:
                         plat_url = _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
                         if not plat_url:
                             per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
                             continue
-                        res = await adapter.upload_video(token, plat_url, caption)
+                        res = await adapter.upload_video(
+                            token, plat_url, caption,
+                            proxy_url=account_proxy,
+                        )
                     per_platform[name] = {
                         "status": "posted",
                         "platform_post_id": res.get("platform_post_id"),

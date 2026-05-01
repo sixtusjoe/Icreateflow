@@ -160,6 +160,11 @@ class Account(Base):
     facebook_expires_at:     Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     facebook_scopes:         Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     facebook_user_id:        Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Per-account residential proxy (matches Clipping's artist_accounts).
+    # When set, every TikTok / YT / IG / FB call from this account is
+    # routed through this URL. Critical for US-targeted accounts on
+    # platforms that deprioritise datacenter IPs.
+    proxy_url:               Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     __table_args__ = (CheckConstraint("role IN ('master', 'variation')", name="accounts_role_chk"),)
 
 
@@ -948,6 +953,15 @@ async def _migrate_per_variation_columns(conn) -> None:
         await conn.execute(text(
             f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS posted_as_draft BOOLEAN DEFAULT FALSE"
         ))
+
+    # Per-account residential proxy on the Brand `accounts` table —
+    # mirror of artist_accounts.proxy_url. Used by post_now to route
+    # OAuth refresh + every adapter call through the account's
+    # configured residential exit, addressing the "0 views from API
+    # posts" datacenter-fingerprint suppression on US TikTok accounts.
+    await conn.execute(text(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS proxy_url TEXT"
+    ))
 
 
 async def _migrate_user_status_pending(conn) -> None:
