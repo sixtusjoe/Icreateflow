@@ -2562,15 +2562,21 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
             # Build public URLs for the 3:4 slides (used for TikTok slideshow).
             # Route through /api/files-jpg/ — TikTok's photo API rejects PNG with
             # file_format_check_failed, so we re-encode to JPEG on serve.
+            # `?for={account_id}` triggers per-account JPEG params + synthetic
+            # EXIF; `?t=...` is a cache-bust token so TikTok's spam clustering
+            # can't dedupe the URL across different posts/accounts.
             slide_urls: list[str] = []
             slides_dir = out.get("slides_dir")
             if slides_dir and Path(slides_dir).exists():
                 from urllib.parse import quote as _q
+                _t = secrets.token_urlsafe(6)
                 for f in sorted(Path(slides_dir).iterdir()):
                     if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" not in f.stem:
                         rel = str(f).lstrip("./")
                         enc = "/".join(_q(seg, safe="") for seg in rel.split("/") if seg)
-                        slide_urls.append(f"{public_base}/api/files-jpg/{enc}")
+                        slide_urls.append(
+                            f"{public_base}/api/files-jpg/{enc}?for={account['id']}&t={_t}"
+                        )
 
             # TikTok per-(post, variation) settings live on the outputs row.
             # User picks them on the Generate tab; dispatcher reads them
@@ -2994,15 +3000,33 @@ async def download_all_outputs(post_id: int, user: dict = Depends(get_current_us
 # =============================================
 
 @app.get("/api/files-jpg/{file_path:path}")
-async def serve_file_as_jpeg(file_path: str):
-    """Serve any image file re-encoded as JPEG.
+async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, alias="for")):
+    """Serve any image file re-encoded as JPEG with per-account fingerprint
+    diversity, used by TikTok's photo slideshow API (which rejects PNG).
 
-    Used by TikTok's photo slideshow API, which rejects PNG with
-    `file_format_check_failed`. We keep the source PNGs untouched and
-    convert on-demand so disk layout doesn't change.
+    Three things vary based on `?for={account_id}`:
+
+    1. JPEG encoder params (quality / subsampling / optimize / progressive)
+       are deterministically derived from account_id, so two accounts'
+       pulls of the same source PNG produce different bytes — different
+       compressed-size, different DCT coefficient distribution. Same
+       account always gets the same encoding (cache stable per account).
+
+    2. Synthetic EXIF (Make / Model / DateTimeOriginal / Software) is
+       embedded before encode. Without it, our slides scream "synthetic
+       JPEG with no metadata" — TikTok's spam clustering can fingerprint
+       on the absence of EXIF. A phone-captured image always has it.
+
+    3. Response headers: `Cache-Control: no-store` so TikTok always
+       fetches fresh bytes (DateTimeOriginal advances per request) and
+       Content-Disposition with a phone-style filename.
+
+    `?for=` is optional for back-compat (other callers — like browser
+    previews — still get the legacy behaviour).
     """
     from io import BytesIO
     from PIL import Image
+    import piexif
 
     full_path = Path(file_path)
     if not full_path.exists():
@@ -3014,20 +3038,101 @@ async def serve_file_as_jpeg(file_path: str):
     if not full_path.exists():
         raise HTTPException(404, "File not found")
 
+    # Per-account JPEG params. Deterministic from account_id so the same
+    # account → same encoding (clusters within an account look like one
+    # device's output). Different accounts → different fingerprints.
+    if for_ is not None:
+        seed = for_
+        quality      = (86, 88, 90, 92, 94)[seed % 5]
+        subsampling  = (0, 2)[seed % 2]
+        optimize     = bool((seed >> 1) & 1)
+        progressive  = bool((seed >> 2) & 1)
+        # Synthetic device pool — three majors, several plausible models
+        # each. The pair (make, model) is stable per account.
+        DEVICES = [
+            ("Apple",   "iPhone 15"),
+            ("Apple",   "iPhone 14 Pro"),
+            ("Apple",   "iPhone 13"),
+            ("samsung", "SM-S928U"),     # Galaxy S24 Ultra
+            ("samsung", "SM-S921U"),     # Galaxy S24
+            ("Google",  "Pixel 8"),
+            ("Google",  "Pixel 7a"),
+        ]
+        make, model = DEVICES[seed % len(DEVICES)]
+        software_pool = {
+            "Apple":   ["17.5.1", "17.6", "18.0"],
+            "samsung": ["One UI 6.1", "One UI 6.0"],
+            "Google":  ["TQ3A.230901.001", "TQ3A.230705.001"],
+        }
+        software = software_pool[make][seed % len(software_pool[make])]
+    else:
+        quality, subsampling, optimize, progressive = 92, 2, True, False
+        make, model, software = None, None, None
+
     try:
         img = Image.open(full_path)
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
+
+        # Build EXIF when serving for an account. DateTimeOriginal is
+        # per-request (last 15min..6h) — looks like a recently-shot phone
+        # photo and breaks any "identical bytes across pulls" cluster.
+        exif_bytes = b""
+        if for_ is not None and make and model:
+            from random import randint
+            shot = datetime.now(timezone.utc) - timedelta(seconds=randint(15 * 60, 6 * 3600))
+            shot_str = shot.strftime("%Y:%m:%d %H:%M:%S").encode("ascii")
+            zeroth = {
+                piexif.ImageIFD.Make:     make.encode("ascii"),
+                piexif.ImageIFD.Model:    model.encode("ascii"),
+                piexif.ImageIFD.Software: software.encode("ascii"),
+                piexif.ImageIFD.DateTime: shot_str,
+                piexif.ImageIFD.Orientation: 1,
+            }
+            exif_dict = {
+                "0th": zeroth,
+                "Exif": {
+                    piexif.ExifIFD.DateTimeOriginal:  shot_str,
+                    piexif.ExifIFD.DateTimeDigitized: shot_str,
+                },
+                "GPS": {},
+                "1st": {},
+                "thumbnail": None,
+            }
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+            except Exception:
+                exif_bytes = b""
+
         buf = BytesIO()
-        img.save(buf, format="JPEG", quality=92, optimize=True)
+        save_kwargs = {
+            "format": "JPEG",
+            "quality": quality,
+            "subsampling": subsampling,
+            "optimize": optimize,
+            "progressive": progressive,
+        }
+        if exif_bytes:
+            save_kwargs["exif"] = exif_bytes
+        img.save(buf, **save_kwargs)
         buf.seek(0)
     except Exception as e:
         raise HTTPException(500, f"Could not convert image: {e}")
 
+    # Filename hint that looks like a phone-camera capture.
+    headers = {"Cache-Control": "no-store" if for_ is not None else "public, max-age=300"}
+    if for_ is not None:
+        # Stable per (account, source-path) so the same slide shows the
+        # same filename on retry; prevents TikTok seeing wildly different
+        # filenames for the same logical slide image.
+        from hashlib import md5
+        fname_seed = md5(f"{for_}:{file_path}".encode()).hexdigest()[:4].upper()
+        headers["Content-Disposition"] = f'inline; filename="IMG_{fname_seed}.JPG"'
+
     return Response(
         content=buf.getvalue(),
         media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers=headers,
     )
 
 
