@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import OAuthTiles from "@/components/OAuthTiles";
+import { TikTokSettingsCard } from "@/components/TikTokSettingsCard";
 import {
   getArtistBySlug,
   updateArtist,
@@ -44,6 +45,7 @@ import {
   resetPromotion,
   listCampaigns,
   downloadStatsCsv,
+  updateVariationTiktokSettings,
 } from "@/lib/api";
 
 type Variation = {
@@ -60,6 +62,16 @@ type Variation = {
   gdrive_folder_url?: string | null;
   proxy_url?: string | null;
   paused_reason?: string | null;
+  // TikTok Direct Post settings (Clipping pipeline persists per variation).
+  tiktok_post_as_draft?: boolean | null;
+  tiktok_privacy_level?: string | null;
+  tiktok_disclosure_enabled?: boolean | null;
+  tiktok_disclose_your_brand?: boolean | null;
+  tiktok_disclose_branded_content?: boolean | null;
+  tiktok_allow_comment?: boolean | null;
+  tiktok_allow_duet?: boolean | null;
+  tiktok_allow_stitch?: boolean | null;
+  tiktok_consent_at?: string | null;
 };
 
 type Clip = {
@@ -1218,6 +1230,31 @@ function VariationExtras({
           </button>
         </div>
       </div>
+
+      {/* TikTok posting settings — only when TikTok is connected for this
+          variation. Required by TikTok's UX rules: privacy and disclosure
+          must be picked per variation (no global default). The dispatcher
+          refuses to fire TikTok posts until these are saved. */}
+      {(v.tiktok_connected || v.tiktok_handle) && (
+        <TikTokSettingsCard
+          entityId={v.id}
+          entityLabel={v.name || `Variation ${v.id}`}
+          creatorInfoAccountId={v.id}
+          creatorInfoKind="variation"
+          initialValues={v}
+          onSave={(payload) =>
+            updateVariationTiktokSettings(v.id, payload).then(() => {
+              onChange();
+            })
+          }
+          onValidityChange={() => {
+            // Clipping is unattended — there's no "Post Now" button to
+            // gate. The dispatcher's pre-call guard handles invalid
+            // variations by failing those clip_posts with a clear error.
+            // Validity is surfaced via the in-card "needs setup" pill.
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -214,8 +214,10 @@ class PostMusic(BaseModel):
     instagram_music_track_id: Optional[int] = None
     facebook_music_track_id: Optional[int] = None
 
-class OutputTikTokSettings(BaseModel):
-    """Per-(post, variation) TikTok Direct Post API settings.
+class TikTokSettingsPayload(BaseModel):
+    """TikTok Direct Post API settings, used both for per-(post, variation)
+    `outputs` rows (Brand pipeline) and per-variation `artist_accounts`
+    rows (Clipping pipeline).
 
     All fields optional — UI sends a partial PATCH on Save and stamps
     `tiktok_consent_at` server-side at the same moment (the music-usage
@@ -229,6 +231,9 @@ class OutputTikTokSettings(BaseModel):
     tiktok_allow_comment: Optional[bool] = None
     tiktok_allow_duet: Optional[bool] = None
     tiktok_allow_stitch: Optional[bool] = None
+
+# Back-compat alias for the Brand outputs endpoint.
+OutputTikTokSettings = TikTokSettingsPayload
 
 class SettingUpdate(BaseModel):
     key: str
@@ -3289,6 +3294,57 @@ async def update_artist_variation(variation_id: int, data: VariationUpdateArtist
             await db.update_artist_account(database, variation_id, **updates)
         row = await db.get_artist_account(database, variation_id)
         return _artist_account_dict(row)
+    finally:
+        await database.close()
+
+
+@app.patch("/api/variations/{variation_id}/tiktok")
+async def update_variation_tiktok(
+    variation_id: int,
+    data: TikTokSettingsPayload,
+    user: dict = Depends(get_current_user),
+):
+    """Save per-variation TikTok Direct Post API settings (Clipping pipeline).
+
+    Mirrors the Brand-side PATCH /api/outputs/{id}/tiktok with the same
+    validation: privacy level constrained, branded + SELF_ONLY rejected
+    (checks merged state so a partial PATCH can't sneak past), and
+    tiktok_consent_at stamped server-side as the user's music-usage /
+    branded-content acknowledgement moment.
+    """
+    database = await db.get_db()
+    try:
+        row = await db.get_artist_account(database, variation_id)
+        if not row:
+            raise HTTPException(404, "Variation not found")
+        await _verify_artist_ownership(row["artist_id"], user)
+        row_d = dict(row)
+
+        updates: dict = {}
+        for field, value in data.model_dump(exclude_unset=True).items():
+            updates[field] = value
+
+        if "tiktok_privacy_level" in updates and updates["tiktok_privacy_level"] is not None:
+            lvl = updates["tiktok_privacy_level"].upper()
+            if lvl not in {"SELF_ONLY", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "PUBLIC_TO_EVERYONE"}:
+                raise HTTPException(400, "Invalid tiktok_privacy_level")
+            updates["tiktok_privacy_level"] = lvl
+
+        merged = {**row_d, **updates}
+        if (
+            merged.get("tiktok_disclose_branded_content")
+            and (merged.get("tiktok_privacy_level") or "").upper() == "SELF_ONLY"
+        ):
+            raise HTTPException(
+                400,
+                "TikTok rejects branded content with SELF_ONLY privacy. "
+                "Pick a non-private level or uncheck Branded content.",
+            )
+
+        updates["tiktok_consent_at"] = datetime.now(timezone.utc)
+        await db.update_artist_account(database, variation_id, **updates)
+        fresh = await db.get_artist_account(database, variation_id)
+        return _artist_account_dict(fresh)
     finally:
         await database.close()
 

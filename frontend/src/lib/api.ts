@@ -496,3 +496,9 @@ export const updateOutputTiktokSettings = (
   data: TikTokSettingsPatch,
 ) =>
   api.patch(`/api/outputs/${output_id}/tiktok`, data).then((r) => r.data);
+
+export const updateVariationTiktokSettings = (
+  variation_id: number,
+  data: TikTokSettingsPatch,
+) =>
+  api.patch(`/api/variations/${variation_id}/tiktok`, data).then((r) => r.data);
