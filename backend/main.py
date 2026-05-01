@@ -2423,7 +2423,6 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
         public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
         if not public_base:
             raise HTTPException(400, "oauth_redirect_base not configured in /settings — needed to expose videos to platforms")
-        tt_privacy = (cfg.get("tiktok_privacy_level") or "SELF_ONLY").upper()
 
         outputs = await db.get_outputs(database, post_id)
         if not outputs:
@@ -2532,33 +2531,90 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                         enc = "/".join(_q(seg, safe="") for seg in rel.split("/") if seg)
                         slide_urls.append(f"{public_base}/api/files-jpg/{enc}")
 
+            # TikTok per-(post, variation) settings live on the outputs row.
+            # User picks them on the Generate tab; dispatcher reads them
+            # here. No site_config fallback — TikTok forbids any global
+            # default value for privacy.
+            def _tiktok_kwargs_for_output(out_row: dict) -> tuple[dict, Optional[str]]:
+                """Returns (kwargs, error). When error is set, dispatcher
+                should mark the platform failed with that message and skip
+                the API call."""
+                if out_row.get("tiktok_post_as_draft"):
+                    # Inbox / draft mode: TikTok ignores every post_info
+                    # field. The user composes the rest inside the TikTok
+                    # app once the draft lands.
+                    return {"post_mode": "MEDIA_UPLOAD"}, None
+                privacy = out_row.get("tiktok_privacy_level")
+                if not privacy:
+                    return {}, (
+                        "TikTok privacy not set for this variation. Open "
+                        "the Generate tab → expand TikTok settings → pick "
+                        "a privacy level (or enable Post as draft)."
+                    )
+                kwargs: dict = {
+                    "post_mode": "DIRECT_POST",
+                    "privacy_level": privacy.upper(),
+                    "disable_comment": not bool(out_row.get("tiktok_allow_comment")),
+                    "disable_duet":    not bool(out_row.get("tiktok_allow_duet")),
+                    "disable_stitch":  not bool(out_row.get("tiktok_allow_stitch")),
+                    "brand_content_toggle": bool(out_row.get("tiktok_disclose_branded_content")),
+                    "brand_organic_toggle": bool(out_row.get("tiktok_disclose_your_brand")),
+                }
+                if kwargs["brand_content_toggle"] and not out_row.get("tiktok_consent_at"):
+                    return {}, (
+                        "Branded Content selected without saving the music "
+                        "usage acknowledgement. Re-open TikTok settings on "
+                        "the Generate tab and Save."
+                    )
+                return kwargs, None
+
             per_platform: dict = {}
             for name, adapter, token in targets:
                 if not token:
                     per_platform[name] = {"status": "skipped", "reason": "not connected"}
                     continue
                 try:
-                    if name == "tiktok" and slide_urls:
-                        # Swipeable photo slideshow instead of the rendered video.
-                        res = await _tt.upload_photo_slideshow(
-                            token, slide_urls, caption, privacy_level=tt_privacy
-                        )
+                    if name == "tiktok":
+                        tt_kwargs, tt_err = _tiktok_kwargs_for_output(out)
+                        if tt_err:
+                            per_platform[name] = {"status": "failed", "error": tt_err}
+                            continue
+                        if slide_urls:
+                            # Swipeable photo slideshow. Duet/Stitch don't
+                            # apply to photo posts — strip those kwargs.
+                            slideshow_kwargs = {
+                                k: v for k, v in tt_kwargs.items()
+                                if k not in ("disable_duet", "disable_stitch")
+                            }
+                            res = await _tt.upload_photo_slideshow(
+                                token, slide_urls, caption, **slideshow_kwargs
+                            )
+                        else:
+                            plat_url = _public_video_url(None)
+                            if not plat_url:
+                                per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
+                                continue
+                            res = await adapter.upload_video(token, plat_url, caption, **tt_kwargs)
                     else:
-                        extra = {"privacy_level": tt_privacy} if name == "tiktok" else {}
                         plat_url = _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
                         if not plat_url:
                             per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
                             continue
-                        res = await adapter.upload_video(token, plat_url, caption, **extra)
+                        res = await adapter.upload_video(token, plat_url, caption)
                     per_platform[name] = {
                         "status": "posted",
                         "platform_post_id": res.get("platform_post_id"),
                         "permalink": res.get("permalink"),
+                        **({"draft": True} if res.get("draft") else {}),
                     }
                     any_success = True
-                    # flag on outputs table
+                    # flag on outputs table; mark drafts so the dashboard
+                    # can render a "draft" pill and the view poller skips.
                     try:
-                        await db.update_output(database, out["id"], **{f"{name}_posted": True})
+                        update_kwargs = {f"{name}_posted": True}
+                        if res.get("draft"):
+                            update_kwargs["posted_as_draft"] = True
+                        await db.update_output(database, out["id"], **update_kwargs)
                     except Exception:
                         pass
                 except PostingError as e:

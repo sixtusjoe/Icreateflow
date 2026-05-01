@@ -757,8 +757,56 @@ async def dispatch_due_once() -> None:
                 if platform == "facebook":
                     kwargs["page_id"] = dict(variation).get("facebook_user_id")
                 if platform == "tiktok":
-                    cfg_tt = await db.get_site_config(database)
-                    kwargs["privacy_level"] = (cfg_tt.get("tiktok_privacy_level") or "SELF_ONLY").upper()
+                    # TikTok per-variation settings live on the artist_accounts
+                    # row. User picks them on the variation card; dispatcher
+                    # reads them here. No site_config fallback — TikTok
+                    # forbids any global default value for privacy.
+                    var_d = dict(variation)
+                    if var_d.get("tiktok_post_as_draft"):
+                        kwargs["post_mode"] = "INBOX"
+                    else:
+                        privacy = var_d.get("tiktok_privacy_level")
+                        if not privacy:
+                            err = (
+                                "TikTok privacy not set for this variation. "
+                                "Open the variation card → expand TikTok "
+                                "settings → pick a privacy level (or enable "
+                                "Post as draft)."
+                            )
+                            await db.update_clip_post(
+                                database, cp["id"], status="failed", error=err,
+                            )
+                            await db.log_error(
+                                database, source="scheduler.dispatch.tiktok",
+                                message=err,
+                                context=f"clip_post_id={cp['id']} variation_id={var_d['id']}",
+                            )
+                            continue
+                        branded = bool(var_d.get("tiktok_disclose_branded_content"))
+                        if branded and not var_d.get("tiktok_consent_at"):
+                            err = (
+                                "TikTok branded content selected without "
+                                "saving the music usage acknowledgement. "
+                                "Re-open variation TikTok settings and Save."
+                            )
+                            await db.update_clip_post(
+                                database, cp["id"], status="failed", error=err,
+                            )
+                            await db.log_error(
+                                database, source="scheduler.dispatch.tiktok",
+                                message=err,
+                                context=f"clip_post_id={cp['id']} variation_id={var_d['id']}",
+                            )
+                            continue
+                        kwargs.update({
+                            "post_mode": "DIRECT_POST",
+                            "privacy_level": privacy.upper(),
+                            "disable_comment": not bool(var_d.get("tiktok_allow_comment")),
+                            "disable_duet":    not bool(var_d.get("tiktok_allow_duet")),
+                            "disable_stitch":  not bool(var_d.get("tiktok_allow_stitch")),
+                            "brand_content_toggle": branded,
+                            "brand_organic_toggle": bool(var_d.get("tiktok_disclose_your_brand")),
+                        })
 
                 # Phase 2: per-(clip, variation, platform) caption paraphrase.
                 # Per-user toggle: user_settings.clip_caption_variants_enabled
@@ -798,12 +846,18 @@ async def dispatch_due_once() -> None:
                     caption=caption_to_post,
                     **kwargs,
                 )
+                # Stamp posted_as_draft when TikTok inbox/MEDIA_UPLOAD was
+                # used so the view poller skips this row (drafts have no
+                # public stats until the user publishes from their app)
+                # and the dashboard renders a "draft" pill.
+                _draft = bool(result.get("draft"))
                 await db.update_clip_post(
                     database, cp["id"],
                     status="posted",
                     posted_at=datetime.now(timezone.utc),
                     platform_post_id=result.get("platform_post_id"),
                     error=None,
+                    posted_as_draft=_draft,
                 )
 
                 # Bump clip stats AFTER a successful post (not at plan time).
@@ -909,6 +963,7 @@ async def poll_views_once() -> None:
             SELECT * FROM clip_posts
             WHERE status = 'posted' AND platform_post_id IS NOT NULL
               AND deleted_at IS NULL
+              AND posted_as_draft = FALSE
               AND (view_count_updated_at IS NULL
                    OR view_count_updated_at < NOW() - INTERVAL '30 seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
