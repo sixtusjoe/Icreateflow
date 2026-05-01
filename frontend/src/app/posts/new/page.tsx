@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import {
   Link2, Upload, Wand2, Download, Play, Clock, Send, RefreshCw, Eye,
   Image as ImageIcon, Type, Sparkles, Check, Loader2, RotateCcw,
+  ChevronDown, ChevronRight, AlertCircle, ExternalLink, Save,
 } from "lucide-react";
 import {
   getBrands, importTikTokPost, uploadSlidesManually, getPost, updateSlide,
@@ -14,6 +15,8 @@ import {
   updateVariation, generatePost, getGenerationStatus,
   schedulePost, postNow, getMusicTracks, getDownloadUrl, downloadFile, fileUrl,
   rerunOcr, getOutputSlides, regenerateSlide, regenerateVideo, updatePostMusic,
+  getTiktokCreatorInfo, updateOutputTiktokSettings,
+  type TikTokCreatorInfo, type TikTokSettingsPatch,
 } from "@/lib/api";
 
 type Plat = "youtube" | "instagram" | "facebook";
@@ -53,6 +56,14 @@ function NewPostPageInner() {
   const [selectedMusic, setSelectedMusic] = useState<number | null>(null);
   const [platMusic, setPlatMusic] = useState<Record<Plat, number | null>>({ youtube: null, instagram: null, facebook: null });
   const [platMusicLib, setPlatMusicLib] = useState<Record<Plat, any[]>>({ youtube: [], instagram: [], facebook: [] });
+  // Per-output TikTok-settings validity. Tracks each non-master, TikTok-
+  // connected variation; Post Now / Save Schedule are disabled while any
+  // entry is false. The cards report up via onValidityChange.
+  const [tiktokValid, setTiktokValid] = useState<Record<number, boolean>>({});
+  const onTiktokValidity = useCallback((outputId: number, valid: boolean) => {
+    setTiktokValid((prev) => (prev[outputId] === valid ? prev : { ...prev, [outputId]: valid }));
+  }, []);
+  const allTiktokValid = Object.values(tiktokValid).every(Boolean);
   const [previewPlatform, setPreviewPlatform] = useState<Plat>("youtube");
   const [regeneratingPlatform, setRegeneratingPlatform] = useState<string | null>(null);
   const [editLoaded, setEditLoaded] = useState(false);
@@ -761,10 +772,14 @@ function NewPostPageInner() {
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-3">
               <button onClick={handleSchedule}
-                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted">
+                disabled={!allTiktokValid}
+                title={!allTiktokValid ? "Finish TikTok setup on all variations below first" : ""}
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
                 <Clock className="h-4 w-4" /> Save Schedule
               </button>
               <button
+                disabled={!allTiktokValid}
+                title={!allTiktokValid ? "Finish TikTok setup on all variations below first" : ""}
                 onClick={async () => {
                   if (!post?.id) { toast.error("Generate the post first"); return; }
                   const t = toast.loading("Posting to connected platforms...");
@@ -788,11 +803,44 @@ function NewPostPageInner() {
                     toast.error(e?.response?.data?.detail || "Post Now failed");
                   }
                 }}
-                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-lime px-5 py-2.5 text-sm font-bold text-black transition-all hover:brightness-95">
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-lime px-5 py-2.5 text-sm font-bold text-black transition-all hover:brightness-95 disabled:opacity-50 disabled:hover:brightness-100">
                 <Send className="h-4 w-4" /> Post Now
               </button>
             </div>
           </div>
+
+          {/* TikTok posting settings — per non-master variation with TT connected.
+              TikTok requires the user to pick privacy and disclosure on every
+              flow with no default value, so settings live here on the Generate
+              tab (not in admin / global). Cards are collapsed by default. */}
+          {post.outputs && post.outputs.length > 0 && (() => {
+            const ttCards = post.outputs
+              .map((out: any) => {
+                const acc = post.brand?.accounts?.find((a: any) => a.id === out.account_id);
+                if (!acc) return null;
+                if (acc.role === "master") return null; // master skips TikTok
+                if (!acc.tiktok_token && !acc.tiktok_connected) return null; // no TT connected
+                return (
+                  <TikTokSettingsCard
+                    key={out.id}
+                    output={out}
+                    accountName={acc.name || `Account ${acc.id}`}
+                    onValidityChange={onTiktokValidity}
+                  />
+                );
+              })
+              .filter(Boolean);
+            if (ttCards.length === 0) return null;
+            return (
+              <div className="rounded-2xl bg-card p-4 md:p-6">
+                <h2 className="mb-1 text-base font-semibold">TikTok posting settings</h2>
+                <p className="mb-4 text-xs text-muted-foreground">
+                  TikTok requires you to pick privacy and disclosure for every post — there's no global default. Configure each variation below before posting.
+                </p>
+                <div className="space-y-2">{ttCards}</div>
+              </div>
+            );
+          })()}
 
           {/* Preview & Downloads */}
           {post.outputs && post.outputs.length > 0 && (
@@ -1270,5 +1318,413 @@ function NewPostPageInner() {
         document.body
       )}
     </div>
+  );
+}
+
+
+// ============================================================
+// TikTokSettingsCard
+//
+// Per-(post, variation) TikTok Direct Post API settings, rendered on the
+// Generate tab below the Schedule & Music card. One card per non-master
+// variation account that has a TikTok token connected. The card enforces
+// every TikTok UX rule from developers.tiktok.com/doc/content-sharing-guidelines:
+//
+//   * creator_info is fetched lazily on first expand (and on every
+//     subsequent expand if cache is stale on the server side).
+//   * Display creator nickname so the user knows which account.
+//   * If creator can't post (cooldown / spam-risk / blocked), the
+//     entire form is replaced with a clear "try again later" block.
+//   * Privacy dropdown options come from creator_info; NO default value
+//     (the user must pick).
+//   * Allow Comment / Duet / Stitch checkboxes default unchecked. Each
+//     checkbox is disabled+greyed when creator_info reports the creator
+//     has that interaction disabled at the account level.
+//   * Disclose post content master toggle defaults OFF. When ON,
+//     "Your Brand" + "Branded Content" sub-options appear (multi-select,
+//     at least one required, otherwise Save is disabled).
+//   * Branded Content checked → SELF_ONLY removed from the privacy
+//     dropdown options (TikTok rejects this combo).
+//   * The declaration text above Save changes to match the disclosure
+//     state (Music Usage Confirmation alone, or + Branded Content
+//     Policy when branded).
+//   * Save stamps tiktok_consent_at server-side — the explicit user
+//     consent moment TikTok requires.
+//   * The card reports validity to its parent via onValidityChange so
+//     Post Now / Save Schedule can be disabled when any variation is
+//     misconfigured.
+//
+// Props match the live `outputs` row shape from `getPost`. The component
+// is uncontrolled — it reads initial values from `output` once, then
+// holds local state until the user clicks Save.
+// ============================================================
+
+const PRIVACY_LABELS: Record<string, string> = {
+  PUBLIC_TO_EVERYONE: "Public — Everyone",
+  MUTUAL_FOLLOW_FRIENDS: "Friends — Mutual follows",
+  FOLLOWER_OF_CREATOR: "Followers",
+  SELF_ONLY: "Private — Only me",
+};
+
+type TikTokOutput = {
+  id: number;
+  account_id: number;
+  tiktok_post_as_draft?: boolean | null;
+  tiktok_privacy_level?: string | null;
+  tiktok_disclosure_enabled?: boolean | null;
+  tiktok_disclose_your_brand?: boolean | null;
+  tiktok_disclose_branded_content?: boolean | null;
+  tiktok_allow_comment?: boolean | null;
+  tiktok_allow_duet?: boolean | null;
+  tiktok_allow_stitch?: boolean | null;
+  tiktok_consent_at?: string | null;
+};
+
+function TikTokSettingsCard({
+  output,
+  accountName,
+  onValidityChange,
+}: {
+  output: TikTokOutput;
+  accountName: string;
+  onValidityChange: (outputId: number, valid: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [info, setInfo] = useState<TikTokCreatorInfo | null>(null);
+  const [infoLoading, setInfoLoading] = useState(false);
+  const [infoError, setInfoError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Local form state. Initial values from the output row.
+  const [postAsDraft, setPostAsDraft] = useState(!!output.tiktok_post_as_draft);
+  const [privacy, setPrivacy] = useState<string>(output.tiktok_privacy_level || "");
+  const [discloseOn, setDiscloseOn] = useState(!!output.tiktok_disclosure_enabled);
+  const [yourBrand, setYourBrand] = useState(!!output.tiktok_disclose_your_brand);
+  const [brandedContent, setBrandedContent] = useState(!!output.tiktok_disclose_branded_content);
+  const [allowComment, setAllowComment] = useState(!!output.tiktok_allow_comment);
+  const [allowDuet, setAllowDuet] = useState(!!output.tiktok_allow_duet);
+  const [allowStitch, setAllowStitch] = useState(!!output.tiktok_allow_stitch);
+
+  // Lazy-fetch creator_info on first expand. We don't refetch on every
+  // open to avoid burning the rate-limit; the server caches for 5 min.
+  useEffect(() => {
+    if (!open || info || infoLoading || infoError) return;
+    setInfoLoading(true);
+    getTiktokCreatorInfo(output.account_id, "brand_account")
+      .then((d) => {
+        if (d?.creator_blocked) {
+          setInfoError(d.detail || "TikTok creator can't post right now");
+        } else {
+          setInfo(d);
+        }
+      })
+      .catch((e) => setInfoError(e?.response?.data?.detail || "Failed to load TikTok creator info"))
+      .finally(() => setInfoLoading(false));
+  }, [open, info, infoLoading, infoError, output.account_id]);
+
+  // Cross-rule: branded content cannot be SELF_ONLY. If the user toggles
+  // branded ON while privacy is SELF_ONLY, clear privacy (force re-pick).
+  useEffect(() => {
+    if (brandedContent && privacy === "SELF_ONLY") setPrivacy("");
+  }, [brandedContent, privacy]);
+
+  // If disclosure is turned off, also clear the sub-options.
+  useEffect(() => {
+    if (!discloseOn) { setYourBrand(false); setBrandedContent(false); }
+  }, [discloseOn]);
+
+  // Validity rules report up to the parent so Post Now can be disabled.
+  // Draft mode is always valid (TikTok ignores all post_info for INBOX).
+  const isValid = (() => {
+    if (postAsDraft) return true;
+    if (!privacy) return false;
+    if (discloseOn && !yourBrand && !brandedContent) return false;
+    if (brandedContent && privacy === "SELF_ONLY") return false;
+    return true;
+  })();
+  useEffect(() => {
+    onValidityChange(output.id, isValid);
+  }, [isValid, output.id, onValidityChange]);
+
+  const privacyOptions = (info?.privacy_level_options || []).filter((opt) => {
+    // Branded content cannot ride with SELF_ONLY; remove it from the
+    // options when branded is ticked, so the dropdown can't even
+    // surface the forbidden choice.
+    if (brandedContent && opt === "SELF_ONLY") return false;
+    return true;
+  });
+
+  const declaration = (() => {
+    if (postAsDraft) return null;
+    if (!discloseOn) return "By posting, you agree to TikTok's Music Usage Confirmation.";
+    if (brandedContent) return "By posting, you agree to TikTok's Branded Content Policy and Music Usage Confirmation.";
+    return "By posting, you agree to TikTok's Music Usage Confirmation.";
+  })();
+
+  const labelHint = (() => {
+    if (!discloseOn) return null;
+    if (brandedContent) return "Your photo/video will be labeled as 'Paid partnership'";
+    if (yourBrand) return "Your photo/video will be labeled as 'Promotional content'";
+    return null;
+  })();
+
+  const onSave = async () => {
+    setSaving(true);
+    try {
+      const payload: TikTokSettingsPatch = {
+        tiktok_post_as_draft: postAsDraft,
+        tiktok_privacy_level: postAsDraft ? null as unknown as string : privacy,
+        tiktok_disclosure_enabled: discloseOn,
+        tiktok_disclose_your_brand: discloseOn ? yourBrand : false,
+        tiktok_disclose_branded_content: discloseOn ? brandedContent : false,
+        tiktok_allow_comment: allowComment,
+        tiktok_allow_duet: allowDuet,
+        tiktok_allow_stitch: allowStitch,
+      };
+      await updateOutputTiktokSettings(output.id, payload);
+      toast.success(`TikTok settings saved for ${accountName}`);
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || "Failed to save TikTok settings");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Validation messages help users understand WHY Save is disabled.
+  const validationMsg = (() => {
+    if (postAsDraft) return null;
+    if (!privacy) return "Pick a privacy level (or enable Post as draft).";
+    if (discloseOn && !yourBrand && !brandedContent) {
+      return "You need to indicate if your content promotes yourself, a third party, or both.";
+    }
+    if (brandedContent && privacy === "SELF_ONLY") {
+      return "Branded content visibility cannot be set to private.";
+    }
+    return null;
+  })();
+
+  return (
+    <div className="rounded-xl border border-border bg-muted/30 p-3">
+      <button
+        onClick={() => setOpen((s) => !s)}
+        className="flex w-full items-center justify-between gap-2 text-sm font-medium hover:opacity-80"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-2">
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          TikTok posting settings — {accountName}
+        </span>
+        {!isValid && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400">
+            <AlertCircle className="h-3 w-3" /> needs setup
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-4">
+          {infoLoading && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> Loading TikTok account info…
+            </div>
+          )}
+          {infoError && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+              <AlertCircle className="mr-1 inline h-3 w-3" /> {infoError}
+            </div>
+          )}
+          {info && !infoError && (
+            <p className="text-xs text-muted-foreground">
+              Posting as <span className="font-medium text-foreground">@{info.creator_nickname || info.creator_username || "(no nickname)"}</span>
+              {info.max_video_post_duration_sec ? <> · max {info.max_video_post_duration_sec}s per video</> : null}
+            </p>
+          )}
+
+          {/* Post as draft — when on, hide the rest of the settings */}
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={postAsDraft}
+              onChange={(e) => setPostAsDraft(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-foreground"
+            />
+            <span>
+              <span className="font-medium">Post as draft</span>
+              <span className="block text-xs text-muted-foreground">
+                Sends to your TikTok inbox. You'll edit privacy, captions, and disclosure inside the TikTok app before publishing.
+              </span>
+            </span>
+          </label>
+
+          {!postAsDraft && info && !infoError && (
+            <div className="space-y-4 border-t border-border/50 pt-3">
+              {/* Privacy dropdown — NO default value */}
+              <div>
+                <label className="mb-1 block text-xs font-medium">Who can view this post</label>
+                <select
+                  value={privacy}
+                  onChange={(e) => setPrivacy(e.target.value)}
+                  className="min-h-[40px] w-full rounded-lg border border-border bg-background px-3 text-base sm:text-sm"
+                >
+                  <option value="">Select privacy</option>
+                  {privacyOptions.map((opt) => (
+                    <option key={opt} value={opt}>{PRIVACY_LABELS[opt] || opt}</option>
+                  ))}
+                </select>
+                {brandedContent && info.privacy_level_options.includes("SELF_ONLY") && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Branded content visibility cannot be set to private.
+                  </p>
+                )}
+              </div>
+
+              {/* Allow Comment / Duet / Stitch — none default-checked */}
+              <div>
+                <label className="mb-1 block text-xs font-medium">Allow users to</label>
+                <div className="flex flex-wrap gap-3">
+                  <Toggle
+                    label="Comment"
+                    checked={allowComment}
+                    disabled={!!info.comment_disabled}
+                    onChange={setAllowComment}
+                  />
+                  <Toggle
+                    label="Duet"
+                    checked={allowDuet}
+                    disabled={!!info.duet_disabled}
+                    onChange={setAllowDuet}
+                  />
+                  <Toggle
+                    label="Stitch"
+                    checked={allowStitch}
+                    disabled={!!info.stitch_disabled}
+                    onChange={setAllowStitch}
+                  />
+                </div>
+              </div>
+
+              {/* Disclose video content master toggle */}
+              <div>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={discloseOn}
+                    onChange={(e) => setDiscloseOn(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-foreground"
+                  />
+                  <span>
+                    <span className="font-medium">Disclose video content</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Turn on if this video promotes goods or services in exchange for value. Promotes yourself, a third party, or both.
+                    </span>
+                  </span>
+                </label>
+
+                {discloseOn && (
+                  <div className="mt-2 space-y-2 rounded-lg border border-border/50 bg-background/50 px-3 py-2">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={yourBrand}
+                        onChange={(e) => setYourBrand(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-foreground"
+                      />
+                      <span>
+                        <span className="font-medium">Your Brand</span>
+                        <span className="block text-[11px] text-muted-foreground">Promoting yourself or your own business.</span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={brandedContent}
+                        onChange={(e) => setBrandedContent(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-foreground"
+                      />
+                      <span>
+                        <span className="font-medium">Branded Content</span>
+                        <span className="block text-[11px] text-muted-foreground">
+                          Promoting another brand or third party.{" "}
+                          <a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" rel="noopener noreferrer"
+                             className="underline hover:text-foreground">
+                            Branded Content Policy <ExternalLink className="inline h-2.5 w-2.5" />
+                          </a>
+                        </span>
+                      </span>
+                    </label>
+                    {labelHint && (
+                      <p className="rounded-md bg-muted/60 px-2 py-1.5 text-[11px] text-muted-foreground">
+                        {labelHint}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Validation message */}
+          {validationMsg && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              <AlertCircle className="mr-1 inline h-3 w-3" /> {validationMsg}
+            </p>
+          )}
+
+          {/* Music usage / Branded Content declaration */}
+          {declaration && (
+            <p className="text-[11px] text-muted-foreground">
+              {declaration.split(/(Music Usage Confirmation|Branded Content Policy)/g).map((seg, i) => {
+                if (seg === "Music Usage Confirmation") return (
+                  <a key={i} href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en"
+                     target="_blank" rel="noopener noreferrer"
+                     className="underline hover:text-foreground">{seg}</a>
+                );
+                if (seg === "Branded Content Policy") return (
+                  <a key={i} href="https://www.tiktok.com/legal/page/global/bc-policy/en"
+                     target="_blank" rel="noopener noreferrer"
+                     className="underline hover:text-foreground">{seg}</a>
+                );
+                return <span key={i}>{seg}</span>;
+              })}
+            </p>
+          )}
+
+          <button
+            onClick={onSave}
+            disabled={!isValid || saving || infoLoading}
+            className="inline-flex min-h-[36px] items-center gap-2 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save TikTok settings
+          </button>
+          {output.tiktok_consent_at && (
+            <p className="text-[10px] text-muted-foreground">
+              Last saved {new Date(output.tiktok_consent_at).toLocaleString()}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Toggle({
+  label, checked, disabled, onChange,
+}: {
+  label: string; checked: boolean; disabled?: boolean; onChange: (b: boolean) => void;
+}) {
+  return (
+    <label className={`flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-muted/40"}`}>
+      <input
+        type="checkbox"
+        checked={checked && !disabled}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-3.5 w-3.5 accent-foreground"
+      />
+      {label}
+      {disabled && <span className="ml-1 text-[10px] text-muted-foreground">(off in TikTok)</span>}
+    </label>
   );
 }

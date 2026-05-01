@@ -449,3 +449,50 @@ export const getAdminErrorLogs = (params?: { limit?: number; source?: string }) 
   api.get("/api/admin/error-logs", { params }).then((r) => r.data);
 export const clearAdminErrorLogs = () =>
   api.delete("/api/admin/error-logs").then((r) => r.data);
+
+// --- TikTok Direct Post API per-row settings ---
+
+export type TikTokCreatorInfo = {
+  creator_avatar_url?: string;
+  creator_username?: string;
+  creator_nickname?: string;
+  privacy_level_options: string[];
+  comment_disabled?: boolean;
+  duet_disabled?: boolean;
+  stitch_disabled?: boolean;
+  max_video_post_duration_sec?: number;
+  // 423 Locked from server when creator can't post right now
+  creator_blocked?: boolean;
+  detail?: string;
+};
+
+export const getTiktokCreatorInfo = (
+  account_id: number,
+  kind: "brand_account" | "variation",
+): Promise<TikTokCreatorInfo> =>
+  api
+    .get("/api/oauth/tiktok/creator-info", { params: { account_id, kind } })
+    .then((r) => r.data)
+    .catch((err) => {
+      // 423 = creator blocked — return the structured payload instead of
+      // throwing so the UI can render a clear "try again later" block.
+      if (err?.response?.status === 423) return err.response.data;
+      throw err;
+    });
+
+export type TikTokSettingsPatch = {
+  tiktok_post_as_draft?: boolean;
+  tiktok_privacy_level?: string;
+  tiktok_disclosure_enabled?: boolean;
+  tiktok_disclose_your_brand?: boolean;
+  tiktok_disclose_branded_content?: boolean;
+  tiktok_allow_comment?: boolean;
+  tiktok_allow_duet?: boolean;
+  tiktok_allow_stitch?: boolean;
+};
+
+export const updateOutputTiktokSettings = (
+  output_id: number,
+  data: TikTokSettingsPatch,
+) =>
+  api.patch(`/api/outputs/${output_id}/tiktok`, data).then((r) => r.data);
