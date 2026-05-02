@@ -1495,13 +1495,37 @@ async def oauth_disconnect(
 async def create_brand(data: BrandCreate, user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
-        brand_id = await db.create_brand(
-            database, data.name, data.slug,
-            data.background_color, data.timezone, data.default_post_times,
-            user_id=user["id"]
-        )
-        brand = await db.get_brand(database, brand_id)
-        return row_to_dict(brand)
+        try:
+            brand_id = await db.create_brand(
+                database, data.name, data.slug,
+                data.background_color, data.timezone, data.default_post_times,
+                user_id=user["id"]
+            )
+            brand = await db.get_brand(database, brand_id)
+            return row_to_dict(brand)
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Log full traceback so the operator sees it in /admin → Errors,
+            # and surface a useful detail to the client toast (the previous
+            # generic 500 made this user-blocking bug invisible).
+            await db.log_error(
+                database, source="api",
+                message=f"POST /api/brands name={data.name!r} slug={data.slug!r}: {e}",
+                traceback=traceback.format_exc(),
+                user_id=user.get("id"),
+            )
+            # Detect the most common UX failure: slug uniqueness collision.
+            msg = str(e).lower()
+            if "unique" in msg and "slug" in msg:
+                raise HTTPException(
+                    409,
+                    f"A brand with slug '{data.slug}' already exists. Pick a different slug.",
+                )
+            raise HTTPException(
+                500,
+                f"Create brand failed: {str(e)[:160]} (see /admin → Errors for full traceback)",
+            )
     finally:
         await database.close()
 

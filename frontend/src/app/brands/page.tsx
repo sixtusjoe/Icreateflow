@@ -39,13 +39,15 @@ export default function BrandsPage() {
       setShowNew(false);
       load();
       toast.success("Brand created");
-    } catch { toast.error("Failed to create brand"); }
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Failed to create brand");
+    }
   };
 
   const handleDeleteBrand = async (id: number) => {
     if (!confirm("Delete this brand and all its data?")) return;
     try { await deleteBrand(id); load(); toast.success("Brand deleted"); }
-    catch { toast.error("Failed to delete"); }
+    catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to delete"); }
   };
 
   const startEditBrand = (brand: any) => {
@@ -55,7 +57,7 @@ export default function BrandsPage() {
 
   const handleSaveBrand = async (id: number) => {
     try { await updateBrand(id, editBrandData); setEditingBrand(null); load(); toast.success("Brand updated"); }
-    catch { toast.error("Failed to update brand"); }
+    catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to update brand"); }
   };
 
   const handleCreateAccount = async (brandId: number) => {
@@ -70,13 +72,13 @@ export default function BrandsPage() {
       setShowNewAccount(null);
       load();
       toast.success("Account added");
-    } catch { toast.error("Failed to add account"); }
+    } catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to add account"); }
   };
 
   const handleDeleteAccount = async (id: number) => {
     if (!confirm("Delete this account?")) return;
     try { await deleteAccount(id); load(); toast.success("Account deleted"); }
-    catch { toast.error("Failed to delete"); }
+    catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to delete"); }
   };
 
   const startEditAccount = (acc: any) => {
@@ -90,7 +92,7 @@ export default function BrandsPage() {
       if (clean[key]) clean[key] = clean[key].replace(/^@+/, "");
     }
     try { await updateAccount(id, clean); setEditingAccount(null); load(); toast.success("Account updated"); }
-    catch { toast.error("Failed to update account"); }
+    catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to update account"); }
   };
 
   const displayHandle = (handle: string) => handle ? handle.replace(/^@+/, "") : "";
