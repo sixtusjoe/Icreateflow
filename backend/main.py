@@ -1518,9 +1518,25 @@ async def create_brand(data: BrandCreate, user: dict = Depends(get_current_user)
             # Detect the most common UX failure: slug uniqueness collision.
             msg = str(e).lower()
             if "unique" in msg and "slug" in msg:
+                # Tell the user WHY: do they already own this slug, or does
+                # someone else? brands.slug is globally unique (used in URL
+                # routing) so a duplicate isn't necessarily theirs.
+                from sqlalchemy import select as _sel
+                from database import Brand as _Brand
+                existing = (await database.session.execute(
+                    _sel(_Brand).where(_Brand.slug == data.slug)
+                )).scalar_one_or_none()
+                if existing is not None and existing.user_id == user.get("id"):
+                    raise HTTPException(
+                        409,
+                        f"You already have a brand '{existing.name}' with slug "
+                        f"'{data.slug}'. Open it from the Brands page or pick "
+                        f"a different slug.",
+                    )
                 raise HTTPException(
                     409,
-                    f"A brand with slug '{data.slug}' already exists. Pick a different slug.",
+                    f"Slug '{data.slug}' is taken by another account. Pick a "
+                    f"different slug (e.g. '{data.slug}-2').",
                 )
             raise HTTPException(
                 500,
