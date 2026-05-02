@@ -69,6 +69,10 @@ function NewPostPageInner() {
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<number>(0);
   const slideTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Debounce timer for the post-level caption textarea on Edit Slides
+  // step. Without this, edits live only in local state and are lost when
+  // advancing to Generate.
+  const captionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [outputSlides, setOutputSlides] = useState<any[]>([]);
   const [previewTab, setPreviewTab] = useState<number>(0);
   const [rerunningOcr, setRerunningOcr] = useState(false);
@@ -152,6 +156,21 @@ function NewPostPageInner() {
     const updated = await getPost(post.id);
     setPost(updated);
   };
+
+  // Persist post-level caption edits. Debounced 500ms while typing;
+  // `flush` parameter skips the debounce so we can force a save before
+  // advancing to the Generate step.
+  const handleCaptionChange = useCallback((value: string, flush = false) => {
+    if (!post) return;
+    setPost((prev: any) => (prev ? { ...prev, caption: value } : prev));
+    if (captionTimer.current) clearTimeout(captionTimer.current);
+    const save = async () => {
+      try { await schedulePost(post.id, { caption: value }); }
+      catch { toast.error("Failed to save caption"); }
+    };
+    if (flush) { save(); return; }
+    captionTimer.current = setTimeout(save, 500);
+  }, [post]);
 
   const handleSlideUpdate = useCallback((slideNum: number, field: string, value: string | boolean) => {
     if (!post) return;
@@ -468,7 +487,9 @@ function NewPostPageInner() {
         <div className="space-y-4">
           <div className="rounded-2xl bg-card p-5">
             <label className="mb-1.5 block text-sm font-medium">Caption (shared across all platforms)</label>
-            <textarea value={post.caption || ""} onChange={(e) => setPost({ ...post, caption: e.target.value })}
+            <textarea value={post.caption || ""}
+              onChange={(e) => handleCaptionChange(e.target.value)}
+              onBlur={(e) => handleCaptionChange(e.target.value, true)}
               placeholder="Enter caption..." rows={2}
               className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground placeholder:text-muted-foreground resize-none" />
           </div>
@@ -553,7 +574,17 @@ function NewPostPageInner() {
             </div>
           ))}
 
-          <button onClick={() => setStep("variations")}
+          <button onClick={async () => {
+              // Flush any in-flight debounced saves so a quick edit-then-click
+              // doesn't lose the last keystrokes when the page reloads on
+              // step 3 / 4.
+              if (captionTimer.current) {
+                clearTimeout(captionTimer.current);
+                try { await schedulePost(post.id, { caption: post.caption || "" }); }
+                catch { toast.error("Failed to save caption"); return; }
+              }
+              setStep("variations");
+            }}
             className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90">
             Next: Edit Variations
           </button>
