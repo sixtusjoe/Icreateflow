@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import traceback
 from datetime import datetime, timedelta, date, time as dtime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import database as db
@@ -731,6 +732,30 @@ async def dispatch_due_once() -> None:
                             error=f"passthrough failed: {pe}",
                         )
                         continue
+                elif public_base and not source.startswith(("http://", "https://")):
+                    # Diversification OFF + local source. Previously the raw
+                    # filesystem path went straight to the adapter — only
+                    # YouTube/Facebook accepted it (TikTok and Instagram
+                    # require URL sources). Now wrap it via /api/files/ with
+                    # the per-account `?for=` knob so:
+                    #   - TikTok/IG can use this path at all (URL-based);
+                    #   - YT/FB still work (their _fetch_bytes hits our URL);
+                    #   - the file gets the per-account container-metadata
+                    #     remux even though pixel-level diversification is
+                    #     turned off (cheap, no quality loss, breaks the
+                    #     identical-bytes-across-accounts cluster).
+                    try:
+                        source = diversify_svc.public_url_for(
+                            Path(source), public_base, account_seed=variation["id"],
+                        )
+                    except Exception as we:
+                        await db.log_error(
+                            database, source=f"scheduler.localwrap.{platform}",
+                            message=str(we), traceback=traceback.format_exc(),
+                            context=f"clip_post_id={cp['id']} clip_id={clip['id']} variation_id={variation['id']}",
+                        )
+                        # Fall through with raw local path; YT/FB will still
+                        # work, TikTok/IG will fail at the adapter.
 
                 # Defense in depth: TikTok will reject any URL not under
                 # our verified domain. If neither diversify nor passthrough
