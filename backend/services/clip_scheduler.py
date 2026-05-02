@@ -684,7 +684,11 @@ async def dispatch_due_once() -> None:
                             variation_id=variation["id"],
                             platform=platform,
                         )
-                        source = diversify_svc.public_url_for(local, public_base)
+                        # Per-variation seed → per-account remux of the
+                        # diversified .mp4 served to the platform.
+                        source = diversify_svc.public_url_for(
+                            local, public_base, account_seed=variation["id"],
+                        )
                         # Stamp last-success so admin stats survive cache cleanup.
                         try:
                             await db.set_site_config(
@@ -709,7 +713,9 @@ async def dispatch_due_once() -> None:
                         local = await diversify_svc.passthrough_download(
                             source=source, clip_id=clip["id"],
                         )
-                        source = diversify_svc.public_url_for(local, public_base)
+                        source = diversify_svc.public_url_for(
+                            local, public_base, account_seed=variation["id"],
+                        )
                     except Exception as pe:
                         await db.log_error(
                             database, source=f"scheduler.passthrough.{platform}",

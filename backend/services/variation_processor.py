@@ -363,12 +363,26 @@ async def passthrough_download(source: str, clip_id: int) -> Path:
     return out
 
 
-def public_url_for(local_path: Path, public_base: str) -> str:
+def public_url_for(
+    local_path: Path,
+    public_base: str,
+    account_seed: int | None = None,
+) -> str:
     """Build an externally-reachable URL the platforms can pull from.
 
     Mirrors the Post Now convention: {public_base}/api/files/{url-encoded-rel-path}.
+
+    When `account_seed` is given (e.g. variation_id on the Clipping side,
+    accounts.id on the Brand side), appends `?for={seed}&t={short_token}`
+    so the /api/files endpoint serves a per-account remuxed copy of the
+    video with synthetic phone-grade container metadata. Different
+    accounts → different bytes → no cross-account fingerprint clustering.
     """
     from urllib.parse import quote
+    import secrets
     rel = str(local_path).lstrip("./")
     enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
-    return f"{public_base.rstrip('/')}/api/files/{enc}"
+    base = f"{public_base.rstrip('/')}/api/files/{enc}"
+    if account_seed is None:
+        return base
+    return f"{base}?for={int(account_seed)}&t={secrets.token_urlsafe(6)}"

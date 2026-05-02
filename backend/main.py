@@ -108,6 +108,87 @@ def _naive_utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# Phone-grade device pool used for both slide EXIF (in serve_file_as_jpeg)
+# and video container metadata (in _remux_video_with_account_metadata).
+# Keeping one source of truth means the same account presents a coherent
+# device identity across slides AND videos served on its behalf.
+_DEVICE_POOL = [
+    ("Apple",   "iPhone 15",       "17.5.1"),
+    ("Apple",   "iPhone 14 Pro",   "17.6"),
+    ("Apple",   "iPhone 13",       "18.0"),
+    ("samsung", "SM-S928U",        "One UI 6.1"),  # Galaxy S24 Ultra
+    ("samsung", "SM-S921U",        "One UI 6.0"),  # Galaxy S24
+    ("Google",  "Pixel 8",         "TQ3A.230901.001"),
+    ("Google",  "Pixel 7a",        "TQ3A.230705.001"),
+]
+
+
+async def _remux_video_with_account_metadata(src_path: Path, account_seed: int) -> bytes:
+    """Return the input video re-muxed (no re-encode) with per-account
+    container metadata so each account's API uploads carry a distinct
+    fingerprint to TikTok / IG / FB / YouTube.
+
+    Why this matters: the proxy work changes API origin IP, but every
+    Brand account still served byte-identical .mp4s to platforms that
+    PULL_FROM_URL (TikTok video, IG Reels) or that we fetch-then-upload
+    (YouTube, Facebook). Identical bytes across accounts cluster as one
+    operator regardless of the IP. Container metadata diversity (Make,
+    Model, Software, creation_time, encoder, comment) is the cheap
+    cousin of the slide EXIF work — runs `ffmpeg -c copy`, no quality
+    loss, ~50–200ms for typical Shorts.
+
+    `account_seed` is whatever stable id is the per-target granularity:
+    Brand `accounts.id` for /posts/new, Clipping `artist_accounts.id`
+    for the scheduler. Same seed → same device identity (cohesive
+    "this account is one phone"); different seeds → different bytes.
+    """
+    make, model, software = _DEVICE_POOL[account_seed % len(_DEVICE_POOL)]
+    # creation_time advances per request → breaks "same bytes across
+    # repeat pulls" clustering. Recent past so it looks like a phone
+    # capture.
+    from random import randint
+    shot = datetime.now(timezone.utc) - timedelta(seconds=randint(15 * 60, 6 * 3600))
+    creation_time = shot.strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    # Encoder string varies per make to look congruent.
+    encoder_pool = {
+        "Apple":   "HEVC",
+        "samsung": "Lavf60.16.100",
+        "Google":  "Lavf60.16.100",
+    }
+    encoder = encoder_pool[make]
+
+    out_path = Path(f"/tmp/_remux_{account_seed}_{secrets.token_hex(4)}.mp4")
+    cmd = [
+        "ffmpeg", "-loglevel", "error", "-y",
+        "-i", str(src_path),
+        "-map_metadata", "-1",         # drop the source's metadata first
+        "-c", "copy",                  # no re-encode
+        "-movflags", "+faststart",     # phone-typical, also helps streaming
+        "-metadata", f"creation_time={creation_time}",
+        "-metadata", f"encoder={encoder}",
+        "-metadata", f"make={make}",
+        "-metadata", f"model={model}",
+        "-metadata", f"software={software}",
+        "-metadata", f"comment=IMG_{account_seed:04d}",
+        str(out_path),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0 or not out_path.exists():
+        # Fail open — return raw bytes rather than 500 the caller. We'd
+        # rather post with stale metadata than not post at all.
+        with open(src_path, "rb") as f:
+            return f.read()
+    try:
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        try: out_path.unlink()
+        except Exception: pass
+
+
 async def verify_brand_ownership(brand_id: int, user: dict):
     """Check that brand belongs to user (admins can access all)."""
     database = await db.get_db()
@@ -2487,13 +2568,19 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
             # proxies /api/* to the backend — the /files mount isn't reachable
             # externally — so we use the existing /api/files/{path} route.
             from urllib.parse import quote
+            # Cache-bust token shared across all platform URLs for this
+            # post_now invocation. Different invocation → different token,
+            # so retry attempts don't share URLs with prior attempts.
+            _video_t = secrets.token_urlsafe(6)
             def _public_video_url(p: Optional[str]) -> Optional[str]:
                 path = (out.get(f"{p}_video_path") if p else None) or legacy_video_path
                 if not path:
                     return None
                 rel = path.lstrip("./")
                 enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
-                return f"{public_base}/api/files/{enc}"
+                # ?for={account_id} triggers per-account container-metadata
+                # remux; ?t=... breaks URL clustering across accounts.
+                return f"{public_base}/api/files/{enc}?for={account['id']}&t={_video_t}"
 
             # Refresh expiring tokens (YouTube/TikTok access tokens are short-lived).
             async def _fresh_token(platform_name: str) -> Optional[str]:
@@ -3137,7 +3224,7 @@ async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, a
 
 
 @app.get("/api/files/{file_path:path}")
-async def serve_file(file_path: str):
+async def serve_file(file_path: str, for_: Optional[int] = Query(None, alias="for")):
     full_path = Path(file_path)
     if not full_path.exists():
         for base in [Path("uploads"), Path("output"), Path("music")]:
@@ -3147,6 +3234,29 @@ async def serve_file(file_path: str):
                 break
     if not full_path.exists():
         raise HTTPException(404, "File not found")
+
+    # When ?for={account_seed} is set AND this is a video, return a
+    # per-account remuxed copy with synthetic phone-grade container
+    # metadata. Both Brand /posts/new and the Clipping scheduler append
+    # this query string when handing a URL to a platform adapter, so
+    # YouTube / TikTok / IG / FB each see a different .mp4 fingerprint
+    # per account. Browser previews (no ?for=) get raw bytes unchanged.
+    if for_ is not None and full_path.suffix.lower() in (".mp4", ".mov", ".m4v"):
+        try:
+            data = await _remux_video_with_account_metadata(full_path, int(for_))
+            return Response(
+                content=data,
+                media_type="video/mp4",
+                headers={
+                    "Cache-Control": "no-store",
+                    "Content-Disposition": f'inline; filename="IMG_{int(for_):04d}.MP4"',
+                },
+            )
+        except Exception:
+            # Fall through to raw on any unexpected error so we never
+            # break a post over a metadata-fingerprint nicety.
+            pass
+
     # Force browsers to revalidate — regenerated slides overwrite the same filename,
     # so without no-cache the old image would stick around after a regenerate.
     return FileResponse(
