@@ -882,14 +882,37 @@ async def dispatch_due_once() -> None:
                 # public stats until the user publishes from their app)
                 # and the dashboard renders a "draft" pill.
                 _draft = bool(result.get("draft"))
-                await db.update_clip_post(
-                    database, cp["id"],
+                # Defense-in-depth: if a model column hasn't been migrated
+                # onto the live DB (e.g. service running pre-migration code),
+                # SQLAlchemy raises "Unconsumed column names: <col>" and the
+                # whole bookkeeping update fails. The platform already has
+                # the upload at this point, so we can't lose the row — fall
+                # back to the minimum set of columns that's been stable for
+                # ages, log the drift, and move on.
+                _post_update = dict(
                     status="posted",
                     posted_at=datetime.now(timezone.utc),
                     platform_post_id=result.get("platform_post_id"),
                     error=None,
                     posted_as_draft=_draft,
                 )
+                try:
+                    await db.update_clip_post(database, cp["id"], **_post_update)
+                except Exception as _upd_err:
+                    msg = str(_upd_err)
+                    if "Unconsumed column names" in msg:
+                        try:
+                            await db.log_error(
+                                database, source="scheduler.dispatch.schema_drift",
+                                message=f"post-success UPDATE rejected: {msg[:200]}",
+                                context=f"clip_post_id={cp['id']} platform={cp.get('platform')}",
+                            )
+                        except Exception:
+                            pass
+                        _post_update.pop("posted_as_draft", None)
+                        await db.update_clip_post(database, cp["id"], **_post_update)
+                    else:
+                        raise
 
                 # Bump clip stats AFTER a successful post (not at plan time).
                 # Bumping at plan time made evaluate_pause think the directory
