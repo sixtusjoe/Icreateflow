@@ -372,11 +372,23 @@ async def _fetch_profile_handles_impl(
             return {"youtube_handle": name} if name else {}
 
         if platform == "instagram":
-            # Standalone IG Login — query /me on graph.instagram.com
+            # Instagram API with Instagram Login profile lookup. Unlike
+            # the Meta Graph API (which requires /vN.N/ in the path),
+            # graph.instagram.com rejects the version prefix with
+            # `IGApiException code 100 — Unsupported request - method
+            # type: get` because it parses `v19.0` as a node id and
+            # `me` as nothing valid. The version-less path is the one
+            # documented for Instagram-Login tokens.
+            #
+            # Request both `user_id` and `username`. `username` is the
+            # @handle we display in the OAuth tile; `user_id` is the IG
+            # Business Account id used by /api/oauth/instagram/callback
+            # downstream and by the FB/IG adapter for posting (matches
+            # what the Meta-flow path returns).
             r = await client.get(
-                "https://graph.instagram.com/v19.0/me",
+                "https://graph.instagram.com/me",
                 params={
-                    "fields": "username",
+                    "fields": "user_id,username",
                     "access_token": access_token,
                 },
             )
@@ -384,7 +396,12 @@ async def _fetch_profile_handles_impl(
                 raise ProfileFetchError(f"instagram {r.status_code}: {r.text[:200]}")
             data = r.json() or {}
             name = data.get("username")
-            return {"instagram_handle": name} if name else {}
+            out: dict = {}
+            if name:
+                out["instagram_handle"] = name
+            if data.get("user_id"):
+                out["instagram_user_id"] = str(data["user_id"])
+            return out
 
         if platform == "meta":
             # Meta's new granular-permission consent flow breaks /me/accounts:
