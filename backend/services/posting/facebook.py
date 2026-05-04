@@ -49,10 +49,9 @@ async def get_view_count(
     access_token: str, platform_post_id: str, proxy_url: str | None = None,
 ) -> int:
     async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
-        # Single call covers both: existence probe + view count. If the
-        # post is gone Meta 4xx's with 'does not exist' / 'unsupported get
-        # request' / code:100 — promote to PostDeletedError. If alive, the
-        # `views` field gives us the count (same response).
+        # Existence probe + node `views` field (used as fallback value).
+        # If the post is gone Meta 4xx's with 'does not exist' / 'unsupported
+        # get request' / code:100 — promote to PostDeletedError.
         r = await client.get(
             f"{GRAPH}/{platform_post_id}",
             params={"fields": "id,views", "access_token": access_token},
@@ -69,4 +68,21 @@ async def get_view_count(
                     f"FB post id {platform_post_id!r} not found: {text[:200]}"
                 )
             return 0
-        return int(r.json().get("views") or 0)
+        node_views = int(r.json().get("views") or 0)
+
+        # Primary metric: total_video_views from video_insights matches what
+        # Meta Creator Studio shows. The node `views` field is a different
+        # (lower) aggregation. Fall back to node_views on any 4xx so older
+        # page tokens / reel-type posts that don't support insights still work.
+        ins = await client.get(
+            f"{GRAPH}/{platform_post_id}/video_insights",
+            params={"metric": "total_video_views", "access_token": access_token},
+        )
+        if ins.status_code >= 400:
+            return node_views
+        for row in ins.json().get("data") or []:
+            if row.get("name") == "total_video_views":
+                values = row.get("values") or []
+                if values:
+                    return int(values[0].get("value") or 0)
+        return node_views

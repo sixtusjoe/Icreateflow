@@ -1248,15 +1248,19 @@ async def poll_views_once() -> None:
 
                 if platform == "youtube" and post_id in yt_attempted:
                     # Pre-batched above. If the ID came back, use that count;
-                    # if it didn't, the video is deleted/private/stale.
+                    # if it didn't, keep the previous count — YouTube can
+                    # transiently omit a video (processing window, geo-
+                    # restriction, API partial result). Raising PostDeletedError
+                    # here would permanently exclude the row from polling with
+                    # no recovery path.
                     if post_id in yt_views:
                         views = yt_views[post_id]
                     else:
-                        from services.posting import PostDeletedError as _PDE
-                        raise _PDE(
-                            f"YouTube stats: video id {post_id!r} not found "
-                            f"(deleted, private, or stored id is stale)"
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count_updated_at=datetime.now(timezone.utc),
                         )
+                        continue
                 else:
                     views = await adapter.get_view_count(
                         access_token, post_id,

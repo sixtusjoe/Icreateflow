@@ -7,9 +7,12 @@ then from the variation row's `instagram_user_id` if available.
 from __future__ import annotations
 
 import asyncio
+import logging
 import httpx
 
 from . import PostingError, PostDeletedError
+
+_log = logging.getLogger(__name__)
 
 
 GRAPH = "https://graph.facebook.com/v19.0"
@@ -119,16 +122,26 @@ async def get_view_count(
         # Step 2: insights for view count. Meta deprecated `plays` in Graph
         # API v22.0+; supported view-equivalent for Reels is `views`. Fall
         # back to `plays` for older API versions.
+        last_status, last_body = None, None
         for metric in ("views", "plays"):
             r = await client.get(
                 f"{GRAPH}/{platform_post_id}/insights",
                 params={"metric": metric, "access_token": access_token},
             )
             if r.status_code >= 400:
+                last_status, last_body = r.status_code, r.text[:200]
                 continue
             for row in r.json().get("data") or []:
                 if row.get("name") == metric:
                     values = row.get("values") or []
                     if values:
                         return int(values[0].get("value") or 0)
+
+        if last_status is not None:
+            _log.warning(
+                "IG insights unavailable for %s — both metrics failed "
+                "(last HTTP %s: %s). Token may be missing "
+                "instagram_manage_insights scope.",
+                platform_post_id, last_status, last_body,
+            )
         return 0

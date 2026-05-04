@@ -441,15 +441,11 @@ async def get_view_count(
             raise PostingError(f"TikTok stats failed {r.status_code}: {r.text[:200]}")
         videos = ((r.json().get("data") or {}).get("videos")) or []
         if not videos:
-            # TikTok returns 200 with empty videos[] when the video id is
-            # gone (deleted by user / removed by moderation / private). Raise
-            # PostDeletedError so the poller marks deleted_at and the
-            # dashboard count drops. Transient glitches (rate-limit, edge
-            # cache) are uncommon for the /video/query/ path; if they do
-            # happen, the recovery path in the poller un-marks deleted_at
-            # the next time the video shows up with a real view_count.
-            raise PostDeletedError(
-                f"TikTok video id {platform_post_id!r} not in query response "
-                f"(deleted, private, or moderated)"
-            )
+            # Return 0; monotonic poller keeps the previous count. We do NOT
+            # raise PostDeletedError here — TikTok returns empty videos[] both
+            # for genuinely deleted videos AND for transient edge-cache /
+            # moderation-hold responses. The poll query permanently excludes
+            # deleted_at rows (no recovery path), so a false PostDeletedError
+            # here would wipe the view count forever.
+            return 0
         return int(videos[0].get("view_count") or 0)
