@@ -42,18 +42,36 @@ async def upload_video(
         if not creation_id:
             raise PostingError("IG container missing id")
 
-        # Poll container status
+        # Poll container status. Request `status` and `error` alongside
+        # `status_code` so when the container goes ERROR we surface the
+        # actual reason (codec, length, aspect ratio, fetch failure)
+        # instead of just `{"status_code":"ERROR","id":"…"}` — that was
+        # opaque enough to send us chasing the wrong root cause on a
+        # past lancastarmoonnews failure.
         for _ in range(36):
             await asyncio.sleep(5)
             s = await client.get(
                 f"{GRAPH}/{creation_id}",
-                params={"fields": "status_code", "access_token": access_token},
+                params={
+                    "fields": "status_code,status,error",
+                    "access_token": access_token,
+                },
             )
-            status = s.json().get("status_code") if s.status_code < 400 else None
+            body = s.json() if s.status_code < 400 else {}
+            status = body.get("status_code")
             if status == "FINISHED":
                 break
             if status == "ERROR":
-                raise PostingError(f"IG container error: {s.text[:200]}")
+                # `error` is the structured Meta error object when present;
+                # `status` is the human-readable processing status string.
+                err_obj = body.get("error") or {}
+                reason = (
+                    err_obj.get("error_user_msg")
+                    or err_obj.get("message")
+                    or body.get("status")
+                    or s.text[:200]
+                )
+                raise PostingError(f"IG container error: {reason}")
         else:
             raise PostingError("IG container processing timed out")
 
