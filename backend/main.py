@@ -4320,20 +4320,25 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         for p in posts:
             platform = p.get("platform")
             status = p.get("status")
-            # Rows the view poller flagged as deleted on the platform should
-            # not inflate the dashboard counts even though status='posted'.
-            if status == "posted" and not p.get("deleted_at"):
-                posts_total += 1
+            if status == "posted":
+                # Views accumulate forever — include deleted posts in the view
+                # total so counts never drop when a post is removed from the
+                # platform. The view_count column is preserved when deleted_at
+                # is set (the poller never clears it).
                 if platform in by_platform:
-                    by_platform[platform]["posted"] += 1
                     by_platform[platform]["views"] += int(p.get("view_count") or 0)
-                posted_at = p.get("posted_at")
-                if isinstance(posted_at, datetime):
-                    # DB stores naive UTC; treat as UTC then convert to artist tz.
-                    if posted_at.tzinfo is None:
-                        posted_at = posted_at.replace(tzinfo=timezone.utc)
-                    if posted_at.astimezone(tz).date() == today:
-                        posts_today += 1
+                # Post count and "today" count only reflect live (non-deleted) posts.
+                if not p.get("deleted_at"):
+                    posts_total += 1
+                    if platform in by_platform:
+                        by_platform[platform]["posted"] += 1
+                    posted_at = p.get("posted_at")
+                    if isinstance(posted_at, datetime):
+                        # DB stores naive UTC; treat as UTC then convert to artist tz.
+                        if posted_at.tzinfo is None:
+                            posted_at = posted_at.replace(tzinfo=timezone.utc)
+                        if posted_at.astimezone(tz).date() == today:
+                            posts_today += 1
             elif status == "scheduled":
                 sch = p.get("scheduled_for")
                 if isinstance(sch, datetime):

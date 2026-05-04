@@ -122,10 +122,13 @@ async def get_view_count(
 ) -> int:
     counts = await get_view_counts_batch(access_token, [platform_post_id], proxy_url)
     if platform_post_id not in counts:
-        # Return 0; monotonic poller keeps the previous count. YouTube can
-        # transiently omit a video from videos.list (processing window, brief
-        # geo-restriction, API partial result). The poll query permanently
-        # excludes deleted_at rows, so raising PostDeletedError here would
-        # wipe the view count with no recovery path.
-        return 0
+        # Video absent from API response — deleted, private, or stale ID.
+        # Raise PostDeletedError so the poller marks deleted_at and this row
+        # drops from the live post count. The view_count column is NOT cleared
+        # on deletion; the dashboard includes views from deleted posts so the
+        # accumulated count never disappears.
+        raise PostDeletedError(
+            f"YouTube stats: video id {platform_post_id!r} not found "
+            f"(deleted, private, or stored id is stale)"
+        )
     return counts[platform_post_id]
