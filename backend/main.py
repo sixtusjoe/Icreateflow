@@ -108,6 +108,79 @@ def _naive_utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+async def _ensure_fresh_account_token(
+    database, account: dict, platform_name: str,
+) -> Optional[str]:
+    """Return a non-expired access token for `account[platform_name]_token`,
+    refreshing via the saved refresh_token + admin OAuth app credentials
+    when the stored token is within 2 minutes of expiry. Persists the
+    refreshed token back to the row.
+
+    Returns None if no token is connected; returns the existing token
+    unchanged when no refresh is possible (no refresh_token, no admin
+    creds, or refresh failed) so the caller can still attempt the call —
+    the platform will 401 instead of us silently failing earlier.
+
+    Used by both post_now (where it's now the same closure) and the
+    refresh-account-profile endpoint (which previously read the raw
+    stored token, hitting 401 the moment TT/YT short-lived tokens
+    expired).
+    """
+    from services import oauth as oauth_svc  # local import to avoid cycles
+
+    token_local = account.get(f"{platform_name}_token")
+    if not token_local:
+        return None
+    exp = account.get(f"{platform_name}_expires_at")
+    refresh = account.get(f"{platform_name}_refresh_token")
+    needs_refresh = False
+    if exp:
+        try:
+            exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if exp_dt <= datetime.now(timezone.utc) + timedelta(minutes=2):
+                needs_refresh = True
+        except Exception:
+            pass
+    if not needs_refresh or not refresh:
+        return token_local
+
+    cfg = await db.get_site_config(database)
+    # facebook is provided by the meta OAuth app; instagram can come from
+    # either the meta app (FB Login fan-out → sibling facebook_token
+    # exists) or the standalone Instagram Login app.
+    if platform_name == "facebook":
+        provider = "meta"
+    elif platform_name == "instagram":
+        provider = "meta" if account.get("facebook_token") else "instagram"
+    else:
+        provider = platform_name
+    cid = cfg.get(f"oauth_{provider}_client_id", "")
+    csec = cfg.get(f"oauth_{provider}_client_secret", "")
+    if not cid or not csec:
+        return token_local
+    try:
+        refreshed = await oauth_svc.refresh_access_token(
+            provider, refresh, cid, csec,
+            proxy_url=account.get("proxy_url") or None,
+        )
+    except Exception:
+        return token_local
+    new_token = refreshed.get("access_token")
+    if not new_token:
+        return token_local
+    updates_tok: dict = {f"{platform_name}_token": new_token}
+    if refreshed.get("refresh_token"):
+        updates_tok[f"{platform_name}_refresh_token"] = refreshed["refresh_token"]
+    if refreshed.get("expires_in"):
+        new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(refreshed["expires_in"]))
+        updates_tok[f"{platform_name}_expires_at"] = new_exp.isoformat()
+    try:
+        await db.update_account(database, account["id"], **updates_tok)
+    except Exception:
+        pass
+    return new_token
+
+
 # Phone-grade device pool used for both slide EXIF (in serve_file_as_jpeg)
 # and video container metadata (in _remux_video_with_account_metadata).
 # Keeping one source of truth means the same account presents a coherent
@@ -1387,13 +1460,30 @@ async def oauth_callback(
             if tokens.get("platform_user_id"):
                 updates[f"{p}_user_id"] = str(tokens["platform_user_id"])
 
+        # Use the strict variant so failures land in error_logs. The
+        # tile would otherwise show "Connected" with no @handle and we'd
+        # have no signal from /admin → Errors about why. The strict call
+        # only raises ProfileFetchError; we still swallow it so a
+        # handle-lookup blip doesn't fail the whole OAuth (tokens are
+        # already persisted below — the user can hit the refresh icon
+        # on the account row to re-fetch).
         try:
-            handles = await oauth_svc.fetch_profile_handles(platform, tokens["access_token"])
-            for k, v in handles.items():
+            handles = await oauth_svc.fetch_profile_handles_strict(platform, tokens["access_token"])
+            for k, v in (handles or {}).items():
                 if v:
                     updates[k] = v
-        except Exception:
-            pass
+        except oauth_svc.ProfileFetchError as e:
+            await db.log_error(
+                database, source=f"oauth.profile.{platform}",
+                message=f"OAuth callback handle fetch: {str(e)[:300]}",
+                context=f"target_id={target_id} kind={kind}",
+            )
+        except Exception as e:
+            await db.log_error(
+                database, source=f"oauth.profile.{platform}",
+                message=f"OAuth callback handle fetch: {type(e).__name__}: {str(e)[:300]}",
+                context=f"target_id={target_id} kind={kind}",
+            )
 
         if kind == "variation":
             await db.update_artist_account(database, target_id, **updates)
@@ -1720,12 +1810,35 @@ async def refresh_account_profile(account_id: int, user: dict = Depends(get_curr
 
         status: dict[str, dict] = {}
         updates: dict = {}
-        platform_specs = [
-            ("tiktok", "tiktok", a.get("tiktok_token")),
-            ("youtube", "youtube", a.get("youtube_token")),
-            ("meta", "facebook", a.get("facebook_token") or a.get("instagram_token")),
+        # (token_field, api_platform, display_key)
+        # `api_platform` is what fetch_profile_handles_strict expects:
+        # the Meta-owned Facebook+linked-IG flow uses the "meta" lookup;
+        # the standalone Instagram Login app uses the "instagram" lookup
+        # (a separate /me endpoint on graph.instagram.com). When both
+        # facebook_token and instagram_token are present (Meta-flow IG),
+        # the meta lookup returns both handles in one call so we only
+        # need the standalone-IG path when `instagram_token` exists
+        # WITHOUT `facebook_token`.
+        platform_specs: list[tuple[str, str, str]] = [
+            ("tiktok",   "tiktok",  "tiktok"),
+            ("youtube",  "youtube", "youtube"),
+            ("facebook", "meta",    "facebook"),
         ]
-        for api_platform, display_key, token in platform_specs:
+        if a.get("instagram_token") and not a.get("facebook_token"):
+            platform_specs.append(("instagram", "instagram", "instagram"))
+        for token_field, api_platform, display_key in platform_specs:
+            if not a.get(token_field):
+                status[display_key] = {"status": "skipped", "reason": "not connected"}
+                continue
+            # CRITICAL: refresh the token before calling the platform —
+            # TT (24h) and YT (1h) tokens expire frequently and the
+            # previous code called fetch_profile_handles_strict with
+            # whatever raw token was in the DB, getting 401s.
+            try:
+                token = await _ensure_fresh_account_token(database, a, token_field)
+            except Exception as e:
+                status[display_key] = {"status": "failed", "error": f"refresh: {type(e).__name__}: {str(e)[:200]}"}
+                continue
             if not token:
                 status[display_key] = {"status": "skipped", "reason": "not connected"}
                 continue

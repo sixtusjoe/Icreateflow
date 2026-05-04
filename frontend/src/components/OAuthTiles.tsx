@@ -57,15 +57,20 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
   const [submittingAsset, setSubmittingAsset] = useState(false);
 
   const handleConnect = async (p: PlatformKey) => {
+    // CRITICAL: open the popup SYNCHRONOUSLY inside the click handler.
+    // Mobile Safari, Firefox iOS and some webviews block window.open()
+    // calls that happen after an await — they require the open to be
+    // a direct user-gesture descendant. We open about:blank now and
+    // navigate it once we have the authorize URL below.
+    const popup = window.open("about:blank", "oauth", "width=600,height=720");
+    if (!popup) {
+      toast.error("Popup blocked — allow popups for this site (Settings → Site permissions)");
+      return;
+    }
     setBusy(p);
     try {
       const { authorize_url } = await startOAuth(OAUTH_PLATFORM_FOR[p], account.id, kind);
-      const popup = window.open(authorize_url, "oauth", "width=600,height=720");
-      if (!popup) {
-        toast.error("Popup blocked — allow popups for this site");
-        setBusy(null);
-        return;
-      }
+      popup.location.href = authorize_url;
       // iOS Safari (and some embedded webviews) drops `window.opener`
       // across an external OAuth domain, so the success postMessage
       // never reaches us. We treat popup-close as a "definitely done"
@@ -111,8 +116,14 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
           }
         }
       }, 800);
-    } catch {
-      toast.error("Failed to start OAuth — admin must configure the app first");
+    } catch (e: any) {
+      // We opened a popup synchronously above. If startOAuth failed,
+      // close the empty popup so the user isn't left with about:blank.
+      try { popup.close(); } catch {}
+      toast.error(
+        e?.response?.data?.detail
+          || "Failed to start OAuth — admin must configure the app first"
+      );
       setBusy(null);
     }
   };
