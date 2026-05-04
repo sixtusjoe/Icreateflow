@@ -2,7 +2,7 @@
 
 > Project memory for future Claude sessions and any dev picking this up
 > cold. Heavy on file paths and exact symbol names so neither audience
-> has to grep around. Last updated 2026-04-28.
+> has to grep around. Last updated 2026-05-04.
 
 ---
 
@@ -443,6 +443,44 @@ sudo setquota -u icreateflow 10485760 10485760 0 0 /dev/sda4
    batched poll keeps daily usage <300, but a multi-artist deploy will
    hit the wall. The quota-exhausted backoff prevents log spam, but
    the cure is a quota increase request via Google Cloud Console.
+5. **View-count undercount across all platforms (open, 2026-05-04).**
+   User reports DB `view_count` is dramatically lower than the in-app
+   number on TikTok, Instagram, Facebook, AND YouTube. Sample data:
+   FB rows showing 1–10, IG rows showing 0–1 even on posts the user
+   confirmed have many more views in the app. Poller infrastructure
+   IS running (every poll cycle stamps `view_count_updated_at` within
+   the cadence window) — the discrepancy is in the value each adapter
+   returns from the platform API. Hypotheses, none yet verified with
+   side-by-side numbers:
+   - **FB**: `services/posting/facebook.py:48` calls
+     `GET /{video_id}?fields=id,views`. The top-level `views` field on
+     a Page video object can undercount vs UI. Switch to
+     `/{video_id}/video_insights?metric=total_video_views` (the
+     metric the FB UI uses) and fall back to `views` if insights 4xx.
+   - **IG**: `services/posting/instagram.py:122` tries `views` then
+     `plays` on `/{media-id}/insights`. If both 4xx (e.g. token lost
+     `instagram_manage_insights` after a re-OAuth), we silently return
+     0. Add an explicit log at WARN when both metrics fail so the
+     scope drift surfaces instead of looking like "no views".
+   - **TikTok**: `services/posting/tiktok.py:430` is `view_count` on
+     `/v2/video/query/?fields=view_count`. Documented as authoritative
+     but TT's analytics index lags the in-app counter by hours. No
+     better Display API alternative; only fix is the Research API
+     (academic scope, not available to us) or Business API (different
+     OAuth setup).
+   - **YouTube**: `services/posting/youtube.py:114` reads
+     `statistics.viewCount` from `videos.list?part=statistics`. This
+     is the canonical value YT's UI shows. Discrepancy here would
+     indicate a wrong `platform_post_id` (we resolved to the wrong
+     video) — verify by comparing `platform_post_id` to the URL the
+     user is checking.
+
+   **What was attempted in the 2026-05-04 session (do not redo without
+   data):** Theorized about every platform without concrete A/B
+   numbers from the user. Burnt credit on speculation. The right
+   move is to get one DB row + app screenshot per platform first;
+   then push platform-specific fixes. The user has explicitly asked
+   to stop speculating without data.
 
 ---
 
@@ -681,3 +719,81 @@ alongside the existing `clip_scheduler.start_background_tasks()`.
   insights, which 4xx's cleanly when the post is gone.
 - **`/admin` is for global config; `/settings` is per-user.** Don't
   put per-user toggles in admin or vice versa.
+- **Mapper-level "Unconsumed column names" is a model/code drift, NOT
+  a DB drift.** When `update(Model).values(col=…)` raises this, the
+  column DOES exist in Postgres but is missing from the running ORM
+  class. Cause is almost always a deploy gap: the rsync laid down the
+  migration but didn't refresh the Python file, OR the systemd
+  service didn't restart cleanly. Fixed at
+  `clip_scheduler.py:899-915` — the post-success bookkeeping
+  `update_clip_post(...)` is wrapped: on `Unconsumed column names`,
+  log a `scheduler.dispatch.schema_drift` row, drop the offending
+  kwarg, and retry. Without this, a successful `upload_video` can
+  silently land on the platform while the local row gets stamped
+  `failed` (the worst possible failure mode — UI says nothing posted,
+  TikTok / IG / FB say it did, dashboard counter frozen).
+- **VPS is rsync-deployed, NOT git-checkout.** `/srv/icreateflow` is
+  not a `git` working tree. `git pull` on the VPS will fail / do
+  nothing — every code change MUST be pushed via `deploy/sync.sh`
+  from the laptop, then `deploy/deploy.sh` on the VPS. When debugging
+  "but I pushed the fix", first verify the file on the VPS:
+  `grep -n <symbol> /srv/icreateflow/backend/<file>.py`. If the
+  symbol isn't there, the rsync didn't run.
+- **`paused_reason IS NULL` rejects empty strings.** psql renders
+  both NULL and `''` as blank, so you can't distinguish them in a
+  SELECT. The dispatch claim filter at
+  `clip_scheduler.py:621-625` uses `aa.paused_reason IS NULL` — an
+  empty string at that column silently blocks claims. To detect:
+  `LENGTH(paused_reason)` will return 0 for empty string, NULL for
+  NULL. `paused_reason IS NULL AS really_null` makes it explicit.
+  Cleanup: `UPDATE artist_accounts SET paused_reason=NULL WHERE
+  paused_reason IS NOT NULL AND LENGTH(TRIM(paused_reason))=0;`
+- **Per-variation pause must run regardless of artist pause state.**
+  `evaluate_variation_pause` was being called only inside
+  `evaluate_pause`, which was itself gated on
+  `artist.is_active && !paused_reason` at every call site (planner,
+  view poller). Result: once an artist hit any paused state, its
+  variations stopped being re-evaluated, and exhausted variations
+  stayed flagged "Running" while the artist showed
+  `directory_exhausted`. Fixed in commit `2975cea` — variation pause
+  now refreshes at the top of every `plan_slots_once` tick before the
+  artist-pause early-return.
+- **Bookkeeping race after successful upload = double-post hazard.**
+  When a post-success local UPDATE raises (column drift, transient DB
+  error, anything), the platform already has the upload but the row
+  gets stamped `failed`. If the operator retries by re-scheduling, it
+  posts again. Mitigations: the `Unconsumed column names` harden
+  above; the unique partial index on
+  `(artist_account_id, platform, scheduled_for)` prevents same-slot
+  re-insert (but a different `scheduled_for` will still fire).
+  Operator-side reconciliation when this happens: visually verify on
+  the platform, then either `UPDATE clip_posts SET status='posted',
+  error=NULL` for the affected rows (they'll never have
+  `platform_post_id` so view poller skips them — dashboard count
+  rises but views stay 0 on those rows) or leave `failed` and live
+  with the count gap.
+- **Standalone IG OAuth needs same-window redirect on mobile.**
+  iOS deep-links `instagram.com/oauth` into the IG app, which can't
+  postMessage back to the popup opener. Fix shape (commit `5521127`):
+  `oauth_svc.sign_state` carries `flow={popup|redirect}` and
+  `return_to`; backend's `_oauth_finish` (`main.py:1116-1149`) emits
+  302 to `return_to` for the redirect flow. Frontend
+  (`OAuthTiles.tsx`) opens the popup synchronously (mobile-Safari
+  popup-blocker workaround), reads `flow` from the start endpoint
+  response, and either drives the popup OR closes it and navigates
+  the main window. Backend downgrades `flow=redirect → popup` when
+  resolving to the Meta FB-Login app (asset picker needs popup) at
+  `main.py:1383-1385`.
+- **IG container ERROR returns nothing useful with `fields=status_code`
+  alone.** Add `status,error` to the poll fields so the human-readable
+  reason surfaces (codec, length, fetch failure, etc.) — see
+  `services/posting/instagram.py:54-56`. Without this, every IG
+  publish failure looks the same: `{"status_code":"ERROR","id":"…"}`.
+  The `error.error_user_msg` / `error.message` / `status` fallback
+  chain at lines 67-73 surfaces the actual reason.
+- **`paused_reason: ""` from the frontend is the wrong shape.**
+  `frontend/src/app/clipping/[slug]/page.tsx:1086` sends empty string
+  on Resume. Backend should normalize empty → NULL on write (it
+  appears to currently, since the cleanup query found 0 empty-string
+  rows). Worth auditing every UPDATE-shaped path that touches
+  `paused_reason` to confirm the normalization is universal.
