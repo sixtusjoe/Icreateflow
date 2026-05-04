@@ -1496,8 +1496,31 @@ async def create_brand(data: BrandCreate, user: dict = Depends(get_current_user)
     database = await db.get_db()
     try:
         try:
+            # Auto-uniquify the slug. brands.slug is globally unique (used
+            # in URL routing), so a typed slug that collides — even with
+            # another tenant's brand — would error out. Walk -2, -3, …
+            # until we find a free one. We pass the resolved slug back so
+            # the frontend can surface it if it differs from the input.
+            from sqlalchemy import select as _sel
+            from database import Brand as _Brand
+            base_slug = data.slug
+            slug = base_slug
+            for n in range(2, 200):
+                exists = (await database.session.execute(
+                    _sel(_Brand.id).where(_Brand.slug == slug)
+                )).scalar_one_or_none()
+                if exists is None:
+                    break
+                slug = f"{base_slug}-{n}"
+            else:
+                raise HTTPException(
+                    409,
+                    f"Couldn't find a free slug variant of '{base_slug}' after "
+                    f"200 attempts. Pick a more distinctive name.",
+                )
+
             brand_id = await db.create_brand(
-                database, data.name, data.slug,
+                database, data.name, slug,
                 data.background_color, data.timezone, data.default_post_times,
                 user_id=user["id"]
             )
@@ -1515,29 +1538,6 @@ async def create_brand(data: BrandCreate, user: dict = Depends(get_current_user)
                 traceback=traceback.format_exc(),
                 user_id=user.get("id"),
             )
-            # Detect the most common UX failure: slug uniqueness collision.
-            msg = str(e).lower()
-            if "unique" in msg and "slug" in msg:
-                # Tell the user WHY: do they already own this slug, or does
-                # someone else? brands.slug is globally unique (used in URL
-                # routing) so a duplicate isn't necessarily theirs.
-                from sqlalchemy import select as _sel
-                from database import Brand as _Brand
-                existing = (await database.session.execute(
-                    _sel(_Brand).where(_Brand.slug == data.slug)
-                )).scalar_one_or_none()
-                if existing is not None and existing.user_id == user.get("id"):
-                    raise HTTPException(
-                        409,
-                        f"You already have a brand '{existing.name}' with slug "
-                        f"'{data.slug}'. Open it from the Brands page or pick "
-                        f"a different slug.",
-                    )
-                raise HTTPException(
-                    409,
-                    f"Slug '{data.slug}' is taken by another account. Pick a "
-                    f"different slug (e.g. '{data.slug}-2').",
-                )
             raise HTTPException(
                 500,
                 f"Create brand failed: {str(e)[:160]} (see /admin → Errors for full traceback)",

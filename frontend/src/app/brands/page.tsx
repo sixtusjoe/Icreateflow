@@ -34,11 +34,19 @@ export default function BrandsPage() {
   const handleCreateBrand = async () => {
     if (!newBrand.name || !newBrand.slug) return toast.error("Name and slug required");
     try {
-      await createBrand(newBrand);
+      const created = await createBrand(newBrand);
+      const submittedSlug = newBrand.slug;
       setNewBrand({ name: "", slug: "", background_color: "#000000", timezone: "US/Eastern", default_post_times: "09:00,13:00,18:00" });
       setShowNew(false);
       load();
-      toast.success("Brand created");
+      // Server auto-bumps the slug to -2/-3/... on collision so creation
+      // never fails on duplicate names. Tell the user when it changed
+      // their typed slug so the URL won't surprise them later.
+      if (created?.slug && created.slug !== submittedSlug) {
+        toast.success(`Brand created — slug auto-set to '${created.slug}' ('${submittedSlug}' was taken)`);
+      } else {
+        toast.success("Brand created");
+      }
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || "Failed to create brand");
     }
