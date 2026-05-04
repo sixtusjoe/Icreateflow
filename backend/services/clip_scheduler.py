@@ -453,6 +453,26 @@ async def plan_slots_once() -> None:
         for a in artists:
             artist = dict(a)
             try:
+                # Per-variation pause flags get refreshed every tick regardless
+                # of artist-level pause state. Without this, once the artist is
+                # paused (manual, target_reached, or rolled-up directory_exhausted),
+                # `evaluate_pause` stops running and any variation that becomes
+                # exhausted afterwards stays flagged "Running" on the dashboard
+                # while its clip pool is actually empty. The function is a no-op
+                # on PAUSE_MANUAL variations and only writes when the target
+                # state differs from the current one, so it's safe to call
+                # unconditionally.
+                try:
+                    for v in await db.get_artist_accounts(database, artist["id"]):
+                        await evaluate_variation_pause(database, dict(v))
+                except Exception:
+                    await db.log_error(
+                        database, source="scheduler.evaluate_variation_pause",
+                        message="failed to refresh per-variation pause flags",
+                        traceback=traceback.format_exc(),
+                        context=f"artist_id={artist['id']}",
+                    )
+
                 if not artist.get("is_active"):
                     continue
                 if artist.get("paused_reason"):
