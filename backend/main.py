@@ -2842,9 +2842,24 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                         if not plat_url:
                             per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
                             continue
+                        # Per-platform required IDs from the Account row.
+                        # Facebook needs the Page id (`page_id`); Instagram
+                        # needs the IG Business Account id (`ig_user_id`).
+                        # The Clipping dispatcher already does this from
+                        # artist_accounts; the Brand path was missing it
+                        # and the FB adapter raised "Facebook requires
+                        # page_id". The OAuth callback persists these into
+                        # `accounts.{platform}_user_id` for both Meta-flow
+                        # connections and standalone IG.
+                        plat_kwargs: dict = {}
+                        if name == "facebook" and account.get("facebook_user_id"):
+                            plat_kwargs["page_id"] = account["facebook_user_id"]
+                        if name == "instagram" and account.get("instagram_user_id"):
+                            plat_kwargs["ig_user_id"] = account["instagram_user_id"]
                         res = await adapter.upload_video(
                             token, plat_url, caption,
                             proxy_url=account_proxy,
+                            **plat_kwargs,
                         )
                     per_platform[name] = {
                         "status": "posted",

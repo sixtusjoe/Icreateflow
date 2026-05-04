@@ -66,6 +66,13 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
         setBusy(null);
         return;
       }
+      // iOS Safari (and some embedded webviews) drops `window.opener`
+      // across an external OAuth domain, so the success postMessage
+      // never reaches us. We treat popup-close as a "definitely done"
+      // signal: refetch state so the connected handle/avatar appear
+      // even when the message path failed. `messageHandled` keeps the
+      // happy path from double-firing toasts/onChange.
+      let messageHandled = false;
       const listener = (ev: MessageEvent) => {
         if (ev.data?.type !== "oauth") return;
         if (ev.data.status === "pick_asset") {
@@ -73,6 +80,7 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
           // yet, popup might also send a final status.
           window.removeEventListener("message", listener);
           setBusy(null);
+          messageHandled = true;
           setPick({
             assets: ev.data.assets || [],
             assignToken: ev.data.assign_token,
@@ -82,6 +90,7 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
         }
         window.removeEventListener("message", listener);
         setBusy(null);
+        messageHandled = true;
         if (ev.data.status === "success") {
           toast.success(`${PLATFORM_LABELS[p]} connected`);
           onChange();
@@ -93,6 +102,13 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
           clearInterval(poll);
           window.removeEventListener("message", listener);
           setBusy(null);
+          if (!messageHandled) {
+            // Fallback: assume the OAuth flow completed (the backend
+            // writes tokens before rendering the close-html), refetch
+            // state, and let the parent decide whether the tile shows
+            // as connected.
+            onChange();
+          }
         }
       }, 800);
     } catch {
