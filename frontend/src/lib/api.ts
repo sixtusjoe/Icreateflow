@@ -309,12 +309,21 @@ export const updateOAuthApp = (
 
 // --- OAuth connect (user-scoped) ---
 // `kind` is "account" (brand accounts) or "variation" (artist accounts).
+// `flow` controls how the callback page returns control: "popup" (default —
+// renders close-html that postMessages opener and self-closes) or
+// "redirect" (302s back to `return_to`). Standalone IG uses redirect on
+// mobile because iOS deep-links instagram.com/oauth into the IG app,
+// which can't postMessage back to the opener window.
 export const startOAuth = (
   platform: string,
   id: number,
   kind: "account" | "variation" = "account",
+  opts?: { flow?: "popup" | "redirect"; return_to?: string },
 ) => {
-  const params = kind === "variation" ? { variation_id: id } : { account_id: id };
+  const params: Record<string, string | number> =
+    kind === "variation" ? { variation_id: id } : { account_id: id };
+  if (opts?.flow) params.flow = opts.flow;
+  if (opts?.return_to) params.return_to = opts.return_to;
   return api.get(`/api/oauth/${platform}/start`, { params }).then((r) => r.data);
 };
 export const disconnectOAuth = (

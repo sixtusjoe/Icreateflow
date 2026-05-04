@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Menu } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import Sidebar from "./Sidebar";
 import Logo from "./Logo";
+import OAuthReturnHandler from "./OAuthReturnHandler";
 
 const PUBLIC_PATHS = ["/login", "/register", "/", "/terms", "/privacy"];
 
@@ -56,6 +57,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      <Suspense fallback={null}>
+        <OAuthReturnHandler />
+      </Suspense>
       <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
 
       {/* Mobile backdrop */}

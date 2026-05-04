@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Link2, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -56,6 +56,16 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
   const [pick, setPick] = useState<PickState>(null);
   const [submittingAsset, setSubmittingAsset] = useState(false);
 
+  // Standalone-IG redirect-flow (see handleConnect comment) hands control
+  // back to OAuthReturnHandler, which dispatches `oauth-returned` once it
+  // finishes the URL cleanup + toast. Refetch our account row so the tile
+  // flips to "Connected" without a manual reload.
+  useEffect(() => {
+    const onReturn = () => onChange();
+    window.addEventListener("oauth-returned", onReturn);
+    return () => window.removeEventListener("oauth-returned", onReturn);
+  }, [onChange]);
+
   const handleConnect = async (p: PlatformKey) => {
     // CRITICAL: open the popup SYNCHRONOUSLY inside the click handler.
     // Mobile Safari, Firefox iOS and some webviews block window.open()
@@ -69,7 +79,28 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
     }
     setBusy(p);
     try {
-      const { authorize_url } = await startOAuth(OAUTH_PLATFORM_FOR[p], account.id, kind);
+      // For the IG tile we ask the backend to use redirect-flow: iOS deep-links
+      // instagram.com/oauth into the Instagram app, which can't postMessage
+      // back to a popup opener. The backend will downgrade to popup-flow when
+      // it falls back to the Meta FB-Login app (asset picker needs a popup),
+      // so we honor whatever `flow` it returns — not what we asked for.
+      const wantRedirect = p === "instagram";
+      const startOpts = wantRedirect
+        ? { flow: "redirect" as const, return_to: window.location.pathname + window.location.search }
+        : undefined;
+      const resp = await startOAuth(OAUTH_PLATFORM_FOR[p], account.id, kind, startOpts);
+      const { authorize_url, flow: resolvedFlow } = resp as {
+        authorize_url: string;
+        flow?: "popup" | "redirect";
+      };
+      if (resolvedFlow === "redirect") {
+        // Close the synchronously-opened popup and drive the main window
+        // through the OAuth flow. The callback will 302 back here with
+        // ?oauth_status=... which `useOAuthReturnToast` picks up on mount.
+        try { popup.close(); } catch {}
+        window.location.href = authorize_url;
+        return;
+      }
       popup.location.href = authorize_url;
       // iOS Safari (and some embedded webviews) drops `window.opener`
       // across an external OAuth domain, so the success postMessage
