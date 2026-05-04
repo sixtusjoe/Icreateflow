@@ -600,13 +600,37 @@ function GoogleDriveCard({ data, onReload }: any) {
 function OAuthCard({ platform, data, redirectBase, onReload }: any) {
   const [clientId, setClientId] = useState(data?.client_id || "");
   const [clientSecret, setClientSecret] = useState("");
+  // IG-only: verify_token used by Facebook's webhook subscription handshake.
+  // Stored in full (not masked) on the GET because the admin needs to copy
+  // it into the developer console UI.
+  const [webhookToken, setWebhookToken] = useState<string>(data?.webhook_verify_token || "");
   useEffect(() => { setClientId(data?.client_id || ""); }, [data]);
+  useEffect(() => { setWebhookToken(data?.webhook_verify_token || ""); }, [data]);
 
   const save = async () => {
     const payload: any = { client_id: clientId };
     if (clientSecret) payload.client_secret = clientSecret;
-    try { await updateOAuthApp(platform, payload); toast.success(`${platform} saved`); setClientSecret(""); onReload(); }
-    catch { toast.error("Failed"); }
+    if (platform === "instagram") payload.webhook_verify_token = webhookToken;
+    try {
+      await updateOAuthApp(platform, payload);
+      toast.success(`${platform} saved`);
+      setClientSecret("");
+      onReload();
+    } catch (e: any) { toast.error(e?.response?.data?.detail || "Failed"); }
+  };
+
+  const generateWebhookToken = () => {
+    // 32 hex chars from crypto.getRandomValues — long enough that brute
+    // force is hopeless, short enough to paste into Facebook's UI.
+    const buf = new Uint8Array(16);
+    crypto.getRandomValues(buf);
+    const tok = Array.from(buf).map((b) => b.toString(16).padStart(2, "0")).join("");
+    setWebhookToken(tok);
+  };
+
+  const copy = async (text: string, label: string) => {
+    try { await navigator.clipboard.writeText(text); toast.success(`${label} copied`); }
+    catch { toast.error("Copy failed"); }
   };
 
   const clearAll = async () => {
@@ -655,6 +679,58 @@ function OAuthCard({ platform, data, redirectBase, onReload }: any) {
         <label className="mb-1 block text-xs text-muted-foreground">Redirect URI (paste this into the {platform} developer console)</label>
         <code className="block break-all rounded-lg border border-border bg-background px-3 py-2 text-xs">{callback}</code>
       </div>
+      {platform === "instagram" && (
+        <div className="mt-3 rounded-xl border border-border bg-muted/30 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold">Webhook subscription</h4>
+            <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] ${webhookToken ? "border-green-500/40 text-green-500" : "border-border text-muted-foreground"}`}>
+              {webhookToken ? "Ready" : "Not set"}
+            </span>
+          </div>
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            Facebook calls our callback URL with <code>?hub.mode=subscribe&hub.verify_token=…</code> to verify webhook subscriptions. Set a token here, copy it into the developer console&apos;s &quot;Verify token&quot; field, then save the webhook config.
+          </p>
+          <label className="mb-1 block text-xs text-muted-foreground">Verify token</label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={webhookToken}
+              onChange={(e) => setWebhookToken(e.target.value)}
+              placeholder="click Generate or paste your own"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-base sm:text-xs outline-none focus:border-foreground"
+            />
+            <button
+              type="button"
+              onClick={generateWebhookToken}
+              className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted"
+            >
+              Generate
+            </button>
+            {webhookToken && (
+              <button
+                type="button"
+                onClick={() => copy(webhookToken, "Verify token")}
+                className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted"
+              >
+                Copy
+              </button>
+            )}
+          </div>
+          <label className="mt-3 mb-1 block text-xs text-muted-foreground">Webhook callback URL (same as redirect URI)</label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <code className="min-w-0 flex-1 break-all rounded-lg border border-border bg-background px-3 py-2 text-xs">{callback}</code>
+            <button
+              type="button"
+              onClick={() => copy(callback, "Callback URL")}
+              className="rounded-lg border border-border px-3 py-2 text-base sm:text-xs font-medium hover:bg-muted"
+            >
+              Copy
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Don&apos;t forget to click <span className="font-medium">Save instagram</span> below after changing the verify token.
+          </p>
+        </div>
+      )}
       {/* TikTok privacy used to live here as a global default. TikTok's
           UX rules require the user to manually pick privacy on every
           flow with no default value, so the setting moved per-(post,

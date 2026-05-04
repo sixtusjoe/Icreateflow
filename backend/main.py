@@ -890,6 +890,12 @@ OAUTH_CONFIG_KEYS = [
     "oauth_meta_client_id", "oauth_meta_client_secret",
     # Standalone Instagram API with Instagram Login (separate from Meta/FB app).
     "oauth_instagram_client_id", "oauth_instagram_client_secret",
+    # Instagram webhook verify_token. Stored here so admins can paste it
+    # into the Facebook developer console "Verify token" field; the same
+    # value is checked when Facebook hits our callback URL with
+    # ?hub.mode=subscribe&hub.verify_token=…&hub.challenge=… during
+    # webhook subscription verification.
+    "oauth_instagram_webhook_verify_token",
     "oauth_google_drive_api_key",
     "oauth_redirect_base",
 ]
@@ -901,6 +907,10 @@ class OAuthAppUpdate(BaseModel):
     api_key: Optional[str] = None
     redirect_base: Optional[str] = None
     tiktok_privacy_level: Optional[str] = None
+    # Instagram-only: webhook subscription verify token. Returned in full
+    # in the GET response (unlike client_secret which is masked) because
+    # the admin needs to copy it into Facebook's developer console.
+    webhook_verify_token: Optional[str] = None
 
 
 def _mask(s: Optional[str]) -> str:
@@ -922,11 +932,19 @@ async def admin_get_oauth_apps(admin: dict = Depends(admin_required)):
         for platform in OAUTH_PLATFORMS:
             cid = cfg.get(f"oauth_{platform}_client_id", "")
             sec = cfg.get(f"oauth_{platform}_client_secret", "")
-            result[platform] = {
+            entry = {
                 "client_id": cid,
                 "client_secret_preview": _mask(sec),
                 "configured": bool(cid and sec),
             }
+            if platform == "instagram":
+                # Surface the full webhook verify token — admin needs to
+                # copy it into the Facebook developer console UI. This is
+                # admin-only data on an admin-only endpoint.
+                entry["webhook_verify_token"] = cfg.get(
+                    "oauth_instagram_webhook_verify_token", ""
+                )
+            result[platform] = entry
         gkey = cfg.get("oauth_google_drive_api_key", "")
         result["google_drive"] = {
             "api_key_preview": _mask(gkey),
@@ -956,6 +974,14 @@ async def admin_update_oauth_app(
                 await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id)
             if data.client_secret is not None:
                 await db.set_site_config(database, f"oauth_{platform}_client_secret", data.client_secret)
+            if platform == "instagram" and data.webhook_verify_token is not None:
+                # Empty string clears the token (disables webhook
+                # verification); a non-empty value replaces what's stored.
+                await db.set_site_config(
+                    database,
+                    "oauth_instagram_webhook_verify_token",
+                    data.webhook_verify_token,
+                )
             # Note: tiktok_privacy_level used to live in site_config as a
             # global default. Per TikTok's UX rules ("Users must manually
             # select the privacy status from a dropdown and there should
@@ -1236,7 +1262,36 @@ async def oauth_start(
 
 
 @app.get("/api/oauth/{platform}/callback")
-async def oauth_callback(platform: str, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+async def oauth_callback(
+    platform: str,
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    # Instagram webhook subscription verification. Facebook GETs this URL
+    # with ?hub.mode=subscribe&hub.verify_token=…&hub.challenge=… when
+    # the operator saves the webhook config in the developer console.
+    # We must echo `hub.challenge` as plain text only when `hub.verify_token`
+    # matches the stored secret, otherwise return 403. The dotted query
+    # keys can't be bound as typed function args, so we read them off
+    # request.query_params.
+    qp = request.query_params
+    if platform == "instagram" and qp.get("hub.mode") == "subscribe":
+        token_provided = qp.get("hub.verify_token") or ""
+        challenge = qp.get("hub.challenge") or ""
+        database = await db.get_db()
+        try:
+            cfg = await db.get_site_config(database)
+            token_stored = cfg.get("oauth_instagram_webhook_verify_token") or ""
+        finally:
+            await database.close()
+        if not token_stored:
+            raise HTTPException(503, "Webhook verify token not configured")
+        if token_provided != token_stored:
+            raise HTTPException(403, "verify_token mismatch")
+        return Response(content=challenge, media_type="text/plain")
+
     if error:
         return HTMLResponse(_oauth_close_html(False, f"Provider error: {error}"))
     if platform not in oauth_svc.AUTHORIZE_URLS:

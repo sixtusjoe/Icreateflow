@@ -297,7 +297,14 @@ export const deleteAdminUser = (id: number) =>
 export const getOAuthApps = () => api.get("/api/admin/oauth-apps").then((r) => r.data);
 export const updateOAuthApp = (
   platform: string,
-  data: { client_id?: string; client_secret?: string; api_key?: string; redirect_base?: string },
+  data: {
+    client_id?: string;
+    client_secret?: string;
+    api_key?: string;
+    redirect_base?: string;
+    /** Instagram only: verify_token for webhook subscription. */
+    webhook_verify_token?: string;
+  },
 ) => api.put(`/api/admin/oauth-apps/${platform}`, data).then((r) => r.data);
 
 // --- OAuth connect (user-scoped) ---
