@@ -482,6 +482,15 @@ class ClipPost(Base):
     # adapter). NULL = alive; any value = deleted on the platform.
     # Dashboard counts exclude rows where this is set.
     deleted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # Stamped True when TikTok inbox/MEDIA_UPLOAD was used (post-as-draft).
+    # The view poller skips drafts (no public stats until the user
+    # publishes from their inbox) and the dashboard renders a "draft"
+    # pill. The migration in _migrate_tiktok_per_target_settings adds
+    # this column to both clip_posts AND outputs; the model column was
+    # missing here, so update_clip_post(..., posted_as_draft=...) raised
+    # SQLAlchemy "Unconsumed column names: posted_as_draft" and broke
+    # every Clipping dispatch.
+    posted_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
     __table_args__ = (
         CheckConstraint(
             "platform IN ('tiktok','youtube','instagram','facebook')",
