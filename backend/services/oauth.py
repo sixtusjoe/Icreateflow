@@ -93,11 +93,25 @@ def build_redirect_uri(redirect_base: str, platform: str) -> str:
     return f"{base}/api/oauth/{platform}/callback"
 
 
-def sign_state(user_id: int, account_id: int, platform: str, kind: str = "account") -> str:
+def sign_state(
+    user_id: int, account_id: int, platform: str,
+    kind: str = "account",
+    flow: str = "popup",
+    return_to: str | None = None,
+) -> str:
     """Short-lived JWT binding the connecting user to the account/variation + platform.
 
     `kind` is either 'account' (brand accounts, default) or 'variation' (artist_accounts).
     `account_id` carries the target row id regardless of kind.
+
+    `flow` is "popup" (default — render close-html that postMessages the
+    opener) or "redirect" (return a 302 to `return_to` with a query
+    string carrying the result). Standalone-IG OAuth on mobile has to
+    use redirect because iOS deep-links instagram.com/oauth into the
+    Instagram app, which can't postMessage back to a popup opener.
+
+    `return_to` is the absolute URL to send the browser back to when
+    flow=redirect; ignored for flow=popup.
     """
     payload = {
         "purpose": "oauth_state",
@@ -105,6 +119,8 @@ def sign_state(user_id: int, account_id: int, platform: str, kind: str = "accoun
         "user_id": user_id,
         "account_id": account_id,
         "kind": kind,
+        "flow": flow,
+        "return_to": return_to or "",
         "nonce": secrets.token_hex(8),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
     }
@@ -124,6 +140,8 @@ def verify_state(state: str) -> dict[str, Any] | None:
             "user_id": int(payload["user_id"]),
             "account_id": int(payload["account_id"]),
             "kind": str(payload.get("kind") or "account"),
+            "flow": str(payload.get("flow") or "popup"),
+            "return_to": str(payload.get("return_to") or ""),
         }
     except (KeyError, ValueError):
         return None

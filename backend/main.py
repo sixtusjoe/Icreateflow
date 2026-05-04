@@ -1113,6 +1113,42 @@ setTimeout(function(){{ try{{ window.close(); }}catch(e){{}} }}, 800);
 </body></html>"""
 
 
+def _oauth_finish(
+    success: bool,
+    message: str = "",
+    *,
+    flow: str = "popup",
+    return_to: str = "",
+    platform: str = "",
+):
+    """Render the appropriate end-of-OAuth response based on the flow.
+
+    flow="popup" — return the close-html that postMessages the opener
+        and auto-closes (existing behaviour).
+
+    flow="redirect" — return 302 to `return_to` with query params
+        oauth_status (success|error), oauth_platform, and oauth_message
+        when there's a message to surface. Used by the standalone IG
+        flow on mobile because iOS deep-links instagram.com/oauth into
+        the IG app, breaking popup window.opener postMessage.
+
+    Falls back to popup when flow=redirect but return_to is empty
+    (defensive — shouldn't happen given the start-endpoint validation).
+    """
+    if flow == "redirect" and return_to:
+        from urllib.parse import urlencode
+        params = {
+            "oauth_status": "success" if success else "error",
+        }
+        if platform:
+            params["oauth_platform"] = platform
+        if message:
+            params["oauth_message"] = message[:200]
+        sep = "&" if "?" in return_to else "?"
+        return RedirectResponse(f"{return_to}{sep}{urlencode(params)}", status_code=302)
+    return HTMLResponse(_oauth_close_html(success, message))
+
+
 def _oauth_close_html(success: bool, message: str = "") -> str:
     status = "success" if success else "error"
     safe = message.replace("</", "<\\/").replace("'", "\\'")
@@ -1289,12 +1325,21 @@ async def oauth_start(
     platform: str,
     account_id: Optional[int] = None,
     variation_id: Optional[int] = None,
+    flow: str = "popup",
+    return_to: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     if platform not in oauth_svc.AUTHORIZE_URLS:
         raise HTTPException(400, f"Unknown platform: {platform}")
     if (account_id is None) == (variation_id is None):
         raise HTTPException(400, "Pass exactly one of account_id or variation_id")
+    if flow not in ("popup", "redirect"):
+        raise HTTPException(400, "flow must be 'popup' or 'redirect'")
+    # Defense-in-depth: only accept return_to within our own configured
+    # public base, so a malicious caller can't turn this endpoint into
+    # an open-redirector.
+    if flow == "redirect" and return_to and not return_to.startswith("/"):
+        raise HTTPException(400, "return_to must be a same-site path (e.g. '/brands')")
 
     kind = "account" if account_id is not None else "variation"
     target_id = account_id if account_id is not None else variation_id
@@ -1329,9 +1374,22 @@ async def oauth_start(
         raise HTTPException(400, f"{platform} OAuth app not configured by admin")
 
     redirect_uri = oauth_svc.build_redirect_uri(redirect_base, effective_platform)
-    state = oauth_svc.sign_state(user["id"], target_id, effective_platform, kind=kind)
+
+    # The Meta flow renders an asset-picker HTML page in the popup that
+    # postMessages the chosen Page back to the opener — that requires
+    # popup mode. If the caller asked for redirect but we resolved to
+    # meta (FB-Login fallback when no standalone IG app is configured),
+    # downgrade to popup so the asset picker keeps working.
+    effective_flow = flow
+    if effective_platform == "meta":
+        effective_flow = "popup"
+
+    state = oauth_svc.sign_state(
+        user["id"], target_id, effective_platform,
+        kind=kind, flow=effective_flow, return_to=return_to,
+    )
     auth_url = oauth_svc.build_authorize_url(effective_platform, client_id, redirect_uri, state)
-    return {"authorize_url": auth_url}
+    return {"authorize_url": auth_url, "flow": effective_flow}
 
 
 @app.get("/api/oauth/{platform}/callback")
@@ -1365,19 +1423,42 @@ async def oauth_callback(
             raise HTTPException(403, "verify_token mismatch")
         return Response(content=challenge, media_type="text/plain")
 
-    if error:
-        return HTMLResponse(_oauth_close_html(False, f"Provider error: {error}"))
-    if platform not in oauth_svc.AUTHORIZE_URLS:
-        return HTMLResponse(_oauth_close_html(False, "Unknown platform"))
-    if not code or not state:
-        return HTMLResponse(_oauth_close_html(False, "Missing code or state"))
+    # Decode state preemptively (best-effort — even when later validation
+    # fails) so we know whether to render the close-html (popup flow) or
+    # 302 back to the caller's page (redirect flow). Provider error
+    # callbacks still carry our state token, so we can route most error
+    # cases to the right shape too.
+    pre_verified = oauth_svc.verify_state(state) if state else None
+    early_flow = (pre_verified or {}).get("flow") or "popup"
+    early_return_to = (pre_verified or {}).get("return_to") or ""
 
-    verified = oauth_svc.verify_state(state)
+    if error:
+        return _oauth_finish(
+            False, f"Provider error: {error}",
+            flow=early_flow, return_to=early_return_to, platform=platform,
+        )
+    if platform not in oauth_svc.AUTHORIZE_URLS:
+        return _oauth_finish(
+            False, "Unknown platform",
+            flow=early_flow, return_to=early_return_to, platform=platform,
+        )
+    if not code or not state:
+        return _oauth_finish(
+            False, "Missing code or state",
+            flow=early_flow, return_to=early_return_to, platform=platform,
+        )
+
+    verified = pre_verified
     if not verified or verified["platform"] != platform:
-        return HTMLResponse(_oauth_close_html(False, "Invalid or expired state"))
+        return _oauth_finish(
+            False, "Invalid or expired state",
+            flow=early_flow, return_to=early_return_to, platform=platform,
+        )
 
     target_id = verified["account_id"]
     kind = verified.get("kind", "account")
+    flow = verified.get("flow") or "popup"
+    return_to = verified.get("return_to") or ""
 
     database = await db.get_db()
     try:
@@ -1390,10 +1471,16 @@ async def oauth_callback(
         try:
             tokens = await oauth_svc.exchange_code(platform, code, client_id, client_secret, redirect_uri)
         except Exception as e:
-            return HTMLResponse(_oauth_close_html(False, f"Token exchange failed: {e}"))
+            return _oauth_finish(
+                False, f"Token exchange failed: {e}",
+                flow=flow, return_to=return_to, platform=platform,
+            )
 
         if not tokens.get("access_token"):
-            return HTMLResponse(_oauth_close_html(False, "Provider returned no access token"))
+            return _oauth_finish(
+                False, "Provider returned no access token",
+                flow=flow, return_to=return_to, platform=platform,
+            )
 
         expires_at = None
         if tokens.get("expires_in"):
@@ -1411,12 +1498,16 @@ async def oauth_callback(
             try:
                 assets = await oauth_svc.fetch_meta_assets(tokens["access_token"])
             except Exception as e:
-                return HTMLResponse(_oauth_close_html(False, f"Asset discovery failed: {e}"))
+                return _oauth_finish(
+                    False, f"Asset discovery failed: {e}",
+                    flow=flow, return_to=return_to, platform=platform,
+                )
             if not assets:
-                return HTMLResponse(_oauth_close_html(
+                return _oauth_finish(
                     False,
                     "No Pages or Instagram accounts were granted. Reconnect and tick at least one Page or IG.",
-                ))
+                    flow=flow, return_to=return_to, platform=platform,
+                )
             assign_token = secrets.token_urlsafe(24)
             payload_json = json.dumps({
                 "user_token": tokens["access_token"],
@@ -1489,7 +1580,9 @@ async def oauth_callback(
             await db.update_artist_account(database, target_id, **updates)
         else:
             await db.update_account(database, target_id, **updates)
-        return HTMLResponse(_oauth_close_html(True))
+        return _oauth_finish(
+            True, flow=flow, return_to=return_to, platform=platform,
+        )
     finally:
         await database.close()
 
