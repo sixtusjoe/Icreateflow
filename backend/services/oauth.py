@@ -398,15 +398,21 @@ async def _fetch_profile_handles_impl(
             # `me` as nothing valid. The version-less path is the one
             # documented for Instagram-Login tokens.
             #
-            # Request both `user_id` and `username`. `username` is the
-            # @handle we display in the OAuth tile; `user_id` is the IG
-            # Business Account id used by /api/oauth/instagram/callback
-            # downstream and by the FB/IG adapter for posting (matches
-            # what the Meta-flow path returns).
+            # graph.instagram.com/me returns "Unsupported request -
+            # method type: get" (IGApiException code 100) for both the
+            # version-prefixed and version-less paths. Use the IG user ID
+            # directly when we have it (always the case after token
+            # exchange, which returns user_id in the short-lived response).
+            # Falls back to /me if somehow no ID is available.
+            ig_endpoint = (
+                f"https://graph.instagram.com/{prefer_ig_id}"
+                if prefer_ig_id
+                else "https://graph.instagram.com/me"
+            )
             r = await client.get(
-                "https://graph.instagram.com/me",
+                ig_endpoint,
                 params={
-                    "fields": "user_id,username",
+                    "fields": "id,username",
                     "access_token": access_token,
                 },
             )
@@ -417,8 +423,9 @@ async def _fetch_profile_handles_impl(
             out: dict = {}
             if name:
                 out["instagram_handle"] = name
-            if data.get("user_id"):
-                out["instagram_user_id"] = str(data["user_id"])
+            uid = data.get("id") or (str(prefer_ig_id) if prefer_ig_id else None)
+            if uid:
+                out["instagram_user_id"] = str(uid)
             return out
 
         if platform == "meta":

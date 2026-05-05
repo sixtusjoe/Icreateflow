@@ -1559,7 +1559,13 @@ async def oauth_callback(
         # already persisted below — the user can hit the refresh icon
         # on the account row to re-fetch).
         try:
-            handles = await oauth_svc.fetch_profile_handles_strict(platform, tokens["access_token"])
+            # For standalone Instagram OAuth the token exchange already
+            # returns the IG user id; pass it so the profile fetch uses
+            # GET /{ig_user_id} instead of GET /me (which now 400s).
+            _ig_id = tokens.get("platform_user_id") if platform == "instagram" else None
+            handles = await oauth_svc.fetch_profile_handles_strict(
+                platform, tokens["access_token"], prefer_ig_id=_ig_id
+            )
             for k, v in (handles or {}).items():
                 if v:
                     updates[k] = v
