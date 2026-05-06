@@ -1498,9 +1498,7 @@ async def discover_external_tiktok_posts() -> None:
       - evaluate_pause / directory_exhausted logic is unaffected
       - view poller DOES poll them — that's the whole point
     """
-    import logging
     import httpx
-    _log = logging.getLogger(__name__)
 
     database = await db.get_db()
     try:
@@ -1527,9 +1525,9 @@ async def discover_external_tiktok_posts() -> None:
                     videos = await tiktok_adapter.list_videos(
                         client, access_token, max_count=50
                     )
-                    _log.info(
-                        "tiktok_discovery: var=%s got %d videos from API",
-                        var_id, len(videos),
+                    print(
+                        f"[tiktok_discovery] var={var_id} got {len(videos)} video(s) from API",
+                        flush=True,
                     )
                     if not videos:
                         continue
@@ -1587,13 +1585,15 @@ async def discover_external_tiktok_posts() -> None:
 
                     await database.commit()
                     if inserted:
-                        _log.info(
-                            "tiktok_discovery: var=%s inserted %d new post(s)",
-                            var_id, inserted,
+                        print(
+                            f"[tiktok_discovery] var={var_id} inserted {inserted} new post(s)",
+                            flush=True,
                         )
                 except Exception:
-                    _log.exception(
-                        "tiktok_discovery: var=%s failed — skipping", var_id
+                    import traceback as _tb
+                    print(
+                        f"[tiktok_discovery] var={var_id} ERROR: {_tb.format_exc()}",
+                        flush=True,
                     )
     finally:
         await database.close()
