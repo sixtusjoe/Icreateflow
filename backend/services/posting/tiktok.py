@@ -344,10 +344,15 @@ async def _fetch_publicly_available_post_id(
         return None
 
 
-async def _list_videos(
+async def list_videos(
     client: httpx.AsyncClient, access_token: str, max_count: int = 20
 ) -> list[dict]:
-    """Return the authed user's most recent videos via /video/list/."""
+    """Return the authed user's most recent videos via /video/list/.
+
+    Requires the ``video.list`` scope on the token. Returns an empty list
+    (not an exception) when the scope is missing or the call fails — callers
+    can treat an empty result as "nothing to discover right now."
+    """
     try:
         r = await client.post(
             f"{API_BASE}/video/list/?fields=id,create_time,view_count,share_url",
@@ -359,6 +364,11 @@ async def _list_videos(
         return ((r.json().get("data") or {}).get("videos")) or []
     except Exception:
         return []
+
+
+# Keep the private alias so internal callers (resolve_video_id) keep working
+# without a change.
+_list_videos = list_videos
 
 
 async def resolve_video_id(

@@ -1483,12 +1483,117 @@ async def sweep_clip_caches_once() -> None:
             pass
 
 
+async def discover_external_tiktok_posts() -> None:
+    """Discover TikTok videos posted outside this platform (e.g. from a phone).
+
+    Calls /v2/video/list/ for every variation that has a tiktok_token (paused
+    or not — paused just means no more clips to schedule, not that the account
+    is inactive). Any video ID not already in clip_posts is inserted as a
+    status='posted' row so the view poller picks it up automatically.
+
+    Safe to run repeatedly — fully idempotent. Only inserts; never touches
+    existing rows. Discovered rows have clip_id=NULL so:
+      - _pick_next_clip ignores them (clips need clip_id IS NOT NULL)
+      - _has_unposted_clip_for_variation ignores them (joins on cp.clip_id=c.id)
+      - evaluate_pause / directory_exhausted logic is unaffected
+      - view poller DOES poll them — that's the whole point
+    """
+    import httpx
+    database = await db.get_db()
+    try:
+        # Fetch all variations across all artists that have a TikTok token.
+        cur = await database.execute(
+            """
+            SELECT aa.id, aa.artist_id, aa.tiktok_token, aa.tiktok_user_id
+            FROM artist_accounts aa
+            WHERE aa.tiktok_token IS NOT NULL
+            """
+        )
+        variations = [dict(r) for r in await cur.fetchall()]
+        if not variations:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        async with httpx.AsyncClient(timeout=30) as client:
+            for var in variations:
+                var_id = var["id"]
+                artist_id = var["artist_id"]
+                access_token = var["tiktok_token"]
+                try:
+                    # Fetch up to 50 most recent videos from TikTok.
+                    videos = await tiktok_adapter.list_videos(
+                        client, access_token, max_count=50
+                    )
+                    if not videos:
+                        continue
+
+                    # Load all platform_post_ids already tracked for this
+                    # variation so we can skip IDs we already know about.
+                    existing_cur = await database.execute(
+                        """
+                        SELECT platform_post_id FROM clip_posts
+                        WHERE artist_account_id = ? AND platform = 'tiktok'
+                          AND platform_post_id IS NOT NULL
+                        """,
+                        (var_id,),
+                    )
+                    known_ids = {
+                        r["platform_post_id"] for r in await existing_cur.fetchall()
+                    }
+
+                    for video in videos:
+                        vid_id = str(video.get("id") or "").strip()
+                        if not vid_id or vid_id in known_ids:
+                            continue
+
+                        # Derive posted_at from create_time (unix seconds).
+                        create_epoch = video.get("create_time")
+                        try:
+                            posted_at = datetime.fromtimestamp(
+                                int(create_epoch), tz=timezone.utc
+                            ).replace(tzinfo=None)  # store as naive UTC (DB convention)
+                        except Exception:
+                            posted_at = now_utc.replace(tzinfo=None)
+
+                        initial_views = int(video.get("view_count") or 0)
+
+                        await database.execute(
+                            """
+                            INSERT INTO clip_posts
+                                (clip_id, artist_id, artist_account_id, platform,
+                                 status, platform_post_id, posted_at,
+                                 view_count, view_count_updated_at)
+                            VALUES (NULL, ?, ?, 'tiktok',
+                                    'posted', ?, ?,
+                                    ?, ?)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (
+                                artist_id, var_id,
+                                vid_id, posted_at,
+                                initial_views, now_utc.replace(tzinfo=None),
+                            ),
+                        )
+                        known_ids.add(vid_id)
+
+                    await database.commit()
+                except Exception:
+                    # Per-variation failures are silently swallowed so one bad
+                    # token can't block discovery for the other variations.
+                    pass
+    finally:
+        await database.close()
+
+
 async def start_background_tasks() -> list[asyncio.Task]:
-    """Kick off the four loops. Call from FastAPI lifespan startup."""
+    """Kick off the background loops. Call from FastAPI lifespan startup."""
     return [
         asyncio.create_task(_loop(plan_slots_once, 300, "plan_slots")),
         asyncio.create_task(_loop(dispatch_due_once, 60, "dispatch")),
         asyncio.create_task(_poll_views_loop()),
         # Daily cache sweep — runs once on boot, then every 24h.
         asyncio.create_task(_loop(sweep_clip_caches_once, 86400, "cache_sweep")),
+        # Hourly TikTok discovery — finds videos posted from phone/other apps
+        # and adds them as posted rows so the view poller tracks them.
+        asyncio.create_task(_loop(discover_external_tiktok_posts, 3600, "tiktok_discovery")),
     ]
