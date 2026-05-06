@@ -1047,8 +1047,12 @@ def _next_midnight_pacific() -> datetime:
 
 
 async def poll_views_once() -> None:
-    """Refresh view counts for posted rows older than VIEW_POLL_INTERVAL_SECONDS,
-    then re-check pause."""
+    """Discover external TikTok posts, then refresh view counts for all
+    posted rows, then re-check pause."""
+    # Run discovery first so any newly found phone-posted videos are
+    # immediately included in the view-count pass below.
+    await discover_external_tiktok_posts()
+
     database = await db.get_db()
     try:
         # The loop interval is the rate limiter. The SQL staleness gate only
@@ -1526,10 +1530,6 @@ async def discover_external_tiktok_posts() -> None:
                     videos = await tiktok_adapter.list_videos(
                         client, access_token, max_count=20
                     )
-                    print(
-                        f"[tiktok_discovery] var={var_id} got {len(videos)} video(s) from API",
-                        flush=True,
-                    )
                     if not videos:
                         continue
 
@@ -1608,7 +1608,4 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(_poll_views_loop()),
         # Daily cache sweep — runs once on boot, then every 24h.
         asyncio.create_task(_loop(sweep_clip_caches_once, 86400, "cache_sweep")),
-        # TikTok discovery — finds videos posted from phone/other apps and adds
-        # them as posted rows so the view poller tracks them. Runs every 5 min.
-        asyncio.create_task(_loop(discover_external_tiktok_posts, 300, "tiktok_discovery")),
     ]
