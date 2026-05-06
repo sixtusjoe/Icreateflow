@@ -359,6 +359,10 @@ async def list_videos(
             json={"max_count": max_count},
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
         )
+        print(
+            f"[tiktok list_videos] status={r.status_code} body={r.text[:300]}",
+            flush=True,
+        )
         if r.status_code >= 400:
             return []
         return ((r.json().get("data") or {}).get("videos")) or []
