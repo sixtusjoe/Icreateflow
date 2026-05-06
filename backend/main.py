@@ -4313,7 +4313,8 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             tz = ZoneInfo(artist_d.get("timezone") or "US/Eastern")
         except Exception:
             tz = ZoneInfo("US/Eastern")
-        today = datetime.now(tz).date()
+        now_utc = datetime.now(timezone.utc)
+        today = now_utc.astimezone(tz).date()
 
         posts_today = 0
         posts_total = 0
@@ -4348,8 +4349,18 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             elif status == "scheduled":
                 sch = p.get("scheduled_for")
                 if isinstance(sch, datetime):
-                    if next_scheduled_at is None or sch < next_scheduled_at:
-                        next_scheduled_at = sch
+                    # Normalise to UTC-aware for comparison.
+                    if sch.tzinfo is None:
+                        sch = sch.replace(tzinfo=timezone.utc)
+                    # Only count FUTURE slots as the "next slot". Past-dated
+                    # scheduled rows exist when an artist/variation became paused
+                    # after the slot was planned — the dispatcher skips them
+                    # (paused_reason IS NULL filter). Surfacing them as "next slot"
+                    # shows a stale past date that never advances, misleading the
+                    # operator into thinking a post is imminent.
+                    if sch > now_utc:
+                        if next_scheduled_at is None or sch < next_scheduled_at:
+                            next_scheduled_at = sch
 
         current_cid = artist_d.get("current_campaign_id")
         campaign = None

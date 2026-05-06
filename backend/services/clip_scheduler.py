@@ -627,6 +627,33 @@ async def dispatch_due_once() -> None:
         )
         await database.commit()
 
+        # Lapsed-slot cleanup: when an artist or variation becomes paused
+        # AFTER a slot was already scheduled, the dispatcher's paused_reason
+        # filter prevents it from ever running — but the row stays at
+        # status='scheduled' indefinitely. This causes the dashboard "Next
+        # slot" to show a stale past date that never advances and confuses
+        # operators. Cancel any scheduled row whose scheduled_for is more than
+        # 6 hours old and whose artist or variation is currently paused.
+        # 6 h gives a comfortable grace window for short pauses that clear
+        # before the slot becomes truly stale.
+        await database.execute(
+            """
+            UPDATE clip_posts
+            SET status = 'failed',
+                error  = 'Slot lapsed while artist/variation was paused — re-schedule via new clip or manual resume'
+            WHERE status = 'scheduled'
+              AND scheduled_for IS NOT NULL
+              AND scheduled_for < NOW() - INTERVAL '6 hours'
+              AND (
+                  artist_id IN (SELECT id FROM artists WHERE paused_reason IS NOT NULL)
+                  OR artist_account_id IN (
+                      SELECT id FROM artist_accounts WHERE paused_reason IS NOT NULL
+                  )
+              )
+            """
+        )
+        await database.commit()
+
         # Atomic claim: flip status='scheduled' → 'posting' in a single
         # UPDATE so only one worker ever gets each row. Without this, two
         # gunicorn workers both SELECT, both UPDATE, and the clip gets
