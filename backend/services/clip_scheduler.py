@@ -1051,7 +1051,13 @@ async def poll_views_once() -> None:
     posted rows, then re-check pause."""
     # Run discovery first so any newly found phone-posted videos are
     # immediately included in the view-count pass below.
-    await discover_external_tiktok_posts()
+    # Wrapped in its own try/except so a TikTok API or DB blip during
+    # discovery can never abort the view-poll cycle — view counting is
+    # more critical and must always run.
+    try:
+        await discover_external_tiktok_posts()
+    except Exception:
+        traceback.print_exc()
 
     database = await db.get_db()
     try:
