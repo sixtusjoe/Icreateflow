@@ -1498,7 +1498,10 @@ async def discover_external_tiktok_posts() -> None:
       - evaluate_pause / directory_exhausted logic is unaffected
       - view poller DOES poll them — that's the whole point
     """
+    import logging
     import httpx
+    _log = logging.getLogger(__name__)
+
     database = await db.get_db()
     try:
         # Fetch all variations across all artists that have a TikTok token.
@@ -1524,6 +1527,10 @@ async def discover_external_tiktok_posts() -> None:
                     videos = await tiktok_adapter.list_videos(
                         client, access_token, max_count=50
                     )
+                    _log.info(
+                        "tiktok_discovery: var=%s got %d videos from API",
+                        var_id, len(videos),
+                    )
                     if not videos:
                         continue
 
@@ -1541,6 +1548,7 @@ async def discover_external_tiktok_posts() -> None:
                         r["platform_post_id"] for r in await existing_cur.fetchall()
                     }
 
+                    inserted = 0
                     for video in videos:
                         vid_id = str(video.get("id") or "").strip()
                         if not vid_id or vid_id in known_ids:
@@ -1575,12 +1583,18 @@ async def discover_external_tiktok_posts() -> None:
                             ),
                         )
                         known_ids.add(vid_id)
+                        inserted += 1
 
                     await database.commit()
+                    if inserted:
+                        _log.info(
+                            "tiktok_discovery: var=%s inserted %d new post(s)",
+                            var_id, inserted,
+                        )
                 except Exception:
-                    # Per-variation failures are silently swallowed so one bad
-                    # token can't block discovery for the other variations.
-                    pass
+                    _log.exception(
+                        "tiktok_discovery: var=%s failed — skipping", var_id
+                    )
     finally:
         await database.close()
 
@@ -1593,7 +1607,7 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(_poll_views_loop()),
         # Daily cache sweep — runs once on boot, then every 24h.
         asyncio.create_task(_loop(sweep_clip_caches_once, 86400, "cache_sweep")),
-        # Hourly TikTok discovery — finds videos posted from phone/other apps
-        # and adds them as posted rows so the view poller tracks them.
-        asyncio.create_task(_loop(discover_external_tiktok_posts, 3600, "tiktok_discovery")),
+        # TikTok discovery — finds videos posted from phone/other apps and adds
+        # them as posted rows so the view poller tracks them. Runs every 5 min.
+        asyncio.create_task(_loop(discover_external_tiktok_posts, 300, "tiktok_discovery")),
     ]
