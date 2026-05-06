@@ -1521,9 +1521,10 @@ async def discover_external_tiktok_posts() -> None:
                 artist_id = var["artist_id"]
                 access_token = var["tiktok_token"]
                 try:
-                    # Fetch up to 50 most recent videos from TikTok.
+                    # Fetch up to 20 most recent videos from TikTok.
+                    # The /video/list/ API caps max_count at 20.
                     videos = await tiktok_adapter.list_videos(
-                        client, access_token, max_count=50
+                        client, access_token, max_count=20
                     )
                     print(
                         f"[tiktok_discovery] var={var_id} got {len(videos)} video(s) from API",
