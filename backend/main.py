@@ -862,6 +862,58 @@ async def admin_send_test_email(admin: dict = Depends(admin_required)):
         raise HTTPException(500, f"Failed to send test email: {exc}")
 
 
+@app.post("/api/admin/upload-asset")
+async def admin_upload_asset(
+    type: str,  # "logo" or "favicon"
+    file: UploadFile = File(...),
+    admin: dict = Depends(admin_required),
+):
+    """Upload a logo or favicon image and store the URL in site_config."""
+    if type not in ("logo", "favicon"):
+        raise HTTPException(400, "type must be 'logo' or 'favicon'")
+    allowed = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"}
+    if file.content_type not in allowed:
+        raise HTTPException(400, f"Unsupported file type: {file.content_type}")
+
+    asset_dir = Path("uploads") / "assets"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine extension
+    ext_map = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+        "image/webp": ".webp", "image/svg+xml": ".svg",
+        "image/x-icon": ".ico", "image/vnd.microsoft.icon": ".ico",
+    }
+    ext = ext_map.get(file.content_type, ".png")
+    filename = f"{type}{ext}"
+    dest = asset_dir / filename
+
+    contents = await file.read()
+    dest.write_bytes(contents)
+
+    # Build the public URL — served via the existing /files/uploads static mount
+    cfg = {}
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        base = cfg.get("oauth_redirect_base", "").rstrip("/") or ""
+    finally:
+        await database.close()
+
+    file_url = f"{base}/files/uploads/assets/{filename}"
+
+    # Save URL to site_config
+    config_key = "site_logo_url" if type == "logo" else "site_favicon_url"
+    database = await db.get_db()
+    try:
+        await db.set_site_config(database, config_key, file_url)
+        await database.commit()
+    finally:
+        await database.close()
+
+    return {"ok": True, "url": file_url}
+
+
 def _dir_size_mb(path: str) -> float:
     total = 0
     p = Path(path)

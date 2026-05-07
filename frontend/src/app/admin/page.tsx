@@ -20,6 +20,7 @@ import {
   getBrandCacheStats, clearBrandCache,
   sendTestEmail,
 } from "@/lib/api";
+import api from "@/lib/api";
 
 type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email";
 
@@ -760,9 +761,67 @@ function OAuthCard({ platform, data, redirectBase, onReload }: any) {
  * BRANDING
  * ============================================================ */
 function BrandingTab({ siteConfig, setSiteConfig }: any) {
+  const [uploading, setUploading] = useState<Record<string, boolean>>({});
+
   const saveCfg = async (key: string, value: string) => {
     try { await updateSiteConfig(key, value); toast.success("Saved"); }
     catch { toast.error("Failed"); }
+  };
+
+  const handleUpload = async (type: "logo" | "favicon", file: File) => {
+    setUploading((u) => ({ ...u, [type]: true }));
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await api.post(`/api/admin/upload-asset?type=${type}`, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      const { url } = res.data;
+      const key = type === "logo" ? "site_logo_url" : "site_favicon_url";
+      setSiteConfig((s: any) => ({ ...s, [key]: url }));
+      toast.success(`${type === "logo" ? "Logo" : "Favicon"} uploaded`);
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploading((u) => ({ ...u, [type]: false }));
+    }
+  };
+
+  const AssetUpload = ({ type, label }: { type: "logo" | "favicon"; label: string }) => {
+    const key = type === "logo" ? "site_logo_url" : "site_favicon_url";
+    const currentUrl = siteConfig[key] || "";
+    return (
+      <div className="mb-5">
+        <label className="mb-2 block text-sm font-medium">{label}</label>
+        <div className="flex items-center gap-4">
+          {currentUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={currentUrl} alt={label} className="h-12 w-auto max-w-[120px] rounded-lg object-contain border border-border bg-muted p-1" />
+          ) : (
+            <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-border bg-muted text-muted-foreground text-xs">
+              None
+            </div>
+          )}
+          <label className={`inline-flex min-h-[40px] cursor-pointer items-center gap-2 rounded-lg border border-border bg-background px-4 text-sm font-medium transition-colors hover:bg-muted ${uploading[type] ? "opacity-50 pointer-events-none" : ""}`}>
+            {uploading[type] ? <span className="animate-spin">⏳</span> : <Save className="h-4 w-4" />}
+            {uploading[type] ? "Uploading…" : "Upload image"}
+            <input
+              type="file"
+              accept="image/*"
+              className="sr-only"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(type, f); }}
+            />
+          </label>
+          {currentUrl && (
+            <button onClick={() => { setSiteConfig((s: any) => ({ ...s, [key]: "" })); saveCfg(key, ""); }}
+              className="text-xs text-muted-foreground hover:text-destructive">
+              Remove
+            </button>
+          )}
+        </div>
+        {currentUrl && <p className="mt-1.5 text-xs text-muted-foreground truncate max-w-sm">{currentUrl}</p>}
+      </div>
+    );
   };
 
   const cfgField = (key: string, label: string, placeholder?: string) => (
@@ -786,8 +845,8 @@ function BrandingTab({ siteConfig, setSiteConfig }: any) {
       <div className="rounded-2xl bg-card p-4 md:p-6">
         <h2 className="mb-5 text-base font-semibold">Site Branding</h2>
         {cfgField("site_name", "Site Name")}
-        {cfgField("site_logo_url", "Logo URL", "https://example.com/logo.png")}
-        {cfgField("site_favicon_url", "Favicon URL", "https://example.com/favicon.ico")}
+        <AssetUpload type="logo" label="Logo" />
+        <AssetUpload type="favicon" label="Favicon" />
       </div>
 
       <PollIntervalCard siteConfig={siteConfig} setSiteConfig={setSiteConfig} />

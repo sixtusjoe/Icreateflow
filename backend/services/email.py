@@ -118,54 +118,79 @@ _BASE_STYLE = """
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
          background: #f5f5f5; margin: 0; padding: 0; }
   .wrap { max-width: 520px; margin: 40px auto; background: #fff;
-          border-radius: 12px; overflow: hidden; }
-  .header { background: #000; color: #fff; padding: 24px 32px; font-size: 18px; font-weight: 700; }
+          border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+  .header { background: #000; color: #fff; padding: 24px 32px; text-align: center; }
+  .header-inner { display: inline-flex; align-items: center; gap: 12px; }
+  .header img { height: 36px; width: auto; display: block; }
+  .header-name { font-size: 18px; font-weight: 700; color: #fff; }
   .body   { padding: 28px 32px; color: #111; line-height: 1.6; }
   .code   { display: inline-block; font-size: 32px; font-weight: 700; letter-spacing: 6px;
             background: #f0f0f0; border-radius: 8px; padding: 12px 24px; margin: 16px 0; }
-  .footer { padding: 16px 32px; font-size: 12px; color: #999; border-top: 1px solid #eee; }
+  .footer { padding: 16px 32px; font-size: 12px; color: #999; border-top: 1px solid #eee; text-align: center; }
   a { color: #111; }
 """
 
 
-def _html_wrap(body: str) -> str:
+def _html_wrap(body: str, site_name: str = "iCreateFlow", logo_url: str = "") -> str:
+    if logo_url:
+        header_inner = (
+            f'<div class="header-inner">'
+            f'<img src="{logo_url}" alt="{site_name}" style="height:36px;width:auto;display:block;">'
+            f'<span class="header-name">{site_name}</span>'
+            f'</div>'
+        )
+    else:
+        header_inner = f'<span class="header-name">{site_name}</span>'
+
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>{_BASE_STYLE}</style></head>
 <body><div class="wrap">
-  <div class="header">iCreateFlow</div>
+  <div class="header">{header_inner}</div>
   <div class="body">{body}</div>
-  <div class="footer">iCreateFlow · <a href="#">Unsubscribe</a></div>
+  <div class="footer">{site_name} · <a href="#">Unsubscribe</a></div>
 </div></body></html>"""
 
 
+async def _html_wrap_cfg(body: str) -> str:
+    """Async version that fetches site_name + logo_url from site_config automatically."""
+    cfg = await _get_smtp_cfg()
+    site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
+    logo_url = cfg.get("site_logo_url", "").strip()
+    return _html_wrap(body, site_name=site_name, logo_url=logo_url)
+
+
 async def send_password_reset_email(to_email: str, otp_code: str) -> None:
-    html = _html_wrap(f"""
+    cfg = await _get_smtp_cfg()
+    site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
+    html = await _html_wrap_cfg(f"""
       <p>Hi,</p>
       <p>You requested a password reset. Use the code below — it expires in <strong>15 minutes</strong>.</p>
       <div class="code">{otp_code}</div>
       <p>If you didn't request this, you can ignore this email.</p>
     """)
     text = (
-        f"Your iCreateFlow password reset code is: {otp_code}\n"
+        f"Your {site_name} password reset code is: {otp_code}\n"
         "It expires in 15 minutes. If you didn't request this, ignore this email."
     )
-    await send_email(to_email, "iCreateFlow — Password reset code", html, text)
+    await send_email(to_email, f"{site_name} — Password reset code", html, text)
 
 
 async def send_email_change_otp(to_email: str, new_email: str, otp_code: str) -> None:
-    html = _html_wrap(f"""
+    cfg = await _get_smtp_cfg()
+    site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
+    html = await _html_wrap_cfg(f"""
       <p>Hi,</p>
-      <p>We received a request to change your iCreateFlow email to <strong>{new_email}</strong>.</p>
+      <p>We received a request to change your {site_name} email to <strong>{new_email}</strong>.</p>
       <p>Enter this code to confirm — it expires in <strong>15 minutes</strong>.</p>
       <div class="code">{otp_code}</div>
       <p>If you didn't request this, you can ignore this email.</p>
     """)
     text = (
-        f"Your iCreateFlow email change code is: {otp_code}\n"
+        f"Your {site_name} email change code is: {otp_code}\n"
         f"This will change your email to: {new_email}\n"
         "It expires in 15 minutes."
     )
-    await send_email(new_email, "iCreateFlow — Confirm email change", html, text)
+    await send_email(new_email, f"{site_name} — Confirm email change", html, text)
 
 
 async def send_post_reminder_email(
@@ -174,8 +199,10 @@ async def send_post_reminder_email(
     scheduled_time: str,
     platform_list: list[str],
 ) -> None:
+    cfg = await _get_smtp_cfg()
+    site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
     plats = ", ".join(p.capitalize() for p in platform_list) if platform_list else "connected platforms"
-    html = _html_wrap(f"""
+    html = await _html_wrap_cfg(f"""
       <p>Hi,</p>
       <p>Reminder: <strong>{artist_name}</strong> has a post scheduled in approximately 1 hour.</p>
       <p><strong>Time:</strong> {scheduled_time}<br>
@@ -186,7 +213,7 @@ async def send_post_reminder_email(
         f"Reminder: {artist_name} has a post scheduled in ~1 hour at {scheduled_time}.\n"
         f"Platforms: {plats}"
     )
-    await send_email(to_email, f"iCreateFlow — Upcoming post: {artist_name}", html, text)
+    await send_email(to_email, f"{site_name} — Upcoming post: {artist_name}", html, text)
 
 
 async def send_post_result_email(
@@ -199,6 +226,8 @@ async def send_post_result_email(
 
     results: list of {platform, variation_name, status, error}
     """
+    cfg = await _get_smtp_cfg()
+    site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
     rows = ""
     for r in results:
         icon = "✓" if r.get("status") == "posted" else "✗"
@@ -212,7 +241,7 @@ async def send_post_result_email(
             f"<td style='padding:6px 0;color:{color};font-size:13px'>{err}</td>"
             f"</tr>"
         )
-    html = _html_wrap(f"""
+    html = await _html_wrap_cfg(f"""
       <p>Here's the posting summary for <strong>{artist_name}</strong>:</p>
       <table style='width:100%;border-collapse:collapse'>
         <tr style='background:#f5f5f5;font-size:12px;color:#666'>
@@ -232,7 +261,7 @@ async def send_post_result_email(
         text = f"Post summary for {artist_name}: all {len(results)} posts succeeded."
     await send_email(
         to_email,
-        f"iCreateFlow — Post results: {artist_name}",
+        f"{site_name} — Post results: {artist_name}",
         html,
         text,
         unsubscribe_url=unsubscribe_url,
@@ -240,14 +269,16 @@ async def send_post_result_email(
 
 
 async def send_welcome_pending_email(to_email: str, name: str) -> None:
-    html = _html_wrap(f"""
+    cfg = await _get_smtp_cfg()
+    site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
+    html = await _html_wrap_cfg(f"""
       <p>Hi {name},</p>
-      <p>Thanks for signing up for iCreateFlow!</p>
+      <p>Thanks for signing up for <strong>{site_name}</strong>!</p>
       <p>Your account is <strong>pending admin approval</strong>. You'll receive another email
       once your account is activated and you can log in.</p>
     """)
     text = (
-        f"Hi {name},\n\nThanks for signing up for iCreateFlow!\n"
+        f"Hi {name},\n\nThanks for signing up for {site_name}!\n"
         "Your account is pending admin approval. You'll be notified when it's activated."
     )
-    await send_email(to_email, "iCreateFlow — Account pending approval", html, text)
+    await send_email(to_email, f"{site_name} — Account pending approval", html, text)
