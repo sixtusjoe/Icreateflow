@@ -289,6 +289,20 @@ class SiteConfig(Base):
     value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class EmailOtp(Base):
+    """Short-lived OTP codes for password reset and email change flows."""
+    __tablename__ = "email_otps"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    email: Mapped[str] = mapped_column(Text, nullable=False)  # email the OTP was sent to
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)  # 'password_reset' | 'email_change'
+    new_email: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # for email_change
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
+
+
 class MetaPendingAssignment(Base):
     """Short-lived (~15 min) handoff between the Meta OAuth callback and the
     follow-up /api/oauth/meta/assign POST. Was an in-memory dict, but with
@@ -983,6 +997,25 @@ async def _migrate_user_status_pending(conn) -> None:
     ))
 
 
+async def _migrate_email_features(conn) -> None:
+    """Add email notification columns to users, reminder column to clip_posts."""
+    await conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_notifications BOOLEAN DEFAULT TRUE"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS unsubscribe_token TEXT"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE clip_posts ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ"
+    ))
+    # email_otps is a new table — handled by create_all via the ORM model.
+    # Index for fast OTP lookups:
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_email_otps_email_purpose "
+        "ON email_otps (email, purpose, used_at)"
+    ))
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -992,6 +1025,7 @@ async def init_db() -> None:
         await _migrate_per_platform_post_columns(conn)
         await _migrate_per_variation_columns(conn)
         await _migrate_user_status_pending(conn)
+        await _migrate_email_features(conn)
     db = await get_db()
     try:
         await _seed(db)

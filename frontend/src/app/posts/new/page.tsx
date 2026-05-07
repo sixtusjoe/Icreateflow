@@ -17,6 +17,7 @@ import {
   updateOutputTiktokSettings,
 } from "@/lib/api";
 import { TikTokSettingsCard } from "@/components/TikTokSettingsCard";
+import { PostingProgressModal } from "@/components/PostingProgressModal";
 
 type Plat = "youtube" | "instagram" | "facebook";
 const PLATFORMS: Plat[] = ["youtube", "instagram", "facebook"];
@@ -65,6 +66,8 @@ function NewPostPageInner() {
   const allTiktokValid = Object.values(tiktokValid).every(Boolean);
   const [previewPlatform, setPreviewPlatform] = useState<Plat>("youtube");
   const [regeneratingPlatform, setRegeneratingPlatform] = useState<string | null>(null);
+  const [postingModalOpen, setPostingModalOpen] = useState(false);
+  const [postingResults, setPostingResults] = useState<any[] | null>(null);
   const [editLoaded, setEditLoaded] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<number>(0);
@@ -812,24 +815,13 @@ function NewPostPageInner() {
                 title={!allTiktokValid ? "Finish TikTok setup on all variations below first" : ""}
                 onClick={async () => {
                   if (!post?.id) { toast.error("Generate the post first"); return; }
-                  const t = toast.loading("Posting to connected platforms...");
+                  setPostingResults(null);
+                  setPostingModalOpen(true);
                   try {
                     const res = await postNow(post.id);
-                    toast.dismiss(t);
-                    const lines: string[] = [];
-                    let anyOk = false;
-                    for (const r of res.results || []) {
-                      const plats = r.platforms || {};
-                      const posted = Object.entries(plats).filter(([, v]: any) => v.status === "posted").map(([k]) => k);
-                      const failed = Object.entries(plats).filter(([, v]: any) => v.status === "failed").map(([k, v]: any) => `${k} (${v.error})`);
-                      const skipped = Object.entries(plats).filter(([, v]: any) => v.status === "skipped").map(([k]) => k);
-                      if (posted.length) anyOk = true;
-                      lines.push(`${r.account_name}: ✓ ${posted.join(", ") || "none"}${failed.length ? ` · ✗ ${failed.join(", ")}` : ""}${skipped.length ? ` · — ${skipped.join(", ")}` : ""}`);
-                    }
-                    if (anyOk) toast.success(lines.join("\n"));
-                    else toast.error(lines.join("\n") || "Nothing was posted");
+                    setPostingResults(res.results || []);
                   } catch (e: any) {
-                    toast.dismiss(t);
+                    setPostingModalOpen(false);
                     toast.error(e?.response?.data?.detail || "Post Now failed");
                   }
                 }}
@@ -1337,6 +1329,13 @@ function NewPostPageInner() {
         </div>,
         document.body
       )}
+
+      {/* Posting progress / results modal */}
+      <PostingProgressModal
+        open={postingModalOpen}
+        results={postingResults}
+        onClose={() => { setPostingModalOpen(false); setPostingResults(null); }}
+      />
 
       {/* Image lightbox */}
       {expandedImage && typeof document !== "undefined" && createPortal(

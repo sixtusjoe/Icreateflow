@@ -9,6 +9,7 @@ import {
   refreshAccountProfile,
 } from "@/lib/api";
 import OAuthTiles from "@/components/OAuthTiles";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 export default function BrandsPage() {
   const [brands, setBrands] = useState<any[]>([]);
@@ -21,6 +22,9 @@ export default function BrandsPage() {
   const [editingAccount, setEditingAccount] = useState<number | null>(null);
   const [editAccountData, setEditAccountData] = useState<any>({});
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [confirmBrandDelete, setConfirmBrandDelete] = useState<number | null>(null);
+  const [confirmAccountDelete, setConfirmAccountDelete] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const toggleCollapsed = (id: number) =>
     setCollapsed((s) => {
       const next = new Set(s);
@@ -52,10 +56,12 @@ export default function BrandsPage() {
     }
   };
 
-  const handleDeleteBrand = async (id: number) => {
-    if (!confirm("Delete this brand and all its data?")) return;
-    try { await deleteBrand(id); load(); toast.success("Brand deleted"); }
+  const handleDeleteBrand = async () => {
+    if (confirmBrandDelete === null) return;
+    setDeleting(true);
+    try { await deleteBrand(confirmBrandDelete); load(); toast.success("Brand deleted"); setConfirmBrandDelete(null); }
     catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to delete"); }
+    finally { setDeleting(false); }
   };
 
   const startEditBrand = (brand: any) => {
@@ -83,10 +89,12 @@ export default function BrandsPage() {
     } catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to add account"); }
   };
 
-  const handleDeleteAccount = async (id: number) => {
-    if (!confirm("Delete this account?")) return;
-    try { await deleteAccount(id); load(); toast.success("Account deleted"); }
+  const handleDeleteAccount = async () => {
+    if (confirmAccountDelete === null) return;
+    setDeleting(true);
+    try { await deleteAccount(confirmAccountDelete); load(); toast.success("Account deleted"); setConfirmAccountDelete(null); }
     catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to delete"); }
+    finally { setDeleting(false); }
   };
 
   const startEditAccount = (acc: any) => {
@@ -244,7 +252,7 @@ export default function BrandsPage() {
                       className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                       <Plus className="h-3 w-3" /> Add Account
                     </button>
-                    <button onClick={() => handleDeleteBrand(brand.id)}
+                    <button onClick={() => setConfirmBrandDelete(brand.id)}
                       className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -353,7 +361,7 @@ export default function BrandsPage() {
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors">
                             <Edit2 className="h-3.5 w-3.5" />
                           </button>
-                          <button onClick={() => handleDeleteAccount(acc.id)}
+                          <button onClick={() => setConfirmAccountDelete(acc.id)}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-destructive transition-colors">
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -409,6 +417,27 @@ export default function BrandsPage() {
           ))}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmBrandDelete !== null}
+        onOpenChange={(o) => { if (!o) setConfirmBrandDelete(null); }}
+        title="Delete brand?"
+        description="This will permanently delete the brand and all its data. This cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDeleteBrand}
+      />
+      <ConfirmModal
+        open={confirmAccountDelete !== null}
+        onOpenChange={(o) => { if (!o) setConfirmAccountDelete(null); }}
+        title="Delete account?"
+        description="This will remove the account and all its OAuth connections."
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDeleteAccount}
+      />
     </div>
   );
 }

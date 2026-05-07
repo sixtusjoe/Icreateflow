@@ -8,12 +8,27 @@ export default function Logo({
   size = 32,
   radius,
   className = "",
+  src,
 }: {
   size?: number;
   radius?: number;
   className?: string;
+  src?: string;
 }) {
   const r = radius ?? Math.round(size * 0.22);
+
+  if (src) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={src}
+        alt="Logo"
+        className={`shrink-0 object-contain ${className}`}
+        style={{ width: size, height: size, borderRadius: r }}
+      />
+    );
+  }
+
   return (
     <div
       className={`inline-flex shrink-0 items-center justify-center bg-foreground ${className}`}

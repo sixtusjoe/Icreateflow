@@ -295,6 +295,20 @@ class PasswordChange(BaseModel):
     current_password: str
     new_password: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+class RequestEmailChangeRequest(BaseModel):
+    new_email: str
+
+class ConfirmEmailChangeRequest(BaseModel):
+    code: str
+
 class AdminUserUpdate(BaseModel):
     role: Optional[str] = None
     status: Optional[str] = None
@@ -515,6 +529,12 @@ async def register(data: AuthRegister):
             database, data.email.lower().strip(), pw_hash, data.name.strip(),
             status="pending",
         )
+        # Fire-and-forget welcome email
+        import asyncio as _asyncio
+        from services.email import send_welcome_pending_email as _send_welcome
+        _asyncio.create_task(
+            _send_welcome(data.email.lower().strip(), data.name.strip())
+        )
         return {
             "pending": True,
             "message": "Your account is pending admin approval. You'll be able to log in once an admin approves you.",
@@ -582,6 +602,193 @@ async def change_password(data: PasswordChange, user: dict = Depends(get_current
         await database.close()
 
 
+@app.post("/api/auth/forgot-password")
+async def forgot_password(data: ForgotPasswordRequest):
+    """Generate and email a password reset OTP. Always returns ok=true (no email leak)."""
+    from datetime import timedelta
+    import secrets as _secrets
+    try:
+        from services.email import send_password_reset_email, generate_otp
+    except ImportError:
+        return {"ok": True}  # email not configured — silently succeed
+
+    database = await db.get_db()
+    try:
+        email = data.email.lower().strip()
+        user = await db.get_user_by_email(database, email)
+        if user:
+            otp = generate_otp(6)
+            expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+            await database.execute(
+                """
+                INSERT INTO email_otps (user_id, email, code, purpose, expires_at)
+                VALUES (:uid, :email, :code, 'password_reset', :exp)
+                """,
+                {"uid": user["id"], "email": email, "code": otp, "exp": expires},
+            )
+            await database.commit()
+            # Fire and forget — don't block the response on SMTP
+            import asyncio
+            asyncio.create_task(send_password_reset_email(email, otp))
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(data: ResetPasswordRequest):
+    """Validate OTP and set a new password."""
+    database = await db.get_db()
+    try:
+        email = data.email.lower().strip()
+        row = await database.fetch_one(
+            """
+            SELECT id, expires_at, used_at
+            FROM email_otps
+            WHERE email = :email AND code = :code AND purpose = 'password_reset'
+            ORDER BY id DESC LIMIT 1
+            """,
+            {"email": email, "code": data.code.strip()},
+        )
+        if not row:
+            raise HTTPException(400, "Invalid or expired code")
+        rd = dict(row)
+        if rd.get("used_at"):
+            raise HTTPException(400, "Code already used")
+        expires = rd["expires_at"]
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires:
+            raise HTTPException(400, "Code has expired")
+        if len(data.new_password) < 6:
+            raise HTTPException(400, "Password must be at least 6 characters")
+        user = await db.get_user_by_email(database, email)
+        if not user:
+            raise HTTPException(400, "User not found")
+        await db.update_user(database, user["id"], password_hash=hash_password(data.new_password))
+        await database.execute(
+            "UPDATE email_otps SET used_at = :now WHERE id = :id",
+            {"now": datetime.now(timezone.utc), "id": rd["id"]},
+        )
+        await database.commit()
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/users/me/request-email-change")
+async def request_email_change(data: RequestEmailChangeRequest, user: dict = Depends(get_current_user)):
+    """Send OTP to new_email to verify it before changing."""
+    from datetime import timedelta
+    try:
+        from services.email import send_email_change_otp, generate_otp
+    except ImportError:
+        raise HTTPException(503, "Email service not available")
+
+    database = await db.get_db()
+    try:
+        new_email = data.new_email.lower().strip()
+        existing = await db.get_user_by_email(database, new_email)
+        if existing and existing["id"] != user["id"]:
+            raise HTTPException(400, "Email already taken")
+        otp = generate_otp(6)
+        expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+        await database.execute(
+            """
+            INSERT INTO email_otps (user_id, email, code, purpose, new_email, expires_at)
+            VALUES (:uid, :email, :code, 'email_change', :new_email, :exp)
+            """,
+            {"uid": user["id"], "email": user["email"], "code": otp,
+             "new_email": new_email, "exp": expires},
+        )
+        await database.commit()
+        import asyncio
+        asyncio.create_task(send_email_change_otp(user["email"], new_email, otp))
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/users/me/confirm-email-change")
+async def confirm_email_change(data: ConfirmEmailChangeRequest, user: dict = Depends(get_current_user)):
+    """Validate OTP and update the user's email."""
+    database = await db.get_db()
+    try:
+        row = await database.fetch_one(
+            """
+            SELECT id, new_email, expires_at, used_at
+            FROM email_otps
+            WHERE user_id = :uid AND code = :code AND purpose = 'email_change'
+            ORDER BY id DESC LIMIT 1
+            """,
+            {"uid": user["id"], "code": data.code.strip()},
+        )
+        if not row:
+            raise HTTPException(400, "Invalid or expired code")
+        rd = dict(row)
+        if rd.get("used_at"):
+            raise HTTPException(400, "Code already used")
+        expires = rd["expires_at"]
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires:
+            raise HTTPException(400, "Code has expired")
+        new_email = rd["new_email"]
+        existing = await db.get_user_by_email(database, new_email)
+        if existing and existing["id"] != user["id"]:
+            raise HTTPException(400, "Email already taken")
+        await db.update_user(database, user["id"], email=new_email)
+        await database.execute(
+            "UPDATE email_otps SET used_at = :now WHERE id = :id",
+            {"now": datetime.now(timezone.utc), "id": rd["id"]},
+        )
+        await database.commit()
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.get("/api/public/config")
+async def public_config():
+    """Public endpoint — returns safe site config fields (logo, favicon, site name)."""
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        return {
+            "site_logo_url": cfg.get("site_logo_url", ""),
+            "site_favicon_url": cfg.get("site_favicon_url", ""),
+            "site_name": cfg.get("site_name", "Icreateflow"),
+        }
+    finally:
+        await database.close()
+
+
+@app.get("/api/auth/unsubscribe")
+async def unsubscribe_email(token: str):
+    """One-click unsubscribe link — disables email notifications for the user."""
+    database = await db.get_db()
+    try:
+        row = await database.fetch_one(
+            "SELECT id FROM users WHERE unsubscribe_token = :token",
+            {"token": token},
+        )
+        if row:
+            await database.execute(
+                "UPDATE users SET email_notifications = FALSE WHERE id = :id",
+                {"id": dict(row)["id"]},
+            )
+            await database.commit()
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;text-align:center;margin-top:60px'>"
+            "<h2>You have been unsubscribed.</h2>"
+            "<p>You will no longer receive email notifications from iCreateFlow.</p>"
+            "</body></html>"
+        )
+    finally:
+        await database.close()
+
+
 # =============================================
 # ADMIN ROUTES
 # =============================================
@@ -645,6 +852,28 @@ async def admin_update_site_config(data: SettingUpdate, admin: dict = Depends(ad
         return {"ok": True}
     finally:
         await database.close()
+
+
+@app.post("/api/admin/send-test-email")
+async def admin_send_test_email(admin: dict = Depends(admin_required)):
+    """Send a test email to the logged-in admin's address to verify SMTP config."""
+    try:
+        from services.email import send_email
+    except ImportError:
+        raise HTTPException(500, "Email service not available — deploy email.py first")
+    try:
+        await send_email(
+            to=admin["email"],
+            subject="iCreateFlow — SMTP test email",
+            html=(
+                "<p>This is a test email from iCreateFlow.</p>"
+                "<p>If you received this, your SMTP configuration is working correctly.</p>"
+            ),
+            text="This is a test email from iCreateFlow. SMTP is configured correctly.",
+        )
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to send test email: {exc}")
 
 
 def _dir_size_mb(path: str) -> float:
@@ -4419,6 +4648,114 @@ async def artist_feed(artist_id: int, user: dict = Depends(get_current_user)):
     try:
         posts = await db.get_clip_posts(database, artist_id=artist_id, limit=100)
         return rows_to_list(posts)
+    finally:
+        await database.close()
+
+
+def _friendly_error(raw: str | None) -> str:
+    """Convert a raw clip_post error string to a user-readable message."""
+    if not raw:
+        return "Unknown error"
+    err = raw.lower()
+    if "rate_limit" in err or "rate limit" in err or "spam" in err or "too frequent" in err:
+        return "Rate limit hit — try again in a few hours"
+    if "token" in err or "oauth" in err or "credentials" in err or "unauthorized" in err or "unauthenticated" in err or "access_token" in err:
+        return "Account credentials expired — reconnect the account"
+    if "duplicate" in err or "already posted" in err or "already exists" in err:
+        return "Video already posted to this platform"
+    if "clip or variation missing" in err or "file not found" in err or "no such file" in err:
+        return "Content file missing — re-upload the clip"
+    if "timeout" in err or "timed out" in err:
+        return "Request timed out — safe to retry"
+    if "privacy" in err:
+        return "Invalid privacy setting — check TikTok settings"
+    if "size" in err or "too large" in err or "file size" in err:
+        return "File size too large for this platform"
+    if "network" in err or "connection" in err or "connection error" in err:
+        return "Network error — safe to retry"
+    if "slot lapsed" in err:
+        return "Slot lapsed while artist was paused — will be re-scheduled automatically"
+    return raw[:200]
+
+
+@app.get("/api/artists/{artist_id}/failed-clip-posts")
+async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_current_user)):
+    """Return failed clip_posts for this artist (last 24 h, limit 50)."""
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        rows = await database.fetch_all(
+            """
+            SELECT cp.id, cp.platform, cp.error, cp.created_at, cp.scheduled_for,
+                   cp.clip_id, cp.artist_account_id,
+                   aa.tiktok_handle, aa.youtube_handle, aa.instagram_handle,
+                   aa.facebook_handle, aa.name AS variation_name
+            FROM clip_posts cp
+            LEFT JOIN artist_accounts aa ON aa.id = cp.artist_account_id
+            WHERE cp.artist_id = :artist_id
+              AND cp.status = 'failed'
+              AND cp.created_at > NOW() - INTERVAL '24 hours'
+            ORDER BY cp.id DESC
+            LIMIT 50
+            """,
+            {"artist_id": artist_id},
+        )
+        result = []
+        for r in rows:
+            rd = dict(r)
+            # Build a human-readable variation name from handles
+            handles = []
+            for plat in ("tiktok", "youtube", "instagram", "facebook"):
+                h = rd.get(f"{plat}_handle")
+                if h:
+                    handles.append(f"@{h.lstrip('@')}")
+            variation_label = rd.get("variation_name") or (handles[0] if handles else f"Variation #{rd['artist_account_id']}")
+            result.append({
+                "id": rd["id"],
+                "platform": rd["platform"],
+                "variation_name": variation_label,
+                "error": rd.get("error"),
+                "friendly_error": _friendly_error(rd.get("error")),
+                "created_at": rd["created_at"].isoformat() if rd.get("created_at") else None,
+                "scheduled_for": rd["scheduled_for"].isoformat() if rd.get("scheduled_for") else None,
+            })
+        return result
+    finally:
+        await database.close()
+
+
+@app.post("/api/clip-posts/{clip_post_id}/retry")
+async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_user)):
+    """Reset a failed clip_post to scheduled so the dispatcher re-attempts it."""
+    database = await db.get_db()
+    try:
+        # Ownership check: the clip_post's artist must belong to this user
+        row = await database.fetch_one(
+            """
+            SELECT cp.id, cp.artist_id, cp.status
+            FROM clip_posts cp
+            JOIN artists a ON a.id = cp.artist_id
+            WHERE cp.id = :id
+              AND a.user_id = :user_id
+            """,
+            {"id": clip_post_id, "user_id": user["id"]},
+        )
+        if not row:
+            raise HTTPException(404, "Clip post not found or access denied")
+        if dict(row)["status"] != "failed":
+            raise HTTPException(400, "Only failed posts can be retried")
+        await database.execute(
+            """
+            UPDATE clip_posts
+            SET status = 'scheduled',
+                scheduled_for = NOW() + INTERVAL '2 minutes',
+                error = NULL
+            WHERE id = :id
+            """,
+            {"id": clip_post_id},
+        )
+        await database.commit()
+        return {"ok": True}
     finally:
         await database.close()
 

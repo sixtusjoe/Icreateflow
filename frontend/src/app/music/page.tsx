@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Music, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { getMusicTracks, uploadMusicTrack, updateMusicTrack, deleteMusicTrack } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 const PLATFORMS: { key: string; label: string }[] = [
   { key: "youtube", label: "YouTube" },
@@ -18,6 +19,8 @@ export default function MusicPage() {
   const [genre, setGenre] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = () => getMusicTracks().then(setTracks).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -34,10 +37,12 @@ export default function MusicPage() {
     finally { setUploading(false); }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this track?")) return;
-    try { await deleteMusicTrack(id); load(); toast.success("Deleted"); }
+  const handleDelete = async () => {
+    if (confirmDelete === null) return;
+    setDeleting(true);
+    try { await deleteMusicTrack(confirmDelete); load(); toast.success("Deleted"); setConfirmDelete(null); }
     catch { toast.error("Failed"); }
+    finally { setDeleting(false); }
   };
 
   const togglePlatform = async (track: any, platform: string) => {
@@ -148,7 +153,7 @@ export default function MusicPage() {
                       );
                     })}
                   </div>
-                  <button onClick={() => handleDelete(track.id)}
+                  <button onClick={() => setConfirmDelete(track.id)}
                     className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -158,6 +163,17 @@ export default function MusicPage() {
           })}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmDelete !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDelete(null); }}
+        title="Delete track?"
+        description="This will permanently delete the music track."
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

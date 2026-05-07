@@ -39,6 +39,14 @@ export const updateProfile = (data: { name?: string; email?: string }) =>
   api.put("/api/auth/profile", data).then((r) => r.data);
 export const changePassword = (current_password: string, new_password: string) =>
   api.put("/api/auth/password", { current_password, new_password }).then((r) => r.data);
+export const forgotPassword = (email: string) =>
+  api.post("/api/auth/forgot-password", { email }).then((r) => r.data);
+export const resetPassword = (email: string, code: string, new_password: string) =>
+  api.post("/api/auth/reset-password", { email, code, new_password }).then((r) => r.data);
+export const requestEmailChange = (new_email: string) =>
+  api.post("/api/users/me/request-email-change", { new_email }).then((r) => r.data);
+export const confirmEmailChange = (code: string) =>
+  api.post("/api/users/me/confirm-email-change", { code }).then((r) => r.data);
 
 // --- Admin ---
 export const getUsers = () => api.get("/api/admin/users").then((r) => r.data);
@@ -49,6 +57,10 @@ export const approveUser = (id: number) =>
 export const getSiteConfig = () => api.get("/api/admin/site-config").then((r) => r.data);
 export const updateSiteConfig = (key: string, value: string) =>
   api.put("/api/admin/site-config", { key, value }).then((r) => r.data);
+export const sendTestEmail = () =>
+  api.post("/api/admin/send-test-email").then((r) => r.data);
+export const getPublicConfig = () =>
+  api.get("/api/public/config").then((r) => r.data);
 export const getAdminStats = () => api.get("/api/admin/stats").then((r) => r.data);
 export const getCacheStats = () => api.get("/api/admin/cache-stats").then((r) => r.data);
 export const clearCache = (target: "video_renders" | "caption_variants" | "passthrough_clips" | "all", older_than_days?: number) =>
@@ -183,6 +195,12 @@ export const getSchedule = (brandId?: number) =>
   api.get("/api/schedule", { params: brandId ? { brand_id: brandId } : {} }).then((r) => r.data);
 export const postNow = (postId: number) =>
   api.post(`/api/posts/${postId}/post-now`).then((r) => r.data);
+
+// --- Clipping: failed posts + retry ---
+export const getArtistFailedPosts = (artistId: number) =>
+  api.get(`/api/artists/${artistId}/failed-clip-posts`).then((r) => r.data);
+export const retryClipPost = (clipPostId: number) =>
+  api.post(`/api/clip-posts/${clipPostId}/retry`).then((r) => r.data);
 
 // --- Music ---
 export const getMusicTracks = (platform?: string) =>

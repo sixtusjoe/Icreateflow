@@ -46,6 +46,8 @@ import {
   listCampaigns,
   downloadStatsCsv,
   updateVariationTiktokSettings,
+  getArtistFailedPosts,
+  retryClipPost,
 } from "@/lib/api";
 
 type Variation = {
@@ -152,6 +154,8 @@ export default function ArtistPage({
   const [variations, setVariations] = useState<Variation[]>([]);
   const [clips, setClips] = useState<Clip[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [failedPosts, setFailedPosts] = useState<any[]>([]);
+  const [retryingId, setRetryingId] = useState<number | null>(null);
 
   const [showNewVariation, setShowNewVariation] = useState(false);
   const [newVar, setNewVar] = useState({
@@ -240,6 +244,7 @@ export default function ArtistPage({
             setLastDashboardAt(Date.now());
           })
           .catch(() => {});
+        getArtistFailedPosts(a.id).then(setFailedPosts).catch(() => {});
         listCampaigns(a.id).then(setCampaigns).catch(() => {});
       })
       .catch(() => toast.error("Failed to load artist"));
@@ -482,6 +487,55 @@ export default function ArtistPage({
             </div>
           ))}
         </div>
+      )}
+
+      {/* Failed posts */}
+      {failedPosts.length > 0 && (
+        <section className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4 md:p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-destructive" />
+            <h2 className="text-sm font-semibold text-destructive">Failed Posts</h2>
+            <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive">
+              {failedPosts.length}
+            </span>
+            <span className="text-xs text-muted-foreground ml-1">· auto-cleared after 24 hours</span>
+          </div>
+          <div className="space-y-2">
+            {failedPosts.map((fp: any) => (
+              <div key={fp.id} className="flex flex-col gap-1.5 rounded-lg border border-destructive/20 bg-background px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                  <span className="font-semibold capitalize">{fp.platform}</span>
+                  <span className="text-muted-foreground">{fp.variation_name}</span>
+                  <span className="text-destructive/80">{fp.friendly_error}</span>
+                  {fp.created_at && (
+                    <span className="text-muted-foreground/60">
+                      {new Date(fp.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={async () => {
+                    setRetryingId(fp.id);
+                    try {
+                      await retryClipPost(fp.id);
+                      toast.success("Retry scheduled — will post in ~2 minutes");
+                      setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
+                    } catch {
+                      toast.error("Failed to retry");
+                    } finally {
+                      setRetryingId(null);
+                    }
+                  }}
+                  disabled={retryingId === fp.id}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  {retryingId === fp.id ? "Retrying…" : "Retry"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Campaign / Promotion */}

@@ -654,6 +654,18 @@ async def dispatch_due_once() -> None:
         )
         await database.commit()
 
+        # Auto-cleanup: delete failed clip_posts older than 24 hours so
+        # the failure queue doesn't grow unboundedly. Posts that failed more
+        # than a day ago are stale and not retryable via the UI.
+        await database.execute(
+            """
+            DELETE FROM clip_posts
+            WHERE status = 'failed'
+              AND created_at < NOW() - INTERVAL '24 hours'
+            """
+        )
+        await database.commit()
+
         # Atomic claim: flip status='scheduled' → 'posting' in a single
         # UPDATE so only one worker ever gets each row. Without this, two
         # gunicorn workers both SELECT, both UPDATE, and the clip gets
@@ -679,6 +691,8 @@ async def dispatch_due_once() -> None:
         )
         rows = [dict(r) for r in await cur.fetchall()]
         await database.commit()
+        # Accumulate per-post outcomes so we can send one result email per artist.
+        _dispatch_results: list[dict] = []
         for cp in rows:
             try:
                 # Row is already status='posting' thanks to the atomic claim.
@@ -979,6 +993,13 @@ async def dispatch_due_once() -> None:
                 artist = await db.get_artist(database, cp["artist_id"])
                 if artist:
                     await evaluate_pause(database, dict(artist))
+                _dispatch_results.append({
+                    "artist_id": cp.get("artist_id"),
+                    "platform": cp.get("platform"),
+                    "variation_name": str(dict(variation).get("name") or f"#{cp.get('artist_account_id')}"),
+                    "status": "posted",
+                    "error": None,
+                })
             except PostingError as e:
                 await db.update_clip_post(database, cp["id"], status="failed", error=str(e)[:500])
                 await db.log_error(
@@ -986,6 +1007,13 @@ async def dispatch_due_once() -> None:
                     message=str(e), traceback=traceback.format_exc(),
                     context=f"clip_post_id={cp['id']}",
                 )
+                _dispatch_results.append({
+                    "artist_id": cp.get("artist_id"),
+                    "platform": cp.get("platform"),
+                    "variation_name": "",
+                    "status": "failed",
+                    "error": str(e)[:200],
+                })
             except Exception as e:  # noqa: BLE001
                 await db.update_clip_post(database, cp["id"], status="failed", error=str(e)[:500])
                 await db.log_error(
@@ -993,6 +1021,50 @@ async def dispatch_due_once() -> None:
                     message=str(e), traceback=traceback.format_exc(),
                     context=f"clip_post_id={cp['id']}",
                 )
+                _dispatch_results.append({
+                    "artist_id": cp.get("artist_id"),
+                    "platform": cp.get("platform"),
+                    "variation_name": "",
+                    "status": "failed",
+                    "error": str(e)[:200],
+                })
+
+        # Send one post-result email per artist per dispatch batch.
+        if _dispatch_results:
+            try:
+                from services.email import send_post_result_email
+                from collections import defaultdict
+                by_artist: dict = defaultdict(list)
+                for r in _dispatch_results:
+                    if r.get("artist_id"):
+                        by_artist[r["artist_id"]].append(r)
+                for artist_id, results in by_artist.items():
+                    try:
+                        artist_row = await db.get_artist(database, artist_id)
+                        if not artist_row:
+                            continue
+                        a_d = dict(artist_row)
+                        owner_id = a_d.get("user_id")
+                        if not owner_id:
+                            continue
+                        user_row = await db.get_user(database, owner_id)
+                        if not user_row:
+                            continue
+                        u_d = dict(user_row)
+                        if not u_d.get("email_notifications", True):
+                            continue
+                        owner_email = u_d.get("email")
+                        if not owner_email:
+                            continue
+                        await send_post_result_email(
+                            owner_email, a_d.get("name", f"Artist #{artist_id}"), results
+                        )
+                    except Exception:
+                        traceback.print_exc()
+            except ImportError:
+                pass  # email not configured
+            except Exception:
+                traceback.print_exc()
     except Exception as e:
         try:
             await db.log_error(
@@ -1046,6 +1118,65 @@ def _next_midnight_pacific() -> datetime:
     return midnight.astimezone(timezone.utc)
 
 
+async def _send_pre_post_reminders() -> None:
+    """Email reminder ~1 hour before a scheduled post. Runs on each poll tick."""
+    try:
+        from services.email import send_post_reminder_email
+    except ImportError:
+        return  # email not configured
+
+    database = await db.get_db()
+    try:
+        rows = await database.fetch_all(
+            """
+            SELECT cp.id, cp.artist_id, cp.artist_account_id, cp.platform, cp.scheduled_for,
+                   a.name AS artist_name, a.timezone AS artist_tz,
+                   u.email AS user_email, u.email_notifications
+            FROM clip_posts cp
+            JOIN artists a ON a.id = cp.artist_id
+            JOIN users u ON u.id = a.user_id
+            WHERE cp.status = 'scheduled'
+              AND cp.reminder_sent_at IS NULL
+              AND cp.scheduled_for BETWEEN NOW() + INTERVAL '55 minutes'
+                                      AND NOW() + INTERVAL '65 minutes'
+            """,
+        )
+        for row in rows:
+            rd = dict(row)
+            if not rd.get("email_notifications", True):
+                continue
+            if not rd.get("user_email"):
+                continue
+            try:
+                from zoneinfo import ZoneInfo
+                tz_str = rd.get("artist_tz") or "US/Eastern"
+                try:
+                    tz = ZoneInfo(tz_str)
+                except Exception:
+                    tz = ZoneInfo("US/Eastern")
+                sf = rd["scheduled_for"]
+                if sf.tzinfo is None:
+                    sf = sf.replace(tzinfo=timezone.utc)
+                time_str = sf.astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+                await send_post_reminder_email(
+                    rd["user_email"],
+                    rd["artist_name"],
+                    time_str,
+                    [rd["platform"]],
+                )
+                await database.execute(
+                    "UPDATE clip_posts SET reminder_sent_at = NOW() WHERE id = :id",
+                    {"id": rd["id"]},
+                )
+                await database.commit()
+            except Exception:
+                traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+    finally:
+        await database.close()
+
+
 async def poll_views_once() -> None:
     """Discover external TikTok posts, then refresh view counts for all
     posted rows, then re-check pause."""
@@ -1056,6 +1187,12 @@ async def poll_views_once() -> None:
     # more critical and must always run.
     try:
         await discover_external_tiktok_posts()
+    except Exception:
+        traceback.print_exc()
+
+    # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
+    try:
+        await _send_pre_post_reminders()
     except Exception:
         traceback.print_exc()
 

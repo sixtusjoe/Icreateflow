@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Plus, Scissors, Trash2, Users, Film, Eye, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { getArtists, createArtist, deleteArtist } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 type Artist = {
   id: number;
@@ -21,6 +22,8 @@ type Artist = {
 export default function ClippingPage() {
   const [artists, setArtists] = useState<Artist[]>([]);
   const [showNew, setShowNew] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{id: number; name: string} | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({
     name: "",
     slug: "",
@@ -59,19 +62,18 @@ export default function ClippingPage() {
     }
   };
 
-  const handleDelete = async (id: number, name: string) => {
-    if (
-      !confirm(
-        `Delete "${name}" and all its clips, variations, and scheduled posts? This cannot be undone.`,
-      )
-    )
-      return;
+  const handleDelete = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
     try {
-      await deleteArtist(id);
+      await deleteArtist(confirmDelete.id);
       load();
       toast.success("Artist deleted");
+      setConfirmDelete(null);
     } catch {
       toast.error("Failed to delete");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -213,7 +215,7 @@ export default function ClippingPage() {
                   </span>
                 </Link>
                 <button
-                  onClick={() => handleDelete(a.id, a.name)}
+                  onClick={() => setConfirmDelete({id: a.id, name: a.name})}
                   className="text-muted-foreground hover:text-destructive p-1"
                   title="Delete artist"
                 >
@@ -246,6 +248,17 @@ export default function ClippingPage() {
           ))}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmDelete !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDelete(null); }}
+        title={`Delete "${confirmDelete?.name}"?`}
+        description="This will permanently delete the artist and all its clips, variations, and scheduled posts. This cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

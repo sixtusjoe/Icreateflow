@@ -11,7 +11,7 @@ import OAuthReturnHandler from "./OAuthReturnHandler";
 
 const PUBLIC_PATHS = ["/login", "/register", "/", "/terms", "/privacy"];
 
-export default function AppShell({ children }: { children: React.ReactNode }) {
+export default function AppShell({ children, logoUrl }: { children: React.ReactNode; logoUrl?: string }) {
   const { user, isLoading } = useAuth();
   const pathname = usePathname();
   const isPublic = PUBLIC_PATHS.includes(pathname);
@@ -60,7 +60,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <Suspense fallback={null}>
         <OAuthReturnHandler />
       </Suspense>
-      <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
+      <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} logoUrl={logoUrl} />
 
       {/* Mobile backdrop */}
       {mobileOpen && (
@@ -82,7 +82,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Menu className="h-5 w-5" />
           </button>
           <Link href="/dashboard" className="flex items-center gap-2">
-            <Logo size={24} radius={6} />
+            <Logo size={24} radius={6} src={logoUrl || undefined} />
             <span className="text-sm font-bold tracking-tight text-foreground">Icreateflow</span>
           </Link>
           <div className="w-10" aria-hidden="true" />

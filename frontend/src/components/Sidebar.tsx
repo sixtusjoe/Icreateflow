@@ -97,9 +97,10 @@ function NavSection({ title, links, pathname, collapsed }: {
 interface SidebarProps {
   mobileOpen?: boolean;
   onMobileClose?: () => void;
+  logoUrl?: string;
 }
 
-export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
+export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl }: SidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
@@ -154,12 +155,12 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       )}>
         {!collapsed ? (
           <Link href="/dashboard" className="flex items-center gap-2 px-1">
-            <Logo size={24} radius={6} />
+            <Logo size={24} radius={6} src={logoUrl || undefined} />
             <span className="text-sm font-bold tracking-tight text-foreground">Icreateflow</span>
           </Link>
         ) : (
           <Link href="/dashboard" className="hidden md:inline-flex">
-            <Logo size={28} radius={7} />
+            <Logo size={28} radius={7} src={logoUrl || undefined} />
           </Link>
         )}
         <div className="flex items-center gap-1">

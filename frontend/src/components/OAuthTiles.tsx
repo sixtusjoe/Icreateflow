@@ -9,6 +9,7 @@ import {
   assignMetaAsset,
   type MetaAsset,
 } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 type PlatformKey = "tiktok" | "youtube" | "instagram" | "facebook";
 
@@ -55,6 +56,8 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
   const [busy, setBusy] = useState<PlatformKey | null>(null);
   const [pick, setPick] = useState<PickState>(null);
   const [submittingAsset, setSubmittingAsset] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState<PlatformKey | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   // Standalone-IG redirect-flow (see handleConnect comment) hands control
   // back to OAuthReturnHandler, which dispatches `oauth-returned` once it
@@ -159,14 +162,18 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
     }
   };
 
-  const handleDisconnect = async (p: PlatformKey) => {
-    if (!confirm(`Disconnect ${PLATFORM_LABELS[p]}?`)) return;
+  const handleDisconnect = async () => {
+    if (!confirmDisconnect) return;
+    setDisconnecting(true);
     try {
-      await disconnectOAuth(OAUTH_PLATFORM_FOR[p], account.id, kind);
-      toast.success(`${PLATFORM_LABELS[p]} disconnected`);
+      await disconnectOAuth(OAUTH_PLATFORM_FOR[confirmDisconnect], account.id, kind);
+      toast.success(`${PLATFORM_LABELS[confirmDisconnect]} disconnected`);
+      setConfirmDisconnect(null);
       onChange();
     } catch {
       toast.error("Failed to disconnect");
+    } finally {
+      setDisconnecting(false);
     }
   };
 
@@ -210,7 +217,7 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
                     {handle ? `@${handle.replace(/^@+/, "")}` : "Connected"}
                   </div>
                   <button
-                    onClick={() => handleDisconnect(p)}
+                    onClick={() => setConfirmDisconnect(p)}
                     className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive"
                   >
                     <Unlink className="h-3 w-3" /> Disconnect
@@ -267,6 +274,17 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
           </div>
         </div>
       ) : null}
+
+      <ConfirmModal
+        open={confirmDisconnect !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDisconnect(null); }}
+        title={`Disconnect ${confirmDisconnect ? PLATFORM_LABELS[confirmDisconnect] : ""}?`}
+        description="This will remove the OAuth connection. You can reconnect at any time."
+        confirmLabel="Disconnect"
+        variant="danger"
+        loading={disconnecting}
+        onConfirm={handleDisconnect}
+      />
     </>
   );
 }

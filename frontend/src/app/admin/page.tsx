@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Users, FileText, Music, Layers, Save, Activity, HardDrive,
   Calendar, Key, Trash2, AlertTriangle, CheckCircle2, XCircle, Link2, Bug,
-  Mic2, Scissors, Video,
+  Mic2, Scissors, Video, Mail, Eye, EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -18,9 +18,10 @@ import {
   getAdminErrorLogs, clearAdminErrorLogs,
   getCacheStats, clearCache,
   getBrandCacheStats, clearBrandCache,
+  sendTestEmail,
 } from "@/lib/api";
 
-type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding";
+type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -72,6 +73,7 @@ export default function AdminPage() {
     { id: "oauth", label: "OAuth Apps" },
     { id: "errors", label: "Errors" },
     { id: "branding", label: "Branding" },
+    { id: "email", label: "Email / SMTP" },
   ];
 
   return (
@@ -111,6 +113,7 @@ export default function AdminPage() {
       {tab === "oauth" && <OAuthTab oauth={oauth} onReload={reloadAll} />}
       {tab === "errors" && <ErrorsTab />}
       {tab === "branding" && <BrandingTab siteConfig={siteConfig} setSiteConfig={setSiteConfig} />}
+      {tab === "email" && <EmailTab siteConfig={siteConfig} setSiteConfig={setSiteConfig} adminEmail={user?.email} />}
     </div>
   );
 }
@@ -757,26 +760,124 @@ function OAuthCard({ platform, data, redirectBase, onReload }: any) {
  * BRANDING
  * ============================================================ */
 function BrandingTab({ siteConfig, setSiteConfig }: any) {
+  const saveCfg = async (key: string, value: string) => {
+    try { await updateSiteConfig(key, value); toast.success("Saved"); }
+    catch { toast.error("Failed"); }
+  };
+
+  const cfgField = (key: string, label: string, placeholder?: string) => (
+    <div className="mb-4">
+      <label className="mb-1.5 block text-sm font-medium">{label}</label>
+      <div className="flex gap-2">
+        <input value={siteConfig[key] || ""}
+          onChange={(e) => setSiteConfig((s: any) => ({ ...s, [key]: e.target.value }))}
+          placeholder={placeholder}
+          className="min-h-[44px] flex-1 rounded-lg border border-border bg-background px-4 text-base sm:text-sm" />
+        <button onClick={() => saveCfg(key, siteConfig[key] || "")}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-foreground px-4 text-background">
+          <Save className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-card p-4 md:p-6">
         <h2 className="mb-5 text-base font-semibold">Site Branding</h2>
-        <label className="mb-1.5 block text-sm font-medium">Site Name</label>
-        <div className="flex gap-2">
-          <input value={siteConfig.site_name || ""}
-            onChange={(e) => setSiteConfig((s: any) => ({ ...s, site_name: e.target.value }))}
-            className="min-h-[44px] flex-1 rounded-lg border border-border bg-background px-4 text-base sm:text-sm" />
-          <button
-            onClick={async () => { try { await updateSiteConfig("site_name", siteConfig.site_name || ""); toast.success("Saved"); } catch { toast.error("Failed"); } }}
-            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-foreground px-4 text-background">
-            <Save className="h-4 w-4" />
-          </button>
-        </div>
+        {cfgField("site_name", "Site Name")}
+        {cfgField("site_logo_url", "Logo URL", "https://example.com/logo.png")}
+        {cfgField("site_favicon_url", "Favicon URL", "https://example.com/favicon.ico")}
       </div>
 
       <PollIntervalCard siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <CacheCleanupCard />
       <BrandCacheCleanupCard />
+    </div>
+  );
+}
+
+function EmailTab({ siteConfig, setSiteConfig, adminEmail }: any) {
+  const [showPassword, setShowPassword] = useState(false);
+  const [testingEmail, setTestingEmail] = useState(false);
+
+  const saveCfg = async (key: string, value: string) => {
+    try { await updateSiteConfig(key, value); toast.success("Saved"); }
+    catch { toast.error("Failed"); }
+  };
+
+  const smtpField = (key: string, label: string, type = "text", placeholder?: string) => (
+    <div className="mb-4">
+      <label className="mb-1.5 block text-sm font-medium">{label}</label>
+      <div className="flex gap-2">
+        {type === "password" ? (
+          <div className="relative flex-1">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={siteConfig[key] || ""}
+              onChange={(e) => setSiteConfig((s: any) => ({ ...s, [key]: e.target.value }))}
+              placeholder={placeholder}
+              className="min-h-[44px] w-full rounded-lg border border-border bg-background px-4 pr-10 text-base sm:text-sm"
+            />
+            <button type="button" onClick={() => setShowPassword((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground">
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        ) : (
+          <input type={type} value={siteConfig[key] || ""}
+            onChange={(e) => setSiteConfig((s: any) => ({ ...s, [key]: e.target.value }))}
+            placeholder={placeholder}
+            className="min-h-[44px] flex-1 rounded-lg border border-border bg-background px-4 text-base sm:text-sm" />
+        )}
+        <button onClick={() => saveCfg(key, siteConfig[key] || "")}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-foreground px-4 text-background">
+          <Save className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl bg-card p-4 md:p-6">
+        <div className="mb-5 flex items-center gap-2">
+          <Mail className="h-5 w-5" />
+          <h2 className="text-base font-semibold">SMTP Email Configuration</h2>
+        </div>
+        <p className="mb-5 text-sm text-muted-foreground">
+          Configure SMTP to enable email notifications, password resets, and OTP codes.
+          Leave <strong>SMTP Host</strong> empty to disable all email sending.
+        </p>
+        {smtpField("smtp_host", "SMTP Host", "text", "smtp.gmail.com")}
+        {smtpField("smtp_port", "SMTP Port", "number", "587")}
+        {smtpField("smtp_user", "SMTP Username / Email", "email")}
+        {smtpField("smtp_password", "SMTP Password", "password")}
+        {smtpField("smtp_from_email", "From Email Address", "email", "noreply@yourdomain.com")}
+        {smtpField("smtp_from_name", "From Name", "text", "iCreateFlow")}
+
+        <div className="mt-2 border-t border-border pt-4">
+          <p className="mb-3 text-xs text-muted-foreground">
+            Send a test email to <strong>{adminEmail}</strong> to verify your SMTP settings.
+          </p>
+          <button
+            onClick={async () => {
+              setTestingEmail(true);
+              try {
+                await sendTestEmail();
+                toast.success("Test email sent — check your inbox");
+              } catch (e: any) {
+                toast.error(e?.response?.data?.detail || "Failed to send test email");
+              } finally { setTestingEmail(false); }
+            }}
+            disabled={testingEmail}
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-border px-5 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            <Mail className="h-4 w-4" />
+            {testingEmail ? "Sending…" : "Send Test Email"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

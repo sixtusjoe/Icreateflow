@@ -5,11 +5,14 @@ import { Download, Eye, Trash2, Plus } from "lucide-react";
 import { getPosts, getBrands, getDownloadUrl, deletePost } from "@/lib/api";
 import { toast } from "sonner";
 import Link from "next/link";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 export default function PostsLibraryPage() {
   const [posts, setPosts] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
   const [filterBrand, setFilterBrand] = useState<string>("all");
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     getBrands().then(setBrands).catch(() => {});
@@ -23,13 +26,16 @@ export default function PostsLibraryPage() {
 
   useEffect(() => { loadPosts(); }, [filterBrand]);
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this post and all its data?")) return;
+  const handleDelete = async () => {
+    if (confirmDelete === null) return;
+    setDeleting(true);
     try {
-      await deletePost(id);
+      await deletePost(confirmDelete);
       loadPosts();
       toast.success("Post deleted");
+      setConfirmDelete(null);
     } catch { toast.error("Failed to delete"); }
+    finally { setDeleting(false); }
   };
 
   return (
@@ -84,7 +90,7 @@ export default function PostsLibraryPage() {
                   className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                   <Download className="h-3 w-3" /> Download
                 </a>
-                <button onClick={() => handleDelete(post.id)}
+                <button onClick={() => setConfirmDelete(post.id)}
                   className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -93,6 +99,17 @@ export default function PostsLibraryPage() {
           ))}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmDelete !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDelete(null); }}
+        title="Delete post?"
+        description="This will permanently delete the post and all its data. This cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }
