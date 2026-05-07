@@ -99,7 +99,7 @@ function FailedPostsSection({
   setRetryingId: (id: number | null) => void;
   setFailedPosts: React.Dispatch<React.SetStateAction<any[]>>;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   return (
     <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
       <button
