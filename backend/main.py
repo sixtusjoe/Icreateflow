@@ -620,11 +620,8 @@ async def forgot_password(data: ForgotPasswordRequest):
             otp = generate_otp(6)
             expires = datetime.now(timezone.utc) + timedelta(minutes=15)
             await database.execute(
-                """
-                INSERT INTO email_otps (user_id, email, code, purpose, expires_at)
-                VALUES (:uid, :email, :code, 'password_reset', :exp)
-                """,
-                {"uid": user["id"], "email": email, "code": otp, "exp": expires},
+                "INSERT INTO email_otps (user_id, email, code, purpose, expires_at) VALUES (?, ?, ?, 'password_reset', ?)",
+                (user["id"], email, otp, expires),
             )
             await database.commit()
             # Fire and forget — don't block the response on SMTP
@@ -641,15 +638,11 @@ async def reset_password(data: ResetPasswordRequest):
     database = await db.get_db()
     try:
         email = data.email.lower().strip()
-        row = await database.fetch_one(
-            """
-            SELECT id, expires_at, used_at
-            FROM email_otps
-            WHERE email = :email AND code = :code AND purpose = 'password_reset'
-            ORDER BY id DESC LIMIT 1
-            """,
-            {"email": email, "code": data.code.strip()},
+        cur = await database.execute(
+            "SELECT id, expires_at, used_at FROM email_otps WHERE email = ? AND code = ? AND purpose = 'password_reset' ORDER BY id DESC LIMIT 1",
+            (email, data.code.strip()),
         )
+        row = await cur.fetchone()
         if not row:
             raise HTTPException(400, "Invalid or expired code")
         rd = dict(row)
@@ -667,8 +660,8 @@ async def reset_password(data: ResetPasswordRequest):
             raise HTTPException(400, "User not found")
         await db.update_user(database, user["id"], password_hash=hash_password(data.new_password))
         await database.execute(
-            "UPDATE email_otps SET used_at = :now WHERE id = :id",
-            {"now": datetime.now(timezone.utc), "id": rd["id"]},
+            "UPDATE email_otps SET used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc), rd["id"]),
         )
         await database.commit()
         return {"ok": True}
@@ -694,12 +687,8 @@ async def request_email_change(data: RequestEmailChangeRequest, user: dict = Dep
         otp = generate_otp(6)
         expires = datetime.now(timezone.utc) + timedelta(minutes=15)
         await database.execute(
-            """
-            INSERT INTO email_otps (user_id, email, code, purpose, new_email, expires_at)
-            VALUES (:uid, :email, :code, 'email_change', :new_email, :exp)
-            """,
-            {"uid": user["id"], "email": user["email"], "code": otp,
-             "new_email": new_email, "exp": expires},
+            "INSERT INTO email_otps (user_id, email, code, purpose, new_email, expires_at) VALUES (?, ?, ?, 'email_change', ?, ?)",
+            (user["id"], user["email"], otp, new_email, expires),
         )
         await database.commit()
         import asyncio
@@ -714,15 +703,11 @@ async def confirm_email_change(data: ConfirmEmailChangeRequest, user: dict = Dep
     """Validate OTP and update the user's email."""
     database = await db.get_db()
     try:
-        row = await database.fetch_one(
-            """
-            SELECT id, new_email, expires_at, used_at
-            FROM email_otps
-            WHERE user_id = :uid AND code = :code AND purpose = 'email_change'
-            ORDER BY id DESC LIMIT 1
-            """,
-            {"uid": user["id"], "code": data.code.strip()},
+        cur = await database.execute(
+            "SELECT id, new_email, expires_at, used_at FROM email_otps WHERE user_id = ? AND code = ? AND purpose = 'email_change' ORDER BY id DESC LIMIT 1",
+            (user["id"], data.code.strip()),
         )
+        row = await cur.fetchone()
         if not row:
             raise HTTPException(400, "Invalid or expired code")
         rd = dict(row)
@@ -739,8 +724,8 @@ async def confirm_email_change(data: ConfirmEmailChangeRequest, user: dict = Dep
             raise HTTPException(400, "Email already taken")
         await db.update_user(database, user["id"], email=new_email)
         await database.execute(
-            "UPDATE email_otps SET used_at = :now WHERE id = :id",
-            {"now": datetime.now(timezone.utc), "id": rd["id"]},
+            "UPDATE email_otps SET used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc), rd["id"]),
         )
         await database.commit()
         return {"ok": True}
@@ -768,14 +753,15 @@ async def unsubscribe_email(token: str):
     """One-click unsubscribe link — disables email notifications for the user."""
     database = await db.get_db()
     try:
-        row = await database.fetch_one(
-            "SELECT id FROM users WHERE unsubscribe_token = :token",
-            {"token": token},
+        cur = await database.execute(
+            "SELECT id FROM users WHERE unsubscribe_token = ?",
+            (token,),
         )
+        row = await cur.fetchone()
         if row:
             await database.execute(
-                "UPDATE users SET email_notifications = FALSE WHERE id = :id",
-                {"id": dict(row)["id"]},
+                "UPDATE users SET email_notifications = 0 WHERE id = ?",
+                (dict(row)["id"],),
             )
             await database.commit()
         from fastapi.responses import HTMLResponse
@@ -4684,7 +4670,7 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
     await _verify_artist_ownership(artist_id, user)
     database = await db.get_db()
     try:
-        rows = await database.fetch_all(
+        cur = await database.execute(
             """
             SELECT cp.id, cp.platform, cp.error, cp.created_at, cp.scheduled_for,
                    cp.clip_id, cp.artist_account_id,
@@ -4692,14 +4678,15 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
                    aa.facebook_handle, aa.name AS variation_name
             FROM clip_posts cp
             LEFT JOIN artist_accounts aa ON aa.id = cp.artist_account_id
-            WHERE cp.artist_id = :artist_id
+            WHERE cp.artist_id = ?
               AND cp.status = 'failed'
               AND cp.created_at > NOW() - INTERVAL '24 hours'
             ORDER BY cp.id DESC
             LIMIT 50
             """,
-            {"artist_id": artist_id},
+            (artist_id,),
         )
+        rows = await cur.fetchall()
         result = []
         for r in rows:
             rd = dict(r)
@@ -4730,29 +4717,23 @@ async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_us
     database = await db.get_db()
     try:
         # Ownership check: the clip_post's artist must belong to this user
-        row = await database.fetch_one(
+        cur = await database.execute(
             """
             SELECT cp.id, cp.artist_id, cp.status
             FROM clip_posts cp
             JOIN artists a ON a.id = cp.artist_id
-            WHERE cp.id = :id
-              AND a.user_id = :user_id
+            WHERE cp.id = ? AND a.user_id = ?
             """,
-            {"id": clip_post_id, "user_id": user["id"]},
+            (clip_post_id, user["id"]),
         )
+        row = await cur.fetchone()
         if not row:
             raise HTTPException(404, "Clip post not found or access denied")
         if dict(row)["status"] != "failed":
             raise HTTPException(400, "Only failed posts can be retried")
         await database.execute(
-            """
-            UPDATE clip_posts
-            SET status = 'scheduled',
-                scheduled_for = NOW() + INTERVAL '2 minutes',
-                error = NULL
-            WHERE id = :id
-            """,
-            {"id": clip_post_id},
+            "UPDATE clip_posts SET status = 'scheduled', scheduled_for = NOW() + INTERVAL '2 minutes', error = NULL WHERE id = ?",
+            (clip_post_id,),
         )
         await database.commit()
         return {"ok": True}
