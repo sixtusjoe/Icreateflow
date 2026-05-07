@@ -523,9 +523,11 @@ export default function ArtistPage({
                     <span className="flex-1 text-xs text-destructive/90 min-w-0 truncate" title={fp.friendly_error}>
                       {fp.friendly_error}
                     </span>
-                    {/* Time */}
+                    {/* Date + Time */}
                     {fp.scheduled_for && (
                       <span className="shrink-0 text-xs text-muted-foreground/60 hidden sm:block">
+                        {new Date(fp.scheduled_for).toLocaleDateString([], { month: "short", day: "numeric" })}
+                        {" · "}
                         {new Date(fp.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                       </span>
                     )}
