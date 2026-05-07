@@ -4695,6 +4695,8 @@ def _friendly_error(raw: str | None) -> str:
     if not raw:
         return "Unknown error"
     err = raw.lower()
+    if "reached_active_user_cap" in err or "active_user_cap" in err:
+        return "TikTok account has reached its active user cap — contact TikTok support"
     if "rate_limit" in err or "rate limit" in err or "spam" in err or "too frequent" in err:
         return "Rate limit hit — try again in a few hours"
     if "token" in err or "oauth" in err or "credentials" in err or "unauthorized" in err or "unauthenticated" in err or "access_token" in err:
@@ -4713,7 +4715,17 @@ def _friendly_error(raw: str | None) -> str:
         return "Network error — safe to retry"
     if "slot lapsed" in err:
         return "Slot lapsed while artist was paused — will be re-scheduled automatically"
-    return raw[:200]
+    if "403" in err or "forbidden" in err:
+        return "Access denied — account may need to be reconnected"
+    if "404" in err or "not found" in err:
+        return "Resource not found — content may have been deleted"
+    if "500" in err or "server error" in err or "internal" in err:
+        return "Platform server error — safe to retry"
+    # Strip raw JSON/long errors — just show first clean sentence or 120 chars
+    import re as _re
+    cleaned = _re.sub(r'\{.*?\}', '', raw, flags=_re.DOTALL).strip(" :{}")
+    cleaned = cleaned.split("\n")[0].strip()
+    return cleaned[:120] if cleaned else raw[:120]
 
 
 @app.get("/api/artists/{artist_id}/failed-clip-posts")
