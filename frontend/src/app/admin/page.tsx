@@ -19,8 +19,8 @@ import {
   getCacheStats, clearCache,
   getBrandCacheStats, clearBrandCache,
   sendTestEmail,
+  uploadAsset,
 } from "@/lib/api";
-import api from "@/lib/api";
 
 type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email";
 
@@ -771,12 +771,7 @@ function BrandingTab({ siteConfig, setSiteConfig }: any) {
   const handleUpload = async (type: "logo" | "favicon", file: File) => {
     setUploading((u) => ({ ...u, [type]: true }));
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await api.post(`/api/admin/upload-asset?type=${type}`, form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      const { url } = res.data;
+      const { url } = await uploadAsset(type, file);
       const key = type === "logo" ? "site_logo_url" : "site_favicon_url";
       setSiteConfig((s: any) => ({ ...s, [key]: url }));
       toast.success(`${type === "logo" ? "Logo" : "Favicon"} uploaded`);

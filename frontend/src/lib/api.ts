@@ -61,6 +61,13 @@ export const sendTestEmail = () =>
   api.post("/api/admin/send-test-email").then((r) => r.data);
 export const getPublicConfig = () =>
   api.get("/api/public/config").then((r) => r.data);
+export const uploadAsset = (type: "logo" | "favicon", file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post(`/api/admin/upload-asset?type=${type}`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  }).then((r) => r.data as { ok: boolean; url: string });
+};
 export const getAdminStats = () => api.get("/api/admin/stats").then((r) => r.data);
 export const getCacheStats = () => api.get("/api/admin/cache-stats").then((r) => r.data);
 export const clearCache = (target: "video_renders" | "caption_variants" | "passthrough_clips" | "all", older_than_days?: number) =>
