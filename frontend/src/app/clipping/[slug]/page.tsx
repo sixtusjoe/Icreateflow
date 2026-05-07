@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState, useCallback } from "react";
+import React, { use, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -86,6 +86,78 @@ type Clip = {
   gdrive_file_id?: string;
   artist_account_id?: number | null;
 };
+
+// ── Collapsible failed-posts section ──────────────────────────────────────
+function FailedPostsSection({
+  failedPosts,
+  retryingId,
+  setRetryingId,
+  setFailedPosts,
+}: {
+  failedPosts: any[];
+  retryingId: number | null;
+  setRetryingId: (id: number | null) => void;
+  setFailedPosts: React.Dispatch<React.SetStateAction<any[]>>;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-4 py-3 md:px-5 text-left hover:bg-destructive/10 transition-colors"
+      >
+        <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+        <span className="text-sm font-semibold text-destructive">Failed Posts</span>
+        <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive">
+          {failedPosts.length}
+        </span>
+        <span className="text-xs text-muted-foreground ml-1">· auto-cleared after 24 hours</span>
+        <ChevronDown className={`h-4 w-4 text-destructive/60 ml-auto shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="divide-y divide-destructive/10 border-t border-destructive/20">
+          {failedPosts.map((fp: any) => (
+            <div key={fp.id} className="flex items-center gap-3 px-4 py-3 md:px-5">
+              <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold capitalize">
+                {fp.platform}
+              </span>
+              <span className="text-xs text-muted-foreground shrink-0">{fp.variation_name}</span>
+              <span className="flex-1 text-xs text-destructive/90 min-w-0 truncate" title={fp.friendly_error}>
+                {fp.friendly_error}
+              </span>
+              {fp.scheduled_for && (
+                <span className="shrink-0 text-xs text-muted-foreground/60 hidden sm:block">
+                  {new Date(fp.scheduled_for).toLocaleDateString([], { month: "short", day: "numeric" })}
+                  {" · "}
+                  {new Date(fp.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+              <button
+                onClick={async () => {
+                  setRetryingId(fp.id);
+                  try {
+                    await retryClipPost(fp.id);
+                    toast.success("Retry scheduled — will post in ~2 minutes");
+                    setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
+                  } catch {
+                    toast.error("Failed to retry");
+                  } finally {
+                    setRetryingId(null);
+                  }
+                }}
+                disabled={retryingId === fp.id}
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <RotateCcw className="h-3 w-3" />
+                {retryingId === fp.id ? "Retrying…" : "Retry"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 type Dashboard = {
   variations_count: number;
@@ -490,74 +562,14 @@ export default function ArtistPage({
       )}
 
       {/* Failed posts — collapsible */}
-      {failedPosts.length > 0 && (() => {
-        const [open, setOpen] = useState(true);
-        return (
-          <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
-            {/* Header — always visible, click to collapse */}
-            <button
-              onClick={() => setOpen((o) => !o)}
-              className="w-full flex items-center gap-2 px-4 py-3 md:px-5 text-left hover:bg-destructive/10 transition-colors"
-            >
-              <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-              <span className="text-sm font-semibold text-destructive">Failed Posts</span>
-              <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive">
-                {failedPosts.length}
-              </span>
-              <span className="text-xs text-muted-foreground ml-1">· auto-cleared after 24 hours</span>
-              <ChevronDown className={`h-4 w-4 text-destructive/60 ml-auto shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
-            </button>
-
-            {/* Rows */}
-            {open && (
-              <div className="divide-y divide-destructive/10 border-t border-destructive/20">
-                {failedPosts.map((fp: any) => (
-                  <div key={fp.id} className="flex items-center gap-3 px-4 py-3 md:px-5">
-                    {/* Platform badge */}
-                    <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold capitalize">
-                      {fp.platform}
-                    </span>
-                    {/* Variation */}
-                    <span className="text-xs text-muted-foreground shrink-0">{fp.variation_name}</span>
-                    {/* Error — flex-1 so it takes up space, no overflow */}
-                    <span className="flex-1 text-xs text-destructive/90 min-w-0 truncate" title={fp.friendly_error}>
-                      {fp.friendly_error}
-                    </span>
-                    {/* Date + Time */}
-                    {fp.scheduled_for && (
-                      <span className="shrink-0 text-xs text-muted-foreground/60 hidden sm:block">
-                        {new Date(fp.scheduled_for).toLocaleDateString([], { month: "short", day: "numeric" })}
-                        {" · "}
-                        {new Date(fp.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    )}
-                    {/* Retry */}
-                    <button
-                      onClick={async () => {
-                        setRetryingId(fp.id);
-                        try {
-                          await retryClipPost(fp.id);
-                          toast.success("Retry scheduled — will post in ~2 minutes");
-                          setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
-                        } catch {
-                          toast.error("Failed to retry");
-                        } finally {
-                          setRetryingId(null);
-                        }
-                      }}
-                      disabled={retryingId === fp.id}
-                      className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                      {retryingId === fp.id ? "Retrying…" : "Retry"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        );
-      })()}
+      {failedPosts.length > 0 && (
+        <FailedPostsSection
+          failedPosts={failedPosts}
+          retryingId={retryingId}
+          setRetryingId={setRetryingId}
+          setFailedPosts={setFailedPosts}
+        />
+      )}
 
       {/* Campaign / Promotion */}
       <section className="rounded-2xl bg-card p-4 md:p-5">
