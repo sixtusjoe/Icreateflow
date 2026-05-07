@@ -1255,6 +1255,7 @@ function ErrorsTab() {
   const sources = Array.from(new Set(logs.map((l) => l.source))).sort();
 
   return (
+    <>
     <div className="rounded-2xl bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4 md:p-5">
         <div className="flex items-center gap-2">
@@ -1342,5 +1343,6 @@ function ErrorsTab() {
       loading={clearing}
       onConfirm={handleClear}
     />
+    </>
   );
 }
