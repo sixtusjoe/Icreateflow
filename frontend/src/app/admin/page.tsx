@@ -9,7 +9,7 @@ import {
   Mic2, Scissors, Video, Mail, Eye, EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
-import ConfirmModal from "@/components/ui/confirm-modal";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 import {
   getAdminStats, getUsers, updateUser, approveUser, deleteAdminUser, getSiteConfig, updateSiteConfig,
   getAdminBrands, deleteAdminBrand, getAdminPosts, deleteAdminPost, getAdminAccounts,
