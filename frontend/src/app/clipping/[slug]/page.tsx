@@ -507,9 +507,9 @@ export default function ArtistPage({
                   <span className="font-semibold capitalize">{fp.platform}</span>
                   <span className="text-muted-foreground">{fp.variation_name}</span>
                   <span className="text-destructive/80">{fp.friendly_error}</span>
-                  {fp.created_at && (
+                  {fp.scheduled_for && (
                     <span className="text-muted-foreground/60">
-                      {new Date(fp.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      scheduled {new Date(fp.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </span>
                   )}
                 </div>

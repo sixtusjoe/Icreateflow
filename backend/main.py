@@ -4724,7 +4724,7 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
     try:
         cur = await database.execute(
             """
-            SELECT cp.id, cp.platform, cp.error, cp.created_at, cp.scheduled_for,
+            SELECT cp.id, cp.platform, cp.error, cp.scheduled_for,
                    cp.clip_id, cp.artist_account_id,
                    aa.tiktok_handle, aa.youtube_handle, aa.instagram_handle,
                    aa.facebook_handle, aa.name AS variation_name
@@ -4732,7 +4732,7 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
             LEFT JOIN artist_accounts aa ON aa.id = cp.artist_account_id
             WHERE cp.artist_id = ?
               AND cp.status = 'failed'
-              AND cp.created_at > NOW() - INTERVAL '24 hours'
+              AND (cp.scheduled_for IS NULL OR cp.scheduled_for > NOW() - INTERVAL '7 days')
             ORDER BY cp.id DESC
             LIMIT 50
             """,
@@ -4755,7 +4755,6 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
                 "variation_name": variation_label,
                 "error": rd.get("error"),
                 "friendly_error": _friendly_error(rd.get("error")),
-                "created_at": rd["created_at"].isoformat() if rd.get("created_at") else None,
                 "scheduled_for": rd["scheduled_for"].isoformat() if rd.get("scheduled_for") else None,
             })
         return result

@@ -9,6 +9,7 @@ import {
   Mic2, Scissors, Video, Mail, Eye, EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
+import ConfirmModal from "@/components/ui/confirm-modal";
 import {
   getAdminStats, getUsers, updateUser, approveUser, deleteAdminUser, getSiteConfig, updateSiteConfig,
   getAdminBrands, deleteAdminBrand, getAdminPosts, deleteAdminPost, getAdminAccounts,
@@ -1221,6 +1222,8 @@ function ErrorsTab() {
   const [source, setSource] = useState<string>("");
   const [expanded, setExpanded] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1236,13 +1239,16 @@ function ErrorsTab() {
   }, [source]);
 
   const handleClear = async () => {
-    if (!confirm("Delete ALL error logs? This cannot be undone.")) return;
+    setClearing(true);
     try {
       await clearAdminErrorLogs();
       toast.success("Cleared");
+      setConfirmClear(false);
       load();
     } catch {
       toast.error("Failed to clear");
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -1276,7 +1282,7 @@ function ErrorsTab() {
             Refresh
           </button>
           <button
-            onClick={handleClear}
+            onClick={() => setConfirmClear(true)}
             className="inline-flex items-center gap-1 rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-500/10"
           >
             <Trash2 className="h-3 w-3" /> Clear all
@@ -1326,5 +1332,15 @@ function ErrorsTab() {
         </div>
       )}
     </div>
+    <ConfirmModal
+      open={confirmClear}
+      onOpenChange={setConfirmClear}
+      title="Clear all error logs?"
+      description="This will permanently delete all error log entries. This cannot be undone."
+      confirmLabel="Clear all"
+      variant="danger"
+      loading={clearing}
+      onConfirm={handleClear}
+    />
   );
 }

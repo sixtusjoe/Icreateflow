@@ -661,7 +661,7 @@ async def dispatch_due_once() -> None:
             """
             DELETE FROM clip_posts
             WHERE status = 'failed'
-              AND created_at < NOW() - INTERVAL '24 hours'
+              AND scheduled_for < NOW() - INTERVAL '24 hours'
             """
         )
         await database.commit()
