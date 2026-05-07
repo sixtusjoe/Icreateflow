@@ -112,6 +112,8 @@ class User(Base):
     status: Mapped[str] = mapped_column(Text, server_default="active")
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     last_login: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    email_notifications: Mapped[Optional[bool]] = mapped_column(Boolean, server_default="true", nullable=True)
+    unsubscribe_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'user')", name="users_role_chk"),
         CheckConstraint("status IN ('active', 'suspended', 'pending')", name="users_status_chk"),
@@ -505,6 +507,7 @@ class ClipPost(Base):
     # SQLAlchemy "Unconsumed column names: posted_as_draft" and broke
     # every Clipping dispatch.
     posted_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     __table_args__ = (
         CheckConstraint(
             "platform IN ('tiktok','youtube','instagram','facebook')",

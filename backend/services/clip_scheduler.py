@@ -1127,7 +1127,7 @@ async def _send_pre_post_reminders() -> None:
 
     database = await db.get_db()
     try:
-        rows = await database.fetch_all(
+        cur = await database.execute(
             """
             SELECT cp.id, cp.artist_id, cp.artist_account_id, cp.platform, cp.scheduled_for,
                    a.name AS artist_name, a.timezone AS artist_tz,
@@ -1139,8 +1139,9 @@ async def _send_pre_post_reminders() -> None:
               AND cp.reminder_sent_at IS NULL
               AND cp.scheduled_for BETWEEN NOW() + INTERVAL '55 minutes'
                                       AND NOW() + INTERVAL '65 minutes'
-            """,
+            """
         )
+        rows = await cur.fetchall()
         for row in rows:
             rd = dict(row)
             if not rd.get("email_notifications", True):
