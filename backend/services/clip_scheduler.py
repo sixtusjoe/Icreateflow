@@ -471,16 +471,18 @@ async def plan_slots_once() -> None:
     """Ensure today's clip_posts rows exist for every ACTIVE artist."""
     database = await db.get_db()
     try:
-        # --- Integrity sweep: cancel stale scheduled slots ---
+        # --- Integrity sweep: reassign stale scheduled slots in place ---
         # A stale slot is a scheduled row whose assigned clip has already been
         # posted globally AND the variation still has unposted clips available.
-        # Cancelling them here lets _pick_next_clip select the correct clip
-        # when the slot-fill loop runs below. Uses the same subquery logic as
+        # Rather than cancelling (which misses the post if it fires soon), we
+        # UPDATE the slot's clip_id to the best available unposted clip using
+        # _pick_next_clip. Only if no replacement clip is found is the slot
+        # cancelled. Uses the same subquery logic as
         # _has_unposted_clip_for_variation() to avoid semantic drift.
         try:
             stale_cur = await database.execute(
                 """
-                SELECT cp.id
+                SELECT cp.id, cp.artist_account_id, aa.artist_id
                 FROM clip_posts cp
                 JOIN artist_accounts aa ON aa.id = cp.artist_account_id
                 WHERE cp.status = 'scheduled'
@@ -503,13 +505,24 @@ async def plan_slots_once() -> None:
                   )
                 """
             )
-            stale_ids = [r["id"] for r in await stale_cur.fetchall()]
-            for sid in stale_ids:
-                await db.update_clip_post(
-                    database, sid, status="failed",
-                    error="Stale slot replaced — unposted clip selected on next planner tick",
-                )
-            if stale_ids:
+            stale_rows = await stale_cur.fetchall()
+            reassigned = 0
+            for row in stale_rows:
+                sid = row["id"]
+                var_id = row["artist_account_id"]
+                art_id = row["artist_id"]
+                # Temporarily exclude this slot's clip from the pick so
+                # _pick_next_clip finds the correct unposted clip
+                replacement = await _pick_next_clip(database, art_id, var_id)
+                if replacement:
+                    await database.execute(
+                        "UPDATE clip_posts SET clip_id = ?, clip_filename = ? WHERE id = ? AND status = 'scheduled'",
+                        (replacement["id"], replacement.get("filename"), sid),
+                    )
+                    reassigned += 1
+                # If no replacement found, leave the slot as-is;
+                # evaluate_variation_pause will handle exhaustion on next tick.
+            if reassigned:
                 await database.commit()
         except Exception:
             pass  # Never let the sweep block the planner
