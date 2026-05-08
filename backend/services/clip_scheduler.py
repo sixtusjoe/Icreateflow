@@ -1261,7 +1261,8 @@ def _next_midnight_pacific() -> datetime:
 
 
 async def _send_pre_post_reminders() -> None:
-    """Email reminder ~1 hour before a scheduled post. Runs on each poll tick."""
+    """Email reminder ~1 hour before a scheduled post. Runs on each poll tick.
+    Groups all platforms for the same artist/time into a single email."""
     try:
         from services.email import send_post_reminder_email
     except ImportError:
@@ -1271,7 +1272,7 @@ async def _send_pre_post_reminders() -> None:
     try:
         cur = await database.execute(
             """
-            SELECT cp.id, cp.artist_id, cp.artist_account_id, cp.platform, cp.scheduled_for,
+            SELECT cp.id, cp.artist_id, cp.platform, cp.scheduled_for,
                    a.name AS artist_name, a.timezone AS artist_tz,
                    u.email AS user_email, u.email_notifications
             FROM clip_posts cp
@@ -1281,36 +1282,58 @@ async def _send_pre_post_reminders() -> None:
               AND cp.reminder_sent_at IS NULL
               AND cp.scheduled_for BETWEEN NOW() + INTERVAL '55 minutes'
                                       AND NOW() + INTERVAL '65 minutes'
+            ORDER BY cp.artist_id, cp.scheduled_for
             """
         )
         rows = await cur.fetchall()
+
+        # Group rows by (artist_id, scheduled_for minute, user_email) so we
+        # send exactly ONE email per artist per upcoming batch time.
+        from collections import defaultdict
+        groups: dict[tuple, list] = defaultdict(list)
         for row in rows:
             rd = dict(row)
-            if not rd.get("email_notifications", True):
+            # Round scheduled_for to the minute so same-batch slots group together
+            sf = rd["scheduled_for"]
+            if sf.tzinfo is None:
+                sf = sf.replace(tzinfo=timezone.utc)
+            key = (rd["artist_id"], sf.replace(second=0, microsecond=0), rd.get("user_email", ""))
+            groups[key].append(rd)
+
+        for (artist_id, sf, user_email), group_rows in groups.items():
+            first = group_rows[0]
+            if not first.get("email_notifications", True):
+                # Still mark as sent so we don't retry each tick
+                for rd in group_rows:
+                    await database.execute(
+                        "UPDATE clip_posts SET reminder_sent_at = NOW() WHERE id = :id",
+                        {"id": rd["id"]},
+                    )
+                await database.commit()
                 continue
-            if not rd.get("user_email"):
+            if not user_email:
                 continue
             try:
                 from zoneinfo import ZoneInfo
-                tz_str = rd.get("artist_tz") or "US/Eastern"
+                tz_str = first.get("artist_tz") or "US/Eastern"
                 try:
                     tz = ZoneInfo(tz_str)
                 except Exception:
                     tz = ZoneInfo("US/Eastern")
-                sf = rd["scheduled_for"]
-                if sf.tzinfo is None:
-                    sf = sf.replace(tzinfo=timezone.utc)
-                time_str = sf.astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+                time_str = sf.astimezone(tz).strftime("%b %d, %Y at %H:%M %Z")
+                platforms = list({rd["platform"] for rd in group_rows})
                 await send_post_reminder_email(
-                    rd["user_email"],
-                    rd["artist_name"],
+                    user_email,
+                    first["artist_name"],
                     time_str,
-                    [rd["platform"]],
+                    platforms,
                 )
-                await database.execute(
-                    "UPDATE clip_posts SET reminder_sent_at = NOW() WHERE id = :id",
-                    {"id": rd["id"]},
-                )
+                ids = [rd["id"] for rd in group_rows]
+                for rid in ids:
+                    await database.execute(
+                        "UPDATE clip_posts SET reminder_sent_at = NOW() WHERE id = :id",
+                        {"id": rid},
+                    )
                 await database.commit()
             except Exception:
                 traceback.print_exc()

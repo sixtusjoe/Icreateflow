@@ -201,19 +201,13 @@ async def send_post_reminder_email(
 ) -> None:
     cfg = await _get_smtp_cfg()
     site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
-    plats = ", ".join(p.capitalize() for p in platform_list) if platform_list else "connected platforms"
     html = await _html_wrap_cfg(f"""
       <p>Hi,</p>
-      <p>Reminder: <strong>{artist_name}</strong> has a post scheduled in approximately 1 hour.</p>
-      <p><strong>Time:</strong> {scheduled_time}<br>
-         <strong>Platforms:</strong> {plats}</p>
-      <p>Make sure the variation accounts are connected and tokens are valid.</p>
+      <p><strong>{artist_name}</strong> has a post going out in approximately 1 hour.</p>
+      <p style="font-size:15px;color:#555;">Scheduled for <strong style="color:#111;">{scheduled_time}</strong></p>
     """)
-    text = (
-        f"Reminder: {artist_name} has a post scheduled in ~1 hour at {scheduled_time}.\n"
-        f"Platforms: {plats}"
-    )
-    await send_email(to_email, f"{site_name} — Upcoming post: {artist_name}", html, text)
+    text = f"Reminder: {artist_name} has a post scheduled in ~1 hour at {scheduled_time}."
+    await send_email(to_email, f"⏰ Upcoming post — {artist_name}", html, text)
 
 
 async def send_post_result_email(
