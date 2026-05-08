@@ -107,11 +107,11 @@ function FailedPostsSection({
         className="w-full flex items-center gap-2 px-4 py-3 md:px-5 text-left hover:bg-destructive/10 transition-colors"
       >
         <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-        <span className="text-sm font-semibold text-destructive">Failed Posts</span>
-        <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive">
+        <span className="text-sm font-semibold text-destructive whitespace-nowrap">Failed Posts</span>
+        <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive shrink-0">
           {failedPosts.length}
         </span>
-        <span className="text-xs text-muted-foreground ml-1">· auto-cleared after 24 hours</span>
+        <span className="text-xs text-muted-foreground hidden sm:inline whitespace-nowrap">· auto-cleared after 24 hours</span>
         <ChevronDown className={`h-4 w-4 text-destructive/60 ml-auto shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (

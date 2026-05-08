@@ -230,6 +230,7 @@ function Section({ title, children }: { title: string; children: any }) {
  * USERS — with delete
  * ============================================================ */
 function UsersTab({ users, currentUserId, onReload }: any) {
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const handleRole = async (id: number, role: string) => {
     try { await updateUser(id, { role }); toast.success("Role updated"); onReload(); } catch { toast.error("Failed"); }
   };
@@ -240,10 +241,8 @@ function UsersTab({ users, currentUserId, onReload }: any) {
     try { await approveUser(id); toast.success(`${name} approved`); onReload(); }
     catch (e: any) { toast.error(e.response?.data?.detail || "Failed to approve"); }
   };
-  const handleDelete = async (id: number, name: string) => {
-    if (!confirm(`Delete ${name} and ALL their brands, posts, music? This cannot be undone.`)) return;
-    try { await deleteAdminUser(id); toast.success("User deleted"); onReload(); }
-    catch (e: any) { toast.error(e.response?.data?.detail || "Failed"); }
+  const handleDelete = (id: number, name: string) => {
+    setConfirm({ title: "Delete user", description: `Delete ${name} and ALL their brands, posts, music? This cannot be undone.`, onConfirm: async () => { try { await deleteAdminUser(id); toast.success("User deleted"); onReload(); } catch (e: any) { toast.error(e.response?.data?.detail || "Failed"); } } });
   };
 
   const pendingUsers = users.filter((u: any) => u.status === "pending");
@@ -323,6 +322,7 @@ function UsersTab({ users, currentUserId, onReload }: any) {
           </tbody>
         </table>
       </div>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
@@ -331,10 +331,9 @@ function UsersTab({ users, currentUserId, onReload }: any) {
  * BRANDS / POSTS / ACCOUNTS / MUSIC / SCHEDULE
  * ============================================================ */
 function BrandsTab({ brands, onReload }: any) {
-  const handleDelete = async (id: number, name: string) => {
-    if (!confirm(`Delete brand "${name}" and all its posts + accounts?`)) return;
-    try { await deleteAdminBrand(id); toast.success("Brand deleted"); onReload(); }
-    catch { toast.error("Failed"); }
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
+  const handleDelete = (id: number, name: string) => {
+    setConfirm({ title: "Delete brand", description: `Delete brand "${name}" and all its posts + accounts? This cannot be undone.`, onConfirm: async () => { try { await deleteAdminBrand(id); toast.success("Brand deleted"); onReload(); } catch { toast.error("Failed"); } } });
   };
   return (
     <div className="overflow-x-auto rounded-2xl bg-card">
@@ -361,15 +360,15 @@ function BrandsTab({ brands, onReload }: any) {
           ))}
         </tbody>
       </table>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
 
 function ArtistsTab({ artists, onReload }: any) {
-  const handleDelete = async (id: number, name: string) => {
-    if (!confirm(`Delete artist "${name}" and all variations, clips, and scheduled posts?`)) return;
-    try { await deleteAdminArtist(id); toast.success("Artist deleted"); onReload(); }
-    catch { toast.error("Failed"); }
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
+  const handleDelete = (id: number, name: string) => {
+    setConfirm({ title: "Delete artist", description: `Delete artist "${name}" and all variations, clips, and scheduled posts? This cannot be undone.`, onConfirm: async () => { try { await deleteAdminArtist(id); toast.success("Artist deleted"); onReload(); } catch { toast.error("Failed"); } } });
   };
   return (
     <div className="overflow-x-auto rounded-2xl bg-card">
@@ -403,17 +402,17 @@ function ArtistsTab({ artists, onReload }: any) {
           ))}
         </tbody>
       </table>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
 
 function PostsTab({ posts, onReload }: any) {
   const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const filtered = filterStatus === "all" ? posts : posts.filter((p: any) => p.status === filterStatus);
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this post and all its slides/variations/outputs?")) return;
-    try { await deleteAdminPost(id); toast.success("Post deleted"); onReload(); }
-    catch { toast.error("Failed"); }
+  const handleDelete = (id: number) => {
+    setConfirm({ title: "Delete post", description: "Delete this post and all its slides, variations, and outputs? This cannot be undone.", onConfirm: async () => { try { await deleteAdminPost(id); toast.success("Post deleted"); onReload(); } catch { toast.error("Failed"); } } });
   };
   return (
     <div className="space-y-3">
@@ -446,6 +445,7 @@ function PostsTab({ posts, onReload }: any) {
           </tbody>
         </table>
       </div>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
@@ -485,10 +485,9 @@ function AccountsTab({ accounts }: any) {
 }
 
 function MusicTab({ tracks, onReload }: any) {
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this track?")) return;
-    try { await deleteAdminMusic(id); toast.success("Deleted"); onReload(); }
-    catch { toast.error("Failed"); }
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
+  const handleDelete = (id: number) => {
+    setConfirm({ title: "Delete track", description: "Delete this music track? This cannot be undone.", onConfirm: async () => { try { await deleteAdminMusic(id); toast.success("Deleted"); onReload(); } catch { toast.error("Failed"); } } });
   };
   return (
     <div className="overflow-x-auto rounded-2xl bg-card">
@@ -512,6 +511,7 @@ function MusicTab({ tracks, onReload }: any) {
           ))}
         </tbody>
       </table>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
@@ -603,6 +603,7 @@ function GoogleDriveCard({ data, onReload }: any) {
 }
 
 function OAuthCard({ platform, data, redirectBase, onReload }: any) {
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [clientId, setClientId] = useState(data?.client_id || "");
   const [clientSecret, setClientSecret] = useState("");
   // IG-only: verify_token used by Facebook's webhook subscription handshake.
@@ -638,15 +639,8 @@ function OAuthCard({ platform, data, redirectBase, onReload }: any) {
     catch { toast.error("Copy failed"); }
   };
 
-  const clearAll = async () => {
-    if (!confirm(`Clear ${platform} Client ID and Secret? Users won't be able to connect ${platform} until you set them again.`)) return;
-    try {
-      await updateOAuthApp(platform, { client_id: "", client_secret: "" });
-      setClientId("");
-      setClientSecret("");
-      toast.success(`${platform} credentials cleared`);
-      onReload();
-    } catch { toast.error("Failed to clear"); }
+  const clearAll = () => {
+    setConfirm({ title: `Clear ${platform} credentials`, description: `Clear ${platform} Client ID and Secret? Users won't be able to connect ${platform} until you set them again.`, onConfirm: async () => { try { await updateOAuthApp(platform, { client_id: "", client_secret: "" }); setClientId(""); setClientSecret(""); toast.success(`${platform} credentials cleared`); onReload(); } catch { toast.error("Failed to clear"); } } });
   };
 
   const callback = redirectBase ? `${redirectBase.replace(/\/$/, "")}/api/oauth/${platform}/callback` : "(set redirect base first)";
@@ -754,6 +748,7 @@ function OAuthCard({ platform, data, redirectBase, onReload }: any) {
           </button>
         )}
       </div>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
@@ -978,6 +973,7 @@ function PollIntervalCard({ siteConfig, setSiteConfig }: any) {
 }
 
 function BrandCacheCleanupCard() {
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [target, setTarget] = useState<"output" | "uploads" | "all">("output");
   const [date, setDate] = useState<string>(() => {
@@ -1012,10 +1008,10 @@ function BrandCacheCleanupCard() {
     const confirmMsg = target === "uploads" || (target === "all" && wipeAll)
       ? `⚠ ${scope}\n\nThis deletes user-uploaded slide images. Posts you haven't regenerated will be unrecoverable.\n\nProceed?`
       : `Delete ${scope}? This cannot be undone.`;
-    if (!confirm(confirmMsg)) return;
-    setBusy(true);
-    try {
-      const r = await clearBrandCache(target, cutoff);
+    setConfirm({ title: wipeAll ? "Wipe all brand artifacts" : "Clear brand cache", description: confirmMsg, onConfirm: async () => {
+      setBusy(true);
+      try {
+        const r = await clearBrandCache(target, cutoff);
       toast.success(
         `Output: ${r.output_dirs_deleted} dirs (${fmtBytes(r.output_bytes_freed)}) · Uploads: ${r.uploads_files_deleted} files (${fmtBytes(r.uploads_bytes_freed)})`
       );
@@ -1025,6 +1021,7 @@ function BrandCacheCleanupCard() {
     } finally {
       setBusy(false);
     }
+    } });
   };
 
   return (
@@ -1082,11 +1079,13 @@ function BrandCacheCleanupCard() {
           </button>
         </div>
       </div>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
 
 function CacheCleanupCard() {
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [target, setTarget] = useState<"video_renders" | "caption_variants" | "passthrough_clips" | "all">("all");
   const [days, setDays] = useState<string>("30");
@@ -1113,17 +1112,18 @@ function CacheCleanupCard() {
     };
     const olderDays = wipeAll ? undefined : Math.max(0, parseInt(days || "0", 10));
     const scope = wipeAll ? `ALL ${labels[target]}` : `${labels[target]} older than ${olderDays} days`;
-    if (!confirm(`Delete ${scope}? This cannot be undone.`)) return;
-    setBusy(true);
-    try {
-      const r = await clearCache(target, wipeAll ? undefined : olderDays);
-      toast.success(`Deleted ${r.video_renders_deleted ?? 0} renders · ${r.passthrough_clips_deleted ?? 0} passthrough · ${r.caption_variants_deleted ?? 0} captions`);
-      load();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Failed to clear cache");
-    } finally {
-      setBusy(false);
-    }
+    setConfirm({ title: wipeAll ? "Wipe all cache" : "Clear cache", description: `Delete ${scope}? This cannot be undone.`, onConfirm: async () => {
+      setBusy(true);
+      try {
+        const r = await clearCache(target, wipeAll ? undefined : olderDays);
+        toast.success(`Deleted ${r.video_renders_deleted ?? 0} renders · ${r.passthrough_clips_deleted ?? 0} passthrough · ${r.caption_variants_deleted ?? 0} captions`);
+        load();
+      } catch (e: any) {
+        toast.error(e?.response?.data?.detail || "Failed to clear cache");
+      } finally {
+        setBusy(false);
+      }
+    } });
   };
 
   return (
@@ -1197,6 +1197,7 @@ function CacheCleanupCard() {
           </button>
         </div>
       </div>
+      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
     </div>
   );
 }
