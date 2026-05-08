@@ -206,6 +206,8 @@ export const postNow = (postId: number) =>
 // --- Clipping: failed posts + retry ---
 export const getArtistFailedPosts = (artistId: number) =>
   api.get(`/api/artists/${artistId}/failed-clip-posts`).then((r) => r.data);
+export const clearArtistFailedPosts = (artistId: number) =>
+  api.delete(`/api/artists/${artistId}/failed-clip-posts`).then((r) => r.data);
 export const retryClipPost = (clipPostId: number) =>
   api.post(`/api/clip-posts/${clipPostId}/retry`).then((r) => r.data);
 

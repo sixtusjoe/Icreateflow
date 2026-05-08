@@ -4871,6 +4871,26 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
         await database.close()
 
 
+@app.delete("/api/artists/{artist_id}/failed-clip-posts")
+async def clear_failed_clip_posts(artist_id: int, user: dict = Depends(get_current_user)):
+    """Delete all failed clip_posts for this artist."""
+    await _verify_artist_ownership(artist_id, user)
+    database = await db.get_db()
+    try:
+        await database.execute(
+            """
+            DELETE FROM clip_posts
+            WHERE artist_id = ?
+              AND status = 'failed'
+            """,
+            (artist_id,),
+        )
+        await database.commit()
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
 @app.post("/api/clip-posts/{clip_post_id}/retry")
 async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_user)):
     """Reset a failed clip_post to scheduled so the dispatcher re-attempts it."""

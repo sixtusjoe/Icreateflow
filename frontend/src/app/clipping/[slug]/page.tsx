@@ -48,6 +48,7 @@ import {
   updateVariationTiktokSettings,
   getArtistFailedPosts,
   retryClipPost,
+  clearArtistFailedPosts,
 } from "@/lib/api";
 
 type Variation = {
@@ -93,27 +94,50 @@ function FailedPostsSection({
   retryingId,
   setRetryingId,
   setFailedPosts,
+  artistId,
 }: {
   failedPosts: any[];
   retryingId: number | null;
   setRetryingId: (id: number | null) => void;
   setFailedPosts: React.Dispatch<React.SetStateAction<any[]>>;
+  artistId: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
   return (
     <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2 px-4 py-3 md:px-5 text-left hover:bg-destructive/10 transition-colors"
-      >
-        <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-        <span className="text-sm font-semibold text-destructive whitespace-nowrap">Failed Posts</span>
-        <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive shrink-0">
-          {failedPosts.length}
-        </span>
-        <span className="text-xs text-muted-foreground hidden sm:inline whitespace-nowrap">· auto-cleared after 24 hours</span>
-        <ChevronDown className={`h-4 w-4 text-destructive/60 ml-auto shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
+      <div className="flex items-center gap-2 px-4 py-3 md:px-5">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-2 flex-1 text-left"
+        >
+          <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+          <span className="text-sm font-semibold text-destructive whitespace-nowrap">Failed Posts</span>
+          <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive shrink-0">
+            {failedPosts.length}
+          </span>
+          <span className="text-xs text-muted-foreground hidden sm:inline whitespace-nowrap">· auto-cleared after 24 hours</span>
+          <ChevronDown className={`h-4 w-4 text-destructive/60 ml-1 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+        <button
+          onClick={async () => {
+            setClearing(true);
+            try {
+              await clearArtistFailedPosts(artistId);
+              setFailedPosts([]);
+              toast.success("Cleared all failed posts");
+            } catch {
+              toast.error("Could not clear");
+            } finally {
+              setClearing(false);
+            }
+          }}
+          disabled={clearing}
+          className="shrink-0 text-xs text-destructive/70 hover:text-destructive font-medium disabled:opacity-50"
+        >
+          {clearing ? "Clearing…" : "Clear all"}
+        </button>
+      </div>
       {open && (
         <div className="divide-y divide-destructive/10 border-t border-destructive/20">
           {failedPosts.map((fp: any) => (
@@ -600,6 +624,7 @@ export default function ArtistPage({
           retryingId={retryingId}
           setRetryingId={setRetryingId}
           setFailedPosts={setFailedPosts}
+          artistId={Number(artist.id)}
         />
       )}
 
@@ -1141,6 +1166,11 @@ function VariationCard({
               {!v.paused_reason && nextClip && (
                 <span className="shrink-0 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-400">
                   Next: {nextClip}
+                </span>
+              )}
+              {!v.paused_reason && !nextClip && (
+                <span className="shrink-0 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-400">
+                  Active
                 </span>
               )}
             </div>
