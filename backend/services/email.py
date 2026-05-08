@@ -221,6 +221,7 @@ async def send_post_result_email(
     artist_name: str,
     results: list[dict],
     unsubscribe_url: str | None = None,
+    dashboard_url: str = "https://icreateflow.com/clipping",
 ) -> None:
     """Send a post success/failure summary email.
 
@@ -228,40 +229,60 @@ async def send_post_result_email(
     """
     cfg = await _get_smtp_cfg()
     site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
-    rows = ""
-    for r in results:
-        icon = "✓" if r.get("status") == "posted" else "✗"
-        color = "#16a34a" if r.get("status") == "posted" else "#dc2626"
-        err = f" — {r['error'][:120]}" if r.get("error") else ""
-        rows += (
-            f"<tr>"
-            f"<td style='padding:6px 12px;color:{color};font-weight:700'>{icon}</td>"
-            f"<td style='padding:6px 0'>{r.get('platform','').capitalize()}</td>"
-            f"<td style='padding:6px 12px;color:#666'>{r.get('variation_name','')}</td>"
-            f"<td style='padding:6px 0;color:{color};font-size:13px'>{err}</td>"
-            f"</tr>"
-        )
-    html = await _html_wrap_cfg(f"""
-      <p>Here's the posting summary for <strong>{artist_name}</strong>:</p>
-      <table style='width:100%;border-collapse:collapse'>
-        <tr style='background:#f5f5f5;font-size:12px;color:#666'>
-          <th style='padding:6px 12px;text-align:left'></th>
-          <th style='padding:6px 0;text-align:left'>Platform</th>
-          <th style='padding:6px 12px;text-align:left'>Variation</th>
-          <th style='padding:6px 0;text-align:left'>Note</th>
-        </tr>
-        {rows}
-      </table>
-    """)
     failed = [r for r in results if r.get("status") != "posted"]
-    if failed:
-        text = f"Post summary for {artist_name}: {len(results)-len(failed)} posted, {len(failed)} failed.\n"
-        text += "\n".join(f"✗ {r.get('platform')} ({r.get('variation_name')}): {r.get('error','')}" for r in failed)
+    failed_count = len(failed)
+
+    failed_block = ""
+    if failed_count:
+        failed_block = f"""
+      <div style="margin-top:24px;background:#fff5f5;border:1px solid #fecaca;border-radius:10px;padding:16px 20px;text-align:center;">
+        <p style="margin:0;font-size:15px;color:#dc2626;font-weight:600;">
+          ⚠️ {failed_count} post{"s" if failed_count > 1 else ""} failed
+        </p>
+        <p style="margin:8px 0 12px;font-size:13px;color:#666;">
+          You can retry from your dashboard.
+        </p>
+        <a href="{dashboard_url}"
+           style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;
+                  font-size:13px;font-weight:600;padding:9px 20px;border-radius:8px;">
+          View failed posts →
+        </a>
+      </div>"""
+
+    html = await _html_wrap_cfg(f"""
+      <div style="text-align:center;padding:8px 0 4px;">
+        <div style="font-size:42px;letter-spacing:4px;margin-bottom:4px;">🎉 🎊 🎉</div>
+        <h1 style="font-size:36px;font-weight:800;margin:0 0 8px;letter-spacing:1px;color:#111;">
+          HURRAY!
+        </h1>
+        <p style="font-size:16px;color:#444;margin:0 0 4px;">
+          Posts published successfully for
+        </p>
+        <p style="font-size:18px;font-weight:700;color:#111;margin:0;">
+          {artist_name}
+        </p>
+      </div>
+      {failed_block}
+      <div style="margin-top:28px;text-align:center;">
+        <a href="{dashboard_url}"
+           style="display:inline-block;background:#111;color:#fff;text-decoration:none;
+                  font-size:13px;font-weight:600;padding:10px 24px;border-radius:8px;">
+          View dashboard →
+        </a>
+      </div>
+    """)
+
+    if failed_count:
+        text = (
+            f"HURRAY! Posts published for {artist_name}.\n"
+            f"{failed_count} post(s) failed — visit your dashboard to retry: {dashboard_url}"
+        )
     else:
-        text = f"Post summary for {artist_name}: all {len(results)} posts succeeded."
+        text = f"HURRAY! Posts published successfully for {artist_name}."
+
     await send_email(
         to_email,
-        f"{site_name} — Post results: {artist_name}",
+        f"🎉 Posts published — {artist_name}",
         html,
         text,
         unsubscribe_url=unsubscribe_url,

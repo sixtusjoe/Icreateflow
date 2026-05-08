@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <rect width="100" height="100" rx="20" ry="20" fill="#0a0a0a"/>
+  <!-- Dot -->
+  <circle cx="29" cy="50" r="6.5" fill="#c8f000"/>
+  <!-- Arc 1 - bright lime -->
+  <path d="M 41 37 A 17 17 0 0 1 41 63" stroke="#c8f000" stroke-width="6.5" fill="none" stroke-linecap="round"/>
+  <!-- Arc 2 - medium olive-lime -->
+  <path d="M 55 27 A 31 31 0 0 1 55 73" stroke="#7a9e10" stroke-width="6.5" fill="none" stroke-linecap="round"/>
+  <!-- Arc 3 - dark olive -->
+  <path d="M 70 17 A 45 45 0 0 1 70 83" stroke="#4a6208" stroke-width="6.5" fill="none" stroke-linecap="round"/>
+</svg>
