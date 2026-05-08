@@ -117,14 +117,43 @@ function FailedPostsSection({
       {open && (
         <div className="divide-y divide-destructive/10 border-t border-destructive/20">
           {failedPosts.map((fp: any) => (
-            <div key={fp.id} className="flex items-center gap-3 px-4 py-3 md:px-5">
-              <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold capitalize">
-                {fp.platform}
-              </span>
-              <span className="text-xs text-muted-foreground shrink-0">{fp.variation_name}</span>
-              <span className="flex-1 text-xs text-destructive/90 min-w-0 truncate" title={fp.friendly_error}>
+            <div key={fp.id} className="flex flex-col gap-1.5 px-4 py-3 md:px-5 sm:flex-row sm:items-center sm:gap-3">
+              {/* Top row on mobile: platform badge + variation + retry button */}
+              <div className="flex items-center gap-2 sm:contents">
+                <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold capitalize">
+                  {fp.platform}
+                </span>
+                <span className="text-xs text-muted-foreground shrink-0 flex-1 sm:flex-none truncate">
+                  {fp.variation_name}
+                </span>
+                {/* Retry on mobile lives in this row, right-aligned */}
+                <button
+                  onClick={async () => {
+                    setRetryingId(fp.id);
+                    try {
+                      await retryClipPost(fp.id);
+                      toast.success("Retry scheduled — will post in ~2 minutes");
+                      setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
+                    } catch {
+                      toast.error("Failed to retry");
+                    } finally {
+                      setRetryingId(null);
+                    }
+                  }}
+                  disabled={retryingId === fp.id}
+                  className="sm:hidden ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  {retryingId === fp.id ? "Retrying…" : "Retry"}
+                </button>
+              </div>
+
+              {/* Error message — full width on mobile */}
+              <span className="text-xs text-destructive/90 sm:flex-1 sm:min-w-0 sm:truncate" title={fp.friendly_error}>
                 {fp.friendly_error}
               </span>
+
+              {/* Date — hidden on mobile */}
               {fp.scheduled_for && (
                 <span className="shrink-0 text-xs text-muted-foreground/60 hidden sm:block">
                   {new Date(fp.scheduled_for).toLocaleDateString([], { month: "short", day: "numeric" })}
@@ -132,6 +161,8 @@ function FailedPostsSection({
                   {new Date(fp.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
               )}
+
+              {/* Retry on desktop */}
               <button
                 onClick={async () => {
                   setRetryingId(fp.id);
@@ -146,7 +177,7 @@ function FailedPostsSection({
                   }
                 }}
                 disabled={retryingId === fp.id}
-                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                className="hidden sm:inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
               >
                 <RotateCcw className="h-3 w-3" />
                 {retryingId === fp.id ? "Retrying…" : "Retry"}
