@@ -1302,17 +1302,21 @@ async def _send_pre_post_reminders() -> None:
 
         for (artist_id, sf, user_email), group_rows in groups.items():
             first = group_rows[0]
-            if not first.get("email_notifications", True):
-                # Still mark as sent so we don't retry each tick
-                for rd in group_rows:
-                    await database.execute(
-                        "UPDATE clip_posts SET reminder_sent_at = NOW() WHERE id = :id",
-                        {"id": rd["id"]},
-                    )
-                await database.commit()
-                continue
-            if not user_email:
-                continue
+            ids = [rd["id"] for rd in group_rows]
+            # Atomically claim these rows — only the worker that updates them sends the email.
+            claim_cur = await database.execute(
+                "UPDATE clip_posts SET reminder_sent_at = NOW()"
+                " WHERE id = ANY(:ids) AND reminder_sent_at IS NULL"
+                " RETURNING id",
+                {"ids": ids},
+            )
+            claimed = await claim_cur.fetchall()
+            await database.commit()
+            if not claimed:
+                continue  # Another worker already claimed and sent this reminder
+
+            if not first.get("email_notifications", True) or not user_email:
+                continue  # Marked as sent above; skip email
             try:
                 from zoneinfo import ZoneInfo
                 tz_str = first.get("artist_tz") or "US/Eastern"
@@ -1328,13 +1332,6 @@ async def _send_pre_post_reminders() -> None:
                     time_str,
                     platforms,
                 )
-                ids = [rd["id"] for rd in group_rows]
-                for rid in ids:
-                    await database.execute(
-                        "UPDATE clip_posts SET reminder_sent_at = NOW() WHERE id = :id",
-                        {"id": rid},
-                    )
-                await database.commit()
             except Exception:
                 traceback.print_exc()
     except Exception:
