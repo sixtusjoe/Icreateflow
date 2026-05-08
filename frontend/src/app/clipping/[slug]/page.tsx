@@ -1126,7 +1126,24 @@ function VariationCard({
             : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform" />
           }
           <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{v.name}</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium truncate">{v.name}</span>
+              {v.paused_reason === "directory_exhausted" && (
+                <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                  All clips posted
+                </span>
+              )}
+              {v.paused_reason === "manual" && (
+                <span className="shrink-0 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+                  Paused
+                </span>
+              )}
+              {!v.paused_reason && nextClip && (
+                <span className="shrink-0 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-400">
+                  Next: {nextClip}
+                </span>
+              )}
+            </div>
             {handles.length > 0 && (
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
                 {handles.map((h, i) => <span key={i}>{h}</span>)}
