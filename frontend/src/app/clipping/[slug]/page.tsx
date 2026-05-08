@@ -207,6 +207,7 @@ type Dashboard = {
     last_polled_at: string | null;
     next_poll_at: string;
   } | null;
+  variation_next_clips?: Record<number, string | null>;
 };
 
 type Campaign = {
@@ -1013,6 +1014,7 @@ export default function ArtistPage({
                   onSaveCaption={saveClipCaption}
                   onDeleteClip={handleDeleteClip}
                   inputClass={inputClass}
+                  nextClip={dashboard?.variation_next_clips?.[v.id] ?? null}
                 />
               )
             ))}
@@ -1087,6 +1089,7 @@ function VariationCard({
   onSaveCaption,
   onDeleteClip,
   inputClass,
+  nextClip,
 }: {
   v: Variation;
   clips: Clip[];
@@ -1100,6 +1103,7 @@ function VariationCard({
   onSaveCaption: () => void;
   onDeleteClip: (id: number) => void;
   inputClass: string;
+  nextClip?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const handles = (["tiktok", "youtube", "instagram", "facebook"] as const)
@@ -1168,7 +1172,7 @@ function VariationCard({
             editingClipId={editingClipId} clipCaption={clipCaption}
             onStartEditClip={onStartEditClip} onChangeCaption={onChangeCaption}
             onSaveCaption={onSaveCaption} onDeleteClip={onDeleteClip}
-            inputClass={inputClass}
+            inputClass={inputClass} nextClip={nextClip}
           />
         </div>
       )}
@@ -1187,6 +1191,7 @@ function VariationExtras({
   onSaveCaption,
   onDeleteClip,
   inputClass,
+  nextClip,
 }: {
   v: Variation;
   clips: Clip[];
@@ -1198,6 +1203,7 @@ function VariationExtras({
   onSaveCaption: () => void;
   onDeleteClip: (id: number) => void;
   inputClass: string;
+  nextClip?: string | null;
 }) {
   const [folder, setFolder] = useState(v.gdrive_folder_url || "");
   const [proxy, setProxy] = useState(v.proxy_url || "");
@@ -1260,7 +1266,7 @@ function VariationExtras({
     <div className="mt-3 space-y-2 border-t border-border pt-3">
       {v.paused_reason === "directory_exhausted" && (
         <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          <span>This variation has posted every clip at least once.</span>
+          <span>All clips posted — add new content</span>
           <button onClick={onResume} className="font-medium underline-offset-2 hover:underline">
             Resume
           </button>
@@ -1270,6 +1276,19 @@ function VariationExtras({
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
           No clips assigned to this variation and the shared pool is empty.
           Sync a Drive folder above (or upload an MP4) to give it something to post.
+        </div>
+      )}
+      {v.paused_reason === "manual" && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 dark:text-blue-400">
+          <span>Manually paused</span>
+          <button onClick={onResume} className="font-medium underline-offset-2 hover:underline">
+            Resume
+          </button>
+        </div>
+      )}
+      {nextClip && !v.paused_reason && (
+        <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+          Next post: <span className="font-medium text-foreground">{nextClip}</span>
         </div>
       )}
 

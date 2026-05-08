@@ -471,6 +471,50 @@ async def plan_slots_once() -> None:
     """Ensure today's clip_posts rows exist for every ACTIVE artist."""
     database = await db.get_db()
     try:
+        # --- Integrity sweep: cancel stale scheduled slots ---
+        # A stale slot is a scheduled row whose assigned clip has already been
+        # posted globally AND the variation still has unposted clips available.
+        # Cancelling them here lets _pick_next_clip select the correct clip
+        # when the slot-fill loop runs below. Uses the same subquery logic as
+        # _has_unposted_clip_for_variation() to avoid semantic drift.
+        try:
+            stale_cur = await database.execute(
+                """
+                SELECT cp.id
+                FROM clip_posts cp
+                JOIN artist_accounts aa ON aa.id = cp.artist_account_id
+                WHERE cp.status = 'scheduled'
+                  AND EXISTS (
+                      SELECT 1 FROM clip_posts cp2
+                      WHERE cp2.clip_id = cp.clip_id
+                        AND cp2.status = 'posted'
+                        AND cp2.deleted_at IS NULL
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM clips c
+                      WHERE c.artist_id = aa.artist_id
+                        AND (c.artist_account_id = cp.artist_account_id OR c.artist_account_id IS NULL)
+                        AND NOT EXISTS (
+                            SELECT 1 FROM clip_posts cp3
+                            WHERE cp3.clip_id = c.id
+                              AND cp3.status = 'posted'
+                              AND cp3.deleted_at IS NULL
+                        )
+                  )
+                """
+            )
+            stale_ids = [r["id"] for r in await stale_cur.fetchall()]
+            for sid in stale_ids:
+                await db.update_clip_post(
+                    database, sid, status="failed",
+                    error="Stale slot replaced — unposted clip selected on next planner tick",
+                )
+            if stale_ids:
+                await database.commit()
+        except Exception:
+            pass  # Never let the sweep block the planner
+        # --- End integrity sweep ---
+
         artists = await db.get_artists(database)
         now_utc = datetime.now(timezone.utc)
         for a in artists:
@@ -727,6 +771,29 @@ async def dispatch_due_once() -> None:
                         database, cp["id"], status="failed", error="Clip or variation missing"
                     )
                     continue
+
+                # --- Pre-dispatch stale-slot guard ---
+                # If this clip has already been posted globally AND the variation
+                # has other unposted clips, this slot was planned against stale
+                # state. Fail it cleanly; the planner recreates a correct slot
+                # on the next tick (within 5 min). Prevents double-posting.
+                _posted_cur = await database.execute(
+                    "SELECT COUNT(*) AS cnt FROM clip_posts"
+                    " WHERE clip_id = ? AND status = 'posted' AND deleted_at IS NULL",
+                    (clip["id"],),
+                )
+                _posted_row = await _posted_cur.fetchone()
+                if _posted_row and _posted_row["cnt"] > 0:
+                    _has_unposted = await _has_unposted_clip_for_variation(
+                        database, dict(variation)["artist_id"], dict(variation)["id"]
+                    )
+                    if _has_unposted:
+                        await db.update_clip_post(
+                            database, cp["id"], status="failed",
+                            error="Stale slot — clip already posted globally; a fresh slot will be planned",
+                        )
+                        continue
+                # --- End stale-slot guard ---
 
                 platform = cp["platform"]
                 access_token = await _fresh_variation_token(database, variation, platform)

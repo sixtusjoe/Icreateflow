@@ -1004,6 +1004,76 @@ async def admin_stats(admin: dict = Depends(admin_required)):
         await database.close()
 
 
+@app.get("/api/admin/variation-health")
+async def admin_variation_health(admin: dict = Depends(admin_required)):
+    """Per-variation health diagnostics. is_healthy=False flags stale slots or
+    incorrect directory_exhausted pauses (paused but unposted clips exist)."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            """
+            SELECT
+                aa.id,
+                aa.name,
+                aa.artist_id,
+                aa.paused_reason,
+                (SELECT COUNT(*) FROM clips c
+                 WHERE c.artist_id = aa.artist_id
+                   AND (c.artist_account_id = aa.id OR c.artist_account_id IS NULL)
+                ) AS total_clips,
+                (SELECT COUNT(*) FROM clips c
+                 WHERE c.artist_id = aa.artist_id
+                   AND (c.artist_account_id = aa.id OR c.artist_account_id IS NULL)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM clip_posts cp
+                       WHERE cp.clip_id = c.id
+                         AND cp.status = 'posted'
+                         AND cp.deleted_at IS NULL
+                   )
+                ) AS unposted_clips,
+                (SELECT COUNT(*) FROM clip_posts cp
+                 WHERE cp.artist_account_id = aa.id
+                   AND cp.status = 'scheduled'
+                ) AS scheduled_slots,
+                (SELECT COUNT(*) FROM clip_posts cp
+                 WHERE cp.artist_account_id = aa.id
+                   AND cp.status = 'scheduled'
+                   AND EXISTS (
+                       SELECT 1 FROM clip_posts cp2
+                       WHERE cp2.clip_id = cp.clip_id
+                         AND cp2.status = 'posted'
+                         AND cp2.deleted_at IS NULL
+                   )
+                   AND EXISTS (
+                       SELECT 1 FROM clips c
+                       WHERE c.artist_id = aa.artist_id
+                         AND (c.artist_account_id = aa.id OR c.artist_account_id IS NULL)
+                         AND NOT EXISTS (
+                             SELECT 1 FROM clip_posts cp3
+                             WHERE cp3.clip_id = c.id
+                               AND cp3.status = 'posted'
+                               AND cp3.deleted_at IS NULL
+                         )
+                   )
+                ) AS stale_slots
+            FROM artist_accounts aa
+            ORDER BY aa.artist_id, aa.id
+            """
+        )
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            is_healthy = (
+                d["stale_slots"] == 0
+                and not (d["paused_reason"] == "directory_exhausted" and d["unposted_clips"] > 0)
+            )
+            result.append({**d, "is_healthy": is_healthy})
+        return {"variations": result}
+    finally:
+        await database.close()
+
+
 @app.delete("/api/admin/users/{user_id}")
 async def admin_delete_user(user_id: int, admin: dict = Depends(admin_required)):
     if user_id == admin["id"]:
@@ -4653,6 +4723,24 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         else:
             next_poll_at = datetime.now(timezone.utc) + timedelta(seconds=poll_interval)
 
+        # Per-variation: next scheduled slot clip filename (for dashboard UI)
+        var_next_clip: dict[int, str | None] = {}
+        for var in variations:
+            vid = dict(var)["id"]
+            nc_cur = await database.execute(
+                """
+                SELECT c.filename FROM clip_posts cp
+                JOIN clips c ON c.id = cp.clip_id
+                WHERE cp.artist_account_id = ?
+                  AND cp.status = 'scheduled'
+                  AND cp.scheduled_for IS NOT NULL
+                ORDER BY cp.scheduled_for ASC LIMIT 1
+                """,
+                (vid,),
+            )
+            nc_row = await nc_cur.fetchone()
+            var_next_clip[vid] = nc_row["filename"] if nc_row else None
+
         return {
             "variations_count": len(variations),
             "active_clips": len(clips),
@@ -4674,6 +4762,7 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                 "last_polled_at": last_polled_at.isoformat() if last_polled_at else None,
                 "next_poll_at": next_poll_at.isoformat(),
             },
+            "variation_next_clips": var_next_clip,
         }
     finally:
         await database.close()
