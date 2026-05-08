@@ -4749,6 +4749,7 @@ async def artist_failed_clip_posts(artist_id: int, user: dict = Depends(get_curr
             WHERE cp.artist_id = ?
               AND cp.status = 'failed'
               AND (cp.scheduled_for IS NULL OR cp.scheduled_for > NOW() - INTERVAL '7 days')
+              AND (cp.error IS NULL OR cp.error NOT LIKE '%Slot lapsed%')
             ORDER BY cp.id DESC
             LIMIT 50
             """,

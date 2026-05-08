@@ -319,6 +319,21 @@ async def evaluate_variation_pause(database, variation: dict) -> None:
         target = None if has_unposted else PAUSE_DIRECTORY_EXHAUSTED
     if current != target:
         await db.update_artist_account(database, var_id, paused_reason=target)
+        # When a variation becomes paused, cancel any future scheduled slots
+        # immediately so they don't lapse and clutter the failed-posts log.
+        if target is not None:
+            await database.execute(
+                """
+                UPDATE clip_posts
+                SET status = 'failed',
+                    error  = 'Slot lapsed while artist/variation was paused — re-schedule via new clip or manual resume'
+                WHERE status = 'scheduled'
+                  AND artist_account_id = ?
+                  AND scheduled_for > NOW()
+                """,
+                (var_id,),
+            )
+            await database.commit()
 
 
 async def evaluate_pause(database, artist: dict) -> None:
