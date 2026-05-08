@@ -341,25 +341,46 @@ async def passthrough_download(source: str, clip_id: int) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     import os as _os
     partial = out.with_suffix(out.suffix + ".partial")
-    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-        async with client.stream("GET", source) as r:
-            r.raise_for_status()
-            with partial.open("wb") as f:
-                async for chunk in r.aiter_bytes(1024 * 256):
-                    f.write(chunk)
+    try:
+        async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+            async with client.stream("GET", source) as r:
+                r.raise_for_status()
+                with partial.open("wb") as f:
+                    async for chunk in r.aiter_bytes(1024 * 256):
+                        f.write(chunk)
 
-    # Probe what we just downloaded. H.264 → keep as-is. Anything else
-    # (HEVC, VP9, etc.) → transcode to H.264.
-    codec = await _probe_video_codec(partial)
-    if codec == "h264":
-        _os.replace(partial, out)
-    else:
-        # Transcode partial → out, then unlink the original partial.
-        await _transcode_to_h264(partial, out)
+        # Guard: if the server returned an error page instead of a video
+        # (expired Drive link, redirect to login, etc.) the HTTP status is
+        # often 200 but the body is tiny HTML. Catch this before ffmpeg
+        # tries to probe it — a 2 KB "file" is never a valid video.
+        size = partial.stat().st_size if partial.exists() else 0
+        if size < 50_000:
+            raise PostingError(
+                f"Source download returned only {size:,} bytes "
+                f"(expected a video file) — the source URL may have expired "
+                f"or returned an error page. Re-upload the clip or refresh the source URL."
+            )
+
+        # Probe what we just downloaded. H.264 → keep as-is. Anything else
+        # (HEVC, VP9, etc.) → transcode to H.264.
+        codec = await _probe_video_codec(partial)
+        if codec == "h264":
+            _os.replace(partial, out)
+        else:
+            # Transcode partial → out, then unlink the original partial.
+            await _transcode_to_h264(partial, out)
+            try:
+                partial.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        # Always clean up the .partial file on any failure so stale
+        # corrupt files don't cause repeated ffmpeg errors on the next run.
         try:
             partial.unlink(missing_ok=True)
         except Exception:
             pass
+        raise
     return out
 
 

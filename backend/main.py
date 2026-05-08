@@ -4715,6 +4715,10 @@ def _friendly_error(raw: str | None) -> str:
         return "Network error — safe to retry"
     if "slot lapsed" in err:
         return "Slot lapsed while artist was paused — will be re-scheduled automatically"
+    if "unaudited_client_can_only_post_to_private_accounts" in err:
+        return "TikTok app not yet audited — video sent to drafts (open TikTok to publish)"
+    if "368" in err or "confirm your identity" in err or "confirm_identity" in err:
+        return "Facebook requires identity verification — open the Facebook app and complete the identity check for this Page"
     if "403" in err or "forbidden" in err:
         return "Access denied — account may need to be reconnected"
     if "404" in err or "not found" in err:
@@ -4794,8 +4798,20 @@ async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_us
             raise HTTPException(404, "Clip post not found or access denied")
         if dict(row)["status"] != "failed":
             raise HTTPException(400, "Only failed posts can be retried")
+        # Fetch the error so we can apply a longer cooldown for errors that
+        # indicate a platform-level cap (retrying immediately wastes quota).
+        err_cur = await database.execute(
+            "SELECT error FROM clip_posts WHERE id = ?", (clip_post_id,)
+        )
+        err_row = await err_cur.fetchone()
+        raw_error = (dict(err_row).get("error") or "") if err_row else ""
+        _cooldown_errors = ("reached_active_user_cap", "active_user_cap")
+        if any(e in raw_error.lower() for e in _cooldown_errors):
+            delay_sql = "NOW() + INTERVAL '6 hours'"
+        else:
+            delay_sql = "NOW() + INTERVAL '2 minutes'"
         await database.execute(
-            "UPDATE clip_posts SET status = 'scheduled', scheduled_for = NOW() + INTERVAL '2 minutes', error = NULL WHERE id = ?",
+            f"UPDATE clip_posts SET status = 'scheduled', scheduled_for = {delay_sql}, error = NULL WHERE id = ?",
             (clip_post_id,),
         )
         await database.commit()

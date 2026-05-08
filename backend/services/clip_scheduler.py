@@ -722,6 +722,40 @@ async def dispatch_due_once() -> None:
                     )
                     continue
 
+                # Duplicate-post guard: if this account+platform posted
+                # successfully within the last 30 minutes (e.g. brand "Post
+                # Now" fired at the same time as the scheduler), skip this
+                # slot and requeue 1 hour out rather than double-posting.
+                # TikTok and IG detect identical content across rapid posts
+                # and silently delete both copies.
+                _dup_cur = await database.execute(
+                    "SELECT id FROM clip_posts "
+                    "WHERE artist_account_id = ? AND platform = ? "
+                    "  AND status = 'posted' "
+                    "  AND posted_at > NOW() - INTERVAL '30 minutes' "
+                    "LIMIT 1",
+                    (cp["artist_account_id"], platform),
+                )
+                _recent = await _dup_cur.fetchone()
+                if _recent:
+                    _requeue_at = datetime.now(timezone.utc) + timedelta(hours=1)
+                    await db.update_clip_post(
+                        database, cp["id"],
+                        status="scheduled",
+                        scheduled_for=_requeue_at,
+                    )
+                    await db.log_error(
+                        database, source="scheduler.collision_guard",
+                        message=(
+                            f"Skipped clip_post {cp['id']} ({platform}) — "
+                            f"same account (id={cp['artist_account_id']}) already posted "
+                            f"id={dict(_recent)['id']} within the last 30 min. "
+                            f"Requeued for {_requeue_at.isoformat()}."
+                        ),
+                        context=f"clip_post_id={cp['id']} artist_account_id={cp['artist_account_id']}",
+                    )
+                    continue
+
                 # Source resolution. Three paths:
                 #   1. Diversification ON: per-(clip, variation, platform)
                 #      ffmpeg-rendered file under our verified domain.
@@ -1001,7 +1035,8 @@ async def dispatch_due_once() -> None:
                     "error": None,
                 })
             except PostingError as e:
-                await db.update_clip_post(database, cp["id"], status="failed", error=str(e)[:500])
+                _err_str = str(e)[:500]
+                await db.update_clip_post(database, cp["id"], status="failed", error=_err_str)
                 await db.log_error(
                     database, source=f"posting.{cp.get('platform')}",
                     message=str(e), traceback=traceback.format_exc(),

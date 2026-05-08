@@ -51,7 +51,13 @@ async def upload_video(
         # instead of just `{"status_code":"ERROR","id":"…"}` — that was
         # opaque enough to send us chasing the wrong root cause on a
         # past lancastarmoonnews failure.
-        for _ in range(36):
+        #
+        # Timeout raised from 36×5s (3 min) → 10s initial settle + 60×5s
+        # (5 min). Large Reels (30–65 MB) regularly need 4–6 min for IG
+        # to download, transcode, and mark FINISHED. The old cap caused
+        # systematic timeouts across all accounts on every batch.
+        await asyncio.sleep(10)  # initial settle — IG needs a moment to start
+        for _ in range(60):
             await asyncio.sleep(5)
             s = await client.get(
                 f"{GRAPH}/{creation_id}",

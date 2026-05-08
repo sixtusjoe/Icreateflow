@@ -157,7 +157,21 @@ async def upload_video(
             f"{API_BASE}/post/publish/video/init/", json=init_body, headers=headers
         )
         if r.status_code >= 400:
-            raise PostingError(f"TikTok init failed {r.status_code}: {r.text[:200]}")
+            body_text = r.text[:400]
+            # TikTok blocks unaudited apps from posting to public accounts via
+            # Direct Post. Auto-fall back to INBOX (draft) so the video at
+            # least lands in the user's TikTok drafts rather than failing hard.
+            # Permanent fix: submit the developer app for TikTok review.
+            if (
+                "unaudited_client_can_only_post_to_private_accounts" in body_text
+                and post_mode != "INBOX"
+            ):
+                return await upload_video(
+                    access_token, video_source, caption,
+                    proxy_url=proxy_url,
+                    **{**kwargs, "post_mode": "INBOX"},
+                )
+            raise PostingError(f"TikTok init failed {r.status_code}: {body_text}")
         data = r.json().get("data") or {}
         publish_id = data.get("publish_id")
         if not publish_id:
