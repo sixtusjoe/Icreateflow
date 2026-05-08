@@ -39,8 +39,13 @@ def parse_folder_id(url: str) -> str | None:
 
 
 def direct_download_url(file_id: str) -> str:
-    """Public direct-download URL that platforms can ingest via their `file_url`/`video_url` params."""
-    return f"https://drive.google.com/uc?export=download&id={file_id}"
+    """Public direct-download URL for a GDrive file.
+
+    Uses drive.usercontent.google.com with confirm=t to bypass Google's
+    large-file virus-scan warning page (which returns ~2,420 bytes of HTML
+    instead of the video when using the legacy /uc?export=download URL).
+    """
+    return f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
 
 
 async def list_video_files(folder_id: str, api_key: str) -> list[dict]:

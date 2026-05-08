@@ -342,20 +342,43 @@ async def passthrough_download(source: str, clip_id: int) -> Path:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     import os as _os
+    import re as _re
     partial = out.with_suffix(out.suffix + ".partial")
-    try:
+
+    async def _fetch(url: str) -> None:
         async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-            async with client.stream("GET", source) as r:
+            async with client.stream("GET", url) as r:
                 r.raise_for_status()
                 with partial.open("wb") as f:
                     async for chunk in r.aiter_bytes(1024 * 256):
                         f.write(chunk)
 
-        # Guard: if the server returned an error page instead of a video
-        # (expired Drive link, redirect to login, etc.) the HTTP status is
-        # often 200 but the body is tiny HTML. Catch this before ffmpeg
-        # tries to probe it — a 2 KB "file" is never a valid video.
+    try:
+        await _fetch(source)
+
+        # Guard: if the server returned an error/warning page instead of a
+        # video (expired link, Google large-file virus-scan warning, etc.)
+        # the HTTP status is 200 but the body is tiny HTML. Detect this and
+        # — if the source looks like a GDrive URL — automatically retry with
+        # the usercontent.google.com confirm=t URL that bypasses the warning.
         size = partial.stat().st_size if partial.exists() else 0
+        if size < 50_000:
+            # GDrive large-file warning page is ~2,420 bytes. Auto-retry with
+            # the bypass URL before giving up.
+            gdrive_id_match = _re.search(
+                r"[?&]id=([a-zA-Z0-9_-]{20,})", source
+            ) or _re.search(
+                r"drive\.google\.com/uc.*[?&]id=([a-zA-Z0-9_-]{20,})", source
+            )
+            if gdrive_id_match:
+                bypass_url = (
+                    f"https://drive.usercontent.google.com/download"
+                    f"?id={gdrive_id_match.group(1)}&export=download&confirm=t"
+                )
+                partial.unlink(missing_ok=True)
+                await _fetch(bypass_url)
+                size = partial.stat().st_size if partial.exists() else 0
+
         if size < 50_000:
             raise PostingError(
                 f"Source download returned only {size:,} bytes "
