@@ -50,6 +50,7 @@ import {
   retryClipPost,
   clearArtistFailedPosts,
 } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 type Variation = {
   id: number;
@@ -104,8 +105,36 @@ function FailedPostsSection({
 }) {
   const [open, setOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    try {
+      await clearArtistFailedPosts(artistId);
+      setFailedPosts([]);
+      setShowClearConfirm(false);
+      toast.success("Cleared all failed posts");
+    } catch {
+      toast.error("Could not clear");
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
-    <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
+    <>
+      <ConfirmModal
+        open={showClearConfirm}
+        onOpenChange={setShowClearConfirm}
+        title="Clear all failed posts?"
+        description={`This will permanently delete all ${failedPosts.length} failed post${failedPosts.length !== 1 ? "s" : ""} from your history. You won't be able to retry them afterward. Note: failed posts are also auto-cleared after 24 hours.`}
+        confirmLabel="Yes, clear all"
+        cancelLabel="Cancel"
+        variant="danger"
+        loading={clearing}
+        onConfirm={handleClearAll}
+      />
+      <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
       <div className="flex items-center gap-2 px-4 py-3 md:px-5">
         <button
           onClick={() => setOpen((o) => !o)}
@@ -120,18 +149,7 @@ function FailedPostsSection({
           <ChevronDown className={`h-4 w-4 text-destructive/60 ml-1 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
         </button>
         <button
-          onClick={async () => {
-            setClearing(true);
-            try {
-              await clearArtistFailedPosts(artistId);
-              setFailedPosts([]);
-              toast.success("Cleared all failed posts");
-            } catch {
-              toast.error("Could not clear");
-            } finally {
-              setClearing(false);
-            }
-          }}
+          onClick={() => setShowClearConfirm(true)}
           disabled={clearing}
           className="shrink-0 text-xs text-destructive/70 hover:text-destructive font-medium disabled:opacity-50"
         >
@@ -211,6 +229,7 @@ function FailedPostsSection({
         </div>
       )}
     </section>
+    </>
   );
 }
 
