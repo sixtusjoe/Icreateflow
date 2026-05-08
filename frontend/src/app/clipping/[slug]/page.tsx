@@ -999,77 +999,21 @@ export default function ArtistPage({
                   </div>
                 </div>
               ) : (
-                <div key={v.id} className="rounded-xl bg-muted/50 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium break-all">{v.name}</div>
-                      {(() => {
-                        const handles = (["tiktok", "youtube", "instagram", "facebook"] as const)
-                          .map((p) => {
-                            const h = (v as any)[`${p}_handle`] as string | undefined;
-                            return h ? `${p}: @${h.replace(/^@+/, "")}` : null;
-                          })
-                          .filter(Boolean);
-                        return handles.length > 0 ? (
-                          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                            {handles.map((h, i) => <span key={i}>{h}</span>)}
-                          </div>
-                        ) : null;
-                      })()}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={async () => {
-                          try {
-                            const r = await refreshVariationProfile(v.id);
-                            const results = (r?.results || {}) as Record<string, { status: string; handles?: Record<string, string>; error?: string }>;
-                            const ok: string[] = [];
-                            const fail: string[] = [];
-                            for (const [p, res] of Object.entries(results)) {
-                              if (res.status === "ok") ok.push(p);
-                              else fail.push(`${p}: ${res.error || "failed"}`);
-                            }
-                            if (ok.length) toast.success(`Refreshed: ${ok.join(", ")}`);
-                            if (fail.length) toast.error(fail.join(" · "));
-                            load();
-                          } catch (e: any) {
-                            toast.error(e?.response?.data?.detail || "Failed to refresh");
-                          }
-                        }}
-                        className="text-muted-foreground hover:text-foreground p-1"
-                        title="Refresh handles from connected platforms"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={() => startEditVariation(v)}
-                        className="text-muted-foreground hover:text-foreground p-1"
-                        title="Edit variation"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteVariation(v.id)}
-                        className="text-muted-foreground hover:text-destructive p-1"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <OAuthTiles account={v as unknown as Record<string, unknown> & { id: number }} kind="variation" onChange={load} />
-                  <VariationExtras
-                    v={v}
-                    clips={clips.filter((c) => c.artist_account_id === v.id)}
-                    onChange={load}
-                    editingClipId={editingClipId}
-                    clipCaption={clipCaption}
-                    onStartEditClip={startEditClip}
-                    onChangeCaption={setClipCaption}
-                    onSaveCaption={saveClipCaption}
-                    onDeleteClip={handleDeleteClip}
-                    inputClass={inputClass}
-                  />
-                </div>
+                <VariationCard
+                  key={v.id}
+                  v={v}
+                  clips={clips.filter((c) => c.artist_account_id === v.id)}
+                  onChange={load}
+                  onStartEdit={startEditVariation}
+                  onDelete={handleDeleteVariation}
+                  editingClipId={editingClipId}
+                  clipCaption={clipCaption}
+                  onStartEditClip={startEditClip}
+                  onChangeCaption={setClipCaption}
+                  onSaveCaption={saveClipCaption}
+                  onDeleteClip={handleDeleteClip}
+                  inputClass={inputClass}
+                />
               )
             ))}
           </div>
@@ -1125,6 +1069,109 @@ export default function ArtistPage({
           <Save className="h-4 w-4" /> Save
         </button>
       </section>
+    </div>
+  );
+}
+
+// ── Collapsible variation card (non-edit view) ────────────────────────────
+function VariationCard({
+  v,
+  clips,
+  onChange,
+  onStartEdit,
+  onDelete,
+  editingClipId,
+  clipCaption,
+  onStartEditClip,
+  onChangeCaption,
+  onSaveCaption,
+  onDeleteClip,
+  inputClass,
+}: {
+  v: Variation;
+  clips: Clip[];
+  onChange: () => void;
+  onStartEdit: (v: Variation) => void;
+  onDelete: (id: number) => void;
+  editingClipId: number | null;
+  clipCaption: string;
+  onStartEditClip: (c: Clip) => void;
+  onChangeCaption: (s: string) => void;
+  onSaveCaption: () => void;
+  onDeleteClip: (id: number) => void;
+  inputClass: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const handles = (["tiktok", "youtube", "instagram", "facebook"] as const)
+    .map((p) => {
+      const h = (v as any)[`${p}_handle`] as string | undefined;
+      return h ? `${p}: @${h.replace(/^@+/, "")}` : null;
+    })
+    .filter(Boolean);
+
+  return (
+    <div className="rounded-xl bg-muted/50 overflow-hidden">
+      {/* Header — always visible */}
+      <div className="flex items-center justify-between px-3 py-3">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-2 min-w-0 flex-1 text-left"
+        >
+          {open
+            ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform" />
+            : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform" />
+          }
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{v.name}</div>
+            {handles.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                {handles.map((h, i) => <span key={i}>{h}</span>)}
+              </div>
+            )}
+          </div>
+        </button>
+        <div className="flex items-center gap-1 shrink-0 ml-2">
+          <button
+            onClick={async () => {
+              try {
+                const r = await refreshVariationProfile(v.id);
+                const results = (r?.results || {}) as Record<string, { status: string; handles?: Record<string, string>; error?: string }>;
+                const ok: string[] = []; const fail: string[] = [];
+                for (const [p, res] of Object.entries(results)) {
+                  if (res.status === "ok") ok.push(p); else fail.push(`${p}: ${res.error || "failed"}`);
+                }
+                if (ok.length) toast.success(`Refreshed: ${ok.join(", ")}`);
+                if (fail.length) toast.error(fail.join(" · "));
+                onChange();
+              } catch (e: any) { toast.error(e?.response?.data?.detail || "Failed to refresh"); }
+            }}
+            className="text-muted-foreground hover:text-foreground p-1"
+            title="Refresh handles from connected platforms"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={() => onStartEdit(v)} className="text-muted-foreground hover:text-foreground p-1" title="Edit variation">
+            <Edit2 className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={() => onDelete(v.id)} className="text-muted-foreground hover:text-destructive p-1">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Collapsible body */}
+      {open && (
+        <div className="px-3 pb-3 border-t border-border/50 pt-3 space-y-3">
+          <OAuthTiles account={v as unknown as Record<string, unknown> & { id: number }} kind="variation" onChange={onChange} />
+          <VariationExtras
+            v={v} clips={clips} onChange={onChange}
+            editingClipId={editingClipId} clipCaption={clipCaption}
+            onStartEditClip={onStartEditClip} onChangeCaption={onChangeCaption}
+            onSaveCaption={onSaveCaption} onDeleteClip={onDeleteClip}
+            inputClass={inputClass}
+          />
+        </div>
+      )}
     </div>
   );
 }
