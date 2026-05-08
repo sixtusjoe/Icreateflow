@@ -22,6 +22,8 @@ from typing import Optional
 
 import httpx
 
+from services.posting import PostingError  # noqa: E402  (needed for passthrough_download guard)
+
 
 CACHE_ROOT = Path("uploads/variation_renders")
 

@@ -111,7 +111,15 @@ async def _fresh_variation_token(database, variation: dict, platform: str) -> st
             pass
     if not needs or not refresh:
         return token
-    provider = "meta" if platform in ("instagram", "facebook") else platform
+    # Mirror the main.py OAuth callback logic: standalone IG OAuth accounts
+    # store only instagram_token (no facebook_token), so they must refresh
+    # via the "instagram" provider, not "meta".
+    if platform == "facebook":
+        provider = "meta"
+    elif platform == "instagram":
+        provider = "meta" if v.get("facebook_token") else "instagram"
+    else:
+        provider = platform
     cfg = await db.get_site_config(database)
     cid = cfg.get(f"oauth_{provider}_client_id", "")
     csec = cfg.get(f"oauth_{provider}_client_secret", "")
@@ -1539,6 +1547,25 @@ async def poll_views_once() -> None:
                             database, cp["id"],
                             view_count_updated_at=datetime.now(timezone.utc),
                             deleted_at=datetime.now(timezone.utc),
+                        )
+                    except Exception:
+                        pass
+                    continue
+                # TikTok (and other platforms) sometimes return transient
+                # 500/429 server errors. These are platform-side outages —
+                # nothing we can do. Bump view_count_updated_at so the row
+                # is skipped this cycle and retried next poll, but do NOT
+                # log to the admin error panel (would flood it every 3 min).
+                err_str = str(e).lower()
+                is_transient = any(x in err_str for x in (
+                    "500", "internal_error", "429", "too many requests",
+                    "service unavailable", "503", "502", "bad gateway",
+                ))
+                if is_transient:
+                    try:
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count_updated_at=datetime.now(timezone.utc),
                         )
                     except Exception:
                         pass
