@@ -760,8 +760,8 @@ async def dispatch_due_once() -> None:
                 WHERE cp.status = 'scheduled' AND cp.scheduled_for IS NOT NULL
                   AND cp.scheduled_for <= NOW()
                   AND a.is_active = TRUE
-                  AND a.paused_reason IS NULL
-                  AND (aa.id IS NULL OR aa.paused_reason IS NULL)
+                  AND (a.paused_reason IS NULL OR a.paused_reason = '')
+                  AND (aa.id IS NULL OR aa.paused_reason IS NULL OR aa.paused_reason = '')
                 ORDER BY cp.scheduled_for ASC
                 LIMIT 50
                 FOR UPDATE OF cp SKIP LOCKED
@@ -786,13 +786,17 @@ async def dispatch_due_once() -> None:
                     continue
 
                 # --- Pre-dispatch stale-slot guard ---
-                # If this clip has already been posted globally AND the variation
-                # has other unposted clips, this slot was planned against stale
-                # state. Fail it cleanly; the planner recreates a correct slot
-                # on the next tick (within 5 min). Prevents double-posting.
+                # If this clip was posted globally MORE THAN 30 minutes ago AND
+                # the variation still has unposted clips, this slot was planned
+                # against stale state. Fail it; the planner recreates a correct
+                # slot on the next tick. The 30-minute window prevents blocking
+                # sibling platform slots dispatched in the same batch (e.g.
+                # TikTok posts first → IG/FB in the same tick would be falsely
+                # blocked without the recency window).
                 _posted_cur = await database.execute(
                     "SELECT COUNT(*) AS cnt FROM clip_posts"
-                    " WHERE clip_id = ? AND status = 'posted' AND deleted_at IS NULL",
+                    " WHERE clip_id = ? AND status = 'posted' AND deleted_at IS NULL"
+                    " AND posted_at < NOW() - INTERVAL '30 minutes'",
                     (clip["id"],),
                 )
                 _posted_row = await _posted_cur.fetchone()

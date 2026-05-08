@@ -4215,6 +4215,9 @@ async def update_artist_variation(variation_id: int, data: VariationUpdateArtist
             raise HTTPException(404, "Variation not found")
         await _verify_artist_ownership(row["artist_id"], user)
         updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        # Normalise empty-string paused_reason to NULL so IS NULL checks work
+        if "paused_reason" in updates and updates["paused_reason"] == "":
+            updates["paused_reason"] = None
         if updates:
             await db.update_artist_account(database, variation_id, **updates)
         row = await db.get_artist_account(database, variation_id)
