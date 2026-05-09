@@ -359,6 +359,13 @@ export default function ArtistPage({
   const [resetTarget, setResetTarget] = useState<string>("");
   const [resetName, setResetName] = useState<string>("");
   const [busy, setBusy] = useState(false);
+
+  // Confirm modals for destructive actions
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmDeleteVariation, setConfirmDeleteVariation] = useState<number | null>(null);
+  const [confirmDeleteClip, setConfirmDeleteClip] = useState<number | null>(null);
+
   // Heartbeat: timestamp of the last successful dashboard refresh, used to
   // render "Updated Ns ago" so the user can see the poll loop is alive even
   // when the underlying numbers haven't changed.
@@ -456,7 +463,6 @@ export default function ArtistPage({
 
   const handleStopPromotion = async () => {
     if (id == null) return;
-    if (!confirm("Stop the current promotion?")) return;
     setBusy(true);
     try {
       await stopPromotion(id);
@@ -471,12 +477,6 @@ export default function ArtistPage({
 
   const handleResetPromotion = async () => {
     if (id == null) return;
-    if (
-      !confirm(
-        "Reset the directory? All uploaded clips will be deleted and the current campaign archived. Historical stats remain downloadable."
-      )
-    )
-      return;
     setBusy(true);
     try {
       await resetPromotion(id, {
@@ -541,7 +541,6 @@ export default function ArtistPage({
   };
 
   const handleDeleteVariation = async (vid: number) => {
-    if (!confirm("Delete this variation?")) return;
     try {
       await deleteArtistVariation(vid);
       load();
@@ -568,7 +567,6 @@ export default function ArtistPage({
   };
 
   const handleDeleteClip = async (cid: number) => {
-    if (!confirm("Delete this clip?")) return;
     try {
       await deleteClip(cid);
       load();
@@ -591,6 +589,46 @@ export default function ArtistPage({
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      {/* ── Confirm modals ─────────────────────────────────────────────── */}
+      <ConfirmModal
+        open={confirmStop}
+        onOpenChange={setConfirmStop}
+        title="Stop promotion?"
+        description="This will stop the current promotion. You can restart it at any time."
+        confirmLabel="Stop"
+        variant="danger"
+        loading={busy}
+        onConfirm={async () => { setConfirmStop(false); await handleStopPromotion(); }}
+      />
+      <ConfirmModal
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title="Reset directory?"
+        description="All uploaded clips will be deleted and the current campaign archived. Historical stats remain downloadable."
+        confirmLabel="Yes, reset"
+        variant="danger"
+        loading={busy}
+        onConfirm={async () => { setConfirmReset(false); await handleResetPromotion(); }}
+      />
+      <ConfirmModal
+        open={confirmDeleteVariation !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDeleteVariation(null); }}
+        title="Delete this variation?"
+        description="This will permanently remove the variation and all its connection settings."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={async () => { const vid = confirmDeleteVariation; setConfirmDeleteVariation(null); if (vid !== null) await handleDeleteVariation(vid); }}
+      />
+      <ConfirmModal
+        open={confirmDeleteClip !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDeleteClip(null); }}
+        title="Delete this clip?"
+        description="This clip will be permanently removed from the directory."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={async () => { const cid = confirmDeleteClip; setConfirmDeleteClip(null); if (cid !== null) await handleDeleteClip(cid); }}
+      />
+      {/* ─────────────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3">
         <Link href="/clipping" className="text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-5 w-5" />
@@ -772,7 +810,7 @@ export default function ArtistPage({
             )}
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={handleStopPromotion}
+                onClick={() => setConfirmStop(true)}
                 disabled={busy}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
@@ -885,7 +923,7 @@ export default function ArtistPage({
             </div>
             <div className="flex gap-2">
               <button
-                onClick={handleResetPromotion}
+                onClick={() => setConfirmReset(true)}
                 disabled={busy}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
@@ -1050,13 +1088,13 @@ export default function ArtistPage({
                   clips={clips.filter((c) => c.artist_account_id === v.id)}
                   onChange={load}
                   onStartEdit={startEditVariation}
-                  onDelete={handleDeleteVariation}
+                  onDelete={(vid) => setConfirmDeleteVariation(vid)}
                   editingClipId={editingClipId}
                   clipCaption={clipCaption}
                   onStartEditClip={startEditClip}
                   onChangeCaption={setClipCaption}
                   onSaveCaption={saveClipCaption}
-                  onDeleteClip={handleDeleteClip}
+                  onDeleteClip={(cid) => setConfirmDeleteClip(cid)}
                   inputClass={inputClass}
                   nextClip={dashboard?.variation_next_clips?.[v.id] ?? null}
                 />
