@@ -577,54 +577,42 @@ async def plan_slots_once() -> None:
                 if fresh:
                     artist = dict(fresh)
 
-                # Per-slot dedup: figure out which of today's slot times still
-                # need rows. Previously this was per-day ("any row for today?")
-                # which meant a deleted future slot couldn't be re-planned and
-                # any race-inserted row blocked all future slots from being
-                # filled. Per-slot is self-healing.
                 all_slots = _today_slots(artist, now_utc)
-                # Treat a slot as "filled" when ANY clip_post exists at that
-                # exact scheduled_for for this artist. The unique index is
-                # per-(account, platform, time, clip), so if at least one row
-                # for that slot landed, others should follow via re-runs of
-                # the per-platform fanout below — but in practice a successful
-                # fanout writes all variations × platforms in one tick.
+                # Only plan future slots.
+                def _naive(d: datetime) -> datetime:
+                    return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
+
+                future_slots = [s for s in all_slots if s > now_utc]
+                if not future_slots:
+                    continue
+
                 day_start = datetime.combine(now_utc.date(), dtime(0, 0))
                 day_end = day_start + timedelta(days=1)
-                existing = await database.execute(
+
+                # Per-variation dedup: for each (variation, slot_time) pair check
+                # independently whether a row already exists. This allows a variation
+                # that gained new clips after the initial plan to still get a slot
+                # at times that were already filled by other variations.
+                existing_cur = await database.execute(
                     """
-                    SELECT DISTINCT scheduled_for FROM clip_posts
+                    SELECT artist_account_id,
+                           scheduled_for
+                    FROM clip_posts
                     WHERE artist_id = ? AND scheduled_for IS NOT NULL
                       AND scheduled_for >= ? AND scheduled_for < ?
+                      AND status IN ('scheduled','posting','posted')
                     """,
                     (artist["id"], day_start, day_end),
                 )
-                # scheduled_for is stored as naive UTC; _today_slots returns
-                # UTC-aware. Normalise to naive UTC on both sides for the set
-                # membership check.
-                existing_times = {
-                    (r["scheduled_for"] if r["scheduled_for"].tzinfo is None
-                     else r["scheduled_for"].astimezone(timezone.utc).replace(tzinfo=None))
-                    for r in await existing.fetchall()
-                }
-                def _naive(d: datetime) -> datetime:
-                    return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
-                # Remove already-filled slots; only future or catch-up slots
-                # for today get planned.
-                missing = [s for s in all_slots if _naive(s) not in existing_times]
-                # Auto-catchup of past-missed slots was removed because it
-                # could surprise users on resume — uploading a clip triggered
-                # an immediate post instead of waiting for the next slot, and
-                # a long gap could fire multiple back-to-back. Recovery is
-                # now an explicit dashboard action: POST
-                # /api/artists/{id}/promotion/catchup (the "Catch up missed
-                # slots" button on the campaign card).
-                slots = [s for s in missing if s > now_utc]
-                if not slots:
-                    continue
+                filled: set[tuple] = set()
+                for r in await existing_cur.fetchall():
+                    sf = r["scheduled_for"]
+                    sf_naive = sf if sf.tzinfo is None else sf.astimezone(timezone.utc).replace(tzinfo=None)
+                    filled.add((r["artist_account_id"], sf_naive))
 
                 campaign_id = artist.get("current_campaign_id")
-                for slot in slots:
+                for slot in future_slots:
+                    slot_naive = _naive(slot)
                     # Per-variation picker: each variation pulls from its own
                     # folder + the shared pool, so two variations on the same
                     # slot can post different clips. Skip variations that hit
@@ -635,6 +623,10 @@ async def plan_slots_once() -> None:
                         if var_d.get("paused_reason") in (
                             PAUSE_DIRECTORY_EXHAUSTED, PAUSE_NO_CLIPS, PAUSE_MANUAL,
                         ):
+                            continue
+                        # Skip if this variation already has a row at this slot time
+                        if (var_d["id"], slot_naive) in filled:
+                            any_planned = True  # counts as planned
                             continue
                         clip = await _pick_next_clip(database, artist["id"], var_d["id"])
                         if not clip:
@@ -655,6 +647,7 @@ async def plan_slots_once() -> None:
                                 clip_filename=clip.get("filename"),
                                 caption_snapshot=clip.get("caption"),
                             )
+                            filled.add((var_d["id"], slot_naive))
                     if not any_planned:
                         # No variation has a postable clip — stop planning.
                         break
