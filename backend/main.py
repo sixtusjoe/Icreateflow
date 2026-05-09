@@ -4689,6 +4689,10 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
             for p in ("tiktok", "youtube", "instagram", "facebook")
         }
         next_scheduled_at = None
+        # Dedup set: tracks (clip_id_or_row_id, artist_account_id, platform) so
+        # stale-slot double-posts never inflate posts_total / posts_today / by_platform.
+        # Uses row id as fallback when clip_id is NULL (TikTok phone-discovery rows).
+        _counted_posts: set[tuple] = set()
 
         for p in posts:
             platform = p.get("platform")
@@ -4702,6 +4706,14 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                     by_platform[platform]["views"] += int(p.get("view_count") or 0)
                 # Post count and "today" count only reflect live (non-deleted) posts.
                 if not p.get("deleted_at"):
+                    _dedup_key = (
+                        p.get("clip_id") if p.get("clip_id") is not None else p.get("id"),
+                        p.get("artist_account_id"),
+                        platform,
+                    )
+                    if _dedup_key in _counted_posts:
+                        continue
+                    _counted_posts.add(_dedup_key)
                     posts_total += 1
                     if platform in by_platform:
                         by_platform[platform]["posted"] += 1
