@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 #
 # Re-runnable ICREATEFLOW deploy.
-# Run on the VPS as root AFTER sync.sh has rsynced code to /srv/icreateflow/src/.
 #
-#     ssh root@187.124.231.108 'bash /srv/icreateflow/src/deploy/deploy.sh'
+# DO NOT call this script directly on the server.
+# Use `bash deploy/ship.sh` from your Mac — it handles git push + server sync
+# before calling this script, so the SRC directory is always up-to-date first.
+#
+# If you must call it manually:
+#   ssh root@187.124.231.108 'bash /srv/icreateflow/src/deploy/deploy.sh'
+# but only AFTER ensuring /srv/icreateflow/src is at the correct commit.
 #
 # Installs/updates backend deps, builds frontend, restarts services.
-# Does NOT touch spideybot.
 #
 set -euo pipefail
 
@@ -17,22 +21,11 @@ FRONTEND=$APP_DIR/frontend
 VENV=$APP_DIR/venv
 USER=icreateflow
 
-echo "==> Syncing code into app dirs (via git archive — immune to working-tree state)"
-# Fetch with retry: GitHub CDN can lag a few seconds after a push, so we
-# retry up to 5 times (5-second gaps) until origin/main moves forward.
-# An optional EXPECT_SHA env var lets the caller assert the exact commit.
+# ---------------------------------------------------------------------------
+# Extract code from git — no fetch, no reset. ship.sh already updated SRC.
+# ---------------------------------------------------------------------------
+echo "==> Extracting code from git archive (commit: $(cd $SRC && git rev-parse --short HEAD))"
 cd "$SRC"
-for attempt in 1 2 3 4 5; do
-    git fetch origin
-    REMOTE_SHA=$(git rev-parse origin/main)
-    if [ -z "${EXPECT_SHA:-}" ] || [ "$REMOTE_SHA" = "$EXPECT_SHA" ]; then
-        break
-    fi
-    echo "  Attempt $attempt: origin/main=$REMOTE_SHA, want=$EXPECT_SHA — retrying in 5s"
-    sleep 5
-done
-git reset --hard origin/main
-rm -f .git/index && git checkout HEAD -- .
 git archive HEAD backend/ | tar -x -C "$APP_DIR/" --overwrite
 git archive HEAD frontend/ | tar -x -C "$APP_DIR/" --overwrite
 git archive HEAD fonts/    | tar -x -C "$APP_DIR/" --overwrite 2>/dev/null || true
@@ -75,9 +68,6 @@ sudo -u $USER bash -c "cd $FRONTEND && npm run build"
 # Generated-content directories (persist across deploys)
 # ---------------------------------------------------------------------------
 install -d -o $USER -g $USER "$APP_DIR/data/output" "$APP_DIR/data/uploads" "$APP_DIR/data/music"
-# Symlink backend's expected paths → persistent data dir.
-# Each path is removed first in case rsync recreated it as a regular dir
-# (ln -sfn won't overwrite an existing directory, only a symlink).
 for d in output uploads music; do
     if [ -d "$BACKEND/$d" ] && [ ! -L "$BACKEND/$d" ]; then
         rm -rf "$BACKEND/$d"
