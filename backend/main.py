@@ -3583,6 +3583,21 @@ async def schedule_post(post_id: int, data: PostSchedule, user: dict = Depends(g
     finally:
         await database.close()
 
+@app.post("/api/posts/{post_id}/unschedule")
+async def unschedule_post(post_id: int, user: dict = Depends(get_current_user)):
+    """Revert a scheduled post back to draft, clearing its scheduled time."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+        await db.update_post(database, post_id, status="draft", scheduled_time=None, reminder_sent_at=None)
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
 @app.get("/api/schedule")
 async def get_schedule(brand_id: Optional[int] = None, user: dict = Depends(get_current_user)):
     database = await db.get_db()

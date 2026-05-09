@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Eye, Trash2, Plus } from "lucide-react";
-import { getPosts, getBrands, getDownloadUrl, deletePost } from "@/lib/api";
+import { Download, Eye, Trash2, Plus, CalendarOff } from "lucide-react";
+import { getPosts, getBrands, getDownloadUrl, deletePost, unschedulePost } from "@/lib/api";
 import { toast } from "sonner";
 import Link from "next/link";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
@@ -11,8 +11,12 @@ export default function PostsLibraryPage() {
   const [posts, setPosts] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
   const [filterBrand, setFilterBrand] = useState<string>("all");
+
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const [confirmUnschedule, setConfirmUnschedule] = useState<number | null>(null);
+  const [unscheduling, setUnscheduling] = useState(false);
 
   useEffect(() => {
     getBrands().then(setBrands).catch(() => {});
@@ -36,6 +40,18 @@ export default function PostsLibraryPage() {
       setConfirmDelete(null);
     } catch { toast.error("Failed to delete"); }
     finally { setDeleting(false); }
+  };
+
+  const handleUnschedule = async () => {
+    if (confirmUnschedule === null) return;
+    setUnscheduling(true);
+    try {
+      await unschedulePost(confirmUnschedule);
+      loadPosts();
+      toast.success("Post moved back to draft");
+      setConfirmUnschedule(null);
+    } catch { toast.error("Failed to unschedule"); }
+    finally { setUnscheduling(false); }
   };
 
   return (
@@ -90,6 +106,15 @@ export default function PostsLibraryPage() {
                   className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                   <Download className="h-3 w-3" /> Download
                 </a>
+                {post.status === "scheduled" && (
+                  <button
+                    onClick={() => setConfirmUnschedule(post.id)}
+                    title="Move back to draft"
+                    className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-amber-500 transition-colors"
+                  >
+                    <CalendarOff className="h-3.5 w-3.5" />
+                  </button>
+                )}
                 <button onClick={() => setConfirmDelete(post.id)}
                   className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
                   <Trash2 className="h-3.5 w-3.5" />
@@ -100,11 +125,24 @@ export default function PostsLibraryPage() {
         </div>
       )}
 
+      {/* Unschedule confirmation */}
+      <ConfirmModal
+        open={confirmUnschedule !== null}
+        onOpenChange={(o) => { if (!o) setConfirmUnschedule(null); }}
+        title="Unschedule post?"
+        description="This will cancel the scheduled time and move the post back to draft. All slides and generated videos are kept — you can reschedule it any time."
+        confirmLabel="Unschedule"
+        variant="default"
+        loading={unscheduling}
+        onConfirm={handleUnschedule}
+      />
+
+      {/* Delete confirmation */}
       <ConfirmModal
         open={confirmDelete !== null}
         onOpenChange={(o) => { if (!o) setConfirmDelete(null); }}
         title="Delete post?"
-        description="This will permanently delete the post and all its data. This cannot be undone."
+        description="This will permanently delete the post and all its slides, variations, and generated videos. This cannot be undone."
         confirmLabel="Delete"
         variant="danger"
         loading={deleting}

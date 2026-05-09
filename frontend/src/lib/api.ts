@@ -202,6 +202,8 @@ export const getSchedule = (brandId?: number) =>
   api.get("/api/schedule", { params: brandId ? { brand_id: brandId } : {} }).then((r) => r.data);
 export const postNow = (postId: number) =>
   api.post(`/api/posts/${postId}/post-now`).then((r) => r.data);
+export const unschedulePost = (postId: number) =>
+  api.post(`/api/posts/${postId}/unschedule`).then((r) => r.data);
 
 // --- Clipping: failed posts + retry ---
 export const getArtistFailedPosts = (artistId: number) =>
