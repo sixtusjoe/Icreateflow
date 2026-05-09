@@ -3320,8 +3320,9 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 if out_row.get("tiktok_post_as_draft"):
                     # Inbox / draft mode: TikTok ignores every post_info
                     # field. The user composes the rest inside the TikTok
-                    # app once the draft lands.
-                    return {"post_mode": "MEDIA_UPLOAD"}, None
+                    # app once the draft lands. Must use "INBOX" — the
+                    # adapter only recognises INBOX as the draft path.
+                    return {"post_mode": "INBOX"}, None
                 privacy = out_row.get("tiktok_privacy_level")
                 if not privacy:
                     return {}, (
