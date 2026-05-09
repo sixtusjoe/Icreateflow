@@ -1334,6 +1334,78 @@ async def _send_pre_post_reminders() -> None:
         await database.close()
 
 
+async def _send_brand_pre_post_reminders() -> None:
+    """Email reminder ~1 hour before a brand scheduled post. Runs on each poll tick.
+    Sends one email per scheduled post approaching its publish time."""
+    try:
+        from services.email import send_post_reminder_email
+    except ImportError:
+        return
+
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            """
+            SELECT p.id, p.date, p.scheduled_time, p.brand_id,
+                   b.name AS brand_name, b.timezone AS brand_tz,
+                   u.email AS user_email, u.email_notifications
+            FROM posts p
+            JOIN brands b ON b.id = p.brand_id
+            JOIN users u ON u.id = b.user_id
+            WHERE p.status = 'scheduled'
+              AND p.scheduled_time IS NOT NULL
+              AND p.reminder_sent_at IS NULL
+              AND (u.email_notifications IS NULL OR u.email_notifications = TRUE)
+            """
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        window_lo = now_utc + timedelta(minutes=55)
+        window_hi = now_utc + timedelta(minutes=65)
+
+        for row in rows:
+            rd = dict(row)
+            try:
+                # Parse date + time in brand's local timezone, then convert to UTC
+                tz_str = rd.get("brand_tz") or "US/Eastern"
+                try:
+                    tz = ZoneInfo(tz_str)
+                except Exception:
+                    tz = ZoneInfo("US/Eastern")
+                date_str = rd.get("date") or ""
+                time_str = rd.get("scheduled_time") or ""
+                if not date_str or not time_str:
+                    continue
+                # scheduled_time stored as "HH:MM" or "HH:MM:SS"
+                fmt = "%Y-%m-%d %H:%M:%S" if len(time_str) > 5 else "%Y-%m-%d %H:%M"
+                local_dt = datetime.strptime(f"{date_str} {time_str}", fmt).replace(tzinfo=tz)
+                post_utc = local_dt.astimezone(timezone.utc)
+                if not (window_lo <= post_utc <= window_hi):
+                    continue
+
+                display_time = local_dt.strftime("%b %d, %Y at %H:%M %Z")
+                await send_post_reminder_email(
+                    rd["user_email"],
+                    rd["brand_name"],
+                    display_time,
+                    [],
+                )
+                await database.execute(
+                    "UPDATE posts SET reminder_sent_at = NOW() WHERE id = :id AND reminder_sent_at IS NULL",
+                    {"id": rd["id"]},
+                )
+                await database.commit()
+            except Exception:
+                traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+    finally:
+        await database.close()
+
+
 async def poll_views_once() -> None:
     """Discover external TikTok posts, then refresh view counts for all
     posted rows, then re-check pause."""
@@ -1350,6 +1422,12 @@ async def poll_views_once() -> None:
     # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
     try:
         await _send_pre_post_reminders()
+    except Exception:
+        traceback.print_exc()
+
+    # Send brand-side pre-post reminders.
+    try:
+        await _send_brand_pre_post_reminders()
     except Exception:
         traceback.print_exc()
 

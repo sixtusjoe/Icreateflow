@@ -3443,6 +3443,31 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 await db.update_post(database, post_id, status="posted")
             except Exception:
                 pass
+            # Send HURRAY result email to the post owner
+            try:
+                from services.email import send_post_result_email as _send_result
+                # Flatten per-account / per-platform results into a simple list
+                flat_results: list[dict] = []
+                for r in results:
+                    for plat, pd in r.get("platforms", {}).items():
+                        flat_results.append({
+                            "platform": plat,
+                            "variation_name": r.get("account_name") or plat,
+                            "status": pd.get("status", "failed"),
+                            "error": pd.get("error"),
+                        })
+                brand = await db.get_brand(database, post["brand_id"])
+                brand_name = (brand or {}).get("name") or "Brand"
+                cfg_e = await db.get_site_config(database)
+                dash_url = (cfg_e.get("oauth_redirect_base") or "https://icreateflow.com").rstrip("/") + "/dashboard"
+                asyncio.create_task(_send_result(
+                    user["email"],
+                    brand_name,
+                    flat_results,
+                    dashboard_url=dash_url,
+                ))
+            except Exception:
+                pass  # Never block the response
 
         return {"ok": any_success, "results": results}
     finally:

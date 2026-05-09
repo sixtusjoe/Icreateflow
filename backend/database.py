@@ -199,6 +199,7 @@ class Post(Base):
     facebook_music_track_id:  Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
     scheduled_time: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(Text, server_default="draft")
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     __table_args__ = (
@@ -1010,6 +1011,9 @@ async def _migrate_email_features(conn) -> None:
     ))
     await conn.execute(text(
         "ALTER TABLE clip_posts ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ"
     ))
     # email_otps is a new table — handled by create_all via the ORM model.
     # Index for fast OTP lookups:
