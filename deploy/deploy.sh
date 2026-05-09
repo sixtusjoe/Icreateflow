@@ -18,9 +18,21 @@ VENV=$APP_DIR/venv
 USER=icreateflow
 
 echo "==> Syncing code into app dirs (via git archive — immune to working-tree state)"
-# Pull latest from origin so we always deploy what's in git, not whatever
-# happens to be in the working tree (avoids stale staged-changes problems).
-cd "$SRC" && git fetch origin && git reset --hard origin/main && rm -f .git/index && git checkout HEAD -- .
+# Fetch with retry: GitHub CDN can lag a few seconds after a push, so we
+# retry up to 5 times (5-second gaps) until origin/main moves forward.
+# An optional EXPECT_SHA env var lets the caller assert the exact commit.
+cd "$SRC"
+for attempt in 1 2 3 4 5; do
+    git fetch origin
+    REMOTE_SHA=$(git rev-parse origin/main)
+    if [ -z "${EXPECT_SHA:-}" ] || [ "$REMOTE_SHA" = "$EXPECT_SHA" ]; then
+        break
+    fi
+    echo "  Attempt $attempt: origin/main=$REMOTE_SHA, want=$EXPECT_SHA — retrying in 5s"
+    sleep 5
+done
+git reset --hard origin/main
+rm -f .git/index && git checkout HEAD -- .
 git archive HEAD backend/ | tar -x -C "$APP_DIR/" --overwrite
 git archive HEAD frontend/ | tar -x -C "$APP_DIR/" --overwrite
 git archive HEAD fonts/    | tar -x -C "$APP_DIR/" --overwrite 2>/dev/null || true
