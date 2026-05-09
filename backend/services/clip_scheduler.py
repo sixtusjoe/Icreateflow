@@ -766,6 +766,9 @@ async def dispatch_due_once() -> None:
         await database.commit()
         # Accumulate per-post outcomes so we can send one result email per artist.
         _dispatch_results: list[dict] = []
+        # Track which clip IDs have had times_posted incremented this tick so
+        # a clip posted across 4 platforms only counts as 1 post, not 4.
+        _incremented_clip_ids: set[int] = set()
         for cp in rows:
             try:
                 # Row is already status='posting' thanks to the atomic claim.
@@ -1114,7 +1117,8 @@ async def dispatch_due_once() -> None:
                 # was exhausted while clips were merely queued, which paused
                 # the artist and stalled the dispatcher.
                 try:
-                    if clip:
+                    if clip and clip["id"] not in _incremented_clip_ids:
+                        _incremented_clip_ids.add(clip["id"])
                         await db.update_clip(
                             database, clip["id"],
                             times_posted=int(dict(clip).get("times_posted") or 0) + 1,
@@ -1402,6 +1406,296 @@ async def _send_brand_pre_post_reminders() -> None:
                 traceback.print_exc()
     except Exception:
         traceback.print_exc()
+    finally:
+        await database.close()
+
+
+async def _fresh_brand_account_token(database, account: dict, platform: str) -> str | None:
+    """Return a fresh token for a brand account, refreshing if near expiry.
+    Mirrors _fresh_variation_token but writes back to `accounts`, not `artist_accounts`."""
+    a = dict(account)
+    token = a.get(f"{platform}_token")
+    if not token:
+        return None
+    exp = a.get(f"{platform}_expires_at")
+    refresh = a.get(f"{platform}_refresh_token")
+    needs = False
+    if exp:
+        try:
+            exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if exp_dt <= datetime.now(timezone.utc) + timedelta(minutes=2):
+                needs = True
+        except Exception:
+            pass
+    if not needs or not refresh:
+        return token
+    if platform == "facebook":
+        provider = "meta"
+    elif platform == "instagram":
+        provider = "meta" if a.get("facebook_token") else "instagram"
+    else:
+        provider = platform
+    cfg = await db.get_site_config(database)
+    cid = cfg.get(f"oauth_{provider}_client_id", "")
+    csec = cfg.get(f"oauth_{provider}_client_secret", "")
+    if not cid or not csec:
+        return token
+    try:
+        refreshed = await oauth_svc.refresh_access_token(
+            provider, refresh, cid, csec, proxy_url=a.get("proxy_url"),
+        )
+    except Exception:
+        return token
+    new_token = refreshed.get("access_token")
+    if not new_token:
+        return token
+    updates: dict = {f"{platform}_token": new_token}
+    if refreshed.get("refresh_token"):
+        updates[f"{platform}_refresh_token"] = refreshed["refresh_token"]
+    if refreshed.get("expires_in"):
+        new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(refreshed["expires_in"]))
+        updates[f"{platform}_expires_at"] = new_exp.isoformat()
+    try:
+        await db.update_account(database, a["id"], **updates)
+    except Exception:
+        pass
+    return new_token
+
+
+async def dispatch_brand_posts_once() -> None:
+    """Auto-dispatch brand posts whose scheduled_time has passed.
+
+    Mirrors the POST /api/posts/{id}/post-now endpoint but runs as a background
+    loop every 60 seconds. Uses status='posting' as an atomic guard to prevent
+    double-dispatch if a previous tick's upload is still in progress.
+    """
+    from services.posting import tiktok as _tt, youtube as _yt, instagram as _ig, facebook as _fb
+    from services.posting import PostingError
+    from urllib.parse import quote
+    import secrets as _secrets
+
+    database = await db.get_db()
+    try:
+        # Recover posts stuck in 'posting' for > 15 min (crashed mid-upload).
+        # scheduled_at is set when the post transitions to 'scheduled'; it's
+        # always in the past by the time dispatch fires, so any post still in
+        # 'posting' > 15 min after its scheduled_at slot is definitively stale.
+        await database.execute(
+            """
+            UPDATE posts SET status = 'scheduled'
+            WHERE status = 'posting'
+              AND scheduled_at IS NOT NULL
+              AND scheduled_at < NOW() - INTERVAL '15 minutes'
+            """
+        )
+        await database.commit()
+
+        cur = await database.execute(
+            """
+            SELECT p.id, p.brand_id, p.date, p.scheduled_time, p.caption,
+                   b.timezone AS brand_tz, b.name AS brand_name,
+                   u.id AS user_id, u.email, u.email_notifications
+            FROM posts p
+            JOIN brands b ON b.id = p.brand_id
+            JOIN users u ON u.id = b.user_id
+            WHERE p.status = 'scheduled'
+              AND p.scheduled_time IS NOT NULL
+              AND p.date IS NOT NULL
+            """
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        due = []
+        for r in rows:
+            d = dict(r)
+            try:
+                tz = ZoneInfo(d.get("brand_tz") or "UTC")
+                date_val = d.get("date")
+                time_val = d.get("scheduled_time")
+                if not date_val or not time_val:
+                    continue
+                time_str = str(time_val)
+                fmt = "%Y-%m-%d %H:%M:%S" if len(time_str) > 5 else "%Y-%m-%d %H:%M"
+                local_dt = datetime.strptime(f"{date_val} {time_str}", fmt).replace(tzinfo=tz)
+                post_utc = local_dt.astimezone(timezone.utc)
+                if post_utc <= now_utc:
+                    due.append(d)
+            except Exception:
+                traceback.print_exc()
+
+        for post_meta in due:
+            post_id = post_meta["id"]
+            try:
+                # Atomic guard: flip to 'posting' so concurrent ticks don't double-dispatch.
+                await database.execute(
+                    "UPDATE posts SET status = 'posting' WHERE id = :id AND status = 'scheduled'",
+                    {"id": post_id},
+                )
+                await database.commit()
+
+                # Re-fetch to confirm we won the race.
+                post = await db.get_post(database, post_id)
+                if not post or dict(post).get("status") != "posting":
+                    continue  # Another tick already claimed it.
+
+                cfg = await db.get_site_config(database)
+                public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
+                if not public_base:
+                    await db.update_post(database, post_id, status="scheduled")
+                    await database.commit()
+                    continue
+
+                outputs = await db.get_outputs(database, post_id)
+                caption = str(post.get("caption") or "")
+                results: list[dict] = []
+                any_success = False
+
+                for out in outputs:
+                    out = dict(out)
+                    account = await db.get_account(database, out["account_id"])
+                    if not account:
+                        continue
+                    account = dict(account)
+                    account_proxy = account.get("proxy_url") or None
+
+                    # Build public URL for a given platform-specific path.
+                    _video_t = _secrets.token_urlsafe(6)
+                    legacy_video_path = out.get("video_path")
+
+                    def _public_video_url(p=None):
+                        path = (out.get(f"{p}_video_path") if p else None) or legacy_video_path
+                        if not path:
+                            return None
+                        rel = path.lstrip("./")
+                        enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+                        return f"{public_base}/api/files/{enc}?for={account['id']}&t={_video_t}"
+
+                    # Build TikTok slide URLs if a slides_dir exists.
+                    slide_urls: list[str] = []
+                    slides_dir = out.get("slides_dir")
+                    if slides_dir and Path(slides_dir).exists():
+                        _t = _secrets.token_urlsafe(6)
+                        for f in sorted(Path(slides_dir).iterdir()):
+                            if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" not in f.stem:
+                                rel = str(f).lstrip("./")
+                                enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+                                slide_urls.append(
+                                    f"{public_base}/api/files-jpg/{enc}?for={account['id']}&t={_t}"
+                                )
+
+                    targets = [
+                        ("tiktok",    _tt, await _fresh_brand_account_token(database, account, "tiktok")),
+                        ("youtube",   _yt, await _fresh_brand_account_token(database, account, "youtube")),
+                        ("instagram", _ig, await _fresh_brand_account_token(database, account, "instagram")),
+                        ("facebook",  _fb, await _fresh_brand_account_token(database, account, "facebook")),
+                    ]
+
+                    per_platform: dict = {}
+                    for name, adapter, token in targets:
+                        if not token:
+                            per_platform[name] = {"status": "skipped", "reason": "not connected"}
+                            continue
+                        try:
+                            if name == "tiktok":
+                                if out.get("tiktok_post_as_draft"):
+                                    tt_kwargs: dict = {"post_mode": "INBOX"}
+                                    tt_err = None
+                                else:
+                                    privacy = out.get("tiktok_privacy_level")
+                                    if not privacy:
+                                        per_platform[name] = {"status": "failed", "error": "TikTok privacy not set"}
+                                        continue
+                                    tt_kwargs = {
+                                        "post_mode": "DIRECT_POST",
+                                        "privacy_level": privacy.upper(),
+                                        "disable_comment": not bool(out.get("tiktok_allow_comment")),
+                                        "disable_duet":    not bool(out.get("tiktok_allow_duet")),
+                                        "disable_stitch":  not bool(out.get("tiktok_allow_stitch")),
+                                        "brand_content_toggle": bool(out.get("tiktok_disclose_branded_content")),
+                                        "brand_organic_toggle": bool(out.get("tiktok_disclose_your_brand")),
+                                    }
+                                if slide_urls:
+                                    slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
+                                                       if k not in ("disable_duet", "disable_stitch")}
+                                    res = await _tt.upload_photo_slideshow(
+                                        token, slide_urls, caption,
+                                        proxy_url=account_proxy, **slideshow_kwargs,
+                                    )
+                                else:
+                                    plat_url = _public_video_url(None)
+                                    if not plat_url:
+                                        per_platform[name] = {"status": "skipped", "reason": "no video rendered"}
+                                        continue
+                                    res = await adapter.upload_video(
+                                        token, plat_url, caption,
+                                        proxy_url=account_proxy, **tt_kwargs,
+                                    )
+                            else:
+                                plat_url = _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
+                                if not plat_url:
+                                    per_platform[name] = {"status": "skipped", "reason": "no video rendered"}
+                                    continue
+                                plat_kwargs: dict = {}
+                                if name == "facebook" and account.get("facebook_user_id"):
+                                    plat_kwargs["page_id"] = account["facebook_user_id"]
+                                if name == "instagram" and account.get("instagram_user_id"):
+                                    plat_kwargs["ig_user_id"] = account["instagram_user_id"]
+                                res = await adapter.upload_video(
+                                    token, plat_url, caption,
+                                    proxy_url=account_proxy, **plat_kwargs,
+                                )
+                            per_platform[name] = {
+                                "status": "posted",
+                                "platform_post_id": res.get("platform_post_id"),
+                                "permalink": res.get("permalink"),
+                                **({"draft": True} if res.get("draft") else {}),
+                            }
+                            any_success = True
+                            try:
+                                update_kwargs = {f"{name}_posted": True}
+                                if res.get("draft"):
+                                    update_kwargs["posted_as_draft"] = True
+                                await db.update_output(database, out["id"], **update_kwargs)
+                            except Exception:
+                                pass
+                        except PostingError as e:
+                            per_platform[name] = {"status": "failed", "error": str(e)[:300]}
+                        except Exception as e:
+                            per_platform[name] = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:250]}"}
+
+                    results.append({"account_name": account.get("name"), "platforms": per_platform})
+
+                if any_success:
+                    await db.update_post(database, post_id, status="posted")
+                    # Send HURRAY result email.
+                    try:
+                        from services.email import send_post_result_email
+                        flat_results = [
+                            {"platform": p, "variation_name": r.get("account_name") or p,
+                             "status": pd.get("status", "failed"), "error": pd.get("error")}
+                            for r in results for p, pd in r.get("platforms", {}).items()
+                        ]
+                        dash_url = public_base + "/dashboard"
+                        asyncio.create_task(send_post_result_email(
+                            post_meta["email"], post_meta["brand_name"], flat_results,
+                            dashboard_url=dash_url,
+                        ))
+                    except Exception:
+                        pass
+                else:
+                    await db.update_post(database, post_id, status="failed")
+
+                await database.commit()
+            except Exception:
+                traceback.print_exc()
+                try:
+                    await db.update_post(database, post_id, status="failed")
+                    await database.commit()
+                except Exception:
+                    pass
     finally:
         await database.close()
 
@@ -2005,4 +2299,7 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(_poll_views_loop()),
         # Daily cache sweep — runs once on boot, then every 24h.
         asyncio.create_task(_loop(sweep_clip_caches_once, 86400, "cache_sweep")),
+        # Brand post auto-dispatcher — checks every 60 s for scheduled posts
+        # whose scheduled_time has passed and fires them via platform adapters.
+        asyncio.create_task(_loop(dispatch_brand_posts_once, 60, "brand_dispatch")),
     ]
