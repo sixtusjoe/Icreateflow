@@ -1531,8 +1531,8 @@ async def dispatch_brand_posts_once() -> None:
             try:
                 # Atomic guard: flip to 'posting' so concurrent ticks don't double-dispatch.
                 await database.execute(
-                    "UPDATE posts SET status = 'posting' WHERE id = :id AND status = 'scheduled'",
-                    {"id": post_id},
+                    "UPDATE posts SET status = 'posting' WHERE id = ? AND status = 'scheduled'",
+                    (post_id,),
                 )
                 await database.commit()
 
