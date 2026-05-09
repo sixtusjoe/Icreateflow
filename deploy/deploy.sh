@@ -17,10 +17,13 @@ FRONTEND=$APP_DIR/frontend
 VENV=$APP_DIR/venv
 USER=icreateflow
 
-echo "==> Syncing code into app dirs"
-rsync -a --delete --exclude='.env' "$SRC/backend/"  "$BACKEND/"
-rsync -a --delete --exclude='.env.production' --exclude='.env.local' "$SRC/frontend/" "$FRONTEND/"
-rsync -a --delete "$SRC/fonts/"    "$APP_DIR/fonts/" 2>/dev/null || true
+echo "==> Syncing code into app dirs (via git archive — immune to working-tree state)"
+# Pull latest from origin so we always deploy what's in git, not whatever
+# happens to be in the working tree (avoids stale staged-changes problems).
+cd "$SRC" && git fetch origin && git reset --hard origin/main && rm -f .git/index && git checkout HEAD -- .
+git archive HEAD backend/ | tar -x -C "$APP_DIR/" --overwrite
+git archive HEAD frontend/ | tar -x -C "$APP_DIR/" --overwrite
+git archive HEAD fonts/    | tar -x -C "$APP_DIR/" --overwrite 2>/dev/null || true
 chown -R $USER:$USER "$BACKEND" "$FRONTEND" "$APP_DIR/fonts" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
