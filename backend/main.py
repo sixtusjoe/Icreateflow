@@ -4986,12 +4986,15 @@ async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_us
             delay_sql = "NOW() + INTERVAL '6 hours'"
         else:
             delay_sql = "NOW() + INTERVAL '2 minutes'"
-        await database.execute(
-            f"UPDATE clip_posts SET status = 'scheduled', scheduled_for = {delay_sql}, error = NULL WHERE id = ?",
+        cur2 = await database.execute(
+            f"UPDATE clip_posts SET status = 'scheduled', scheduled_for = {delay_sql}, error = NULL WHERE id = ? RETURNING scheduled_for",
             (clip_post_id,),
         )
+        ret = await cur2.fetchone()
         await database.commit()
-        return {"ok": True}
+        scheduled_for = dict(ret)["scheduled_for"] if ret else None
+        cooldown_hours = 6 if any(e in raw_error.lower() for e in _cooldown_errors) else 0
+        return {"ok": True, "scheduled_for": scheduled_for.isoformat() if scheduled_for else None, "cooldown_hours": cooldown_hours}
     finally:
         await database.close()
 

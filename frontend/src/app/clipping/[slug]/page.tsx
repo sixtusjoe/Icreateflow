@@ -173,8 +173,11 @@ function FailedPostsSection({
                   onClick={async () => {
                     setRetryingId(fp.id);
                     try {
-                      await retryClipPost(fp.id);
-                      toast.success("Retry scheduled — will post in ~2 minutes");
+                      const res = await retryClipPost(fp.id);
+                      const msg = res.cooldown_hours >= 6
+                        ? `Retry scheduled — will post in ~6 hours (platform cap cooldown)`
+                        : `Retry scheduled — will post in ~2 minutes`;
+                      toast.success(msg);
                       setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
                     } catch {
                       toast.error("Failed to retry");
@@ -209,8 +212,11 @@ function FailedPostsSection({
                 onClick={async () => {
                   setRetryingId(fp.id);
                   try {
-                    await retryClipPost(fp.id);
-                    toast.success("Retry scheduled — will post in ~2 minutes");
+                    const res = await retryClipPost(fp.id);
+                    const msg = res.cooldown_hours >= 6
+                      ? `Retry scheduled — will post in ~6 hours (platform cap cooldown)`
+                      : `Retry scheduled — will post in ~2 minutes`;
+                    toast.success(msg);
                     setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
                   } catch {
                     toast.error("Failed to retry");
