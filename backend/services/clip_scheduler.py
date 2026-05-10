@@ -1251,7 +1251,7 @@ async def dispatch_due_once() -> None:
                 if _ppid and not _draft:
                     try:
                         await database.execute(
-                            "UPDATE clip_posts SET deleted_at = NOW() "
+                            "UPDATE clip_posts SET deleted_at = NOW(), view_count = 0 "
                             "WHERE artist_account_id = ? AND platform = ? "
                             "  AND platform_post_id = ? "
                             "  AND clip_id IS NULL "
