@@ -4973,14 +4973,24 @@ async def clear_failed_clip_posts(artist_id: int, user: dict = Depends(get_curre
 
 
 @app.post("/api/clip-posts/{clip_post_id}/retry")
-async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_user)):
-    """Reset a failed clip_post to scheduled so the dispatcher re-attempts it."""
+async def retry_clip_post(
+    clip_post_id: int,
+    mode: str = Query("normal", description="'normal' (apply cap cooldown) or 'draft' (post immediately as TikTok inbox draft)"),
+    user: dict = Depends(get_current_user),
+):
+    """Reset a failed clip_post to scheduled so the dispatcher re-attempts it.
+
+    mode=draft  → sets force_inbox=TRUE + schedules immediately. Dispatcher will
+                  use TikTok INBOX mode for this row only, regardless of variation
+                  settings. Intended for cap-error TikTok posts.
+    mode=normal → existing behaviour: 6h cooldown for cap errors, 2min otherwise.
+    """
     database = await db.get_db()
     try:
         # Ownership check: the clip_post's artist must belong to this user
         cur = await database.execute(
             """
-            SELECT cp.id, cp.artist_id, cp.status
+            SELECT cp.id, cp.artist_id, cp.status, cp.platform
             FROM clip_posts cp
             JOIN artists a ON a.id = cp.artist_id
             WHERE cp.id = ? AND a.user_id = ?
@@ -4990,10 +5000,27 @@ async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_us
         row = await cur.fetchone()
         if not row:
             raise HTTPException(404, "Clip post not found or access denied")
-        if dict(row)["status"] != "failed":
+        row_d = dict(row)
+        if row_d["status"] != "failed":
             raise HTTPException(400, "Only failed posts can be retried")
-        # Fetch the error so we can apply a longer cooldown for errors that
-        # indicate a platform-level cap (retrying immediately wastes quota).
+
+        if mode == "draft":
+            # Retry immediately as TikTok inbox draft — force_inbox tells the
+            # dispatcher to use INBOX mode for this specific row only.
+            if row_d.get("platform") != "tiktok":
+                raise HTTPException(400, "Draft mode is only available for TikTok posts")
+            cur2 = await database.execute(
+                "UPDATE clip_posts SET status = 'scheduled', scheduled_for = NOW(), "
+                "error = NULL, force_inbox = TRUE WHERE id = ? RETURNING scheduled_for",
+                (clip_post_id,),
+            )
+            ret = await cur2.fetchone()
+            await database.commit()
+            scheduled_for = dict(ret)["scheduled_for"] if ret else None
+            return {"ok": True, "scheduled_for": scheduled_for.isoformat() if scheduled_for else None,
+                    "cooldown_hours": 0, "mode": "draft"}
+
+        # mode=normal — fetch the error to apply the right cooldown.
         err_cur = await database.execute(
             "SELECT error FROM clip_posts WHERE id = ?", (clip_post_id,)
         )
@@ -5005,14 +5032,16 @@ async def retry_clip_post(clip_post_id: int, user: dict = Depends(get_current_us
         else:
             delay_sql = "NOW() + INTERVAL '2 minutes'"
         cur2 = await database.execute(
-            f"UPDATE clip_posts SET status = 'scheduled', scheduled_for = {delay_sql}, error = NULL WHERE id = ? RETURNING scheduled_for",
+            f"UPDATE clip_posts SET status = 'scheduled', scheduled_for = {delay_sql}, "
+            f"error = NULL, force_inbox = FALSE WHERE id = ? RETURNING scheduled_for",
             (clip_post_id,),
         )
         ret = await cur2.fetchone()
         await database.commit()
         scheduled_for = dict(ret)["scheduled_for"] if ret else None
         cooldown_hours = 6 if any(e in raw_error.lower() for e in _cooldown_errors) else 0
-        return {"ok": True, "scheduled_for": scheduled_for.isoformat() if scheduled_for else None, "cooldown_hours": cooldown_hours}
+        return {"ok": True, "scheduled_for": scheduled_for.isoformat() if scheduled_for else None,
+                "cooldown_hours": cooldown_hours, "mode": "normal"}
     finally:
         await database.close()
 

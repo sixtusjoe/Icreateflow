@@ -991,7 +991,10 @@ async def dispatch_due_once() -> None:
                     # reads them here. No site_config fallback — TikTok
                     # forbids any global default value for privacy.
                     var_d = dict(variation)
-                    if var_d.get("tiktok_post_as_draft"):
+                    # force_inbox on the clip_post row overrides variation setting —
+                    # set by retry-as-draft so a cap-error post goes to inbox
+                    # immediately rather than waiting 6 hours.
+                    if cp.get("force_inbox") or var_d.get("tiktok_post_as_draft"):
                         kwargs["post_mode"] = "INBOX"
                     else:
                         privacy = var_d.get("tiktok_privacy_level")
@@ -1093,6 +1096,7 @@ async def dispatch_due_once() -> None:
                     platform_post_id=result.get("platform_post_id"),
                     error=None,
                     posted_as_draft=_draft,
+                    force_inbox=False,  # clear the one-shot override after use
                 )
                 try:
                     await db.update_clip_post(database, cp["id"], **_post_update)

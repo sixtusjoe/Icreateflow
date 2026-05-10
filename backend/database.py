@@ -508,6 +508,9 @@ class ClipPost(Base):
     # SQLAlchemy "Unconsumed column names: posted_as_draft" and broke
     # every Clipping dispatch.
     posted_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # Set by retry-as-draft: dispatcher uses TikTok INBOX mode for this row
+    # regardless of the variation's tiktok_post_as_draft setting.
+    force_inbox: Mapped[bool] = mapped_column(Boolean, server_default="false")
     reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     __table_args__ = (
         CheckConstraint(
@@ -980,6 +983,13 @@ async def _migrate_per_variation_columns(conn) -> None:
         await conn.execute(text(
             f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS posted_as_draft BOOLEAN DEFAULT FALSE"
         ))
+
+    # force_inbox on clip_posts: set by retry-as-draft so the dispatcher
+    # uses TikTok INBOX mode for this specific row even if the variation
+    # is configured for DIRECT_POST. Cleared after a successful post.
+    await conn.execute(text(
+        "ALTER TABLE clip_posts ADD COLUMN IF NOT EXISTS force_inbox BOOLEAN DEFAULT FALSE"
+    ))
 
     # Per-account residential proxy on the Brand `accounts` table —
     # mirror of artist_accounts.proxy_url. Used by post_now to route

@@ -106,6 +106,9 @@ function FailedPostsSection({
   const [open, setOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  // Cap-error retry modal
+  const [capRetryPost, setCapRetryPost] = useState<any | null>(null);
+  const [capRetrying, setCapRetrying] = useState(false);
 
   const handleClearAll = async () => {
     setClearing(true);
@@ -118,6 +121,33 @@ function FailedPostsSection({
       toast.error("Could not clear");
     } finally {
       setClearing(false);
+    }
+  };
+
+  const isCapError = (fp: any) =>
+    fp.platform === "tiktok" &&
+    (fp.friendly_error || "").toLowerCase().includes("active user cap");
+
+  const handleRetry = async (fp: any, mode: "normal" | "draft" = "normal") => {
+    setRetryingId(fp.id);
+    if (mode === "draft") setCapRetrying(true);
+    try {
+      const res = await retryClipPost(fp.id, mode);
+      if (mode === "draft") {
+        toast.success("Retry scheduled as draft — will post to TikTok inbox immediately");
+        setCapRetryPost(null);
+      } else {
+        const msg = res.cooldown_hours >= 6
+          ? `Retry scheduled — will post in ~6 hours (platform cap cooldown)`
+          : `Retry scheduled — will post in ~2 minutes`;
+        toast.success(msg);
+      }
+      setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
+    } catch {
+      toast.error("Failed to retry");
+    } finally {
+      setRetryingId(null);
+      setCapRetrying(false);
     }
   };
 
@@ -134,6 +164,43 @@ function FailedPostsSection({
         loading={clearing}
         onConfirm={handleClearAll}
       />
+
+      {/* TikTok cap-error retry options modal */}
+      {capRetryPost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-background p-6 shadow-xl">
+            <h3 className="text-base font-semibold">Retry TikTok post</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This account has hit TikTok's active user cap. Choose how to retry:
+            </p>
+            <div className="mt-5 flex flex-col gap-2.5">
+              <button
+                onClick={() => handleRetry(capRetryPost, "draft")}
+                disabled={capRetrying}
+                className="flex flex-col items-start gap-0.5 rounded-xl border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <span className="text-sm font-medium">Post as draft</span>
+                <span className="text-xs text-muted-foreground">Posts immediately to TikTok inbox — you publish from the app</span>
+              </button>
+              <button
+                onClick={() => handleRetry(capRetryPost, "normal")}
+                disabled={capRetrying}
+                className="flex flex-col items-start gap-0.5 rounded-xl border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <span className="text-sm font-medium">Retry in 6 hours</span>
+                <span className="text-xs text-muted-foreground">System retries direct post after the cap cooldown</span>
+              </button>
+              <button
+                onClick={() => setCapRetryPost(null)}
+                disabled={capRetrying}
+                className="mt-1 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
       <div className="flex items-center gap-2 px-4 py-3 md:px-5">
         <button
@@ -170,21 +237,7 @@ function FailedPostsSection({
                 </span>
                 {/* Retry on mobile lives in this row, right-aligned */}
                 <button
-                  onClick={async () => {
-                    setRetryingId(fp.id);
-                    try {
-                      const res = await retryClipPost(fp.id);
-                      const msg = res.cooldown_hours >= 6
-                        ? `Retry scheduled — will post in ~6 hours (platform cap cooldown)`
-                        : `Retry scheduled — will post in ~2 minutes`;
-                      toast.success(msg);
-                      setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
-                    } catch {
-                      toast.error("Failed to retry");
-                    } finally {
-                      setRetryingId(null);
-                    }
-                  }}
+                  onClick={() => isCapError(fp) ? setCapRetryPost(fp) : handleRetry(fp)}
                   disabled={retryingId === fp.id}
                   className="sm:hidden ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
                 >
@@ -209,21 +262,7 @@ function FailedPostsSection({
 
               {/* Retry on desktop */}
               <button
-                onClick={async () => {
-                  setRetryingId(fp.id);
-                  try {
-                    const res = await retryClipPost(fp.id);
-                    const msg = res.cooldown_hours >= 6
-                      ? `Retry scheduled — will post in ~6 hours (platform cap cooldown)`
-                      : `Retry scheduled — will post in ~2 minutes`;
-                    toast.success(msg);
-                    setFailedPosts((prev) => prev.filter((p) => p.id !== fp.id));
-                  } catch {
-                    toast.error("Failed to retry");
-                  } finally {
-                    setRetryingId(null);
-                  }
-                }}
+                onClick={() => isCapError(fp) ? setCapRetryPost(fp) : handleRetry(fp)}
                 disabled={retryingId === fp.id}
                 className="hidden sm:inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
               >

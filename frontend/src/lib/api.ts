@@ -210,8 +210,8 @@ export const getArtistFailedPosts = (artistId: number) =>
   api.get(`/api/artists/${artistId}/failed-clip-posts`).then((r) => r.data);
 export const clearArtistFailedPosts = (artistId: number) =>
   api.delete(`/api/artists/${artistId}/failed-clip-posts`).then((r) => r.data);
-export const retryClipPost = (clipPostId: number) =>
-  api.post(`/api/clip-posts/${clipPostId}/retry`).then((r) => r.data);
+export const retryClipPost = (clipPostId: number, mode: "normal" | "draft" = "normal") =>
+  api.post(`/api/clip-posts/${clipPostId}/retry?mode=${mode}`).then((r) => r.data);
 
 // --- Music ---
 export const getMusicTracks = (platform?: string) =>
