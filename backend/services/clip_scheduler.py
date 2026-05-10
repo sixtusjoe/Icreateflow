@@ -213,10 +213,13 @@ async def _instagram_public_url(source: str, clip_post_id: int, proxy_url: str |
     uploads_dir.mkdir(exist_ok=True)
 
     if not source.startswith("http"):
-        # Local upload — already on our server; just derive the public URL.
-        return f"{_base}/files/uploads/{_Path(source).name}"
+        # Local upload — already on our server. Files are served at
+        # /api/files/<basename> by the serve_file endpoint (which looks
+        # under uploads/, output/, music/ automatically).
+        return f"{_base}/api/files/{_Path(source).name}"
 
-    # HTTP(S) source (e.g. Google Drive) — download to a stable temp file.
+    # HTTP(S) source (e.g. Google Drive) — download to a stable temp file
+    # in our uploads dir, then serve it through our own /api/files/ endpoint.
     tmp_name = f"ig_proxy_{clip_post_id}.mp4"
     tmp_path = uploads_dir / tmp_name
 
@@ -235,7 +238,8 @@ async def _instagram_public_url(source: str, clip_post_id: int, proxy_url: str |
                 f"Could not download video for Instagram proxy (source={source!r}): {_e}"
             )
 
-    return f"{_base}/files/uploads/{tmp_name}"
+    # /api/files/<name> is served by serve_file() which searches uploads/ automatically.
+    return f"{_base}/api/files/{tmp_name}"
 
 
 async def _pick_next_clip(database, artist_id: int, artist_account_id: int) -> dict | None:
