@@ -840,18 +840,23 @@ async def dispatch_due_once() -> None:
                     continue
 
                 # --- Pre-dispatch stale-slot guard ---
-                # If this clip was posted globally MORE THAN 30 minutes ago AND
-                # the variation still has unposted clips, this slot was planned
-                # against stale state. Fail it; the planner recreates a correct
-                # slot on the next tick. The 30-minute window prevents blocking
-                # sibling platform slots dispatched in the same batch (e.g.
-                # TikTok posts first → IG/FB in the same tick would be falsely
-                # blocked without the recency window).
+                # If this clip was already posted on THIS SAME PLATFORM more
+                # than 30 minutes ago AND the variation still has unposted clips,
+                # this slot was planned against stale state — fail it so the
+                # planner picks a fresh clip on the next tick.
+                #
+                # IMPORTANT: the check is platform-scoped. A clip successfully
+                # posted to TikTok/YouTube/Facebook does NOT make the Instagram
+                # slot stale — those are independent platform queues. Checking
+                # cross-platform was causing user-retried Instagram posts to be
+                # incorrectly killed because sibling platforms had already posted
+                # the same clip in the same batch.
+                platform = cp["platform"]
                 _posted_cur = await database.execute(
                     "SELECT COUNT(*) AS cnt FROM clip_posts"
-                    " WHERE clip_id = ? AND status = 'posted' AND deleted_at IS NULL"
+                    " WHERE clip_id = ? AND platform = ? AND status = 'posted' AND deleted_at IS NULL"
                     " AND posted_at < NOW() - INTERVAL '30 minutes'",
-                    (clip["id"],),
+                    (clip["id"], platform),
                 )
                 _posted_row = await _posted_cur.fetchone()
                 if _posted_row and _posted_row["cnt"] > 0:
@@ -866,7 +871,6 @@ async def dispatch_due_once() -> None:
                         continue
                 # --- End stale-slot guard ---
 
-                platform = cp["platform"]
                 access_token = await _fresh_variation_token(database, variation, platform)
                 if not access_token:
                     err = f"{platform} not connected on variation #{variation['id']}"
