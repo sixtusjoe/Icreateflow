@@ -847,8 +847,8 @@ async def dispatch_due_once() -> None:
                 WHERE cp.status = 'scheduled' AND cp.scheduled_for IS NOT NULL
                   AND cp.scheduled_for <= NOW()
                   AND a.is_active = TRUE
-                  AND (a.paused_reason IS NULL OR a.paused_reason = '')
-                  AND (aa.id IS NULL OR aa.paused_reason IS NULL OR aa.paused_reason = '')
+                  AND (cp.force_inbox = TRUE OR a.paused_reason IS NULL OR a.paused_reason = '')
+                  AND (cp.force_inbox = TRUE OR aa.id IS NULL OR aa.paused_reason IS NULL OR aa.paused_reason = '')
                 ORDER BY cp.scheduled_for ASC
                 LIMIT 50
                 FOR UPDATE OF cp SKIP LOCKED
