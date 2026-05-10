@@ -4139,13 +4139,12 @@ async def list_artists(user: dict = Depends(get_current_user)):
                     continue
                 # Views include deleted posts — same as dashboard.
                 views_total += int(p.get("view_count") or 0)
-                # Only count system-dispatched posts (clip_id IS NOT NULL).
-                # NULL-clip rows are TikTok phone-discovery entries and should
-                # not inflate the post count shown on the artists list.
-                if p.get("deleted_at") or p.get("clip_id") is None:
+                # Exclude deleted posts and TikTok inbox drafts (posted_as_draft=TRUE).
+                # NULL-clip discovery rows (phone-published videos) DO count.
+                if p.get("deleted_at") or p.get("posted_as_draft"):
                     continue
                 _key = (
-                    p.get("clip_id"),
+                    p.get("clip_id") if p.get("clip_id") is not None else p.get("id"),
                     p.get("artist_account_id"),
                     p.get("platform"),
                 )
@@ -4725,6 +4724,8 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
         # Dedup set: tracks (clip_id_or_row_id, artist_account_id, platform) so
         # stale-slot double-posts never inflate posts_total / posts_today / by_platform.
         # Uses row id as fallback when clip_id is NULL (TikTok phone-discovery rows).
+        # posted_as_draft=TRUE rows are excluded — those are TikTok drafts not yet
+        # published. The discovery row inserted when user publishes is counted instead.
         _counted_posts: set[tuple] = set()
 
         for p in posts:
@@ -4737,14 +4738,19 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                 # is set (the poller never clears it).
                 if platform in by_platform:
                     by_platform[platform]["views"] += int(p.get("view_count") or 0)
-                # Post count and "today" count only reflect live (non-deleted),
-                # system-dispatched posts (clip_id IS NOT NULL). NULL-clip rows are
-                # TikTok phone-discovery entries added by the view poller — they are
-                # real views but were NOT dispatched by the scheduler, so we don't
-                # count them as "posts sent today / total".
-                if not p.get("deleted_at") and p.get("clip_id") is not None:
+                # Post count and "today" count:
+                #   - Exclude deleted posts
+                #   - Exclude posted_as_draft=TRUE rows — these are TikTok drafts
+                #     sitting in Creator Inbox waiting for the user to publish.
+                #     The system uploaded them but the video is not yet live.
+                #     Once the user publishes from their phone, TikTok discovery
+                #     inserts a NULL-clip row with the real video ID, and THAT
+                #     row is what we count instead.
+                #   - NULL-clip rows (clip_id IS NULL) represent phone-published
+                #     videos discovered via TikTok API — count them normally.
+                if not p.get("deleted_at") and not p.get("posted_as_draft"):
                     _dedup_key = (
-                        p.get("clip_id"),
+                        p.get("clip_id") if p.get("clip_id") is not None else p.get("id"),
                         p.get("artist_account_id"),
                         platform,
                     )
