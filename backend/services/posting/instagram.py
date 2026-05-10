@@ -62,7 +62,13 @@ async def upload_video(
             s = await client.get(
                 f"{GRAPH}/{creation_id}",
                 params={
-                    "fields": "status_code,status,error",
+                    # NOTE: do NOT include "error" in fields — Meta returns
+                    # a 400 OAuthException ("Tried accessing nonexisting field
+                    # (error)") whenever the container is not in ERROR state,
+                    # which makes every poll appear to fail and causes our
+                    # loop to exhaust all retries even when the container is
+                    # FINISHED and ready to publish.
+                    "fields": "status_code,status",
                     "access_token": access_token,
                 },
             )
@@ -71,15 +77,8 @@ async def upload_video(
             if status == "FINISHED":
                 break
             if status == "ERROR":
-                # `error` is the structured Meta error object when present;
-                # `status` is the human-readable processing status string.
-                err_obj = body.get("error") or {}
-                reason = (
-                    err_obj.get("error_user_msg")
-                    or err_obj.get("message")
-                    or body.get("status")
-                    or s.text[:200]
-                )
+                # Use the human-readable status string Meta provides.
+                reason = body.get("status") or s.text[:200]
                 raise PostingError(f"IG container error: {reason}")
         else:
             raise PostingError("IG container processing timed out")
