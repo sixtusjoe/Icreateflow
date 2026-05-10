@@ -4127,14 +4127,24 @@ async def list_artists(user: dict = Depends(get_current_user)):
             variations = await db.get_artist_accounts(database, a["id"])
             clips = await db.get_clips(database, a["id"])
             posts = await db.get_clip_posts(database, artist_id=a["id"])
-            # Skip rows the view poller flagged as deleted on the platform —
-            # they shouldn't inflate either the post count or the views total.
-            views_total = sum(
-                int(p.get("view_count") or 0) for p in posts if not p.get("deleted_at")
-            )
-            posts_total = sum(
-                1 for p in posts if p.get("status") == "posted" and not p.get("deleted_at")
-            )
+            # Dedup on (clip_id_or_row_id, artist_account_id, platform) so
+            # stale-slot double-posts don't inflate counts — mirrors dashboard logic.
+            views_total = 0
+            posts_total = 0
+            _seen: set[tuple] = set()
+            for p in posts:
+                if p.get("status") != "posted" or p.get("deleted_at"):
+                    continue
+                _key = (
+                    p.get("clip_id") if p.get("clip_id") is not None else p.get("id"),
+                    p.get("artist_account_id"),
+                    p.get("platform"),
+                )
+                if _key in _seen:
+                    continue
+                _seen.add(_key)
+                posts_total += 1
+                views_total += int(p.get("view_count") or 0)
             result.append({
                 **dict(a),
                 "variations_count": len(variations),
