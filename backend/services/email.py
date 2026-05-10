@@ -133,14 +133,24 @@ _BASE_STYLE = """
 
 def _html_wrap(body: str, site_name: str = "iCreateFlow", logo_url: str = "") -> str:
     if logo_url:
+        # Use a table so logo + name stay on one line and vertically centred
+        # in all email clients (Gmail, Outlook, Apple Mail) — flexbox is not
+        # reliably supported inside email rendering engines.
         header_inner = (
-            f'<div class="header-inner">'
-            f'<img src="{logo_url}" alt="{site_name}" style="height:36px;width:auto;display:block;">'
-            f'<span class="header-name">{site_name}</span>'
-            f'</div>'
+            f'<table role="presentation" cellpadding="0" cellspacing="0" '
+            f'style="margin:0 auto;border-collapse:collapse;">'
+            f'<tr>'
+            f'<td style="vertical-align:middle;padding:0;">'
+            f'<img src="{logo_url}" alt="" style="height:36px;width:auto;display:block;">'
+            f'</td>'
+            f'<td style="vertical-align:middle;padding:0 0 0 10px;">'
+            f'<span style="font-size:18px;font-weight:700;color:#fff;white-space:nowrap;">{site_name}</span>'
+            f'</td>'
+            f'</tr>'
+            f'</table>'
         )
     else:
-        header_inner = f'<span class="header-name">{site_name}</span>'
+        header_inner = f'<span style="font-size:18px;font-weight:700;color:#fff;">{site_name}</span>'
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>{_BASE_STYLE}</style></head>
