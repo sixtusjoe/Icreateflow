@@ -4878,6 +4878,10 @@ def _friendly_error(raw: str | None) -> str:
         return "Video already posted to this platform"
     if "clip or variation missing" in err or "file not found" in err or "no such file" in err:
         return "Content file missing — re-upload the clip"
+    if "ig container processing timed out" in err or "ig container couldn't fetch" in err or "could not download video for instagram" in err:
+        return "Instagram couldn't fetch the video — retrying will serve it through our server"
+    if "ig container error" in err:
+        return f"Instagram rejected the video: {raw.split('IG container error:')[-1].strip()[:120]}"
     if "timeout" in err or "timed out" in err:
         return "Request timed out — safe to retry"
     if "privacy" in err:

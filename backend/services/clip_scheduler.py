@@ -180,6 +180,64 @@ def _clip_video_source(clip: dict) -> str | None:
     return clip.get("local_path")
 
 
+async def _instagram_public_url(source: str, clip_post_id: int, proxy_url: str | None = None) -> str:
+    """Return a guaranteed-public HTTPS URL for an Instagram container.
+
+    Instagram's media processing servers pull the video from the URL we
+    supply in the container-create call.  Google Drive download links often
+    fail for Meta's CDN IPs (redirects, consent pages, IP throttling), so
+    we always proxy the video through our own server:
+
+    - If source is already a local path  → build /files/uploads/<basename>
+    - If source is an http/https URL     → download to uploads/ig_proxy_<id>.mp4
+                                           then return our own URL for it.
+
+    The temp file is written once per clip_post_id, so retries are
+    idempotent.  It is cleaned up after the container is published.
+    """
+    import httpx as _httpx
+    from pathlib import Path as _Path
+
+    # Read base URL from site_config; fall back to production domain.
+    try:
+        _db = await db.get_db()
+        try:
+            _cfg = await db.get_site_config(_db)
+            _base = (_cfg.get("oauth_redirect_base") or "https://icreateflow.com").rstrip("/")
+        finally:
+            await _db.close()
+    except Exception:
+        _base = "https://icreateflow.com"
+
+    uploads_dir = _Path("uploads")
+    uploads_dir.mkdir(exist_ok=True)
+
+    if not source.startswith("http"):
+        # Local upload — already on our server; just derive the public URL.
+        return f"{_base}/files/uploads/{_Path(source).name}"
+
+    # HTTP(S) source (e.g. Google Drive) — download to a stable temp file.
+    tmp_name = f"ig_proxy_{clip_post_id}.mp4"
+    tmp_path = uploads_dir / tmp_name
+
+    if not tmp_path.exists():
+        try:
+            async with _httpx.AsyncClient(
+                timeout=120, follow_redirects=True, proxy=proxy_url
+            ) as _client:
+                r = await _client.get(source)
+                r.raise_for_status()
+                tmp_path.write_bytes(r.content)
+        except Exception as _e:
+            # Download failed — surface a clear error rather than letting
+            # IG time out trying to fetch an inaccessible URL.
+            raise Exception(
+                f"Could not download video for Instagram proxy (source={source!r}): {_e}"
+            )
+
+    return f"{_base}/files/uploads/{tmp_name}"
+
+
 async def _pick_next_clip(database, artist_id: int, artist_account_id: int) -> dict | None:
     """Round-robin within ONE variation's scope, biased toward
     globally-unposted clips.
@@ -1072,12 +1130,39 @@ async def dispatch_due_once() -> None:
                 except Exception:
                     pass
 
+                # Instagram requires a publicly-accessible HTTPS URL that
+                # Meta's CDN servers can fetch directly.  Google Drive
+                # download URLs are unreliable for this — Google may serve
+                # redirects, consent pages, or throttle Meta's IPs, leaving
+                # the IG container stuck in IN_PROGRESS until our poller
+                # times out.  Serve the video through our own server instead.
+                _ig_proxy_path: str | None = None
+                post_source = source
+                if platform == "instagram":
+                    post_source = await _instagram_public_url(
+                        source, cp["id"],
+                        proxy_url=dict(variation).get("proxy_url") or None,
+                    )
+                    # Track temp file path for cleanup after publish.
+                    if "ig_proxy_" in post_source:
+                        from pathlib import Path as _P
+                        _ig_proxy_path = str(_P("uploads") / f"ig_proxy_{cp['id']}.mp4")
+
                 result = await adapter.upload_video(
                     access_token=access_token,
-                    video_source=source,
+                    video_source=post_source,
                     caption=caption_to_post,
                     **kwargs,
                 )
+
+                # Clean up the Instagram proxy temp file now that the
+                # container has been published successfully.
+                if _ig_proxy_path:
+                    try:
+                        import os as _os
+                        _os.remove(_ig_proxy_path)
+                    except OSError:
+                        pass
                 # Stamp posted_as_draft when TikTok inbox/MEDIA_UPLOAD was
                 # used so the view poller skips this row (drafts have no
                 # public stats until the user publishes from their app)
