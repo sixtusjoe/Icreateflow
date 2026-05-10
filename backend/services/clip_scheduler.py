@@ -1241,6 +1241,28 @@ async def dispatch_due_once() -> None:
                     else:
                         raise
 
+                # Race-condition cleanup: discovery may have inserted a
+                # NULL-clip row for this same video while the platform API
+                # call was in flight (discovery sees no platform_post_id yet,
+                # queries TikTok/IG, and finds the newly-uploaded video).
+                # Soft-delete any such duplicates now that we have the real
+                # platform_post_id — prevents the same post counting twice.
+                _ppid = result.get("platform_post_id")
+                if _ppid and not _draft:
+                    try:
+                        await database.execute(
+                            "UPDATE clip_posts SET deleted_at = NOW() "
+                            "WHERE artist_account_id = ? AND platform = ? "
+                            "  AND platform_post_id = ? "
+                            "  AND clip_id IS NULL "
+                            "  AND deleted_at IS NULL "
+                            "  AND id != ?",
+                            (cp["artist_account_id"], platform, _ppid, cp["id"]),
+                        )
+                        await database.commit()
+                    except Exception:
+                        pass
+
                 # Bump clip stats AFTER a successful post (not at plan time).
                 # Bumping at plan time made evaluate_pause think the directory
                 # was exhausted while clips were merely queued, which paused
