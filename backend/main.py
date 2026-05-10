@@ -4139,10 +4139,13 @@ async def list_artists(user: dict = Depends(get_current_user)):
                     continue
                 # Views include deleted posts — same as dashboard.
                 views_total += int(p.get("view_count") or 0)
-                if p.get("deleted_at"):
+                # Only count system-dispatched posts (clip_id IS NOT NULL).
+                # NULL-clip rows are TikTok phone-discovery entries and should
+                # not inflate the post count shown on the artists list.
+                if p.get("deleted_at") or p.get("clip_id") is None:
                     continue
                 _key = (
-                    p.get("clip_id") if p.get("clip_id") is not None else p.get("id"),
+                    p.get("clip_id"),
                     p.get("artist_account_id"),
                     p.get("platform"),
                 )
@@ -4734,10 +4737,14 @@ async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user
                 # is set (the poller never clears it).
                 if platform in by_platform:
                     by_platform[platform]["views"] += int(p.get("view_count") or 0)
-                # Post count and "today" count only reflect live (non-deleted) posts.
-                if not p.get("deleted_at"):
+                # Post count and "today" count only reflect live (non-deleted),
+                # system-dispatched posts (clip_id IS NOT NULL). NULL-clip rows are
+                # TikTok phone-discovery entries added by the view poller — they are
+                # real views but were NOT dispatched by the scheduler, so we don't
+                # count them as "posts sent today / total".
+                if not p.get("deleted_at") and p.get("clip_id") is not None:
                     _dedup_key = (
-                        p.get("clip_id") if p.get("clip_id") is not None else p.get("id"),
+                        p.get("clip_id"),
                         p.get("artist_account_id"),
                         platform,
                     )
