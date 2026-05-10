@@ -224,19 +224,51 @@ async def _instagram_public_url(source: str, clip_post_id: int, proxy_url: str |
     tmp_path = uploads_dir / tmp_name
 
     if not tmp_path.exists():
+        # Download the source video to a raw temp file first.
+        raw_path = uploads_dir / f"ig_raw_{clip_post_id}.mp4"
         try:
-            async with _httpx.AsyncClient(
-                timeout=120, follow_redirects=True, proxy=proxy_url
-            ) as _client:
-                r = await _client.get(source)
-                r.raise_for_status()
-                tmp_path.write_bytes(r.content)
+            if source.startswith("http"):
+                async with _httpx.AsyncClient(
+                    timeout=120, follow_redirects=True, proxy=proxy_url
+                ) as _client:
+                    r = await _client.get(source)
+                    r.raise_for_status()
+                    raw_path.write_bytes(r.content)
+            else:
+                import shutil as _shutil
+                _shutil.copy2(source, raw_path)
         except Exception as _e:
-            # Download failed — surface a clear error rather than letting
-            # IG time out trying to fetch an inaccessible URL.
             raise Exception(
                 f"Could not download video for Instagram proxy (source={source!r}): {_e}"
             )
+
+        # Transcode to Instagram-compatible specs:
+        #   - 30fps  (IG rejects anything above 60fps; 120fps videos always fail)
+        #   - H.264 video + AAC audio  (required by Reels API)
+        #   - Copy if already within spec (-vf fps=30 only re-timestamps, ffmpeg
+        #     still re-encodes so we use libx264 to guarantee compatibility)
+        import subprocess as _sp
+        try:
+            _sp.run(
+                [
+                    "ffmpeg", "-y", "-i", str(raw_path),
+                    "-vf", "fps=30",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    str(tmp_path),
+                ],
+                check=True, capture_output=True,
+            )
+        except _sp.CalledProcessError as _e:
+            raise Exception(
+                f"ffmpeg transcode failed for Instagram proxy: {_e.stderr.decode()[-300:]}"
+            )
+        finally:
+            try:
+                raw_path.unlink()
+            except OSError:
+                pass
 
     # /api/files/<name> is served by serve_file() which searches uploads/ automatically.
     return f"{_base}/api/files/{tmp_name}"
