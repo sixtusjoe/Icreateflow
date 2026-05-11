@@ -1,12 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useState, useRef, useCallback } from "react";
+import React, { Suspense, useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   Link2, Upload, Wand2, Download, Play, Clock, Send, RefreshCw, Eye,
   Image as ImageIcon, Type, Sparkles, Check, Loader2, RotateCcw,
+  AlertCircle, ChevronDown,
 } from "lucide-react";
 import {
   getBrands, importTikTokPost, uploadSlidesManually, getPost, updateSlide,
@@ -14,7 +15,7 @@ import {
   updateVariation, generatePost, getGenerationStatus,
   schedulePost, postNow, getMusicTracks, getDownloadUrl, downloadFile, fileUrl,
   rerunOcr, getOutputSlides, regenerateSlide, regenerateVideo, updatePostMusic,
-  updateOutputTiktokSettings,
+  updateOutputTiktokSettings, getFailedOutputs, retryOutput, clearFailedOutputs,
 } from "@/lib/api";
 import { TikTokSettingsCard } from "@/components/TikTokSettingsCard";
 import { PostingProgressModal } from "@/components/PostingProgressModal";
@@ -24,6 +25,201 @@ const PLATFORMS: Plat[] = ["youtube", "instagram", "facebook"];
 const PLAT_LABEL: Record<Plat, string> = { youtube: "YouTube", instagram: "Instagram", facebook: "Facebook" };
 
 type Step = "import" | "edit" | "variations" | "generate";
+
+// ── Failed Outputs Section ────────────────────────────────────────────────────
+// Shows persisted per-platform posting errors for both manual Post Now and
+// scheduled dispatch. Mirrors FailedPostsSection on the clipping side.
+function FailedOutputsSection({
+  postId,
+  failedOutputs,
+  setFailedOutputs,
+}: {
+  postId: number;
+  failedOutputs: any[];
+  setFailedOutputs: React.Dispatch<React.SetStateAction<any[]>>;
+}) {
+  const [open, setOpen] = React.useState(true);
+  const [clearing, setClearing] = React.useState(false);
+  const [retryingKey, setRetryingKey] = React.useState<string | null>(null);
+  const [capRetry, setCapRetry] = React.useState<{ outputId: number; platform: string } | null>(null);
+  const [capRetrying, setCapRetrying] = React.useState(false);
+
+  const isCapError = (err?: string) =>
+    !!(err && (err.toLowerCase().includes("reached_active_user_cap") || err.toLowerCase().includes("active_user_cap")));
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    try {
+      await clearFailedOutputs(postId);
+      setFailedOutputs([]);
+      toast.success("Cleared all failed posts");
+    } catch {
+      toast.error("Could not clear");
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const handleRetry = async (outputId: number, platform: string, mode: "normal" | "draft" | "delayed") => {
+    const key = `${outputId}:${platform}`;
+    setRetryingKey(key);
+    if (mode !== "normal") setCapRetrying(true);
+    try {
+      await retryOutput(outputId, mode);
+      if (mode === "delayed") {
+        toast.success("TikTok retry scheduled in 6 hours");
+      } else if (mode === "draft") {
+        toast.success("Retry scheduled as draft — will post to TikTok inbox immediately");
+      } else {
+        toast.success("Retry submitted");
+      }
+      setCapRetry(null);
+      // Remove the retried platform from the failed list
+      setFailedOutputs((prev) =>
+        prev
+          .map((o) => {
+            if (o.output_id !== outputId) return o;
+            const platforms = { ...o.platforms };
+            delete platforms[platform];
+            return { ...o, platforms };
+          })
+          .filter((o) => Object.keys(o.platforms).length > 0)
+      );
+    } catch {
+      toast.error("Failed to retry");
+    } finally {
+      setRetryingKey(null);
+      setCapRetrying(false);
+    }
+  };
+
+  if (failedOutputs.length === 0) return null;
+
+  // Flatten to a list of {outputId, accountName, platform, error, friendlyError}
+  const rows = failedOutputs.flatMap((o: any) =>
+    Object.entries(o.platforms).map(([plat, pd]: [string, any]) => ({
+      outputId: o.output_id,
+      accountName: o.account_name,
+      platform: plat,
+      error: pd.error,
+      friendlyError: pd.friendly_error || pd.error,
+    }))
+  );
+
+  return (
+    <>
+      {/* TikTok cap-error retry popup */}
+      {capRetry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-background p-6 shadow-xl">
+            <h3 className="text-base font-semibold">Retry TikTok post</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This account has hit TikTok's active user cap. Choose how to retry:
+            </p>
+            <div className="mt-5 flex flex-col gap-2.5">
+              <button
+                onClick={() => handleRetry(capRetry.outputId, capRetry.platform, "draft")}
+                disabled={capRetrying}
+                className="flex flex-col items-start gap-0.5 rounded-xl border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <span className="text-sm font-medium">Post as draft</span>
+                <span className="text-xs text-muted-foreground">Posts immediately to TikTok inbox — you publish from the app</span>
+              </button>
+              <button
+                onClick={() => handleRetry(capRetry.outputId, capRetry.platform, "delayed")}
+                disabled={capRetrying}
+                className="flex flex-col items-start gap-0.5 rounded-xl border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <span className="text-sm font-medium">Retry in 6 hours</span>
+                <span className="text-xs text-muted-foreground">System retries direct post after the cap cooldown</span>
+              </button>
+              <button
+                onClick={() => setCapRetry(null)}
+                disabled={capRetrying}
+                className="mt-1 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <section className="rounded-2xl border border-destructive/30 bg-destructive/5 overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-3 md:px-5">
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="flex items-center gap-2 flex-1 text-left"
+          >
+            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+            <span className="text-sm font-semibold text-destructive whitespace-nowrap">Failed Posts</span>
+            <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive shrink-0">
+              {rows.length}
+            </span>
+            <ChevronDown className={`h-4 w-4 text-destructive/60 ml-1 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+          </button>
+          <button
+            onClick={handleClearAll}
+            disabled={clearing}
+            className="shrink-0 text-xs text-destructive/70 hover:text-destructive font-medium disabled:opacity-50"
+          >
+            {clearing ? "Clearing…" : "Clear all"}
+          </button>
+        </div>
+        {open && (
+          <div className="divide-y divide-destructive/10 border-t border-destructive/20">
+            {rows.map((row, idx) => {
+              const key = `${row.outputId}:${row.platform}`;
+              const isRetrying = retryingKey === key;
+              return (
+                <div key={idx} className="flex flex-col gap-1.5 px-4 py-3 md:px-5 sm:flex-row sm:items-center sm:gap-3">
+                  {/* Mobile: platform + account + retry button */}
+                  <div className="flex items-center gap-2 sm:contents">
+                    <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold capitalize">
+                      {row.platform}
+                    </span>
+                    <span className="text-xs text-muted-foreground shrink-0 flex-1 sm:flex-none truncate">
+                      {row.accountName}
+                    </span>
+                    <button
+                      onClick={() =>
+                        isCapError(row.error) && row.platform === "tiktok"
+                          ? setCapRetry({ outputId: row.outputId, platform: row.platform })
+                          : handleRetry(row.outputId, row.platform, "normal")
+                      }
+                      disabled={isRetrying}
+                      className="sm:hidden ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                    >
+                      {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                      {isRetrying ? "Retrying…" : "Retry"}
+                    </button>
+                  </div>
+                  {/* Error message */}
+                  <span className="text-xs text-destructive/90 sm:flex-1 sm:min-w-0 sm:truncate" title={row.friendlyError}>
+                    {row.friendlyError}
+                  </span>
+                  {/* Retry on desktop */}
+                  <button
+                    onClick={() =>
+                      isCapError(row.error) && row.platform === "tiktok"
+                        ? setCapRetry({ outputId: row.outputId, platform: row.platform })
+                        : handleRetry(row.outputId, row.platform, "normal")
+                    }
+                    disabled={isRetrying}
+                    className="hidden sm:inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                  >
+                    {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                    {isRetrying ? "Retrying…" : "Retry"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
 
 export default function NewPostPage() {
   return (
@@ -68,6 +264,7 @@ function NewPostPageInner() {
   const [regeneratingPlatform, setRegeneratingPlatform] = useState<string | null>(null);
   const [postingModalOpen, setPostingModalOpen] = useState(false);
   const [postingResults, setPostingResults] = useState<any[] | null>(null);
+  const [failedOutputs, setFailedOutputs] = useState<any[]>([]);
   const [editLoaded, setEditLoaded] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<number>(0);
@@ -119,6 +316,10 @@ function NewPostPageInner() {
           });
           setStep("edit");
           toast.success("Post loaded");
+          // Load any persisted platform failures for this post
+          getFailedOutputs(Number(editId))
+            .then((fo) => setFailedOutputs(fo || []))
+            .catch(() => {});
         })
         .catch(() => toast.error("Failed to load post"));
     }
@@ -803,6 +1004,18 @@ function NewPostPageInner() {
                 </div>
               </div>
             </div>
+            {/* Failed platform errors — shown for both manual Post Now failures
+                and scheduled dispatch failures. Persisted in the outputs table. */}
+            {failedOutputs.length > 0 && post?.id && (
+              <div className="mt-4">
+                <FailedOutputsSection
+                  postId={post.id}
+                  failedOutputs={failedOutputs}
+                  setFailedOutputs={setFailedOutputs}
+                />
+              </div>
+            )}
+
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-3">
               <button onClick={handleSchedule}
                 disabled={!allTiktokValid}
@@ -820,6 +1033,8 @@ function NewPostPageInner() {
                   try {
                     const res = await postNow(post.id);
                     setPostingResults(res.results || []);
+                    // Refresh failed outputs so the persistent section updates
+                    getFailedOutputs(post.id).then((fo) => setFailedOutputs(fo || [])).catch(() => {});
                   } catch (e: any) {
                     setPostingModalOpen(false);
                     toast.error(e?.response?.data?.detail || "Post Now failed");

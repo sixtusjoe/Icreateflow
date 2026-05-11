@@ -269,6 +269,16 @@ class Output(Base):
     tiktok_privacy_level: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tiktok_consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     posted_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # Per-platform error messages from the last posting attempt.
+    # NULL means no error (either not attempted, or succeeded).
+    # Cleared on successful retry; set on failure.
+    tiktok_error:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    youtube_error:   Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instagram_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    facebook_error:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Delayed TikTok retry timestamp — set by retry?mode=delayed.
+    # dispatch_brand_posts_once re-attempts TikTok when this timestamp elapses.
+    tiktok_retry_after: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Setting(Base):
@@ -913,6 +923,26 @@ async def _migrate_per_platform_post_columns(conn) -> None:
     ))
 
 
+async def _migrate_output_error_columns(conn) -> None:
+    """Per-platform posting error text + delayed-retry timestamp on outputs.
+
+    tiktok_error / youtube_error / instagram_error / facebook_error:
+      Persisted by post-now and the brand scheduler whenever a platform
+      upload fails. NULL = no error. Cleared on successful retry.
+
+    tiktok_retry_after:
+      Set by POST /api/outputs/{id}/retry?mode=delayed. The brand
+      scheduler re-attempts TikTok posting once this timestamp elapses.
+    """
+    for col in ("tiktok_error", "youtube_error", "instagram_error", "facebook_error"):
+        await conn.execute(text(
+            f"ALTER TABLE outputs ADD COLUMN IF NOT EXISTS {col} TEXT"
+        ))
+    await conn.execute(text(
+        "ALTER TABLE outputs ADD COLUMN IF NOT EXISTS tiktok_retry_after TIMESTAMP"
+    ))
+
+
 async def _migrate_per_variation_columns(conn) -> None:
     """Add per-variation GDrive + proxy + pause columns and clips.artist_account_id.
 
@@ -1043,6 +1073,7 @@ async def init_db() -> None:
         await _migrate_per_variation_columns(conn)
         await _migrate_user_status_pending(conn)
         await _migrate_email_features(conn)
+        await _migrate_output_error_columns(conn)
     db = await get_db()
     try:
         await _seed(db)

@@ -213,6 +213,14 @@ export const clearArtistFailedPosts = (artistId: number) =>
 export const retryClipPost = (clipPostId: number, mode: "normal" | "draft" = "normal") =>
   api.post(`/api/clip-posts/${clipPostId}/retry?mode=${mode}`).then((r) => r.data);
 
+// --- Brand: failed outputs + retry ---
+export const getFailedOutputs = (postId: number) =>
+  api.get(`/api/posts/${postId}/failed-outputs`).then((r) => r.data);
+export const retryOutput = (outputId: number, mode: "normal" | "draft" | "delayed" = "normal") =>
+  api.post(`/api/outputs/${outputId}/retry?mode=${mode}`).then((r) => r.data);
+export const clearFailedOutputs = (postId: number) =>
+  api.delete(`/api/posts/${postId}/failed-outputs`).then((r) => r.data);
+
 // --- Music ---
 export const getMusicTracks = (platform?: string) =>
   api.get("/api/music", { params: platform ? { platform } : {} }).then((r) => r.data);

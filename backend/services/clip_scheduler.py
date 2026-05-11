@@ -1806,16 +1806,26 @@ async def dispatch_brand_posts_once() -> None:
                             }
                             any_success = True
                             try:
-                                update_kwargs = {f"{name}_posted": True}
+                                update_kwargs = {f"{name}_posted": True, f"{name}_error": None}
                                 if res.get("draft"):
                                     update_kwargs["posted_as_draft"] = True
                                 await db.update_output(database, out["id"], **update_kwargs)
                             except Exception:
                                 pass
                         except PostingError as e:
-                            per_platform[name] = {"status": "failed", "error": str(e)[:300]}
+                            err_msg = str(e)[:300]
+                            per_platform[name] = {"status": "failed", "error": err_msg}
+                            try:
+                                await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
+                            except Exception:
+                                pass
                         except Exception as e:
-                            per_platform[name] = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:250]}"}
+                            err_msg = f"{type(e).__name__}: {str(e)[:250]}"
+                            per_platform[name] = {"status": "failed", "error": err_msg}
+                            try:
+                                await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
+                            except Exception:
+                                pass
 
                     results.append({"account_name": account.get("name"), "platforms": per_platform})
 
@@ -1847,6 +1857,127 @@ async def dispatch_brand_posts_once() -> None:
                     await database.commit()
                 except Exception:
                     pass
+
+        # ── Delayed TikTok retries ────────────────────────────────────────────
+        # Retry outputs whose tiktok_retry_after has elapsed (set by
+        # POST /api/outputs/{id}/retry?mode=delayed from the brand retry UI).
+        # Only fires if the platform hasn't already posted successfully.
+        try:
+            retry_cur = await database.execute(
+                """
+                SELECT o.id AS output_id, o.post_id, o.account_id,
+                       o.slides_dir, o.video_path,
+                       o.tiktok_post_as_draft, o.tiktok_privacy_level,
+                       o.tiktok_allow_comment, o.tiktok_allow_duet,
+                       o.tiktok_allow_stitch,
+                       o.tiktok_disclose_branded_content, o.tiktok_disclose_your_brand,
+                       p.caption
+                FROM outputs o
+                JOIN posts p ON p.id = o.post_id
+                WHERE o.tiktok_retry_after IS NOT NULL
+                  AND o.tiktok_retry_after <= NOW()
+                  AND (o.tiktok_posted IS NULL OR o.tiktok_posted = FALSE)
+                """
+            )
+            delayed_rows = await retry_cur.fetchall()
+            for drow in delayed_rows:
+                drow = dict(drow)
+                out_id = drow["output_id"]
+                # Clear retry_after immediately so we don't re-attempt on next tick
+                await database.execute(
+                    "UPDATE outputs SET tiktok_retry_after = NULL WHERE id = ?",
+                    (out_id,),
+                )
+                await database.commit()
+                try:
+                    account = await db.get_account(database, drow["account_id"])
+                    if not account:
+                        continue
+                    account = dict(account)
+                    token = await _fresh_brand_account_token(database, account, "tiktok")
+                    if not token:
+                        continue
+
+                    cfg = await db.get_site_config(database)
+                    public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
+                    if not public_base:
+                        continue
+
+                    _t = _secrets.token_urlsafe(6)
+                    legacy_path = drow.get("video_path")
+
+                    def _pub_url(p=None):
+                        path = (drow.get(f"{p}_video_path") if p else None) or legacy_path
+                        if not path:
+                            return None
+                        rel = path.lstrip("./")
+                        enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+                        return f"{public_base}/api/files/{enc}?for={account['id']}&t={_t}"
+
+                    slide_urls: list[str] = []
+                    slides_dir = drow.get("slides_dir")
+                    if slides_dir and Path(slides_dir).exists():
+                        _st = _secrets.token_urlsafe(6)
+                        for f in sorted(Path(slides_dir).iterdir()):
+                            if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" not in f.stem:
+                                rel = str(f).lstrip("./")
+                                enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+                                slide_urls.append(
+                                    f"{public_base}/api/files-jpg/{enc}?for={account['id']}&t={_st}"
+                                )
+
+                    if drow.get("tiktok_post_as_draft"):
+                        tt_kwargs: dict = {"post_mode": "INBOX"}
+                    else:
+                        privacy = drow.get("tiktok_privacy_level")
+                        if not privacy:
+                            await db.update_output(database, out_id,
+                                                   tiktok_error="TikTok privacy not set")
+                            await database.commit()
+                            continue
+                        tt_kwargs = {
+                            "post_mode": "DIRECT_POST",
+                            "privacy_level": privacy.upper(),
+                            "disable_comment": not bool(drow.get("tiktok_allow_comment")),
+                            "disable_duet":    not bool(drow.get("tiktok_allow_duet")),
+                            "disable_stitch":  not bool(drow.get("tiktok_allow_stitch")),
+                            "brand_content_toggle": bool(drow.get("tiktok_disclose_branded_content")),
+                            "brand_organic_toggle": bool(drow.get("tiktok_disclose_your_brand")),
+                        }
+
+                    account_proxy = account.get("proxy_url") or None
+                    if slide_urls:
+                        slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
+                                            if k not in ("disable_duet", "disable_stitch")}
+                        res = await _tt.upload_photo_slideshow(
+                            token, slide_urls, str(drow.get("caption") or ""),
+                            proxy_url=account_proxy, **slideshow_kwargs,
+                        )
+                    else:
+                        plat_url = _pub_url(None)
+                        if not plat_url:
+                            continue
+                        res = await _tt.upload_video(
+                            token, plat_url, str(drow.get("caption") or ""),
+                            proxy_url=account_proxy, **tt_kwargs,
+                        )
+                    upd: dict = {"tiktok_posted": True, "tiktok_error": None}
+                    if res.get("draft"):
+                        upd["posted_as_draft"] = True
+                    await db.update_output(database, out_id, **upd)
+                    await database.commit()
+                except Exception:
+                    traceback.print_exc()
+                    try:
+                        err_msg = traceback.format_exc()[-300:]
+                        await db.update_output(database, out_id,
+                                               tiktok_error=err_msg)
+                        await database.commit()
+                    except Exception:
+                        pass
+        except Exception:
+            traceback.print_exc()
+
     finally:
         await database.close()
 

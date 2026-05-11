@@ -3430,19 +3430,32 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                     any_success = True
                     # flag on outputs table; mark drafts so the dashboard
                     # can render a "draft" pill and the view poller skips.
+                    # Also clear any prior error so FailedOutputsSection
+                    # removes this platform from its list.
                     try:
-                        update_kwargs = {f"{name}_posted": True}
+                        update_kwargs = {f"{name}_posted": True, f"{name}_error": None}
                         if res.get("draft"):
                             update_kwargs["posted_as_draft"] = True
                         await db.update_output(database, out["id"], **update_kwargs)
                     except Exception:
                         pass
                 except PostingError as e:
-                    per_platform[name] = {"status": "failed", "error": str(e)[:300]}
+                    err_msg = str(e)[:300]
+                    per_platform[name] = {"status": "failed", "error": err_msg}
+                    try:
+                        await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
+                    except Exception:
+                        pass
                 except Exception as e:
-                    per_platform[name] = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:250]}"}
+                    err_msg = f"{type(e).__name__}: {str(e)[:250]}"
+                    per_platform[name] = {"status": "failed", "error": err_msg}
+                    try:
+                        await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
+                    except Exception:
+                        pass
 
             results.append({
+                "output_id": out["id"],
                 "account_id": out["account_id"],
                 "account_name": account.get("name"),
                 "platforms": per_platform,
@@ -3480,6 +3493,334 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 pass  # Never block the response
 
         return {"ok": any_success, "results": results}
+    finally:
+        await database.close()
+
+
+@app.get("/api/posts/{post_id}/failed-outputs")
+async def get_failed_outputs(post_id: int, user: dict = Depends(get_current_user)):
+    """Return outputs that have at least one platform posting error.
+
+    Used by FailedOutputsSection on the Generate tab to show persistent
+    per-platform failures for both manual Post Now and scheduled dispatch.
+    """
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        outputs = await db.get_outputs(database, post_id)
+        result = []
+        for out in outputs:
+            out = dict(out)
+            platforms: dict = {}
+            for plat in ("tiktok", "youtube", "instagram", "facebook"):
+                err = out.get(f"{plat}_error")
+                if err and not out.get(f"{plat}_posted"):
+                    platforms[plat] = {
+                        "error": err,
+                        "friendly_error": _friendly_error(err),
+                    }
+            if not platforms:
+                continue
+            account = await db.get_account(database, out["account_id"])
+            result.append({
+                "output_id": out["id"],
+                "account_id": out["account_id"],
+                "account_name": dict(account).get("name") if account else f"Account {out['account_id']}",
+                "platforms": platforms,
+            })
+        return result
+    finally:
+        await database.close()
+
+
+@app.post("/api/outputs/{output_id}/retry")
+async def retry_output(
+    output_id: int,
+    mode: str = Query("normal", description="normal | draft | delayed"),
+    user: dict = Depends(get_current_user),
+):
+    """Retry failed platforms for a brand post output.
+
+    mode=normal  — immediately re-attempt all platforms where an error is stored
+                   and the platform hasn't successfully posted yet.
+    mode=draft   — TikTok only, posts immediately using INBOX mode (user publishes
+                   from the TikTok app). Clears tiktok_error on success.
+    mode=delayed — TikTok only, stores tiktok_retry_after = NOW() + 6 hours so the
+                   brand scheduler re-attempts TikTok without re-scheduling the
+                   whole post. Clears tiktok_error immediately (will be re-set if
+                   the delayed attempt also fails).
+    """
+    from services.posting import tiktok as _tt, youtube as _yt, instagram as _ig, facebook as _fb
+    from services.posting import PostingError
+    from urllib.parse import quote
+
+    database = await db.get_db()
+    try:
+        # Ownership check: output → post → brand → user
+        cur = await database.execute(
+            """
+            SELECT o.*, p.caption, p.brand_id, p.status AS post_status
+            FROM outputs o
+            JOIN posts p ON p.id = o.post_id
+            WHERE o.id = ?
+            """,
+            (output_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Output not found")
+        out = dict(row)
+        await verify_brand_ownership(out["brand_id"], user)
+
+        # Check there's something to retry
+        has_error = any(out.get(f"{p}_error") for p in ("tiktok", "youtube", "instagram", "facebook"))
+        if not has_error:
+            raise HTTPException(400, "No failed platforms on this output")
+
+        account = await db.get_account(database, out["account_id"])
+        if not account:
+            raise HTTPException(404, "Account not found")
+        account = dict(account)
+
+        cfg = await db.get_site_config(database)
+        public_base = (cfg.get("oauth_redirect_base") or "").rstrip("/")
+        if not public_base:
+            raise HTTPException(400, "oauth_redirect_base not configured")
+
+        # Handle delayed mode — just schedule and return
+        if mode == "delayed":
+            await database.execute(
+                "UPDATE outputs SET tiktok_retry_after = NOW() + INTERVAL '6 hours', "
+                "tiktok_error = NULL WHERE id = ?",
+                (output_id,),
+            )
+            await database.commit()
+            return {"ok": True, "mode": "delayed", "message": "TikTok retry scheduled in 6 hours"}
+
+        # Build public video URLs
+        _video_t = secrets.token_urlsafe(6)
+        legacy_video_path = out.get("video_path")
+
+        def _public_video_url(p=None):
+            path = (out.get(f"{p}_video_path") if p else None) or legacy_video_path
+            if not path:
+                return None
+            rel = path.lstrip("./")
+            enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+            return f"{public_base}/api/files/{enc}?for={account['id']}&t={_video_t}"
+
+        # Build TikTok slide URLs
+        slide_urls: list[str] = []
+        slides_dir = out.get("slides_dir")
+        if slides_dir and Path(slides_dir).exists():
+            _t = secrets.token_urlsafe(6)
+            for f in sorted(Path(slides_dir).iterdir()):
+                if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and "_9x16" not in f.stem:
+                    rel = str(f).lstrip("./")
+                    enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+                    slide_urls.append(
+                        f"{public_base}/api/files-jpg/{enc}?for={account['id']}&t={_t}"
+                    )
+
+        # Refresh tokens
+        async def _fresh_token(platform_name: str):
+            token_local = account.get(f"{platform_name}_token")
+            if not token_local:
+                return None
+            exp = account.get(f"{platform_name}_expires_at")
+            refresh = account.get(f"{platform_name}_refresh_token")
+            needs_refresh = False
+            if exp:
+                try:
+                    exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+                    if exp_dt <= datetime.now(timezone.utc) + timedelta(minutes=2):
+                        needs_refresh = True
+                except Exception:
+                    pass
+            if not needs_refresh or not refresh:
+                return token_local
+            if platform_name == "facebook":
+                provider = "meta"
+            elif platform_name == "instagram":
+                provider = "meta" if account.get("facebook_token") else "instagram"
+            else:
+                provider = platform_name
+            cid = cfg.get(f"oauth_{provider}_client_id", "")
+            csec = cfg.get(f"oauth_{provider}_client_secret", "")
+            if not cid or not csec:
+                return token_local
+            try:
+                refreshed = await oauth_svc.refresh_access_token(
+                    provider, refresh, cid, csec,
+                    proxy_url=account.get("proxy_url") or None,
+                )
+            except Exception:
+                return token_local
+            new_token = refreshed.get("access_token")
+            if not new_token:
+                return token_local
+            updates_tok: dict = {f"{platform_name}_token": new_token}
+            if refreshed.get("refresh_token"):
+                updates_tok[f"{platform_name}_refresh_token"] = refreshed["refresh_token"]
+            if refreshed.get("expires_in"):
+                new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(refreshed["expires_in"]))
+                updates_tok[f"{platform_name}_expires_at"] = new_exp.isoformat()
+            try:
+                await db.update_account(database, account["id"], **updates_tok)
+            except Exception:
+                pass
+            return new_token
+
+        caption = out.get("caption") or ""
+        account_proxy = account.get("proxy_url") or None
+        per_platform: dict = {}
+        any_success = False
+
+        adapters = {"tiktok": _tt, "youtube": _yt, "instagram": _ig, "facebook": _fb}
+
+        for plat in ("tiktok", "youtube", "instagram", "facebook"):
+            # Only retry platforms that have errors and haven't posted
+            if not out.get(f"{plat}_error") or out.get(f"{plat}_posted"):
+                continue
+            # draft/delayed modes only apply to TikTok
+            if mode in ("draft",) and plat != "tiktok":
+                continue
+
+            adapter = adapters[plat]
+            token = await _fresh_token(plat)
+            if not token:
+                per_platform[plat] = {"status": "skipped", "reason": "not connected"}
+                continue
+
+            try:
+                if plat == "tiktok":
+                    if mode == "draft" or out.get("tiktok_post_as_draft"):
+                        tt_kwargs: dict = {"post_mode": "INBOX"}
+                    else:
+                        privacy = out.get("tiktok_privacy_level")
+                        if not privacy:
+                            per_platform[plat] = {"status": "failed", "error": "TikTok privacy not set"}
+                            continue
+                        tt_kwargs = {
+                            "post_mode": "DIRECT_POST",
+                            "privacy_level": privacy.upper(),
+                            "disable_comment": not bool(out.get("tiktok_allow_comment")),
+                            "disable_duet":    not bool(out.get("tiktok_allow_duet")),
+                            "disable_stitch":  not bool(out.get("tiktok_allow_stitch")),
+                            "brand_content_toggle": bool(out.get("tiktok_disclose_branded_content")),
+                            "brand_organic_toggle": bool(out.get("tiktok_disclose_your_brand")),
+                        }
+                    if slide_urls:
+                        slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
+                                            if k not in ("disable_duet", "disable_stitch")}
+                        res = await _tt.upload_photo_slideshow(
+                            token, slide_urls, caption,
+                            proxy_url=account_proxy, **slideshow_kwargs,
+                        )
+                    else:
+                        plat_url = _public_video_url(None)
+                        if not plat_url:
+                            per_platform[plat] = {"status": "skipped", "reason": "no video"}
+                            continue
+                        res = await adapter.upload_video(
+                            token, plat_url, caption,
+                            proxy_url=account_proxy, **tt_kwargs,
+                        )
+                else:
+                    plat_url = _public_video_url(plat)
+                    if not plat_url:
+                        per_platform[plat] = {"status": "skipped", "reason": "no video"}
+                        continue
+                    plat_kwargs: dict = {}
+                    if plat == "facebook" and account.get("facebook_user_id"):
+                        plat_kwargs["page_id"] = account["facebook_user_id"]
+                    if plat == "instagram" and account.get("instagram_user_id"):
+                        plat_kwargs["ig_user_id"] = account["instagram_user_id"]
+                    res = await adapter.upload_video(
+                        token, plat_url, caption,
+                        proxy_url=account_proxy, **plat_kwargs,
+                    )
+
+                per_platform[plat] = {
+                    "status": "posted",
+                    "platform_post_id": res.get("platform_post_id"),
+                    **({"draft": True} if res.get("draft") else {}),
+                }
+                any_success = True
+                try:
+                    upd: dict = {f"{plat}_posted": True, f"{plat}_error": None}
+                    if res.get("draft"):
+                        upd["posted_as_draft"] = True
+                    await db.update_output(database, output_id, **upd)
+                except Exception:
+                    pass
+
+            except PostingError as e:
+                err_msg = str(e)[:300]
+                per_platform[plat] = {"status": "failed", "error": err_msg}
+                try:
+                    await db.update_output(database, output_id, **{f"{plat}_error": err_msg})
+                except Exception:
+                    pass
+            except Exception as e:
+                err_msg = f"{type(e).__name__}: {str(e)[:250]}"
+                per_platform[plat] = {"status": "failed", "error": err_msg}
+                try:
+                    await db.update_output(database, output_id, **{f"{plat}_error": err_msg})
+                except Exception:
+                    pass
+
+        # If any platform succeeded and the post was 'failed', promote it
+        if any_success and out.get("post_status") == "failed":
+            try:
+                await database.execute(
+                    "UPDATE posts SET status = 'posted' WHERE id = ? AND status = 'failed'",
+                    (out["post_id"],),
+                )
+                await database.commit()
+            except Exception:
+                pass
+
+        return {
+            "ok": any_success,
+            "mode": mode,
+            "output_id": output_id,
+            "platforms": per_platform,
+        }
+    finally:
+        await database.close()
+
+
+@app.delete("/api/posts/{post_id}/failed-outputs")
+async def clear_failed_outputs(post_id: int, user: dict = Depends(get_current_user)):
+    """Clear all platform error messages on this post's outputs.
+
+    Does NOT delete the outputs — just NULLs every *_error column so
+    they disappear from FailedOutputsSection. Ownership-checked.
+    """
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        await database.execute(
+            """
+            UPDATE outputs
+            SET tiktok_error = NULL, youtube_error = NULL,
+                instagram_error = NULL, facebook_error = NULL,
+                tiktok_retry_after = NULL
+            WHERE post_id = ?
+            """,
+            (post_id,),
+        )
+        await database.commit()
+        return {"ok": True}
     finally:
         await database.close()
 
