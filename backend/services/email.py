@@ -233,7 +233,7 @@ async def send_post_result_email(
     """
     cfg = await _get_smtp_cfg()
     site_name = cfg.get("site_name", "iCreateFlow") or "iCreateFlow"
-    failed = [r for r in results if r.get("status") != "posted"]
+    failed = [r for r in results if r.get("status") not in ("posted", "skipped")]
     failed_count = len(failed)
 
     failed_block = ""

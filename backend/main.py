@@ -3516,6 +3516,8 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                 flat_results: list[dict] = []
                 for r in results:
                     for plat, pd in r.get("platforms", {}).items():
+                        if pd.get("status") == "skipped":
+                            continue  # don't include not-connected platforms in email
                         flat_results.append({
                             "platform": plat,
                             "variation_name": r.get("account_name") or plat,
