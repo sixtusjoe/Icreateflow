@@ -2,6 +2,7 @@
 Full pipeline orchestrator.
 Coordinates: overlay generation → video creation for all accounts.
 """
+import asyncio
 from pathlib import Path
 from PIL import Image
 from . import overlay, video
@@ -88,14 +89,20 @@ async def render_account_slides(
             pass
 
         if is_master:
-            img = Image.open(source_image).convert("RGB")
-            img_3x4 = overlay.resize_to_3x4(img)
-            img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-            img_9x16.save(str(out_9x16), "PNG")
+            _src = source_image
+            _out = str(out_9x16)
+            _bg = bg_color
+            def _render_master():
+                _img = Image.open(_src).convert("RGB")
+                _img_3x4 = overlay.resize_to_3x4(_img)
+                _img_9x16 = overlay.convert_3x4_to_9x16(_img_3x4, _bg)
+                _img_9x16.save(_out, "PNG")
+            await asyncio.to_thread(_render_master)
             slide_9x16_paths.append(str(out_9x16))
         elif has_replacement:
             output_path = str(slides_dir / f"slide_{slide_num:02d}.png")
-            result = overlay.apply_overlay(
+            result = await asyncio.to_thread(
+                overlay.apply_overlay,
                 image_path=source_image,
                 slide_type=slide["type"],
                 output_path=output_path,
@@ -106,12 +113,17 @@ async def render_account_slides(
             )
             slide_9x16_paths.append(result["slide_9x16"])
         else:
-            img = Image.open(source_image).convert("RGB")
-            img_3x4 = overlay.resize_to_3x4(img)
-            out_3x4 = slides_dir / f"slide_{slide_num:02d}.png"
-            img_3x4.save(str(out_3x4), "PNG")
-            img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-            img_9x16.save(str(out_9x16), "PNG")
+            _src = source_image
+            _out_3x4 = str(slides_dir / f"slide_{slide_num:02d}.png")
+            _out_9x16 = str(out_9x16)
+            _bg = bg_color
+            def _render_nonmaster():
+                _img = Image.open(_src).convert("RGB")
+                _img_3x4 = overlay.resize_to_3x4(_img)
+                _img_3x4.save(_out_3x4, "PNG")
+                _img_9x16 = overlay.convert_3x4_to_9x16(_img_3x4, _bg)
+                _img_9x16.save(_out_9x16, "PNG")
+            await asyncio.to_thread(_render_nonmaster)
             slide_9x16_paths.append(str(out_9x16))
 
     return slides_dir, slide_9x16_paths
@@ -201,7 +213,7 @@ async def generate_post(post_id: int, database) -> dict:
             if len(slide_9x16_paths) >= 2:
                 video_path = str(out_dir / "video.mp4")
                 try:
-                    video.build_video(
+                    await video.build_video(
                         slide_paths=slide_9x16_paths,
                         output_path=video_path,
                         music_path=music_path,
@@ -213,7 +225,7 @@ async def generate_post(post_id: int, database) -> dict:
                 for plat in ("youtube", "instagram", "facebook"):
                     out_p = str(out_dir / f"video_{plat}.mp4")
                     try:
-                        video.build_platform_video(
+                        await video.build_platform_video(
                             slide_paths=slide_9x16_paths,
                             output_path=out_p,
                             platform=plat,

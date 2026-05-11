@@ -3,6 +3,7 @@ FFmpeg video builder.
 Creates 9:16 videos with left-slide transitions from slide images.
 Optionally mixes in background music.
 """
+import asyncio
 import subprocess
 import shutil
 from pathlib import Path
@@ -12,9 +13,9 @@ def check_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def build_video(slide_paths: list[str], output_path: str,
-                slide_duration: float = 3.0, transition_duration: float = 0.5,
-                fps: int = 30, music_path: str = None) -> str:
+async def build_video(slide_paths: list[str], output_path: str,
+                      slide_duration: float = 3.0, transition_duration: float = 0.5,
+                      fps: int = 30, music_path: str = None) -> str:
     """
     Build a 9:16 video with left-slide transitions from a list of slide images.
 
@@ -99,10 +100,14 @@ def build_video(slide_paths: list[str], output_path: str,
         str(output_path)
     ])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed: {result.stderr[-500:]}")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed: {stderr.decode()[-500:]}")
 
     return output_path
 
@@ -124,7 +129,7 @@ PLATFORM_PROFILES = {
 }
 
 
-def build_platform_video(
+async def build_platform_video(
     slide_paths: list[str],
     output_path: str,
     platform: str,
@@ -154,7 +159,7 @@ def build_platform_video(
         # Solve for dwell: (n*d) - (n-1)*t = cap  ->  d = (cap + (n-1)*t) / n
         dwell = max(1.0, (cap + (n - 1) * transition_duration) / n)
 
-    return build_video(
+    return await build_video(
         slide_paths=slide_paths,
         output_path=output_path,
         slide_duration=dwell,

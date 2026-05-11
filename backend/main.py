@@ -2809,31 +2809,41 @@ async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dic
                     "scale": data.scale_cta if data.scale_cta is not None else 1.0,
                 })
 
-        # Use overlay engine directly with custom text blocks
+        # Use overlay engine directly with custom text blocks.
+        # Pillow is CPU-bound — run in a thread so the event loop stays free
+        # to handle other requests while this slide renders.
         from PIL import Image
         font_weight = data.font_weight or overlay.DEFAULT_WEIGHT
         text_style = data.text_style or "stroke"
 
-        img = Image.open(source_image).convert("RGB")
-        img_3x4 = overlay.resize_to_3x4(img)
+        _source = source_image
+        _output_path = output_path
+        _bg = bg_color
+        _custom_texts = custom_texts
+        _font_weight = font_weight
+        _text_style = text_style
 
-        if custom_texts:
-            img_3x4 = overlay._apply_text_block(
-                img_3x4, custom_texts,
-                weight=font_weight, text_style=text_style,
-            )
+        def _render_slide():
+            _img = Image.open(_source).convert("RGB")
+            _img_3x4 = overlay.resize_to_3x4(_img)
+            if _custom_texts:
+                _img_3x4 = overlay._apply_text_block(
+                    _img_3x4, _custom_texts,
+                    weight=_font_weight, text_style=_text_style,
+                )
+            _out_3x4 = Path(_output_path)
+            _out_3x4.parent.mkdir(parents=True, exist_ok=True)
+            _img_3x4.save(str(_out_3x4), "PNG")
+            _img_9x16 = overlay.convert_3x4_to_9x16(_img_3x4, _bg)
+            _out_9x16 = _out_3x4.parent / f"{_out_3x4.stem}_9x16{_out_3x4.suffix}"
+            _img_9x16.save(str(_out_9x16), "PNG")
+            return str(_out_3x4), str(_out_9x16)
 
-        output_3x4 = Path(output_path)
-        output_3x4.parent.mkdir(parents=True, exist_ok=True)
-        img_3x4.save(str(output_3x4), "PNG")
-
-        img_9x16 = overlay.convert_3x4_to_9x16(img_3x4, bg_color)
-        output_9x16 = output_3x4.parent / f"{output_3x4.stem}_9x16{output_3x4.suffix}"
-        img_9x16.save(str(output_9x16), "PNG")
+        slide_3x4_path, slide_9x16_path = await asyncio.to_thread(_render_slide)
 
         return {
-            "slide_3x4": str(output_3x4),
-            "slide_9x16": str(output_9x16),
+            "slide_3x4": slide_3x4_path,
+            "slide_9x16": slide_9x16_path,
             "slide_number": data.slide_number,
             "account_id": data.account_id,
         }
@@ -2940,14 +2950,14 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
         video_path = str(out_dir / filename)
 
         if data.platform:
-            video.build_platform_video(
+            await video.build_platform_video(
                 slide_paths=slide_paths,
                 output_path=video_path,
                 platform=data.platform,
                 music_path=music_path,
             )
         else:
-            video.build_video(
+            await video.build_video(
                 slide_paths=slide_paths,
                 output_path=video_path,
                 music_path=music_path,
@@ -3856,23 +3866,27 @@ async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, a
         quality, subsampling, optimize, progressive = 92, 2, True, False
         make, model, software = None, None, None
 
-    try:
-        img = Image.open(full_path)
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
+    # Pillow open + encode is CPU-bound. Run in a thread so the event loop
+    # stays free for other requests while TikTok pulls the JPEG.
+    _full_path = full_path
+    _for = for_
+    _make, _model, _software = make, model, software
+    _quality, _subsampling, _optimize, _progressive = quality, subsampling, optimize, progressive
 
-        # Build EXIF when serving for an account. DateTimeOriginal is
-        # per-request (last 15min..6h) — looks like a recently-shot phone
-        # photo and breaks any "identical bytes across pulls" cluster.
-        exif_bytes = b""
-        if for_ is not None and make and model:
+    def _encode_jpeg():
+        _img = Image.open(_full_path)
+        if _img.mode not in ("RGB", "L"):
+            _img = _img.convert("RGB")
+
+        _exif_bytes = b""
+        if _for is not None and _make and _model:
             from random import randint
             shot = datetime.now(timezone.utc) - timedelta(seconds=randint(15 * 60, 6 * 3600))
             shot_str = shot.strftime("%Y:%m:%d %H:%M:%S").encode("ascii")
             zeroth = {
-                piexif.ImageIFD.Make:     make.encode("ascii"),
-                piexif.ImageIFD.Model:    model.encode("ascii"),
-                piexif.ImageIFD.Software: software.encode("ascii"),
+                piexif.ImageIFD.Make:     _make.encode("ascii"),
+                piexif.ImageIFD.Model:    _model.encode("ascii"),
+                piexif.ImageIFD.Software: _software.encode("ascii"),
                 piexif.ImageIFD.DateTime: shot_str,
                 piexif.ImageIFD.Orientation: 1,
             }
@@ -3887,22 +3901,25 @@ async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, a
                 "thumbnail": None,
             }
             try:
-                exif_bytes = piexif.dump(exif_dict)
+                _exif_bytes = piexif.dump(exif_dict)
             except Exception:
-                exif_bytes = b""
+                _exif_bytes = b""
 
-        buf = BytesIO()
-        save_kwargs = {
+        _buf = BytesIO()
+        _save_kwargs = {
             "format": "JPEG",
-            "quality": quality,
-            "subsampling": subsampling,
-            "optimize": optimize,
-            "progressive": progressive,
+            "quality": _quality,
+            "subsampling": _subsampling,
+            "optimize": _optimize,
+            "progressive": _progressive,
         }
-        if exif_bytes:
-            save_kwargs["exif"] = exif_bytes
-        img.save(buf, **save_kwargs)
-        buf.seek(0)
+        if _exif_bytes:
+            _save_kwargs["exif"] = _exif_bytes
+        _img.save(_buf, **_save_kwargs)
+        return _buf.getvalue()
+
+    try:
+        jpeg_bytes = await asyncio.to_thread(_encode_jpeg)
     except Exception as e:
         raise HTTPException(500, f"Could not convert image: {e}")
 
@@ -3917,7 +3934,7 @@ async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, a
         headers["Content-Disposition"] = f'inline; filename="IMG_{fname_seed}.JPG"'
 
     return Response(
-        content=buf.getvalue(),
+        content=jpeg_bytes,
         media_type="image/jpeg",
         headers=headers,
     )
