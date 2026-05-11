@@ -2377,6 +2377,10 @@ async def discover_external_tiktok_posts() -> None:
 
                     # Load all platform_post_ids already tracked for this
                     # variation so we can skip IDs we already know about.
+                    # Include soft-deleted rows so we never re-insert a video
+                    # that was cleaned up by the race-condition deduplicator.
+                    # Also strip any whitespace so large-integer IDs returned
+                    # by TikTok compare correctly against stored strings.
                     existing_cur = await database.execute(
                         """
                         SELECT platform_post_id FROM clip_posts
@@ -2386,7 +2390,8 @@ async def discover_external_tiktok_posts() -> None:
                         (var_id,),
                     )
                     known_ids = {
-                        r["platform_post_id"] for r in await existing_cur.fetchall()
+                        str(r["platform_post_id"]).strip()
+                        for r in await existing_cur.fetchall()
                     }
 
                     inserted = 0
@@ -2406,21 +2411,30 @@ async def discover_external_tiktok_posts() -> None:
 
                         initial_views = int(video.get("view_count") or 0)
 
+                        # Double-check at INSERT time with a WHERE NOT EXISTS so
+                        # a concurrent discovery run or a system post that finished
+                        # between our known_ids load and now can't cause a dupe.
                         await database.execute(
                             """
                             INSERT INTO clip_posts
                                 (clip_id, artist_id, artist_account_id, platform,
                                  status, platform_post_id, posted_at,
                                  view_count, view_count_updated_at)
-                            VALUES (NULL, ?, ?, 'tiktok',
-                                    'posted', ?, ?,
-                                    ?, ?)
-                            ON CONFLICT DO NOTHING
+                            SELECT NULL, ?, ?, 'tiktok',
+                                   'posted', ?, ?,
+                                   ?, ?
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM clip_posts
+                                WHERE artist_account_id = ?
+                                  AND platform = 'tiktok'
+                                  AND platform_post_id = ?
+                            )
                             """,
                             (
                                 artist_id, var_id,
                                 vid_id, posted_at,
                                 initial_views, now_utc.replace(tzinfo=None),
+                                var_id, vid_id,
                             ),
                         )
                         known_ids.add(vid_id)
