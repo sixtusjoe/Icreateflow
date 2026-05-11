@@ -28,7 +28,7 @@ const PROGRESS_MESSAGES = [
 interface PostResult {
   output_id?: number
   account_name: string
-  platforms: Record<string, { status: string; error?: string }>
+  platforms: Record<string, { status: string; error?: string; friendly_error?: string; draft?: boolean }>
 }
 
 interface PostingProgressModalProps {
@@ -212,8 +212,11 @@ export function PostingProgressModal({
                             <div className="flex flex-1 flex-wrap items-start justify-between gap-1.5">
                               <span>
                                 <span className="font-medium">{PLATFORM_LABELS_FULL[plat] ?? plat}</span>
-                                {v.status === "failed" && v.error && (
-                                  <span className="ml-1 text-destructive/80">— {v.error.slice(0, 100)}</span>
+                                {v.status === "posted" && v.draft && (
+                                  <span className="ml-1 text-amber-500">— posted to drafts</span>
+                                )}
+                                {v.status === "failed" && (v.friendly_error || v.error) && (
+                                  <span className="ml-1 text-destructive/80">— {(v.friendly_error || v.error || "").slice(0, 120)}</span>
                                 )}
                                 {v.status === "skipped" && (
                                   <span className="ml-1 text-muted-foreground">— skipped (not connected)</span>

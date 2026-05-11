@@ -3451,14 +3451,45 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                         pass
                 except PostingError as e:
                     err_msg = str(e)[:300]
-                    per_platform[name] = {"status": "failed", "error": err_msg}
+                    # Auto-fallback to INBOX when TikTok rejects DIRECT_POST for unaudited apps
+                    if name == "tiktok" and "unaudited_client_can_only_post_to_private_accounts" in err_msg.lower():
+                        try:
+                            if slide_urls:
+                                res = await _tt.upload_photo_slideshow(
+                                    token, slide_urls, caption,
+                                    proxy_url=account_proxy, post_mode="INBOX",
+                                )
+                            else:
+                                _pu = _public_video_url(None)
+                                if not _pu:
+                                    raise RuntimeError("no_video")
+                                res = await _tt.upload_video(
+                                    token, _pu, caption,
+                                    proxy_url=account_proxy, post_mode="INBOX",
+                                )
+                            per_platform[name] = {
+                                "status": "posted", "draft": True,
+                                "platform_post_id": res.get("platform_post_id"),
+                            }
+                            any_success = True
+                            try:
+                                await db.update_output(database, out["id"], **{
+                                    f"{name}_posted": True, f"{name}_error": None,
+                                    "posted_as_draft": True,
+                                })
+                            except Exception:
+                                pass
+                            continue
+                        except Exception:
+                            pass  # fall through to record original error
+                    per_platform[name] = {"status": "failed", "error": err_msg, "friendly_error": _friendly_error(err_msg)}
                     try:
                         await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
                     except Exception:
                         pass
                 except Exception as e:
                     err_msg = f"{type(e).__name__}: {str(e)[:250]}"
-                    per_platform[name] = {"status": "failed", "error": err_msg}
+                    per_platform[name] = {"status": "failed", "error": err_msg, "friendly_error": _friendly_error(err_msg)}
                     try:
                         await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
                     except Exception:
@@ -3771,14 +3802,45 @@ async def retry_output(
 
             except PostingError as e:
                 err_msg = str(e)[:300]
-                per_platform[plat] = {"status": "failed", "error": err_msg}
+                # Auto-fallback to INBOX when TikTok rejects DIRECT_POST for unaudited apps
+                if plat == "tiktok" and "unaudited_client_can_only_post_to_private_accounts" in err_msg.lower():
+                    try:
+                        if slide_urls:
+                            res = await _tt.upload_photo_slideshow(
+                                token, slide_urls, caption,
+                                proxy_url=account_proxy, post_mode="INBOX",
+                            )
+                        else:
+                            _pu = _public_video_url(None)
+                            if not _pu:
+                                raise RuntimeError("no_video")
+                            res = await _tt.upload_video(
+                                token, _pu, caption,
+                                proxy_url=account_proxy, post_mode="INBOX",
+                            )
+                        per_platform[plat] = {
+                            "status": "posted", "draft": True,
+                            "platform_post_id": res.get("platform_post_id"),
+                        }
+                        any_success = True
+                        try:
+                            await db.update_output(database, output_id, **{
+                                f"{plat}_posted": True, f"{plat}_error": None,
+                                "posted_as_draft": True,
+                            })
+                        except Exception:
+                            pass
+                        continue
+                    except Exception:
+                        pass  # fall through to record original error
+                per_platform[plat] = {"status": "failed", "error": err_msg, "friendly_error": _friendly_error(err_msg)}
                 try:
                     await db.update_output(database, output_id, **{f"{plat}_error": err_msg})
                 except Exception:
                     pass
             except Exception as e:
                 err_msg = f"{type(e).__name__}: {str(e)[:250]}"
-                per_platform[plat] = {"status": "failed", "error": err_msg}
+                per_platform[plat] = {"status": "failed", "error": err_msg, "friendly_error": _friendly_error(err_msg)}
                 try:
                     await db.update_output(database, output_id, **{f"{plat}_error": err_msg})
                 except Exception:

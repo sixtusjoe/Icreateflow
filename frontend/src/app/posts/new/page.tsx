@@ -1543,7 +1543,14 @@ function NewPostPageInner() {
       <PostingProgressModal
         open={postingModalOpen}
         results={postingResults}
-        onClose={() => { setPostingModalOpen(false); setPostingResults(null); }}
+        onClose={() => {
+          setPostingModalOpen(false);
+          setPostingResults(null);
+          // Re-fetch on close so FailedOutputsSection always reflects DB state
+          if (post?.id) {
+            getFailedOutputs(post.id).then((fo) => setFailedOutputs(fo || [])).catch(() => {});
+          }
+        }}
       />
 
       {/* Image lightbox */}
