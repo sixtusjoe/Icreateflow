@@ -34,7 +34,7 @@ async def render_account_slides(
         / brand["slug"]
         / post["date"]
         / account["name"]
-        / f"post_{post['post_number']}"
+        / f"post_{post['id']}"
     )
     slides_dir = out_dir / "slides"
     slides_dir.mkdir(parents=True, exist_ok=True)

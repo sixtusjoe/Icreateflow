@@ -240,7 +240,7 @@ function NewPostPageInner() {
   const [importMode, setImportMode] = useState<"tiktok" | "upload">("upload");
   const [selectedBrand, setSelectedBrand] = useState<number | null>(null);
   const [tiktokUrl, setTiktokUrl] = useState("");
-  const [postNumber, setPostNumber] = useState(1);
+  const [postNumber] = useState(1); // kept for compatibility; server auto-assigns now
   const [importing, setImporting] = useState(false);
   const [manualFiles, setManualFiles] = useState<File[]>([]);
   const [manualCaption, setManualCaption] = useState("");
@@ -306,7 +306,6 @@ function NewPostPageInner() {
         .then((data) => {
           setPost(data);
           setSelectedBrand(data.brand_id);
-          setPostNumber(data.post_number || 1);
           if (data.scheduled_time) setScheduleTime(data.scheduled_time);
           if (data.music_track_id) setSelectedMusic(data.music_track_id);
           setPlatMusic({
@@ -314,7 +313,12 @@ function NewPostPageInner() {
             instagram: data.instagram_music_track_id || null,
             facebook: data.facebook_music_track_id || null,
           });
-          setStep("edit");
+          // Auto-jump to Generate tab if content is already generated
+          if (data.outputs && data.outputs.length > 0) {
+            setStep("generate");
+          } else {
+            setStep("edit");
+          }
           toast.success("Post loaded");
           // Load any persisted platform failures for this post
           getFailedOutputs(Number(editId))
@@ -332,7 +336,7 @@ function NewPostPageInner() {
     if (!tiktokUrl) return toast.error("Paste a TikTok URL");
     setImporting(true);
     try {
-      const result = await importTikTokPost({ tiktok_url: tiktokUrl, brand_id: selectedBrand, post_number: postNumber });
+      const result = await importTikTokPost({ tiktok_url: tiktokUrl, brand_id: selectedBrand });
       setPost(result);
       setStep("edit");
       toast.success(`Imported ${result.slides?.length || 0} slides`);
@@ -346,7 +350,7 @@ function NewPostPageInner() {
     if (manualFiles.length === 0) return toast.error("Upload at least one slide image");
     setImporting(true);
     try {
-      const result = await uploadSlidesManually(selectedBrand, postNumber, manualCaption, manualFiles);
+      const result = await uploadSlidesManually(selectedBrand, manualCaption, manualFiles);
       setPost(result);
       setStep("edit");
       toast.success(`Uploaded ${result.slides?.length || 0} slides`);
@@ -639,16 +643,6 @@ function NewPostPageInner() {
                 className={inputClass} defaultValue="">
                 <option value="" disabled>Select a brand...</option>
                 {brands.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium">Post Number (1-3 for the day)</label>
-              <select defaultValue="1" onChange={(e) => e.target.value && setPostNumber(Number(e.target.value))}
-                className="w-32 rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none focus:border-foreground">
-                <option value="1">Post 1</option>
-                <option value="2">Post 2</option>
-                <option value="3">Post 3</option>
               </select>
             </div>
 

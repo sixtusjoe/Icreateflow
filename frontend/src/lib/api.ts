@@ -122,19 +122,16 @@ export const deletePost = (id: number) =>
 export const importTikTokPost = (data: {
   tiktok_url: string;
   brand_id: number;
-  post_number?: number;
   caption?: string;
 }) => api.post("/api/posts/import", data).then((r) => r.data);
 
 export const uploadSlidesManually = (
   brandId: number,
-  postNumber: number,
   caption: string,
   files: File[]
 ) => {
   const form = new FormData();
   form.append("brand_id", String(brandId));
-  form.append("post_number", String(postNumber));
   form.append("caption", caption);
   files.forEach((f) => form.append("files", f));
   return api.post("/api/posts/upload-slides", form).then((r) => r.data);

@@ -348,7 +348,6 @@ class AccountUpdate(BaseModel):
 class PostImport(BaseModel):
     tiktok_url: str
     brand_id: int
-    post_number: int = 1
     caption: Optional[str] = None
 
 class SlideUpdate(BaseModel):
@@ -2388,7 +2387,7 @@ async def delete_post(post_id: int, user: dict = Depends(get_current_user)):
                 shutil.rmtree(upload_dir, ignore_errors=True)
             output_dir = Path("output") / brand["slug"]
             if output_dir.exists():
-                for d in output_dir.rglob(f"post_{post['post_number']}"):
+                for d in output_dir.rglob(f"post_{post['id']}"):
                     shutil.rmtree(d, ignore_errors=True)
 
         return {"ok": True}
@@ -2420,10 +2419,16 @@ async def import_tiktok_post(data: PostImport, user: dict = Depends(get_current_
                 "Check the link (must be a photo carousel post) or upload slides manually.",
             )
 
+        today = datetime.now().strftime("%Y-%m-%d")
+        cur_num = await database.execute(
+            "SELECT COALESCE(MAX(post_number), 0) + 1 AS next_num FROM posts WHERE brand_id = ? AND date = ?",
+            (data.brand_id, today),
+        )
+        next_num = (await cur_num.fetchone())["next_num"]
         post_id = await db.create_post(
             database, data.brand_id,
-            datetime.now().strftime("%Y-%m-%d"),
-            data.post_number,
+            today,
+            next_num,
             tiktok_url=data.tiktok_url,
             caption=data.caption or "",
         )
@@ -2482,7 +2487,6 @@ async def import_tiktok_post(data: PostImport, user: dict = Depends(get_current_
 @app.post("/api/posts/upload-slides")
 async def upload_slides_manually(
     brand_id: int = Form(...),
-    post_number: int = Form(1),
     caption: str = Form(""),
     files: list[UploadFile] = File(...),
     user: dict = Depends(get_current_user),
@@ -2494,10 +2498,16 @@ async def upload_slides_manually(
         if not brand:
             raise HTTPException(404, "Brand not found")
 
+        today = datetime.now().strftime("%Y-%m-%d")
+        cur_num = await database.execute(
+            "SELECT COALESCE(MAX(post_number), 0) + 1 AS next_num FROM posts WHERE brand_id = ? AND date = ?",
+            (brand_id, today),
+        )
+        next_num = (await cur_num.fetchone())["next_num"]
         post_id = await db.create_post(
             database, brand_id,
-            datetime.now().strftime("%Y-%m-%d"),
-            post_number,
+            today,
+            next_num,
             caption=caption,
         )
 
@@ -2745,7 +2755,7 @@ async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dic
         if not account:
             raise HTTPException(404, "Account not found")
 
-        out_dir = Path("output") / brand["slug"] / post["date"] / account["name"] / f"post_{post['post_number']}"
+        out_dir = Path("output") / brand["slug"] / post["date"] / account["name"] / f"post_{post['id']}"
         slides_dir = out_dir / "slides"
         slides_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2923,7 +2933,7 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
             / brand["slug"]
             / post["date"]
             / account["name"]
-            / f"post_{post['post_number']}"
+            / f"post_{post['id']}"
         )
         slides_dir = out_dir / "slides"
 
@@ -4125,7 +4135,7 @@ async def download_all_outputs(post_id: int, user: dict = Depends(get_current_us
         if not base_dir.exists():
             raise HTTPException(404, "Output directory not found")
 
-        zip_path = str(base_dir) + f"_post_{post['post_number']}.zip"
+        zip_path = str(base_dir) + f"_post_{post['id']}.zip"
         shutil.make_archive(zip_path.replace(".zip", ""), "zip", str(base_dir))
 
         return FileResponse(zip_path, filename=Path(zip_path).name, media_type="application/zip")

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Eye, Trash2, Plus, CalendarOff } from "lucide-react";
+import { Download, Eye, Trash2, Plus, CalendarOff, AlertCircle } from "lucide-react";
 import { getPosts, getBrands, getDownloadUrl, deletePost, unschedulePost } from "@/lib/api";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -91,10 +91,16 @@ export default function PostsLibraryPage() {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-4">
                 <span className="text-sm font-medium">Post #{post.post_number}</span>
                 <span className="text-sm text-muted-foreground">{post.date}</span>
-                <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium capitalize">{post.status}</span>
+                <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${post.status === "failed" ? "bg-destructive/15 text-destructive" : "bg-muted"}`}>{post.status}</span>
                 <span className="text-xs text-muted-foreground">{post.slide_count} slides</span>
                 {post.scheduled_time && (
                   <span className="text-xs text-muted-foreground">@ {post.scheduled_time}</span>
+                )}
+                {post.status === "failed" && (
+                  <Link href={`/posts/new?edit=${post.id}`}
+                    className="inline-flex items-center gap-1 text-xs text-destructive font-medium hover:underline">
+                    <AlertCircle className="h-3 w-3" /> View errors
+                  </Link>
                 )}
               </div>
               <div className="flex flex-wrap gap-1.5">
