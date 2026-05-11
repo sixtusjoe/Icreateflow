@@ -3485,15 +3485,17 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                     per_platform[name] = {"status": "failed", "error": err_msg, "friendly_error": _friendly_error(err_msg)}
                     try:
                         await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
-                    except Exception:
-                        pass
+                        print(f"[post_now] stored {name}_error on output {out['id']}: {err_msg[:80]}")
+                    except Exception as _se:
+                        print(f"[post_now] FAILED to store {name}_error on output {out['id']}: {_se}")
                 except Exception as e:
                     err_msg = f"{type(e).__name__}: {str(e)[:250]}"
                     per_platform[name] = {"status": "failed", "error": err_msg, "friendly_error": _friendly_error(err_msg)}
                     try:
                         await db.update_output(database, out["id"], **{f"{name}_error": err_msg})
-                    except Exception:
-                        pass
+                        print(f"[post_now] stored {name}_error on output {out['id']}: {err_msg[:80]}")
+                    except Exception as _se:
+                        print(f"[post_now] FAILED to store {name}_error on output {out['id']}: {_se}")
 
             results.append({
                 "output_id": out["id"],
@@ -3559,22 +3561,13 @@ async def get_failed_outputs(post_id: int, user: dict = Depends(get_current_user
             platforms: dict = {}
             for plat in ("tiktok", "youtube", "instagram", "facebook"):
                 err = out.get(f"{plat}_error")
-                if err and not out.get(f"{plat}_posted"):
+                # Show error regardless of whether the platform previously posted
+                # (a new post-now attempt can fail even if an earlier one succeeded)
+                if err:
                     platforms[plat] = {
                         "error": err,
                         "friendly_error": _friendly_error(err),
                         "draft": False,
-                    }
-                elif plat == "tiktok" and out.get("tiktok_posted") and out.get("posted_as_draft"):
-                    # TikTok auto-fell back to draft mode — surface it so the
-                    # user can retry as a live post once TikTok audits the app.
-                    platforms["tiktok"] = {
-                        "error": None,
-                        "friendly_error": (
-                            "Sent to TikTok drafts (app not yet audited for direct post). "
-                            "Open the TikTok app to publish, or click Retry live post."
-                        ),
-                        "draft": True,
                     }
             if not platforms:
                 continue
@@ -3629,10 +3622,9 @@ async def retry_output(
         out = dict(row)
         await verify_brand_ownership(out["brand_id"], user)
 
-        # Check there's something to retry (error stored OR TikTok posted as draft)
+        # Check there's something to retry (error stored)
         has_error = any(out.get(f"{p}_error") for p in ("tiktok", "youtube", "instagram", "facebook"))
-        is_tiktok_draft = out.get("tiktok_posted") and out.get("posted_as_draft")
-        if not has_error and not is_tiktok_draft:
+        if not has_error:
             raise HTTPException(400, "No failed platforms on this output")
 
         account = await db.get_account(database, out["account_id"])
@@ -3737,16 +3729,8 @@ async def retry_output(
         adapters = {"tiktok": _tt, "youtube": _yt, "instagram": _ig, "facebook": _fb}
 
         for plat in ("tiktok", "youtube", "instagram", "facebook"):
-            # Allow retry when there's a stored error OR when TikTok previously
-            # fell back to draft mode and the user wants to try going live.
-            is_draft_tiktok = (
-                plat == "tiktok"
-                and out.get("tiktok_posted")
-                and out.get("posted_as_draft")
-            )
-            if not out.get(f"{plat}_error") and not is_draft_tiktok:
-                continue
-            if out.get(f"{plat}_posted") and not is_draft_tiktok:
+            # Only retry platforms that have a stored error
+            if not out.get(f"{plat}_error"):
                 continue
             # draft/delayed modes only apply to TikTok
             if mode in ("draft",) and plat != "tiktok":
