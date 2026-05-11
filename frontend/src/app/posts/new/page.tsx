@@ -924,6 +924,21 @@ function NewPostPageInner() {
       {/* Step 4: Generate */}
       {step === "generate" && post && (
         <div className="space-y-6">
+          {/* Failed post banner — shown when post failed and no per-platform errors are stored
+              (i.e. it failed before error tracking was added, or the scheduler set status=failed
+              before we could capture the details). Prompts the user to retry via Post Now. */}
+          {post.status === "failed" && failedOutputs.length === 0 && (
+            <div className="flex items-start gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3.5 md:px-5">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-destructive">This post failed to publish</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Check your TikTok / platform settings below, then click <strong>Post Now</strong> to retry. Error details were not captured for this failure.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Generate Content */}
           <div className="rounded-2xl bg-card p-4 md:p-6">
             <h2 className="mb-2 text-base font-semibold">Generate Content</h2>
