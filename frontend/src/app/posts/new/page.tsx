@@ -95,7 +95,7 @@ function FailedOutputsSection({
 
   if (failedOutputs.length === 0) return null;
 
-  // Flatten to a list of {outputId, accountName, platform, error, friendlyError}
+  // Flatten to a list of {outputId, accountName, platform, error, friendlyError, isDraft}
   const rows = failedOutputs.flatMap((o: any) =>
     Object.entries(o.platforms).map(([plat, pd]: [string, any]) => ({
       outputId: o.output_id,
@@ -103,6 +103,7 @@ function FailedOutputsSection({
       platform: plat,
       error: pd.error,
       friendlyError: pd.friendly_error || pd.error,
+      isDraft: !!pd.draft,
     }))
   );
 
@@ -152,7 +153,9 @@ function FailedOutputsSection({
             className="flex items-center gap-2 flex-1 text-left"
           >
             <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-            <span className="text-sm font-semibold text-destructive whitespace-nowrap">Failed Posts</span>
+            <span className="text-sm font-semibold text-destructive whitespace-nowrap">
+              {rows.every(r => r.isDraft) ? "Sent to Drafts" : rows.some(r => r.isDraft) ? "Action Required" : "Failed Posts"}
+            </span>
             <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive shrink-0">
               {rows.length}
             </span>
@@ -175,8 +178,8 @@ function FailedOutputsSection({
                 <div key={idx} className="flex flex-col gap-1.5 px-4 py-3 md:px-5 sm:flex-row sm:items-center sm:gap-3">
                   {/* Mobile: platform + account + retry button */}
                   <div className="flex items-center gap-2 sm:contents">
-                    <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-semibold capitalize">
-                      {row.platform}
+                    <span className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold capitalize ${row.isDraft ? "bg-amber-500/15 text-amber-600" : "bg-muted"}`}>
+                      {row.platform}{row.isDraft ? " (draft)" : ""}
                     </span>
                     <span className="text-xs text-muted-foreground shrink-0 flex-1 sm:flex-none truncate">
                       {row.accountName}
@@ -191,11 +194,11 @@ function FailedOutputsSection({
                       className="sm:hidden ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
                     >
                       {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                      {isRetrying ? "Retrying…" : "Retry"}
+                      {isRetrying ? "Retrying…" : row.isDraft ? "Retry live" : "Retry"}
                     </button>
                   </div>
-                  {/* Error message */}
-                  <span className="text-xs text-destructive/90 sm:flex-1 sm:min-w-0 sm:truncate" title={row.friendlyError}>
+                  {/* Error / draft message */}
+                  <span className={`text-xs sm:flex-1 sm:min-w-0 sm:truncate ${row.isDraft ? "text-amber-600/90" : "text-destructive/90"}`} title={row.friendlyError}>
                     {row.friendlyError}
                   </span>
                   {/* Retry on desktop */}
@@ -209,7 +212,7 @@ function FailedOutputsSection({
                     className="hidden sm:inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
                   >
                     {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                    {isRetrying ? "Retrying…" : "Retry"}
+                    {isRetrying ? "Retrying…" : row.isDraft ? "Retry live" : "Retry"}
                   </button>
                 </div>
               );

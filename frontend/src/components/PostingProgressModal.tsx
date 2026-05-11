@@ -210,10 +210,13 @@ export function PostingProgressModal({
                               <MinusCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                             )}
                             <div className="flex flex-1 flex-wrap items-start justify-between gap-1.5">
-                              <span>
+                              <span className="flex-1">
                                 <span className="font-medium">{PLATFORM_LABELS_FULL[plat] ?? plat}</span>
+                                {v.status === "posted" && !v.draft && (
+                                  <span className="ml-1 text-emerald-600">— posted live</span>
+                                )}
                                 {v.status === "posted" && v.draft && (
-                                  <span className="ml-1 text-amber-500">— posted to drafts</span>
+                                  <span className="ml-1 text-amber-500">— sent to drafts (open TikTok app to publish)</span>
                                 )}
                                 {v.status === "failed" && (v.friendly_error || v.error) && (
                                   <span className="ml-1 text-destructive/80">— {(v.friendly_error || v.error || "").slice(0, 120)}</span>
@@ -222,7 +225,7 @@ export function PostingProgressModal({
                                   <span className="ml-1 text-muted-foreground">— skipped (not connected)</span>
                                 )}
                               </span>
-                              {v.status === "failed" && r.output_id && (
+                              {(v.status === "failed" || (v.status === "posted" && v.draft)) && r.output_id && (
                                 <button
                                   onClick={() => {
                                     if (isCapError(v.error) && plat === "tiktok") {
@@ -235,7 +238,7 @@ export function PostingProgressModal({
                                   className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
                                 >
                                   {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                                  {isRetrying ? "Retrying…" : "Retry"}
+                                  {isRetrying ? "Retrying…" : v.draft ? "Retry live" : "Retry"}
                                 </button>
                               )}
                             </div>
