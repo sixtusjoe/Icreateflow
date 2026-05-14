@@ -89,7 +89,7 @@ export default function PostsLibraryPage() {
           {posts.map((post: any) => (
             <div key={post.id} className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-4">
-                <span className="text-sm font-medium">Post #{post.post_number}</span>
+                <span className="text-sm font-medium">{post.brand_name} #{post.post_number}</span>
                 <span className="text-sm text-muted-foreground">{post.date}</span>
                 <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${post.status === "failed" ? "bg-destructive/15 text-destructive" : "bg-muted"}`}>{post.status}</span>
                 <span className="text-xs text-muted-foreground">{post.slide_count} slides</span>
