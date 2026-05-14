@@ -152,8 +152,8 @@ async def _call_claude(prompt: str, api_key: str) -> Optional[str]:
 
 async def _get_api_key(database, user_id: Optional[int] = None) -> Optional[str]:
     if user_id:
-        user_rows = await db.get_user_settings(database, user_id)
-        user_key = next((r["value"] for r in user_rows if r["key"] == "anthropic_api_key"), None)
+        user_map = await db.get_user_settings(database, user_id)
+        user_key = user_map.get("anthropic_api_key")
         if user_key:
             return user_key
     for k in ("anthropic_api_key", "claude_api_key"):

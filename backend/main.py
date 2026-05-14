@@ -2633,7 +2633,7 @@ async def rerun_ocr(post_id: int, user: dict = Depends(get_current_user)):
         # Fetch the Anthropic key from the Postgres settings table, falling back
         # to the env var. Surface a clear 400 if nothing is configured so the
         # frontend toast tells the user to set it in Settings.
-        _u_rows = {r["key"]: r["value"] for r in await db.get_user_settings(database, user["id"])}
+        _u_rows = await db.get_user_settings(database, user["id"])
         api_key = (_u_rows.get("anthropic_api_key")
                    or await db.get_setting(database, "anthropic_api_key")
                    or await db.get_setting(database, "claude_api_key"))
@@ -3107,7 +3107,7 @@ async def generate_variation_image(variation_id: int, data: FluxGenerate, user: 
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / f"slide_{var['slide_number']}_{var['account_name']}.png"
 
-        _u_rows2 = {r["key"]: r["value"] for r in await db.get_user_settings(database, user["id"])}
+        _u_rows2 = await db.get_user_settings(database, user["id"])
         api_token = _u_rows2.get("replicate_api_token") or await db.get_setting(database, "replicate_api_token")
 
         await flux.generate_image(
@@ -4448,8 +4448,7 @@ async def get_settings(user: dict = Depends(get_current_user)):
         rows = await cursor.fetchall()
         cfg = {r["key"]: r["value"] for r in rows}
         # Overlay per-user API keys on top of global defaults
-        user_rows = await db.get_user_settings(database, user["id"])
-        user_map = {r["key"]: r["value"] for r in user_rows}
+        user_map = await db.get_user_settings(database, user["id"])
         for k in _PER_USER_SETTING_KEYS:
             if k in user_map:
                 cfg[k] = user_map[k]
