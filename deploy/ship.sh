@@ -48,8 +48,7 @@ for attempt in 1 2 3 4 5; do
 done
 # Force working tree to exactly match HEAD (clears any stale files)
 git reset --hard origin/main
-rm -f .git/index
-git checkout HEAD -- .
+git clean -fd
 echo "  SRC is now at: $(git rev-parse --short HEAD)"
 ENDSSH
 
