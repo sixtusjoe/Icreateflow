@@ -150,7 +150,12 @@ async def _call_claude(prompt: str, api_key: str) -> Optional[str]:
     return await asyncio.to_thread(_do)
 
 
-async def _get_api_key(database) -> Optional[str]:
+async def _get_api_key(database, user_id: Optional[int] = None) -> Optional[str]:
+    if user_id:
+        user_rows = await db.get_user_settings(database, user_id)
+        user_key = next((r["value"] for r in user_rows if r["key"] == "anthropic_api_key"), None)
+        if user_key:
+            return user_key
     for k in ("anthropic_api_key", "claude_api_key"):
         v = await db.get_setting(database, k)
         if v:
@@ -164,6 +169,7 @@ async def get_variant(
     variation_id: int,
     platform: str,
     base_caption: str,
+    user_id: Optional[int] = None,
 ) -> str:
     """Return a paraphrased caption for this (clip, variation, platform).
 
@@ -194,7 +200,7 @@ async def get_variant(
     ):
         return cached["caption"]
 
-    api_key = await _get_api_key(database)
+    api_key = await _get_api_key(database, user_id=user_id)
     if not api_key:
         return base_caption
 

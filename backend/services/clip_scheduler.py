@@ -1155,6 +1155,7 @@ async def dispatch_due_once() -> None:
                             variation_id=variation["id"],
                             platform=platform,
                             base_caption=base_caption,
+                            user_id=_owner_id,
                         )
                     except Exception as ce:
                         await db.log_error(

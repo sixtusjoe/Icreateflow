@@ -2633,9 +2633,10 @@ async def rerun_ocr(post_id: int, user: dict = Depends(get_current_user)):
         # Fetch the Anthropic key from the Postgres settings table, falling back
         # to the env var. Surface a clear 400 if nothing is configured so the
         # frontend toast tells the user to set it in Settings.
-        api_key = await db.get_setting(database, "anthropic_api_key")
-        if not api_key:
-            api_key = await db.get_setting(database, "claude_api_key")
+        _u_rows = {r["key"]: r["value"] for r in await db.get_user_settings(database, user["id"])}
+        api_key = (_u_rows.get("anthropic_api_key")
+                   or await db.get_setting(database, "anthropic_api_key")
+                   or await db.get_setting(database, "claude_api_key"))
         if not api_key:
             import os as _os
             api_key = _os.environ.get("ANTHROPIC_API_KEY")
@@ -3106,7 +3107,8 @@ async def generate_variation_image(variation_id: int, data: FluxGenerate, user: 
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / f"slide_{var['slide_number']}_{var['account_name']}.png"
 
-        api_token = await db.get_setting(database, "replicate_api_token")
+        _u_rows2 = {r["key"]: r["value"] for r in await db.get_user_settings(database, user["id"])}
+        api_token = _u_rows2.get("replicate_api_token") or await db.get_setting(database, "replicate_api_token")
 
         await flux.generate_image(
             prompt=data.prompt,
@@ -4436,13 +4438,22 @@ async def update_user_settings(data: SettingUpdate, user: dict = Depends(get_cur
 # GLOBAL SETTINGS (admin only for write, readable by all auth users)
 # =============================================
 
+_PER_USER_SETTING_KEYS = {"anthropic_api_key", "replicate_api_token"}
+
 @app.get("/api/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
         cursor = await database.execute("SELECT * FROM settings")
         rows = await cursor.fetchall()
-        return {r["key"]: r["value"] for r in rows}
+        cfg = {r["key"]: r["value"] for r in rows}
+        # Overlay per-user API keys on top of global defaults
+        user_rows = await db.get_user_settings(database, user["id"])
+        user_map = {r["key"]: r["value"] for r in user_rows}
+        for k in _PER_USER_SETTING_KEYS:
+            if k in user_map:
+                cfg[k] = user_map[k]
+        return cfg
     finally:
         await database.close()
 
@@ -4450,7 +4461,11 @@ async def get_settings(user: dict = Depends(get_current_user)):
 async def update_settings(data: SettingUpdate, user: dict = Depends(get_current_user)):
     database = await db.get_db()
     try:
-        await db.set_setting(database, data.key, data.value)
+        if data.key in _PER_USER_SETTING_KEYS:
+            # Store API keys per-user so different users have independent keys
+            await db.set_user_setting(database, user["id"], data.key, data.value or "")
+        else:
+            await db.set_setting(database, data.key, data.value)
         return {"ok": True}
     finally:
         await database.close()
