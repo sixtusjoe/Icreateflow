@@ -7,6 +7,32 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 
+const GROUP_LABELS = ["TODAY", "YESTERDAY", "LAST WEEK", "LAST MONTH", "OLDER"] as const;
+type GroupKey = typeof GROUP_LABELS[number];
+
+function groupPosts(posts: any[]): Record<GroupKey, any[]> {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(todayStart.getDate() - 1);
+  const weekStart = new Date(todayStart); weekStart.setDate(todayStart.getDate() - 7);
+  const monthStart = new Date(todayStart); monthStart.setDate(todayStart.getDate() - 30);
+
+  const groups: Record<GroupKey, any[]> = {
+    TODAY: [], YESTERDAY: [], "LAST WEEK": [], "LAST MONTH": [], OLDER: [],
+  };
+
+  for (const post of posts) {
+    const d = new Date(post.date + "T00:00:00");
+    if (d >= todayStart) groups["TODAY"].push(post);
+    else if (d >= yesterdayStart) groups["YESTERDAY"].push(post);
+    else if (d >= weekStart) groups["LAST WEEK"].push(post);
+    else if (d >= monthStart) groups["LAST MONTH"].push(post);
+    else groups["OLDER"].push(post);
+  }
+
+  return groups;
+}
+
 export default function PostsLibraryPage() {
   const [posts, setPosts] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
@@ -54,6 +80,9 @@ export default function PostsLibraryPage() {
     finally { setUnscheduling(false); }
   };
 
+  const groups = groupPosts(posts);
+  const hasAny = posts.length > 0;
+
   return (
     <div className="mx-auto max-w-4xl">
       <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -79,55 +108,67 @@ export default function PostsLibraryPage() {
         </div>
       </div>
 
-      {posts.length === 0 ? (
+      {!hasAny ? (
         <div className="rounded-2xl bg-card p-8 text-center">
           <p className="text-muted-foreground">No posts yet.</p>
           <p className="mt-1 text-sm text-muted-foreground/60">Create your first post to get started.</p>
         </div>
       ) : (
-        <div className="space-y-2">
-          {posts.map((post: any) => (
-            <div key={post.id} className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-4">
-                <span className="text-sm font-medium">{post.brand_name} #{post.post_number}</span>
-                <span className="text-sm text-muted-foreground">{post.date}</span>
-                <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${post.status === "failed" ? "bg-destructive/15 text-destructive" : "bg-muted"}`}>{post.status}</span>
-                <span className="text-xs text-muted-foreground">{post.slide_count} slides</span>
-                {post.scheduled_time && (
-                  <span className="text-xs text-muted-foreground">@ {post.scheduled_time}</span>
-                )}
-                {post.status === "failed" && (
-                  <Link href={`/posts/new?edit=${post.id}`}
-                    className="inline-flex items-center gap-1 text-xs text-destructive font-medium hover:underline">
-                    <AlertCircle className="h-3 w-3" /> View errors
-                  </Link>
-                )}
+        <div className="space-y-6">
+          {GROUP_LABELS.map((label) => {
+            const group = groups[label];
+            if (!group.length) return null;
+            return (
+              <div key={label}>
+                <p className="mb-2 text-xs font-semibold tracking-widest text-muted-foreground uppercase">
+                  {label}
+                </p>
+                <div className="space-y-2">
+                  {group.map((post: any) => (
+                    <div key={post.id} className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-4">
+                        <span className="text-sm font-medium">{post.brand_name} #{post.post_number}</span>
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${post.status === "failed" ? "bg-destructive/15 text-destructive" : "bg-muted"}`}>{post.status}</span>
+                        <span className="text-xs text-muted-foreground">{post.slide_count} slides</span>
+                        {post.scheduled_time && (
+                          <span className="text-xs text-muted-foreground">@ {post.scheduled_time}</span>
+                        )}
+                        {post.status === "failed" && (
+                          <Link href={`/posts/new?edit=${post.id}`}
+                            className="inline-flex items-center gap-1 text-xs text-destructive font-medium hover:underline">
+                            <AlertCircle className="h-3 w-3" /> View errors
+                          </Link>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Link href={`/posts/new?edit=${post.id}`}
+                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                          <Eye className="h-3 w-3" /> View
+                        </Link>
+                        <a href={getDownloadUrl(post.id)}
+                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                          <Download className="h-3 w-3" /> Download
+                        </a>
+                        {post.status === "scheduled" && (
+                          <button
+                            onClick={() => setConfirmUnschedule(post.id)}
+                            title="Move back to draft"
+                            className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-amber-500 transition-colors"
+                          >
+                            <CalendarOff className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        <button onClick={() => setConfirmDelete(post.id)}
+                          className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                <Link href={`/posts/new?edit=${post.id}`}
-                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
-                  <Eye className="h-3 w-3" /> View
-                </Link>
-                <a href={getDownloadUrl(post.id)}
-                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
-                  <Download className="h-3 w-3" /> Download
-                </a>
-                {post.status === "scheduled" && (
-                  <button
-                    onClick={() => setConfirmUnschedule(post.id)}
-                    title="Move back to draft"
-                    className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-amber-500 transition-colors"
-                  >
-                    <CalendarOff className="h-3.5 w-3.5" />
-                  </button>
-                )}
-                <button onClick={() => setConfirmDelete(post.id)}
-                  className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
