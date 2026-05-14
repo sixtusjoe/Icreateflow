@@ -2310,9 +2310,13 @@ async def list_posts(brand_id: Optional[int] = None, date: Optional[str] = None,
     database = await db.get_db()
     try:
         posts = await db.get_posts(database, brand_id=brand_id, date=date, user_id=user["id"])
+        # Build a brand-id → name lookup so we can include brand_name in each post
+        brands = await db.get_brands(database, user_id=user["id"])
+        brand_names = {b["id"]: b["name"] for b in brands}
         result = []
         for p in posts:
             post_dict = dict(p)
+            post_dict["brand_name"] = brand_names.get(p["brand_id"], "")
             slides = await db.get_slides(database, p["id"])
             post_dict["slides"] = rows_to_list(slides)
             post_dict["slide_count"] = len(slides)
