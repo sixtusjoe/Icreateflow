@@ -32,7 +32,13 @@ export default function BrandsPage() {
       return next;
     });
 
-  const load = () => getBrands().then(setBrands).catch(() => toast.error("Failed to load brands"));
+  const load = () =>
+    getBrands()
+      .then((data) => {
+        setBrands(data);
+        setCollapsed(new Set((data as any[]).map((b) => b.id)));
+      })
+      .catch(() => toast.error("Failed to load brands"));
   useEffect(() => { load(); }, []);
 
   const handleCreateBrand = async () => {
