@@ -54,7 +54,10 @@ async def generate_image(
 
         def _to_png_bytes(path: str) -> bytes:
             img = _PILImage.open(path)
-            img.load()  # force full load before converting
+            try:
+                img.load()
+            except OSError:
+                pass  # truncated file — use whatever was loaded
             img = img.convert("RGBA")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
