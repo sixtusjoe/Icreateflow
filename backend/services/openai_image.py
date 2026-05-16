@@ -48,10 +48,14 @@ async def generate_image(
     if reference_image_path and Path(reference_image_path).exists():
         # OpenAI edits endpoint requires PNG. Convert if needed.
         import io
-        from PIL import Image as _PILImage
+        from PIL import Image as _PILImage, ImageFile as _PILImageFile
+
+        _PILImageFile.LOAD_TRUNCATED_IMAGES = True  # handle partially-written files
 
         def _to_png_bytes(path: str) -> bytes:
-            img = _PILImage.open(path).convert("RGBA")
+            img = _PILImage.open(path)
+            img.load()  # force full load before converting
+            img = img.convert("RGBA")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             return buf.getvalue()
