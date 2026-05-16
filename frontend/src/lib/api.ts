@@ -175,10 +175,10 @@ export const uploadVariationImage = (id: number, file: File) => {
 export const generateVariationImage = (
   id: number,
   prompt: string,
-  aspect_ratio: string = "3:4"
+  use_reference: boolean = true
 ) =>
   api
-    .post(`/api/variations/${id}/generate`, { prompt, aspect_ratio })
+    .post(`/api/variations/${id}/generate`, { prompt, aspect_ratio: "3:4", use_reference })
     .then((r) => r.data);
 
 export const approveVariation = (id: number) =>

@@ -114,12 +114,12 @@ export default function SettingsPage() {
             hint="Powers AI text extraction from slides using Claude Vision."
           />
           <SecretField
-            label="Replicate API Token"
-            value={settings["replicate_api_token"] ?? ""}
-            onChange={(v) => update("replicate_api_token", v)}
-            onSave={() => saveGlobal("replicate_api_token", settings["replicate_api_token"] || "")}
-            placeholder="r8_..."
-            hint="For AI face generation in variations."
+            label="OpenAI API Key"
+            value={settings["openai_api_key"] ?? ""}
+            onChange={(v) => update("openai_api_key", v)}
+            onSave={() => saveGlobal("openai_api_key", settings["openai_api_key"] || "")}
+            placeholder="sk-..."
+            hint="For AI image generation in variations (gpt-image-1)."
           />
         </div>
       </div>

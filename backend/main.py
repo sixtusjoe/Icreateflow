@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 import database as db
 from services import tiktok_scraper, ocr, generator, overlay, video
-from services import flux
+from services import openai_image
 from services import oauth as oauth_svc
 from services import clip_scheduler
 from services.auth import hash_password, verify_password, create_access_token, decode_token
@@ -384,6 +384,7 @@ class RegenerateSlide(BaseModel):
 class FluxGenerate(BaseModel):
     prompt: str
     aspect_ratio: str = "3:4"
+    use_reference: bool = True  # pass current slide image to OpenAI as reference
 
 class PostSchedule(BaseModel):
     scheduled_time: Optional[str] = None
@@ -3108,13 +3109,23 @@ async def generate_variation_image(variation_id: int, data: FluxGenerate, user: 
         save_path = save_dir / f"slide_{var['slide_number']}_{var['account_name']}.png"
 
         _u_rows2 = await db.get_user_settings(database, user["id"])
-        api_token = _u_rows2.get("replicate_api_token") or await db.get_setting(database, "replicate_api_token")
+        api_key = _u_rows2.get("openai_api_key") or await db.get_setting(database, "openai_api_key")
 
-        await flux.generate_image(
+        # Resolve the reference image path (original slide image)
+        ref_path: str | None = None
+        if data.use_reference:
+            cursor2 = await database.execute(
+                "SELECT master_image_path FROM slides WHERE id = ?", (var["slide_id"],)
+            )
+            slide_row = await cursor2.fetchone()
+            if slide_row and slide_row["master_image_path"]:
+                ref_path = slide_row["master_image_path"]
+
+        await openai_image.generate_image(
             prompt=data.prompt,
             output_path=str(save_path),
-            aspect_ratio=data.aspect_ratio,
-            api_token=api_token,
+            reference_image_path=ref_path,
+            api_key=api_key,
         )
 
         await db.update_variation(
@@ -4438,7 +4449,7 @@ async def update_user_settings(data: SettingUpdate, user: dict = Depends(get_cur
 # GLOBAL SETTINGS (admin only for write, readable by all auth users)
 # =============================================
 
-_PER_USER_SETTING_KEYS = {"anthropic_api_key", "replicate_api_token"}
+_PER_USER_SETTING_KEYS = {"anthropic_api_key", "openai_api_key"}
 
 @app.get("/api/settings")
 async def get_settings(user: dict = Depends(get_current_user)):

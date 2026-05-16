@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import { TikTokSettingsCard } from "@/components/TikTokSettingsCard";
 import { PostingProgressModal } from "@/components/PostingProgressModal";
+import { AIGenerateModal } from "@/components/AIGenerateModal";
 
 type Plat = "youtube" | "instagram" | "facebook";
 const PLATFORMS: Plat[] = ["youtube", "instagram", "facebook"];
@@ -270,6 +271,7 @@ function NewPostPageInner() {
   const [failedOutputs, setFailedOutputs] = useState<any[]>([]);
   const [editLoaded, setEditLoaded] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
+  const [aiModal, setAiModal] = useState<{ variationId: number; slideImageUrl: string; slideTitle?: string } | null>(null);
   const [activeTab, setActiveTab] = useState<number>(0);
   const slideTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   // Debounce timer for the post-level caption textarea on Edit Slides
@@ -407,17 +409,8 @@ function NewPostPageInner() {
     catch { toast.error("Upload failed"); }
   };
 
-  const handleGenerateAI = async (variationId: number) => {
-    const prompt = window.prompt("Describe the image to generate:");
-    if (!prompt) return;
-    try {
-      toast.info("Generating image...");
-      await generateVariationImage(variationId, prompt);
-      await reloadPost();
-      toast.success("Image generated! Review and approve it.");
-    } catch (e: any) {
-      toast.error("Generation failed: " + (e.response?.data?.detail || e.message));
-    }
+  const handleGenerateAI = (variationId: number, slideImageUrl: string, slideTitle?: string) => {
+    setAiModal({ variationId, slideImageUrl, slideTitle });
   };
 
   const handleApprove = async (variationId: number) => {
@@ -897,7 +890,7 @@ function NewPostPageInner() {
                               }}>
                               <Upload className="mr-1 inline h-3 w-3" /> Upload
                             </button>
-                            <button onClick={() => handleGenerateAI(variation.id)}
+                            <button onClick={() => handleGenerateAI(variation.id, slide.master_image_path ? fileUrl(slide.master_image_path) : "", slide.title_text)}
                               className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                               <Wand2 className="mr-1 inline h-3 w-3" /> AI Generate
                             </button>
@@ -1570,6 +1563,18 @@ function NewPostPageInner() {
           }
         }}
       />
+
+      {/* AI Generate Modal */}
+      {aiModal && (
+        <AIGenerateModal
+          open={true}
+          variationId={aiModal.variationId}
+          slideImageUrl={aiModal.slideImageUrl}
+          slideTitle={aiModal.slideTitle}
+          onClose={() => setAiModal(null)}
+          onSuccess={() => { setAiModal(null); reloadPost(); toast.success("Image generated! Review and approve it."); }}
+        />
+      )}
 
       {/* Image lightbox */}
       {expandedImage && typeof document !== "undefined" && createPortal(
