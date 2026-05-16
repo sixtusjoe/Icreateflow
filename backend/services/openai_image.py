@@ -65,7 +65,7 @@ async def generate_image(
             "model": "gpt-image-2",
             "prompt": prompt,
             "size": size,
-            "quality": "high",
+            "quality": "medium",
             "n": "1",
         }
 
@@ -88,7 +88,7 @@ async def generate_image(
             "model": "gpt-image-2",
             "prompt": prompt,
             "size": size,
-            "quality": "high",
+            "quality": "medium",
             "n": 1,
         }
 

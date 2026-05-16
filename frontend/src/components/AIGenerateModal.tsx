@@ -13,8 +13,8 @@ const PRESETS = [
 const PROGRESS_MESSAGES = [
   "Analyzing your slide…",
   "Crafting the composition…",
-  "Generating image — this can take 1-2 minutes…",
-  "Still working, hang tight…",
+  "Generating image…",
+  "Still working, almost there…",
   "Adding final touches…",
   "Almost there…",
 ]
