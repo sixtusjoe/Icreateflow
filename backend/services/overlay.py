@@ -6,7 +6,8 @@ with configurable weight (Light → Black) and two text styles:
   - "stroke": white fill + black stroke outline
   - "background": white text on semi-transparent dark rounded rect
 """
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 from pathlib import Path
 
 FONTS_DIR = Path(__file__).parent.parent / "fonts"

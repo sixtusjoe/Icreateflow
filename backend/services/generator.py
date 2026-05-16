@@ -4,7 +4,8 @@ Coordinates: overlay generation → video creation for all accounts.
 """
 import asyncio
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 from . import overlay, video
 import database as db
 
