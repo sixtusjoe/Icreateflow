@@ -2515,14 +2515,14 @@ async def import_tiktok_post(data: PostImport, user: dict = Depends(get_current_
                             instagram_music_track_id=music_track_id,
                             facebook_music_track_id=music_track_id,
                         )
-                        logger.info("Imported TikTok audio as music track %d", music_track_id)
+                        print(f"[import] TikTok audio saved as music track {music_track_id}")
                     else:
-                        logger.warning(
-                            "TikTok audio download failed (status=%s, size=%d)",
-                            audio_resp.status_code, len(audio_resp.content),
+                        print(
+                            f"[import] TikTok audio download failed "
+                            f"(status={audio_resp.status_code}, size={len(audio_resp.content)})"
                         )
             except Exception as audio_err:
-                logger.warning("TikTok audio import failed (continuing): %s", audio_err)
+                print(f"[import] TikTok audio import failed (continuing): {audio_err}")
 
         # No auto-OCR — user clicks "Run OCR" manually to save API costs
         accounts = await db.get_accounts(database, data.brand_id)
