@@ -5,9 +5,9 @@ import { Wand2, X } from "lucide-react"
 import { generateVariationImage } from "@/lib/api"
 
 const PRESETS = [
-  { label: "Similar — different colors", prompt: "Recreate this image with a completely different color palette and mood. Keep the exact same composition, subject matter, and photorealistic style — only change the colors and lighting tones." },
-  { label: "Similar — different placement", prompt: "Recreate this image with the subjects repositioned or recomposed. Keep the same photorealistic style, lighting, and theme — only change how elements are arranged in the frame." },
-  { label: "Remove all text", prompt: "Recreate this image with all text, words, labels, and typography completely removed. Inpaint those areas naturally to match the surrounding visual style and background." },
+  { label: "New person, same scene", prompt: "Generate a new photorealistic image using the same background, setting, lighting, and composition as the reference. Replace the person with a completely different person. Remove any text overlays. Keep the same overall vibe and environment." },
+  { label: "New person, different colors", prompt: "Generate a new photorealistic image with the same setting and composition as the reference but with a completely different color palette and lighting mood. Replace the person with a new person. Remove any text overlays." },
+  { label: "Same scene, no text", prompt: "Recreate this exact scene and setting with the same composition, lighting, and style. Remove all text overlays and captions. Keep everything else — the environment, the props, the overall mood — intact." },
 ]
 
 const PROGRESS_MESSAGES = [
