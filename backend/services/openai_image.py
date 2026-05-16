@@ -1,6 +1,6 @@
 """OpenAI image generation service for variation slide images.
 
-Uses gpt-image-1 model:
+Uses gpt-image-2 model:
 - With reference image → /v1/images/edits  (image-guided generation)
 - Without reference    → /v1/images/generations (text-to-image)
 """
@@ -8,9 +8,32 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import os
 from pathlib import Path
 from typing import Optional
+
+# Allow Pillow to open files that are slightly truncated (e.g. AI-generated PNGs)
+from PIL import Image as _PILImage, ImageFile as _PILImageFile
+_PILImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+def _to_png_bytes(path: str) -> bytes:
+    """Convert any image file to RGBA PNG bytes, tolerating truncated files."""
+    try:
+        img = _PILImage.open(path)
+        img.load()
+    except OSError:
+        pass  # truncated — use whatever pixels were loaded
+    try:
+        img = img.convert("RGBA")
+    except Exception:
+        # Last resort: re-open via raw bytes to avoid any file-handle issues
+        raw = Path(path).read_bytes()
+        img = _PILImage.open(io.BytesIO(raw)).convert("RGBA")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 async def generate_image(
@@ -46,23 +69,6 @@ async def generate_image(
     headers = {"Authorization": f"Bearer {token}"}
 
     if reference_image_path and Path(reference_image_path).exists():
-        # OpenAI edits endpoint requires PNG. Convert if needed.
-        import io
-        from PIL import Image as _PILImage, ImageFile as _PILImageFile
-
-        _PILImageFile.LOAD_TRUNCATED_IMAGES = True  # handle partially-written files
-
-        def _to_png_bytes(path: str) -> bytes:
-            img = _PILImage.open(path)
-            try:
-                img.load()
-            except OSError:
-                pass  # truncated file — use whatever was loaded
-            img = img.convert("RGBA")
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return buf.getvalue()
-
         image_bytes = await asyncio.to_thread(_to_png_bytes, reference_image_path)
 
         files = {
