@@ -244,6 +244,8 @@ function NewPostPageInner() {
   const [importMode, setImportMode] = useState<"tiktok" | "upload">("upload");
   const [selectedBrand, setSelectedBrand] = useState<number | null>(null);
   const [tiktokUrl, setTiktokUrl] = useState("");
+  const [importAudio, setImportAudio] = useState(false);
+  const [audioName, setAudioName] = useState("");
   const [postNumber] = useState(1); // kept for compatibility; server auto-assigns now
   const [importing, setImporting] = useState(false);
   const [manualFiles, setManualFiles] = useState<File[]>([]);
@@ -341,10 +343,20 @@ function NewPostPageInner() {
     if (!tiktokUrl) return toast.error("Paste a TikTok URL");
     setImporting(true);
     try {
-      const result = await importTikTokPost({ tiktok_url: tiktokUrl, brand_id: selectedBrand });
+      const result = await importTikTokPost({
+        tiktok_url: tiktokUrl,
+        brand_id: selectedBrand,
+        import_audio: importAudio,
+        audio_name: audioName || undefined,
+      });
       setPost(result);
       setStep("edit");
-      toast.success(`Imported ${result.slides?.length || 0} slides`);
+      // Pre-select imported music track on all platforms
+      const trackId = result.youtube_music_track_id ?? result.instagram_music_track_id ?? result.facebook_music_track_id ?? null;
+      if (trackId) {
+        setPlatMusic({ youtube: trackId, instagram: trackId, facebook: trackId });
+      }
+      toast.success(`Imported ${result.slides?.length || 0} slides${importAudio && trackId ? " + audio" : ""}`);
     } catch (e: any) {
       toast.error("Import failed: " + (e.response?.data?.detail || e.message));
     } finally { setImporting(false); }
@@ -643,14 +655,35 @@ function NewPostPageInner() {
             </div>
 
             {importMode === "tiktok" ? (
-              <div key="tiktok-mode">
+              <div key="tiktok-mode" className="space-y-3">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium">TikTok Post URL</label>
                   <input value={tiktokUrl} onChange={(e) => setTiktokUrl(e.target.value)}
                     placeholder="https://www.tiktok.com/@user/photo/1234..." className={inputClass} />
                 </div>
+                {/* Import audio option */}
+                <div className="rounded-xl border border-border bg-muted/30 px-4 py-3 space-y-2">
+                  <label className="flex cursor-pointer items-center gap-2.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={importAudio}
+                      onChange={(e) => setImportAudio(e.target.checked)}
+                      className="h-4 w-4 rounded border-border accent-foreground"
+                    />
+                    <span className="font-medium">Import audio from TikTok</span>
+                    <span className="text-xs text-muted-foreground">— auto-set as music for YouTube, Instagram &amp; Facebook</span>
+                  </label>
+                  {importAudio && (
+                    <input
+                      value={audioName}
+                      onChange={(e) => setAudioName(e.target.value)}
+                      placeholder="Track name (auto-filled from TikTok if left blank)"
+                      className={inputClass}
+                    />
+                  )}
+                </div>
                 <button onClick={handleImport} disabled={importing}
-                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50">
+                  className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50">
                   {importing ? <><Loader2 className="h-4 w-4 animate-spin" /> Importing...</> : <><Download className="h-4 w-4" /> Import Slides</>}
                 </button>
               </div>

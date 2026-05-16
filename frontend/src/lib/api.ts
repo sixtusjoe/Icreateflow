@@ -123,6 +123,8 @@ export const importTikTokPost = (data: {
   tiktok_url: string;
   brand_id: number;
   caption?: string;
+  import_audio?: boolean;
+  audio_name?: string;
 }) => api.post("/api/posts/import", data).then((r) => r.data);
 
 export const uploadSlidesManually = (

@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import httpx
 import database as db
 from services import tiktok_scraper, ocr, generator, overlay, video
 from services import openai_image
@@ -349,6 +350,8 @@ class PostImport(BaseModel):
     tiktok_url: str
     brand_id: int
     caption: Optional[str] = None
+    import_audio: bool = False
+    audio_name: Optional[str] = None
 
 class SlideUpdate(BaseModel):
     type: Optional[str] = None
@@ -2462,6 +2465,64 @@ async def import_tiktok_post(data: PostImport, user: dict = Depends(get_current_
             await db.update_post(database, post_id, caption=download_result["caption"])
         if download_result["sound_id"]:
             await db.update_post(database, post_id, tiktok_sound_id=download_result["sound_id"])
+
+        # Optional: import TikTok audio as a music track
+        music_track_id: Optional[int] = None
+        if data.import_audio and download_result.get("music_play_url"):
+            try:
+                music_play_url = download_result["music_play_url"]
+                music_title = download_result.get("music_title") or "TikTok Audio"
+                music_author = download_result.get("music_author") or ""
+
+                # Determine track name
+                if data.audio_name:
+                    track_name = data.audio_name
+                elif music_author:
+                    track_name = f"{music_author} — {music_title}"
+                else:
+                    track_name = music_title
+
+                # Download the audio file
+                music_dir = upload_dir / "audio"
+                music_dir.mkdir(parents=True, exist_ok=True)
+                audio_path = music_dir / "tiktok_audio.mp3"
+
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=30,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                            "Mobile/15E148 Safari/604.1"
+                        ),
+                    }
+                ) as audio_client:
+                    audio_resp = await audio_client.get(music_play_url)
+                    if audio_resp.status_code == 200 and len(audio_resp.content) > 1000:
+                        audio_path.write_bytes(audio_resp.content)
+                        music_track_id = await db.create_music_track(
+                            database,
+                            name=track_name,
+                            file_path=str(audio_path),
+                            is_custom=True,
+                            user_id=user["id"],
+                        )
+                        # Link track to all three platforms on this post
+                        await db.update_post(
+                            database, post_id,
+                            youtube_music_track_id=music_track_id,
+                            instagram_music_track_id=music_track_id,
+                            facebook_music_track_id=music_track_id,
+                        )
+                        logger.info("Imported TikTok audio as music track %d", music_track_id)
+                    else:
+                        logger.warning(
+                            "TikTok audio download failed (status=%s, size=%d)",
+                            audio_resp.status_code, len(audio_resp.content),
+                        )
+            except Exception as audio_err:
+                logger.warning("TikTok audio import failed (continuing): %s", audio_err)
 
         # No auto-OCR — user clicks "Run OCR" manually to save API costs
         accounts = await db.get_accounts(database, data.brand_id)

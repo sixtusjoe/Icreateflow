@@ -16,7 +16,8 @@ async def download_tiktok_slides(tiktok_url: str, output_dir: str) -> dict:
     """
     Download slides from a TikTok photo carousel post.
 
-    Returns dict with: slides (list of paths), sound_id, caption
+    Returns dict with: slides (list of paths), sound_id, caption,
+                       music_title, music_author, music_play_url
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -24,6 +25,9 @@ async def download_tiktok_slides(tiktok_url: str, output_dir: str) -> dict:
     slides = []
     sound_id = None
     caption = ""
+    music_title = None
+    music_author = None
+    music_play_url = None
 
     try:
         # Resolve short URLs and fetch the page
@@ -62,7 +66,7 @@ async def download_tiktok_slides(tiktok_url: str, output_dir: str) -> dict:
             if match:
                 try:
                     data = json.loads(match.group(1))
-                    image_urls, caption, sound_id = _extract_from_universal_data(data)
+                    image_urls, caption, sound_id, music_title, music_author, music_play_url = _extract_from_universal_data(data)
                     logger.info("tiktok_scraper: UNIVERSAL_DATA yielded %d urls", len(image_urls))
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.warning("tiktok_scraper: UNIVERSAL_DATA parse failed: %s", e)
@@ -76,7 +80,7 @@ async def download_tiktok_slides(tiktok_url: str, output_dir: str) -> dict:
                 if match:
                     try:
                         data = json.loads(match.group(1))
-                        image_urls, caption, sound_id = _extract_from_sigi_state(data)
+                        image_urls, caption, sound_id, music_title, music_author, music_play_url = _extract_from_sigi_state(data)
                         logger.info("tiktok_scraper: SIGI_STATE yielded %d urls", len(image_urls))
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning("tiktok_scraper: SIGI_STATE parse failed: %s", e)
@@ -146,6 +150,9 @@ async def download_tiktok_slides(tiktok_url: str, output_dir: str) -> dict:
         "slides": slides,
         "sound_id": sound_id,
         "caption": caption,
+        "music_title": music_title,
+        "music_author": music_author,
+        "music_play_url": music_play_url,
     }
 
 
@@ -193,11 +200,22 @@ def _ytdlp_fallback(url: str) -> list[str]:
         return []
 
 
-def _extract_from_universal_data(data: dict) -> tuple[list[str], str, str | None]:
+def _extract_music(music: dict) -> tuple[str | None, str | None, str | None, str | None]:
+    """Extract sound_id, title, author, play_url from a TikTok music object."""
+    if not music:
+        return None, None, None, None
+    sound_id   = str(music.get("id", "")) or None
+    title      = music.get("title") or music.get("musicName") or None
+    author     = music.get("authorName") or music.get("author") or None
+    play_url   = music.get("playUrl") or music.get("play_url") or None
+    return sound_id, title, author, play_url
+
+
+def _extract_from_universal_data(data: dict) -> tuple[list[str], str, str | None, str | None, str | None, str | None]:
     """Extract image URLs from __UNIVERSAL_DATA_FOR_REHYDRATION__ JSON."""
     image_urls = []
     caption = ""
-    sound_id = None
+    sound_id = music_title = music_author = music_play_url = None
 
     # Navigate the nested structure
     default_scope = data.get("__DEFAULT_SCOPE__", {})
@@ -215,10 +233,8 @@ def _extract_from_universal_data(data: dict) -> tuple[list[str], str, str | None
     if item_info:
         caption = item_info.get("desc", "")
 
-        # Get sound ID
         music = item_info.get("music", {})
-        if music:
-            sound_id = str(music.get("id", ""))
+        sound_id, music_title, music_author, music_play_url = _extract_music(music)
 
         # Get carousel images
         image_post = item_info.get("imagePost", {})
@@ -229,21 +245,20 @@ def _extract_from_universal_data(data: dict) -> tuple[list[str], str, str | None
                 # Prefer the last URL (usually highest quality)
                 image_urls.append(url_list[-1])
 
-    return image_urls, caption, sound_id
+    return image_urls, caption, sound_id, music_title, music_author, music_play_url
 
 
-def _extract_from_sigi_state(data: dict) -> tuple[list[str], str, str | None]:
+def _extract_from_sigi_state(data: dict) -> tuple[list[str], str, str | None, str | None, str | None, str | None]:
     """Extract image URLs from SIGI_STATE JSON."""
     image_urls = []
     caption = ""
-    sound_id = None
+    sound_id = music_title = music_author = music_play_url = None
 
     item_module = data.get("ItemModule", {})
     for item_id, item in item_module.items():
         caption = item.get("desc", "")
         music = item.get("music", {})
-        if music:
-            sound_id = str(music.get("id", ""))
+        sound_id, music_title, music_author, music_play_url = _extract_music(music)
 
         image_post = item.get("imagePost", {})
         images = image_post.get("images", [])
@@ -253,7 +268,7 @@ def _extract_from_sigi_state(data: dict) -> tuple[list[str], str, str | None]:
                 image_urls.append(url_list[-1])
         break  # Only need the first item
 
-    return image_urls, caption, sound_id
+    return image_urls, caption, sound_id, music_title, music_author, music_play_url
 
 
 async def _resolve_url(url: str) -> str:
