@@ -62,9 +62,10 @@ async def generate_image(
             "image": ("reference.png", image_bytes, "image/png"),
         }
         data = {
-            "model": "gpt-image-1",
+            "model": "gpt-image-2",
             "prompt": prompt,
             "size": size,
+            "quality": "high",
             "n": "1",
         }
 
@@ -84,9 +85,10 @@ async def generate_image(
     else:
         # Pure text-to-image via /v1/images/generations
         payload = {
-            "model": "gpt-image-1",
+            "model": "gpt-image-2",
             "prompt": prompt,
             "size": size,
+            "quality": "high",
             "n": 1,
         }
 

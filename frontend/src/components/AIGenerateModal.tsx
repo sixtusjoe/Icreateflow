@@ -5,9 +5,9 @@ import { Wand2, X } from "lucide-react"
 import { generateVariationImage } from "@/lib/api"
 
 const PRESETS = [
-  { label: "Similar — different colors", prompt: "Generate an image very similar to the reference but with different colors and color palette. Keep the same composition, style, and subject matter." },
-  { label: "Similar — different placement", prompt: "Generate an image similar to the reference but with different placement and positioning of the subjects. Keep the same style and overall theme." },
-  { label: "Remove all text", prompt: "Generate an image based on the reference but with all text, words, and typography completely removed. Keep the visual style and composition." },
+  { label: "Similar — different colors", prompt: "Recreate this image with a completely different color palette and mood. Keep the exact same composition, subject matter, and photorealistic style — only change the colors and lighting tones." },
+  { label: "Similar — different placement", prompt: "Recreate this image with the subjects repositioned or recomposed. Keep the same photorealistic style, lighting, and theme — only change how elements are arranged in the frame." },
+  { label: "Remove all text", prompt: "Recreate this image with all text, words, labels, and typography completely removed. Inpaint those areas naturally to match the surrounding visual style and background." },
 ]
 
 const PROGRESS_MESSAGES = [
@@ -158,7 +158,7 @@ export function AIGenerateModal({
               onChange={(e) => { setPrompt(e.target.value); setSelectedPreset(null) }}
               disabled={generating}
               rows={4}
-              placeholder="Describe the image you want to generate…"
+              placeholder="Describe the image you want — be specific about style, lighting, and mood for best results…"
               className="w-full resize-none rounded-xl border border-border bg-muted/30 px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground/50 focus:border-foreground disabled:opacity-50"
             />
           </div>

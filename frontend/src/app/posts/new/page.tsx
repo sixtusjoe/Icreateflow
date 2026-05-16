@@ -873,7 +873,7 @@ function NewPostPageInner() {
                         <div className="flex-shrink-0 text-center">
                           <p className="mb-1 text-[10px] text-muted-foreground">Replacement</p>
                           {variation.replacement_image_path ? (
-                            <img src={fileUrl(variation.replacement_image_path)} alt="" className="h-24 w-18 rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setExpandedImage(fileUrl(variation.replacement_image_path))} />
+                            <img src={`${fileUrl(variation.replacement_image_path)}?v=${cacheKey}`} alt="" className="h-24 w-18 rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setExpandedImage(`${fileUrl(variation.replacement_image_path)}?v=${cacheKey}`)} />
                           ) : (
                             <div className="flex h-24 w-18 items-center justify-center rounded-lg border border-dashed border-border bg-muted/50">
                               <span className="text-[10px] text-muted-foreground/50">Same</span>
@@ -1612,7 +1612,7 @@ function NewPostPageInner() {
           slideTitle={aiModal.slideTitle}
           isEdit={aiModal.isEdit}
           onClose={() => setAiModal(null)}
-          onSuccess={() => { setAiModal(null); reloadPost(); toast.success(aiModal.isEdit ? "Image updated! Review and approve it." : "Image generated! Review and approve it."); }}
+          onSuccess={() => { setAiModal(null); reloadPost(); setCacheKey(Date.now()); toast.success(aiModal.isEdit ? "Image updated! Review and approve it." : "Image generated! Review and approve it."); }}
         />
       )}
 
