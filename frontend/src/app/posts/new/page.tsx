@@ -271,7 +271,7 @@ function NewPostPageInner() {
   const [failedOutputs, setFailedOutputs] = useState<any[]>([]);
   const [editLoaded, setEditLoaded] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
-  const [aiModal, setAiModal] = useState<{ variationId: number; slideImageUrl: string; slideTitle?: string } | null>(null);
+  const [aiModal, setAiModal] = useState<{ variationId: number; slideImageUrl: string; slideTitle?: string; isEdit?: boolean } | null>(null);
   const [activeTab, setActiveTab] = useState<number>(0);
   const slideTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   // Debounce timer for the post-level caption textarea on Edit Slides
@@ -894,6 +894,12 @@ function NewPostPageInner() {
                               className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
                               <Wand2 className="mr-1 inline h-3 w-3" /> AI Generate
                             </button>
+                            {variation.replacement_image_path && (
+                              <button onClick={() => setAiModal({ variationId: variation.id, slideImageUrl: fileUrl(variation.replacement_image_path), slideTitle: slide.title_text, isEdit: true })}
+                                className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted">
+                                <Wand2 className="mr-1 inline h-3 w-3" /> Edit
+                              </button>
+                            )}
                             {variation.status === "generated" && (
                               <button onClick={() => handleApprove(variation.id)}
                                 className="rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90">
@@ -1571,8 +1577,9 @@ function NewPostPageInner() {
           variationId={aiModal.variationId}
           slideImageUrl={aiModal.slideImageUrl}
           slideTitle={aiModal.slideTitle}
+          isEdit={aiModal.isEdit}
           onClose={() => setAiModal(null)}
-          onSuccess={() => { setAiModal(null); reloadPost(); toast.success("Image generated! Review and approve it."); }}
+          onSuccess={() => { setAiModal(null); reloadPost(); toast.success(aiModal.isEdit ? "Image updated! Review and approve it." : "Image generated! Review and approve it."); }}
         />
       )}
 

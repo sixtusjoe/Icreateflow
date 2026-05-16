@@ -3111,15 +3111,19 @@ async def generate_variation_image(variation_id: int, data: FluxGenerate, user: 
         _u_rows2 = await db.get_user_settings(database, user["id"])
         api_key = _u_rows2.get("openai_api_key") or await db.get_setting(database, "openai_api_key")
 
-        # Resolve the reference image path (original slide image)
+        # Resolve reference image: prefer previously-generated image (for edits),
+        # fall back to original slide master image (for first-time generation).
         ref_path: str | None = None
         if data.use_reference:
-            cursor2 = await database.execute(
-                "SELECT master_image_path FROM slides WHERE id = ?", (var["slide_id"],)
-            )
-            slide_row = await cursor2.fetchone()
-            if slide_row and slide_row["master_image_path"]:
-                ref_path = slide_row["master_image_path"]
+            if var.get("replacement_image_path") and Path(var["replacement_image_path"]).exists():
+                ref_path = var["replacement_image_path"]
+            else:
+                cursor2 = await database.execute(
+                    "SELECT master_image_path FROM slides WHERE id = ?", (var["slide_id"],)
+                )
+                slide_row = await cursor2.fetchone()
+                if slide_row and slide_row["master_image_path"]:
+                    ref_path = slide_row["master_image_path"]
 
         await openai_image.generate_image(
             prompt=data.prompt,

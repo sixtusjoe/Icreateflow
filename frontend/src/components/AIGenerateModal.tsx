@@ -23,6 +23,7 @@ interface AIGenerateModalProps {
   variationId: number
   slideImageUrl?: string
   slideTitle?: string
+  isEdit?: boolean   // true when editing an already-generated image
   onClose: () => void
   onSuccess: () => void
 }
@@ -32,6 +33,7 @@ export function AIGenerateModal({
   variationId,
   slideImageUrl,
   slideTitle,
+  isEdit = false,
   onClose,
   onSuccess,
 }: AIGenerateModalProps) {
@@ -91,7 +93,7 @@ export function AIGenerateModal({
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div className="flex items-center gap-2">
             <Wand2 className="h-4 w-4 text-foreground" />
-            <span className="text-sm font-semibold">AI Generate Image</span>
+            <span className="text-sm font-semibold">{isEdit ? "Edit Generated Image" : "AI Generate Image"}</span>
           </div>
           <button
             onClick={onClose}
@@ -119,7 +121,7 @@ export function AIGenerateModal({
                 {slideTitle && (
                   <p className="mt-0.5 truncate text-sm font-medium">{slideTitle}</p>
                 )}
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Image will be used as visual context</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">{isEdit ? "Edits will be applied to this image" : "Image will be used as visual context"}</p>
               </div>
             </div>
           )}
