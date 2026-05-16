@@ -70,7 +70,7 @@ async def generate_image(
         }
 
         def _do_request():
-            with httpx.Client(timeout=120) as client:
+            with httpx.Client(timeout=300) as client:
                 resp = client.post(
                     "https://api.openai.com/v1/images/edits",
                     headers=headers,
@@ -93,7 +93,7 @@ async def generate_image(
         }
 
         def _do_request():
-            with httpx.Client(timeout=120) as client:
+            with httpx.Client(timeout=300) as client:
                 resp = client.post(
                     "https://api.openai.com/v1/images/generations",
                     headers={**headers, "Content-Type": "application/json"},
