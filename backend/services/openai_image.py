@@ -46,14 +46,20 @@ async def generate_image(
     headers = {"Authorization": f"Bearer {token}"}
 
     if reference_image_path and Path(reference_image_path).exists():
-        # Image-guided generation via /v1/images/edits
-        image_bytes = Path(reference_image_path).read_bytes()
-        # Detect mime type from extension
-        ext = Path(reference_image_path).suffix.lower()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
+        # OpenAI edits endpoint requires PNG. Convert if needed.
+        import io
+        from PIL import Image as _PILImage
+
+        def _to_png_bytes(path: str) -> bytes:
+            img = _PILImage.open(path).convert("RGBA")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        image_bytes = await asyncio.to_thread(_to_png_bytes, reference_image_path)
 
         files = {
-            "image": (Path(reference_image_path).name, image_bytes, mime),
+            "image": ("reference.png", image_bytes, "image/png"),
         }
         data = {
             "model": "gpt-image-1",
@@ -70,7 +76,8 @@ async def generate_image(
                     data=data,
                     files=files,
                 )
-                resp.raise_for_status()
+                if not resp.is_success:
+                    raise RuntimeError(f"OpenAI error {resp.status_code}: {resp.text}")
                 return resp.json()
 
         result = await asyncio.to_thread(_do_request)
@@ -90,7 +97,8 @@ async def generate_image(
                     headers={**headers, "Content-Type": "application/json"},
                     json=payload,
                 )
-                resp.raise_for_status()
+                if not resp.is_success:
+                    raise RuntimeError(f"OpenAI error {resp.status_code}: {resp.text}")
                 return resp.json()
 
         result = await asyncio.to_thread(_do_request)
