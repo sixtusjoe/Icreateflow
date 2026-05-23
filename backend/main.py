@@ -6844,7 +6844,7 @@ async def assign_audio_clip(
         clip_db_id = await db.create_clip(
             database,
             artist_id=acct["artist_id"],
-            source="audio_to_video",
+            source="upload",   # constraint only allows upload|gdrive
             filename=filename,
             local_path=video_path,
             duration_s=clip_duration,
