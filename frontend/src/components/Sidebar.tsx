@@ -11,6 +11,7 @@ import {
   Library,
   CalendarClock,
   Music,
+  Music2,
   Settings,
   Shield,
   Scissors,
@@ -30,6 +31,7 @@ const mainLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/posts/new", label: "New Post", icon: PlusCircle },
   { href: "/clipping", label: "Clipping", icon: Scissors },
+  { href: "/clipping/audio-to-video", label: "Audio to Video", icon: Music2 },
 ];
 
 const libraryLinks = [

@@ -25,6 +25,7 @@ import database as db
 from services import tiktok_scraper, ocr, generator, overlay, video
 from services import openai_image
 from services import oauth as oauth_svc
+from services import audio_video as audio_video_svc
 from services import clip_scheduler
 from services.auth import hash_password, verify_password, create_access_token, decode_token
 
@@ -6323,6 +6324,592 @@ async def admin_reconcile_clip_post(
         except Exception as e:  # noqa: BLE001
             polled = {"error": str(e)}
         return {"ok": True, "before": before, "new_platform_post_id": new_id, "polled": polled}
+    finally:
+        await database.close()
+
+
+# ---------------------------------------------------------------------------
+# Audio to Video endpoints
+# ---------------------------------------------------------------------------
+
+class AudioSplitRequest(BaseModel):
+    clips: int  # 1, 3, or 5
+
+
+class AudioGenerateRequest(BaseModel):
+    template_id: str = "minimal"
+    background_image_path: Optional[str] = None
+
+
+class AudioLyricsWord(BaseModel):
+    word: str
+    start_s: float
+    end_s: float
+
+
+class AudioLyricsRequest(BaseModel):
+    words: list[AudioLyricsWord]
+
+
+class AudioAssignRequest(BaseModel):
+    artist_account_id: int
+
+
+@app.get("/api/audio-to-video/tracks")
+async def list_audio_tracks(
+    artist_id: int = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    """List all audio tracks uploaded for an artist."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT * FROM audio_tracks WHERE artist_id = ? ORDER BY created_at DESC",
+            (artist_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await database.close()
+
+
+@app.post("/api/audio-to-video/upload")
+async def upload_audio_track(
+    artist_id: int = Form(...),
+    title: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Upload an audio file, transcribe with Whisper, and return word timestamps."""
+    allowed = {
+        "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
+        "audio/mp4", "audio/m4a", "audio/aac", "audio/x-aac",
+        "audio/ogg", "audio/flac",
+    }
+    content_type = file.content_type or ""
+    if content_type not in allowed and not file.filename.lower().endswith(
+        (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+    ):
+        raise HTTPException(400, "Unsupported audio format")
+
+    # Save uploaded file
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT slug FROM artists WHERE id = ?", (artist_id,))
+        artist_row = await cur.fetchone()
+        if not artist_row:
+            raise HTTPException(404, "Artist not found")
+        artist_slug = artist_row["slug"]
+    finally:
+        await database.close()
+
+    audio_dir = Path("uploads") / artist_slug / "audio_to_video"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # Unique filename to avoid collisions
+    import uuid as _uuid
+    safe_name = f"{_uuid.uuid4().hex}_{Path(file.filename).name}"
+    audio_path = audio_dir / safe_name
+    contents = await file.read()
+    audio_path.write_bytes(contents)
+
+    # Get duration via ffprobe
+    duration_s: Optional[float] = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format",
+            str(audio_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        import json as _json
+        ffprobe_data = _json.loads(stdout)
+        duration_s = float(ffprobe_data.get("format", {}).get("duration", 0)) or None
+    except Exception as e:
+        print(f"[audio-to-video] ffprobe failed: {e}")
+
+    # Whisper transcription
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise HTTPException(500, "OpenAI API key not configured")
+
+    words = []
+    try:
+        import httpx as _httpx
+        with open(str(audio_path), "rb") as audio_f:
+            audio_bytes = audio_f.read()
+
+        def _whisper_request():
+            with _httpx.Client(timeout=300) as client:
+                resp = client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    data={
+                        "model": "whisper-1",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "word",
+                    },
+                    files={"file": (safe_name, audio_bytes, "audio/mpeg")},
+                )
+                if not resp.is_success:
+                    raise RuntimeError(f"Whisper API error {resp.status_code}: {resp.text[:200]}")
+                return resp.json()
+
+        whisper_result = await asyncio.to_thread(_whisper_request)
+        raw_words = whisper_result.get("words") or []
+        words = [
+            {"word": w["word"].strip(), "start_s": float(w["start"]), "end_s": float(w["end"])}
+            for w in raw_words
+            if w.get("word", "").strip()
+        ]
+    except Exception as e:
+        print(f"[audio-to-video] Whisper transcription failed: {e}")
+        # Continue without words — user can edit manually
+
+    # Save to DB
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "INSERT INTO audio_tracks (artist_id, title, local_path, duration_s) VALUES (?, ?, ?, ?)",
+            (artist_id, title or Path(file.filename).stem, str(audio_path), duration_s),
+        )
+        await database.commit()
+        track_id = cur.lastrowid
+
+        for w in words:
+            await database.execute(
+                "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, 0, ?, ?, ?)",
+                (track_id, w["word"], w["start_s"], w["end_s"]),
+            )
+        await database.commit()
+
+        return {
+            "track_id": track_id,
+            "duration_s": duration_s,
+            "words": words,
+            "word_count": len(words),
+        }
+    finally:
+        await database.close()
+
+
+@app.get("/api/audio-to-video/{track_id}")
+async def get_audio_track(
+    track_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Get an audio track with its clips and transcription words."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,))
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Audio track not found")
+
+        cur = await database.execute(
+            "SELECT * FROM audio_clips WHERE audio_track_id = ? ORDER BY clip_index",
+            (track_id,),
+        )
+        clips_rows = await cur.fetchall()
+
+        clips = []
+        for c in clips_rows:
+            c_dict = dict(c)
+            # attach video status
+            cur2 = await database.execute(
+                "SELECT * FROM audio_video_clips WHERE audio_clip_id = ? ORDER BY id DESC LIMIT 1",
+                (c_dict["id"],),
+            )
+            avc = await cur2.fetchone()
+            c_dict["video"] = dict(avc) if avc else None
+            clips.append(c_dict)
+
+        cur = await database.execute(
+            "SELECT * FROM audio_words WHERE audio_track_id = ? ORDER BY start_s",
+            (track_id,),
+        )
+        words = [dict(w) for w in await cur.fetchall()]
+
+        return {**dict(track), "clips": clips, "words": words}
+    finally:
+        await database.close()
+
+
+@app.post("/api/audio-to-video/{track_id}/split")
+async def split_audio_track(
+    track_id: int,
+    data: AudioSplitRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Split an audio track into 1, 3, or 5 equal clips and write FFmpeg segments."""
+    if data.clips not in (1, 3, 5):
+        raise HTTPException(400, "clips must be 1, 3, or 5")
+
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,))
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Audio track not found")
+        track = dict(track)
+    finally:
+        await database.close()
+
+    duration = track.get("duration_s") or 0
+    if duration <= 0:
+        raise HTTPException(400, "Track duration is unknown — cannot split")
+
+    audio_path = track["local_path"]
+    clip_dir = Path(audio_path).parent / f"clips_{track_id}"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+
+    clip_duration = duration / data.clips
+    created_clips = []
+
+    # Delete existing clips for this track
+    database = await db.get_db()
+    try:
+        await database.execute(
+            "DELETE FROM audio_clips WHERE audio_track_id = ?", (track_id,)
+        )
+        await database.commit()
+    finally:
+        await database.close()
+
+    for i in range(data.clips):
+        start_s = i * clip_duration
+        end_s = min((i + 1) * clip_duration, duration)
+        clip_path = str(clip_dir / f"clip_{i:02d}.mp3")
+
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", audio_path,
+            "-ss", str(start_s),
+            "-to", str(end_s),
+            "-c", "copy",
+            clip_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            raise HTTPException(500, f"FFmpeg split failed for clip {i}: {stderr.decode()[:200]}")
+
+        database = await db.get_db()
+        try:
+            cur = await database.execute(
+                "INSERT INTO audio_clips (audio_track_id, clip_index, start_s, end_s, local_path) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (track_id, i, start_s, end_s, clip_path),
+            )
+            await database.commit()
+            clip_id = cur.lastrowid
+        finally:
+            await database.close()
+
+        # Assign words to clip
+        database = await db.get_db()
+        try:
+            await database.execute(
+                "UPDATE audio_words SET clip_index = ? "
+                "WHERE audio_track_id = ? AND start_s >= ? AND start_s < ?",
+                (i, track_id, start_s, end_s),
+            )
+            await database.commit()
+
+            cur = await database.execute(
+                "SELECT COUNT(*) as cnt FROM audio_words WHERE audio_track_id = ? AND clip_index = ?",
+                (track_id, i),
+            )
+            word_count_row = await cur.fetchone()
+            word_count = word_count_row["cnt"] if word_count_row else 0
+        finally:
+            await database.close()
+
+        created_clips.append({
+            "clip_id": clip_id,
+            "clip_index": i,
+            "start_s": start_s,
+            "end_s": end_s,
+            "word_count": word_count,
+        })
+
+    return {"track_id": track_id, "clips": created_clips}
+
+
+@app.get("/api/audio-to-video/clips/{clip_id}")
+async def get_audio_clip(
+    clip_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Get a single audio clip with its words and current video status."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_clips WHERE id = ?", (clip_id,))
+        clip = await cur.fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        clip = dict(clip)
+
+        cur = await database.execute(
+            "SELECT * FROM audio_words WHERE audio_track_id = ? AND clip_index = ? ORDER BY start_s",
+            (clip["audio_track_id"], clip["clip_index"]),
+        )
+        words = [dict(w) for w in await cur.fetchall()]
+
+        cur = await database.execute(
+            "SELECT * FROM audio_video_clips WHERE audio_clip_id = ? ORDER BY id DESC LIMIT 1",
+            (clip_id,),
+        )
+        avc = await cur.fetchone()
+
+        return {**clip, "words": words, "video": dict(avc) if avc else None}
+    finally:
+        await database.close()
+
+
+@app.post("/api/audio-to-video/clips/{clip_id}/generate")
+async def generate_audio_video_clip(
+    clip_id: int,
+    data: AudioGenerateRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    """Kick off async video generation for an audio clip."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_clips WHERE id = ?", (clip_id,))
+        clip = await cur.fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        clip = dict(clip)
+
+        # Get words for this clip
+        cur = await database.execute(
+            "SELECT word, start_s, end_s FROM audio_words "
+            "WHERE audio_track_id = ? AND clip_index = ? ORDER BY start_s",
+            (clip["audio_track_id"], clip["clip_index"]),
+        )
+        words = [dict(w) for w in await cur.fetchall()]
+
+        # Get artist slug from audio_tracks
+        cur = await database.execute(
+            "SELECT at.*, ar.slug FROM audio_tracks at "
+            "JOIN artists ar ON ar.id = at.artist_id "
+            "WHERE at.id = ?",
+            (clip["audio_track_id"],),
+        )
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Audio track not found")
+        track = dict(track)
+
+        # Create or reset the AudioVideoClip row
+        cur = await database.execute(
+            "SELECT id FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,)
+        )
+        existing = await cur.fetchone()
+        if existing:
+            await database.execute(
+                "UPDATE audio_video_clips SET status = 'generating', error = NULL, "
+                "template_id = ?, background_image_path = ?, video_path = NULL WHERE audio_clip_id = ?",
+                (data.template_id, data.background_image_path, clip_id),
+            )
+            await database.commit()
+            avc_id = existing["id"]
+        else:
+            cur = await database.execute(
+                "INSERT INTO audio_video_clips (audio_clip_id, template_id, background_image_path, status) "
+                "VALUES (?, ?, ?, 'generating')",
+                (clip_id, data.template_id, data.background_image_path),
+            )
+            await database.commit()
+            avc_id = cur.lastrowid
+    finally:
+        await database.close()
+
+    # Output path
+    artist_slug = track["slug"]
+    out_dir = Path("output") / artist_slug / "audio_clips"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    video_path = str(out_dir / f"clip_{clip_id}.mp4")
+
+    async def _run_generate():
+        err = None
+        try:
+            await audio_video_svc.generate_audio_video_clip(
+                audio_clip_path=clip["local_path"],
+                clip_start_s=clip["start_s"],
+                clip_end_s=clip["end_s"],
+                words=words,
+                template_id=data.template_id,
+                output_path=video_path,
+                background_image_path=data.background_image_path,
+            )
+        except Exception as e:
+            err = str(e)
+            print(f"[audio-to-video] generate failed clip {clip_id}: {e}")
+
+        database2 = await db.get_db()
+        try:
+            if err:
+                await database2.execute(
+                    "UPDATE audio_video_clips SET status = 'failed', error = ? WHERE id = ?",
+                    (err[:500], avc_id),
+                )
+            else:
+                await database2.execute(
+                    "UPDATE audio_video_clips SET status = 'done', video_path = ? WHERE id = ?",
+                    (video_path, avc_id),
+                )
+            await database2.commit()
+        finally:
+            await database2.close()
+
+    background_tasks.add_task(_run_generate)
+    return {"avc_id": avc_id, "status": "generating"}
+
+
+@app.put("/api/audio-to-video/clips/{clip_id}/lyrics")
+async def update_audio_clip_lyrics(
+    clip_id: int,
+    data: AudioLyricsRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update per-word timestamps for a clip; invalidates any generated video."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_clips WHERE id = ?", (clip_id,))
+        clip = await cur.fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        clip = dict(clip)
+
+        # Delete existing words for this clip and replace
+        await database.execute(
+            "DELETE FROM audio_words WHERE audio_track_id = ? AND clip_index = ?",
+            (clip["audio_track_id"], clip["clip_index"]),
+        )
+        for w in data.words:
+            await database.execute(
+                "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, ?, ?, ?, ?)",
+                (clip["audio_track_id"], clip["clip_index"], w.word, w.start_s, w.end_s),
+            )
+        await database.commit()
+
+        # Invalidate generated video → set back to pending
+        await database.execute(
+            "UPDATE audio_video_clips SET status = 'pending', video_path = NULL, error = NULL "
+            "WHERE audio_clip_id = ?",
+            (clip_id,),
+        )
+        await database.commit()
+
+        return {"ok": True, "word_count": len(data.words)}
+    finally:
+        await database.close()
+
+
+@app.post("/api/audio-to-video/clips/{clip_id}/assign")
+async def assign_audio_clip(
+    clip_id: int,
+    data: AudioAssignRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Assign a generated video clip to an artist variation for scheduling."""
+    database = await db.get_db()
+    try:
+        # Verify the clip exists and has a generated video
+        cur = await database.execute(
+            "SELECT avc.*, ac.audio_track_id, ac.clip_index, ac.start_s, ac.end_s "
+            "FROM audio_video_clips avc "
+            "JOIN audio_clips ac ON ac.id = avc.audio_clip_id "
+            "WHERE avc.audio_clip_id = ? AND avc.status = 'done'",
+            (clip_id,),
+        )
+        avc = await cur.fetchone()
+        if not avc:
+            raise HTTPException(400, "No completed video for this clip. Generate first.")
+        avc = dict(avc)
+
+        # Look up the artist_account to get artist_id
+        cur = await database.execute(
+            "SELECT * FROM artist_accounts WHERE id = ?", (data.artist_account_id,)
+        )
+        acct = await cur.fetchone()
+        if not acct:
+            raise HTTPException(404, "Artist account not found")
+        acct = dict(acct)
+
+        # Get clip duration
+        clip_duration = avc["end_s"] - avc["start_s"]
+
+        # Create a Clip record that the scheduler can pick up
+        video_path = avc["video_path"]
+        filename = Path(video_path).name
+        clip_db_id = await db.create_clip(
+            database,
+            artist_id=acct["artist_id"],
+            source="audio_to_video",
+            filename=filename,
+            local_path=video_path,
+            duration_s=clip_duration,
+            artist_account_id=data.artist_account_id,
+        )
+
+        # Update audio_video_clips to record the assignment
+        await database.execute(
+            "UPDATE audio_video_clips SET artist_account_id = ? WHERE audio_clip_id = ?",
+            (data.artist_account_id, clip_id),
+        )
+        await database.commit()
+
+        return {
+            "ok": True,
+            "clip_id": clip_db_id,
+            "artist_account_id": data.artist_account_id,
+        }
+    finally:
+        await database.close()
+
+
+@app.delete("/api/audio-to-video/{track_id}")
+async def delete_audio_track(
+    track_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Delete an audio track and all its clips/videos."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT local_path FROM audio_tracks WHERE id = ?", (track_id,)
+        )
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Audio track not found")
+
+        # Cascade-delete via FK; also clean files
+        await database.execute("DELETE FROM audio_tracks WHERE id = ?", (track_id,))
+        await database.commit()
+
+        # Best-effort file cleanup
+        try:
+            audio_path = Path(dict(track)["local_path"])
+            if audio_path.exists():
+                audio_path.unlink()
+            # Remove clips dir if it exists
+            clips_dir = audio_path.parent / f"clips_{track_id}"
+            if clips_dir.exists():
+                import shutil as _shutil
+                _shutil.rmtree(clips_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"[audio-to-video] file cleanup failed: {e}")
+
+        return {"ok": True}
     finally:
         await database.close()
 

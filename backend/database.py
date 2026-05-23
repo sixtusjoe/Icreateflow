@@ -454,6 +454,61 @@ class Clip(Base):
     __table_args__ = (CheckConstraint("source IN ('upload','gdrive')", name="clips_source_chk"),)
 
 
+# ---------------------------------------------------------------------------
+# Audio-to-Video tables
+# ---------------------------------------------------------------------------
+
+class AudioTrack(Base):
+    """An uploaded audio file (music track) for the Audio-to-Video feature."""
+    __tablename__ = "audio_tracks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    local_path: Mapped[str] = mapped_column(Text, nullable=False)
+    duration_s: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
+class AudioWord(Base):
+    """Whisper word-level timestamp for a track."""
+    __tablename__ = "audio_words"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audio_track_id: Mapped[int] = mapped_column(ForeignKey("audio_tracks.id", ondelete="CASCADE"), nullable=False)
+    clip_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    word: Mapped[str] = mapped_column(Text, nullable=False)
+    start_s: Mapped[float] = mapped_column(Double, nullable=False)
+    end_s: Mapped[float] = mapped_column(Double, nullable=False)
+
+
+class AudioClip(Base):
+    """A time segment of an AudioTrack (1, 3, or 5 per track)."""
+    __tablename__ = "audio_clips"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audio_track_id: Mapped[int] = mapped_column(ForeignKey("audio_tracks.id", ondelete="CASCADE"), nullable=False)
+    clip_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_s: Mapped[float] = mapped_column(Double, nullable=False)
+    end_s: Mapped[float] = mapped_column(Double, nullable=False)
+    local_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
+class AudioVideoClip(Base):
+    """A generated 9:16 video clip for an AudioClip."""
+    __tablename__ = "audio_video_clips"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audio_clip_id: Mapped[int] = mapped_column(ForeignKey("audio_clips.id", ondelete="CASCADE"), nullable=False)
+    # NULL = shared; non-NULL = scoped to one variation
+    artist_account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("artist_accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    template_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="'minimal'")
+    background_image_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    video_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="'pending'")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
 class ClipCaptionVariant(Base):
     """Per-(clip, variation, platform) paraphrased caption.
 

@@ -554,3 +554,55 @@ export const updateVariationTiktokSettings = (
   data: TikTokSettingsPatch,
 ) =>
   api.patch(`/api/variations/${variation_id}/tiktok`, data).then((r) => r.data);
+
+// ---------------------------------------------------------------------------
+// Audio to Video
+// ---------------------------------------------------------------------------
+
+export const listAudioTracks = (artistId: number) =>
+  api.get(`/api/audio-to-video/tracks?artist_id=${artistId}`).then((r) => r.data);
+
+export const uploadAudioTrack = (artistId: number, file: File, title?: string) => {
+  const form = new FormData();
+  form.append("artist_id", String(artistId));
+  form.append("file", file);
+  if (title) form.append("title", title);
+  return api.post("/api/audio-to-video/upload", form).then((r) => r.data);
+};
+
+export const getAudioTrack = (trackId: number) =>
+  api.get(`/api/audio-to-video/${trackId}`).then((r) => r.data);
+
+export const deleteAudioTrack = (trackId: number) =>
+  api.delete(`/api/audio-to-video/${trackId}`).then((r) => r.data);
+
+export const splitAudioTrack = (trackId: number, clips: 1 | 3 | 5) =>
+  api.post(`/api/audio-to-video/${trackId}/split`, { clips }).then((r) => r.data);
+
+export const getAudioClip = (clipId: number) =>
+  api.get(`/api/audio-to-video/clips/${clipId}`).then((r) => r.data);
+
+export const generateAudioVideoClip = (
+  clipId: number,
+  templateId: string,
+  backgroundImagePath?: string,
+) =>
+  api
+    .post(`/api/audio-to-video/clips/${clipId}/generate`, {
+      template_id: templateId,
+      background_image_path: backgroundImagePath ?? null,
+    })
+    .then((r) => r.data);
+
+export const updateAudioClipLyrics = (
+  clipId: number,
+  words: { word: string; start_s: number; end_s: number }[],
+) =>
+  api.put(`/api/audio-to-video/clips/${clipId}/lyrics`, { words }).then((r) => r.data);
+
+export const assignAudioClip = (clipId: number, artistAccountId: number) =>
+  api
+    .post(`/api/audio-to-video/clips/${clipId}/assign`, {
+      artist_account_id: artistAccountId,
+    })
+    .then((r) => r.data);
