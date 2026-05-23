@@ -6439,10 +6439,33 @@ async def upload_audio_track(
             print(f"[audio-to-video] ffprobe failed: {e}")
 
         # Whisper word-level transcription
+        # Whisper API hard-limit is 25 MB.  Convert to mono MP3 @ 128 kbps /
+        # 16 kHz first — this shrinks a 28 MB WAV to ~2 MB and works for every
+        # input format (WAV, FLAC, OGG, etc.).
         words = []
+        _whisper_tmp = None
         try:
             import httpx as _httpx
-            audio_bytes = audio_path.read_bytes()
+            _whisper_tmp = str(audio_path) + "_whisper.mp3"
+            _conv_cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(audio_path),
+                "-ac", "1",           # mono
+                "-ar", "16000",       # 16 kHz — sufficient for Whisper
+                "-c:a", "libmp3lame", "-q:a", "5",  # ~128 kbps
+                _whisper_tmp,
+            ]
+            _conv_proc = await asyncio.create_subprocess_exec(
+                *_conv_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, _conv_err = await asyncio.wait_for(_conv_proc.communicate(), timeout=120)
+            if _conv_proc.returncode != 0:
+                raise RuntimeError(f"FFmpeg convert for Whisper failed: {_conv_err.decode()[:200]}")
+
+            audio_bytes = Path(_whisper_tmp).read_bytes()
+            whisper_filename = Path(_whisper_tmp).name
 
             def _whisper_request():
                 with _httpx.Client(timeout=300) as client:
@@ -6454,7 +6477,7 @@ async def upload_audio_track(
                             "response_format": "verbose_json",
                             "timestamp_granularities[]": "word",
                         },
-                        files={"file": (safe_name, audio_bytes, "audio/mpeg")},
+                        files={"file": (whisper_filename, audio_bytes, "audio/mpeg")},
                     )
                     if not resp.is_success:
                         raise RuntimeError(f"Whisper API error {resp.status_code}: {resp.text[:200]}")
@@ -6467,9 +6490,16 @@ async def upload_audio_track(
                 for w in raw_words
                 if w.get("word", "").strip()
             ]
+            print(f"[audio-to-video] Whisper returned {len(words)} words")
         except Exception as e:
             print(f"[audio-to-video] Whisper transcription failed: {e}")
             # Continue without words — user can edit manually
+        finally:
+            if _whisper_tmp:
+                try:
+                    os.unlink(_whisper_tmp)
+                except Exception:
+                    pass
 
         # Save track + words to DB
         cur = await database.execute(

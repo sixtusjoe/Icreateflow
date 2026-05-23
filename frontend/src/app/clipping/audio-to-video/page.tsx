@@ -666,15 +666,18 @@ export default function AudioToVideoPage() {
                     Preview
                   </p>
                   {activeClip.video?.status === "done" && activeClip.video.video_path ? (
-                    <div className="overflow-hidden rounded-xl border border-border bg-black">
-                      <video
-                        ref={videoRef}
-                        key={activeClip.id}
-                        src={`/files/${activeClip.video.video_path}`}
-                        controls
-                        className="w-full"
-                        style={{ maxHeight: "480px", objectFit: "contain" }}
-                      />
+                    <div className="flex justify-center">
+                      {/* Constrain to 9:16 — max 300px wide so it fits the panel */}
+                      <div className="overflow-hidden rounded-xl border border-border bg-black w-full max-w-[300px]"
+                           style={{ aspectRatio: "9/16" }}>
+                        <video
+                          ref={videoRef}
+                          key={activeClip.id}
+                          src={`/files/${activeClip.video.video_path}`}
+                          controls
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
                     </div>
                   ) : activeClip.video?.status === "generating" || generating[activeClip.id] ? (
                     <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card sm:h-64">
