@@ -64,10 +64,18 @@ function NavSection({ title, links, pathname, collapsed }: {
       )}
       <div className="space-y-0.5">
         {links.map((link) => {
+          // Most-specific match wins: if another link in this section is a
+          // longer prefix of pathname, this link should NOT be active.
           const isActive =
             link.href === "/posts"
               ? pathname === "/posts"
-              : pathname === link.href || pathname.startsWith(link.href + "/");
+              : (pathname === link.href || pathname.startsWith(link.href + "/")) &&
+                !links.some(
+                  (other) =>
+                    other.href !== link.href &&
+                    other.href.length > link.href.length &&
+                    (pathname === other.href || pathname.startsWith(other.href + "/"))
+                );
           return (
             <Link
               key={link.href}

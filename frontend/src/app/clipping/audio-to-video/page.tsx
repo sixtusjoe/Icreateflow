@@ -337,7 +337,7 @@ export default function AudioToVideoPage() {
       {/* Header */}
       <div className="border-b border-border/40 px-6 py-4">
         <div className="flex items-center gap-3">
-          <Music2 className="h-6 w-6 text-primary" />
+          <Music2 className="h-6 w-6 text-lime" />
           <h1 className="text-xl font-bold">Audio to Video</h1>
         </div>
         {/* Step dots */}
@@ -348,9 +348,9 @@ export default function AudioToVideoPage() {
                 onClick={() => track && i <= step && setStep(i)}
                 className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-colors ${
                   i === step
-                    ? "bg-primary text-primary-foreground"
+                    ? "bg-lime text-black"
                     : i < step
-                    ? "bg-primary/30 text-primary cursor-pointer"
+                    ? "bg-lime/30 text-black cursor-pointer"
                     : "bg-muted text-muted-foreground cursor-default"
                 }`}
               >
@@ -385,8 +385,8 @@ export default function AudioToVideoPage() {
                     onClick={() => setSelectedArtistId(a.id)}
                     className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
                       selectedArtistId === a.id
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border bg-card hover:border-primary/50"
+                        ? "border-lime bg-lime/10 text-black"
+                        : "border-border bg-card hover:border-lime/50"
                     }`}
                   >
                     {a.name}
@@ -403,10 +403,10 @@ export default function AudioToVideoPage() {
               onClick={() => fileInputRef.current?.click()}
               className={`cursor-pointer rounded-2xl border-2 border-dashed p-12 text-center transition-colors ${
                 isDragging
-                  ? "border-primary bg-primary/5"
+                  ? "border-lime bg-lime/5"
                   : audioFile
                   ? "border-green-500/60 bg-green-500/5"
-                  : "border-border bg-card hover:border-primary/50"
+                  : "border-border bg-card hover:border-lime/50"
               }`}
             >
               <input
@@ -429,7 +429,7 @@ export default function AudioToVideoPage() {
                 <div className="flex flex-col items-center gap-4">
                   <div className="relative">
                     <Music2 className="h-16 w-16 text-muted-foreground/40" />
-                    <Upload className="absolute -bottom-1 -right-1 h-6 w-6 text-primary" />
+                    <Upload className="absolute -bottom-1 -right-1 h-6 w-6 text-lime" />
                   </div>
                   <div>
                     <p className="text-lg font-medium">Drop your audio file here</p>
@@ -449,7 +449,7 @@ export default function AudioToVideoPage() {
                 value={audioTitle}
                 onChange={(e) => setAudioTitle(e.target.value)}
                 placeholder="e.g. Summer Vibes"
-                className="w-full rounded-lg border border-border bg-card px-4 py-2 text-sm outline-none focus:border-primary"
+                className="w-full rounded-lg border border-border bg-card px-4 py-2 text-sm outline-none focus:border-lime"
               />
             </div>
 
@@ -468,8 +468,8 @@ export default function AudioToVideoPage() {
                     onClick={() => setClipCount(n)}
                     className={`flex-1 rounded-xl border py-4 text-center transition-colors ${
                       clipCount === n
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border bg-card hover:border-primary/50"
+                        ? "border-lime bg-lime/10 text-black"
+                        : "border-border bg-card hover:border-lime/50"
                     }`}
                   >
                     <div className="text-2xl font-bold">{n}</div>
@@ -491,7 +491,7 @@ export default function AudioToVideoPage() {
             <button
               onClick={handleUploadAndProcess}
               disabled={!audioFile || !selectedArtistId || uploading}
-              className="w-full rounded-xl bg-primary py-3 font-semibold text-primary-foreground transition-opacity disabled:opacity-50"
+              className="w-full rounded-xl bg-lime py-3 font-semibold text-black transition-opacity disabled:opacity-50"
             >
               {uploading ? (
                 <span className="flex items-center justify-center gap-2">
@@ -518,7 +518,7 @@ export default function AudioToVideoPage() {
               </div>
               <button
                 onClick={handleGenerateAll}
-                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+                className="flex items-center gap-2 rounded-lg bg-lime px-4 py-2 text-sm font-medium text-black"
               >
                 <Wand2 className="h-4 w-4" />
                 Generate All
@@ -554,7 +554,7 @@ export default function AudioToVideoPage() {
                       <button
                         onClick={() => handleGenerateClip(clip.id)}
                         disabled={isGenerating}
-                        className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 bg-lime/10 px-3 py-1.5 text-xs font-medium text-black transition-colors hover:bg-lime/20 disabled:opacity-50"
                       >
                         {isGenerating ? (
                           <>
@@ -587,8 +587,8 @@ export default function AudioToVideoPage() {
                           }
                           className={`flex-1 rounded-xl border p-3 text-left transition-all ${
                             cfg.template_id === t.id
-                              ? "border-primary ring-1 ring-primary"
-                              : "border-border hover:border-primary/50"
+                              ? "border-lime ring-1 ring-lime"
+                              : "border-border hover:border-lime/50"
                           }`}
                         >
                           <div className="mb-2 flex gap-1.5">
@@ -629,7 +629,7 @@ export default function AudioToVideoPage() {
                   setEditingClipId(track.clips[0]?.id ?? null);
                   setStep(2);
                 }}
-                className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground"
+                className="flex items-center gap-2 rounded-lg bg-lime px-5 py-2 text-sm font-medium text-black"
               >
                 Review & Edit <ChevronRight className="h-4 w-4" />
               </button>
@@ -651,7 +651,7 @@ export default function AudioToVideoPage() {
                   }}
                   className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                     activeReviewClip === i
-                      ? "border-primary text-primary"
+                      ? "border-lime text-black"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -683,7 +683,7 @@ export default function AudioToVideoPage() {
                     </div>
                   ) : activeClip.video?.status === "generating" || generating[activeClip.id] ? (
                     <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card">
-                      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                      <Loader2 className="h-8 w-8 animate-spin text-lime" />
                       <p className="text-sm text-muted-foreground">Generating video…</p>
                     </div>
                   ) : activeClip.video?.status === "failed" ? (
@@ -694,7 +694,7 @@ export default function AudioToVideoPage() {
                       </p>
                       <button
                         onClick={() => handleGenerateClip(activeClip.id)}
-                        className="flex items-center gap-1.5 rounded-lg border border-primary/40 px-3 py-1.5 text-xs text-primary"
+                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 px-3 py-1.5 text-xs text-black"
                       >
                         <RefreshCw className="h-3.5 w-3.5" /> Retry
                       </button>
@@ -705,7 +705,7 @@ export default function AudioToVideoPage() {
                       <p className="text-sm text-muted-foreground">No video yet</p>
                       <button
                         onClick={() => handleGenerateClip(activeClip.id)}
-                        className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+                        className="flex items-center gap-1.5 rounded-lg bg-lime px-3 py-1.5 text-xs font-medium text-black"
                       >
                         <Wand2 className="h-3.5 w-3.5" /> Generate
                       </button>
@@ -731,7 +731,7 @@ export default function AudioToVideoPage() {
                       <button
                         onClick={() => handleSaveLyrics(activeClip.id)}
                         disabled={savingLyrics}
-                        className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:border-primary/50"
+                        className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:border-lime/50"
                       >
                         {savingLyrics ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
@@ -746,7 +746,7 @@ export default function AudioToVideoPage() {
                           );
                         }}
                         disabled={savingLyrics || generating[activeClip.id]}
-                        className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                        className="flex items-center gap-1.5 rounded-lg bg-lime px-3 py-1.5 text-xs font-medium text-black disabled:opacity-50"
                       >
                         <RefreshCw className="h-3 w-3" /> Save & Regenerate
                       </button>
@@ -776,7 +776,7 @@ export default function AudioToVideoPage() {
                                   onChange={(e) =>
                                     handleWordChange(activeClip.id, wi, "word", e.target.value)
                                   }
-                                  className="w-full bg-transparent font-mono outline-none focus:text-primary"
+                                  className="w-full bg-transparent font-mono outline-none focus:text-lime"
                                 />
                               </td>
                               <td className="px-3 py-1.5 text-right">
@@ -792,7 +792,7 @@ export default function AudioToVideoPage() {
                                       parseFloat(e.target.value) || 0,
                                     )
                                   }
-                                  className="w-16 bg-transparent text-right font-mono outline-none focus:text-primary"
+                                  className="w-16 bg-transparent text-right font-mono outline-none focus:text-lime"
                                 />
                               </td>
                               <td className="px-3 py-1.5 text-right">
@@ -808,7 +808,7 @@ export default function AudioToVideoPage() {
                                       parseFloat(e.target.value) || 0,
                                     )
                                   }
-                                  className="w-16 bg-transparent text-right font-mono outline-none focus:text-primary"
+                                  className="w-16 bg-transparent text-right font-mono outline-none focus:text-lime"
                                 />
                               </td>
                             </tr>
@@ -830,7 +830,7 @@ export default function AudioToVideoPage() {
               </button>
               <button
                 onClick={() => setStep(3)}
-                className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground"
+                className="flex items-center gap-2 rounded-lg bg-lime px-5 py-2 text-sm font-medium text-black"
               >
                 Assign to Variations <ChevronRight className="h-4 w-4" />
               </button>
@@ -884,7 +884,7 @@ export default function AudioToVideoPage() {
                             key={v.id}
                             onClick={() => handleAssign(clip.id, v.id, v.name)}
                             disabled={assigning[clip.id]}
-                            className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:opacity-50"
+                            className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors hover:border-lime/50 hover:bg-lime/5 disabled:opacity-50"
                           >
                             {assigning[clip.id] ? (
                               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -925,7 +925,7 @@ export default function AudioToVideoPage() {
                   setAssignSuccess({});
                   setStep(0);
                 }}
-                className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground"
+                className="rounded-lg bg-lime px-5 py-2 text-sm font-medium text-black"
               >
                 Start New Track
               </button>
