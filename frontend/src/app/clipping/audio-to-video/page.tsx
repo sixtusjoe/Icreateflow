@@ -27,6 +27,9 @@ import {
   Clock,
   FileVideo,
   Wand2,
+  Trash2,
+  Download,
+  FolderOpen,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -70,27 +73,19 @@ interface AudioTrackData {
   clips: AudioClipData[];
 }
 
+interface TrackSummary {
+  id: number;
+  title: string;
+  duration_s: number;
+  created_at?: string;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TEMPLATES = [
-  {
-    id: "minimal",
-    label: "Minimal",
-    description: "Dark + neon-green",
-    colors: ["#0a0a0f", "#00ffaa"],
-  },
-  {
-    id: "vivid",
-    label: "Vivid",
-    description: "Purple + hot-pink",
-    colors: ["#120028", "#ff5ac8"],
-  },
-  {
-    id: "neon",
-    label: "Neon",
-    description: "Navy + cyan glow",
-    colors: ["#000814", "#00dcff"],
-  },
+  { id: "minimal", label: "Minimal", description: "Dark + neon-green", colors: ["#0a0a0f", "#00ffaa"] },
+  { id: "vivid",   label: "Vivid",   description: "Purple + hot-pink", colors: ["#120028", "#ff5ac8"] },
+  { id: "neon",    label: "Neon",    description: "Navy + cyan glow",  colors: ["#000814", "#00dcff"] },
 ];
 
 const STEPS = ["Upload", "Configure", "Edit", "Assign"];
@@ -107,6 +102,11 @@ function formatDuration(s: number): string {
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
   return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+/** Resolve a backend file path to a public URL */
+function fileUrl(path: string): string {
+  return `/api/files/${path}`;
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -127,10 +127,14 @@ export default function AudioToVideoPage() {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Track library (past tracks for selected artist)
+  const [pastTracks, setPastTracks] = useState<TrackSummary[]>([]);
+  const [loadingPastTracks, setLoadingPastTracks] = useState(false);
+  const [deletingTrackId, setDeletingTrackId] = useState<number | null>(null);
+  const [openingTrackId, setOpeningTrackId] = useState<number | null>(null);
+
   // Configure state — per clip template + bg
-  const [clipConfigs, setClipConfigs] = useState<
-    Record<number, { template_id: string; bg_path?: string }>
-  >({});
+  const [clipConfigs, setClipConfigs] = useState<Record<number, { template_id: string; bg_path?: string }>>({});
   const [generating, setGenerating] = useState<Record<number, boolean>>({});
   const [generationErrors, setGenerationErrors] = useState<Record<number, string>>({});
 
@@ -142,9 +146,7 @@ export default function AudioToVideoPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Assign state
-  const [assignedClips, setAssignedClips] = useState<
-    Record<number, { variationId: number; variationName: string } | null>
-  >({});
+  const [assignedClips, setAssignedClips] = useState<Record<number, { variationId: number; variationName: string } | null>>({});
   const [assigning, setAssigning] = useState<Record<number, boolean>>({});
 
   // Poll interval ref
@@ -162,7 +164,62 @@ export default function AudioToVideoPage() {
   useEffect(() => {
     if (!selectedArtistId) return;
     getArtist(selectedArtistId).then(setArtistDetail);
+    loadPastTracks(selectedArtistId);
   }, [selectedArtistId]);
+
+  // ── Track library helpers ─────────────────────────────────────────────────
+
+  const loadPastTracks = async (artistId: number) => {
+    setLoadingPastTracks(true);
+    try {
+      const data = await listAudioTracks(artistId);
+      setPastTracks(Array.isArray(data) ? data : data.tracks ?? []);
+    } catch {
+      setPastTracks([]);
+    } finally {
+      setLoadingPastTracks(false);
+    }
+  };
+
+  const handleOpenTrack = async (trackId: number) => {
+    setOpeningTrackId(trackId);
+    try {
+      const trackData: AudioTrackData = await getAudioTrack(trackId);
+      setTrack(trackData);
+      const configs: Record<number, { template_id: string }> = {};
+      const words: Record<number, AudioWord[]> = {};
+      for (const clip of trackData.clips) {
+        configs[clip.id] = { template_id: clip.video?.template_id ?? "minimal" };
+        words[clip.id] = clip.words ?? [];
+      }
+      setClipConfigs(configs);
+      setClipWords(words);
+      if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
+      setActiveReviewClip(0);
+      setStep(1);
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || "Failed to load track");
+    } finally {
+      setOpeningTrackId(null);
+    }
+  };
+
+  const handleDeleteTrack = async (trackId: number) => {
+    if (!confirm("Delete this track and all its generated videos?")) return;
+    setDeletingTrackId(trackId);
+    try {
+      await deleteAudioTrack(trackId);
+      setPastTracks((t) => t.filter((x) => x.id !== trackId));
+      if (track?.id === trackId) {
+        setTrack(null);
+        setStep(0);
+      }
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || "Failed to delete track");
+    } finally {
+      setDeletingTrackId(null);
+    }
+  };
 
   // ── File drag and drop ────────────────────────────────────────────────────
 
@@ -191,18 +248,11 @@ export default function AudioToVideoPage() {
     setUploading(true);
     setUploadError("");
     try {
-      const uploadResult = await uploadAudioTrack(
-        selectedArtistId,
-        audioFile,
-        audioTitle || audioFile.name,
-      );
+      const uploadResult = await uploadAudioTrack(selectedArtistId, audioFile, audioTitle || audioFile.name);
       const trackId: number = uploadResult.track_id;
-
       await splitAudioTrack(trackId, clipCount);
-
       const trackData = await getAudioTrack(trackId);
       setTrack(trackData);
-
       const configs: Record<number, { template_id: string }> = {};
       const words: Record<number, AudioWord[]> = {};
       for (const clip of trackData.clips) {
@@ -212,7 +262,8 @@ export default function AudioToVideoPage() {
       setClipConfigs(configs);
       setClipWords(words);
       if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
-
+      // Refresh past tracks list
+      if (selectedArtistId) loadPastTracks(selectedArtistId);
       setStep(1);
     } catch (err: any) {
       setUploadError(err?.response?.data?.detail || err?.message || "Upload failed");
@@ -231,19 +282,14 @@ export default function AudioToVideoPage() {
       await generateAudioVideoClip(clipId, cfg.template_id, cfg.bg_path);
       startPolling();
     } catch (err: any) {
-      setGenerationErrors((e) => ({
-        ...e,
-        [clipId]: err?.response?.data?.detail || err?.message || "Generation failed",
-      }));
+      setGenerationErrors((e) => ({ ...e, [clipId]: err?.response?.data?.detail || err?.message || "Generation failed" }));
       setGenerating((g) => ({ ...g, [clipId]: false }));
     }
   };
 
   const handleGenerateAll = async () => {
     if (!track) return;
-    for (const clip of track.clips) {
-      await handleGenerateClip(clip.id);
-    }
+    for (const clip of track.clips) await handleGenerateClip(clip.id);
   };
 
   const startPolling = useCallback(() => {
@@ -251,25 +297,14 @@ export default function AudioToVideoPage() {
     pollRef.current = setInterval(async () => {
       if (!track) return;
       let allDone = true;
-      const updatedClips = await Promise.all(
-        track.clips.map((c) => getAudioClip(c.id).catch(() => c)),
-      );
+      const updatedClips = await Promise.all(track.clips.map((c) => getAudioClip(c.id).catch(() => c)));
       for (const c of updatedClips) {
         const status = c.video?.status;
         if (status === "generating" || status === "pending") allDone = false;
-        if (status !== "generating") {
-          setGenerating((g) => ({ ...g, [c.id]: false }));
-        }
+        if (status !== "generating") setGenerating((g) => ({ ...g, [c.id]: false }));
       }
-      setTrack((t) =>
-        t
-          ? { ...t, clips: updatedClips.map((c) => ({ ...c, words: c.words ?? [] })) }
-          : t,
-      );
-      if (allDone && pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      setTrack((t) => t ? { ...t, clips: updatedClips.map((c) => ({ ...c, words: c.words ?? [] })) } : t);
+      if (allDone && pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }, 3000);
   }, [track]);
 
@@ -277,12 +312,7 @@ export default function AudioToVideoPage() {
 
   // ── Lyrics editing ────────────────────────────────────────────────────────
 
-  const handleWordChange = (
-    clipId: number,
-    wordIndex: number,
-    field: keyof AudioWord,
-    value: string | number,
-  ) => {
+  const handleWordChange = (clipId: number, wordIndex: number, field: keyof AudioWord, value: string | number) => {
     setClipWords((cw) => {
       const updated = [...(cw[clipId] ?? [])];
       updated[wordIndex] = { ...updated[wordIndex], [field]: value };
@@ -316,8 +346,7 @@ export default function AudioToVideoPage() {
     }
   };
 
-  const activeClip =
-    track?.clips.find((c) => c.id === editingClipId) ?? track?.clips[0] ?? null;
+  const activeClip = track?.clips.find((c) => c.id === editingClipId) ?? track?.clips[0] ?? null;
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -331,7 +360,7 @@ export default function AudioToVideoPage() {
           <h1 className="text-lg font-bold sm:text-xl">Audio to Video</h1>
         </div>
 
-        {/* Step indicator — dots only on xs, dots+labels on sm+ */}
+        {/* Step indicator */}
         <div className="mt-3 flex items-center gap-1 sm:gap-2 overflow-x-auto pb-0.5">
           {STEPS.map((s, i) => (
             <div key={s} className="flex shrink-0 items-center gap-1 sm:gap-2">
@@ -347,19 +376,9 @@ export default function AudioToVideoPage() {
               >
                 {i < step ? <CheckCircle2 className="h-3.5 w-3.5" /> : i + 1}
               </button>
-              {/* Label — hidden on xs, shown on sm+ */}
-              <span className={`hidden sm:inline text-sm ${
-                i === step ? "font-medium text-foreground" : "text-muted-foreground"
-              }`}>
-                {s}
-              </span>
-              {/* On xs show current step label only */}
-              {i === step && (
-                <span className="sm:hidden text-xs font-medium text-foreground">{s}</span>
-              )}
-              {i < STEPS.length - 1 && (
-                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              )}
+              <span className={`hidden sm:inline text-sm ${i === step ? "font-medium text-foreground" : "text-muted-foreground"}`}>{s}</span>
+              {i === step && <span className="sm:hidden text-xs font-medium text-foreground">{s}</span>}
+              {i < STEPS.length - 1 && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
             </div>
           ))}
         </div>
@@ -370,7 +389,7 @@ export default function AudioToVideoPage() {
 
         {/* ── Step 0: Upload ──────────────────────────────────────────────── */}
         {step === 0 && (
-          <div className="space-y-5">
+          <div className="space-y-6">
 
             {/* Artist selector */}
             <div>
@@ -392,18 +411,69 @@ export default function AudioToVideoPage() {
               </div>
             </div>
 
-            {/* Drop zone — compact on mobile */}
+            {/* ── Past Tracks Library ─────────────────────────────────────── */}
+            {selectedArtistId && (loadingPastTracks || pastTracks.length > 0) && (
+              <div>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold flex items-center gap-2">
+                    <FolderOpen className="h-4 w-4 text-lime" />
+                    Your Tracks
+                  </h2>
+                  {loadingPastTracks && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                </div>
+                <div className="space-y-2">
+                  {pastTracks.map((pt) => (
+                    <div
+                      key={pt.id}
+                      className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+                    >
+                      <Music2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate text-sm font-medium">{pt.title}</p>
+                        {pt.duration_s && (
+                          <p className="text-xs text-muted-foreground">{formatDuration(pt.duration_s)}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleOpenTrack(pt.id)}
+                          disabled={openingTrackId === pt.id}
+                          className="flex items-center gap-1.5 rounded-lg bg-lime px-3 py-1.5 text-xs font-medium text-black disabled:opacity-50"
+                        >
+                          {openingTrackId === pt.id
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : <FolderOpen className="h-3.5 w-3.5" />}
+                          Open
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTrack(pt.id)}
+                          disabled={deletingTrackId === pt.id}
+                          className="flex items-center justify-center rounded-lg border border-border p-1.5 text-muted-foreground hover:border-destructive/50 hover:text-destructive transition-colors disabled:opacity-50"
+                        >
+                          {deletingTrackId === pt.id
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : <Trash2 className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 border-t border-border/40 pt-4">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Upload New Track</p>
+                </div>
+              </div>
+            )}
+
+            {/* Drop zone */}
             <div
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleFileDrop}
               onClick={() => fileInputRef.current?.click()}
               className={`cursor-pointer rounded-2xl border-2 border-dashed p-6 sm:p-12 text-center transition-colors ${
-                isDragging
-                  ? "border-lime bg-lime/5"
-                  : audioFile
-                  ? "border-green-500/60 bg-green-500/5"
-                  : "border-border bg-card hover:border-lime/50"
+                isDragging ? "border-lime bg-lime/5"
+                : audioFile ? "border-green-500/60 bg-green-500/5"
+                : "border-border bg-card hover:border-lime/50"
               }`}
             >
               <input
@@ -429,9 +499,7 @@ export default function AudioToVideoPage() {
                   </div>
                   <div>
                     <p className="font-medium">Drop audio here or tap to browse</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      MP3, WAV, M4A, AAC, OGG, FLAC
-                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">MP3, WAV, M4A, AAC, OGG, FLAC</p>
                   </div>
                 </div>
               )}
@@ -452,24 +520,18 @@ export default function AudioToVideoPage() {
             {/* Clip count */}
             <div>
               <label className="mb-1 block text-sm font-medium">Number of Clips</label>
-              <p className="mb-3 text-xs text-muted-foreground">
-                Audio will be split into equal segments
-              </p>
+              <p className="mb-3 text-xs text-muted-foreground">Audio will be split into equal segments</p>
               <div className="grid grid-cols-3 gap-3">
                 {([1, 3, 5] as const).map((n) => (
                   <button
                     key={n}
                     onClick={() => setClipCount(n)}
                     className={`rounded-xl border py-4 text-center transition-colors ${
-                      clipCount === n
-                        ? "border-lime bg-lime/10 text-foreground"
-                        : "border-border bg-card hover:border-lime/50"
+                      clipCount === n ? "border-lime bg-lime/10 text-foreground" : "border-border bg-card hover:border-lime/50"
                     }`}
                   >
                     <div className="text-2xl font-bold">{n}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {n === 1 ? "clip" : "clips"}
-                    </div>
+                    <div className="text-xs text-muted-foreground">{n === 1 ? "clip" : "clips"}</div>
                   </button>
                 ))}
               </div>
@@ -492,9 +554,7 @@ export default function AudioToVideoPage() {
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span className="text-sm">Uploading & transcribing…</span>
                 </span>
-              ) : (
-                "Process Audio →"
-              )}
+              ) : "Process Audio →"}
             </button>
           </div>
         )}
@@ -503,22 +563,31 @@ export default function AudioToVideoPage() {
         {step === 1 && track && (
           <div className="space-y-5">
 
-            {/* Header row — stacks on mobile */}
+            {/* Header row */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-base font-bold sm:text-lg">{track.title}</h2>
                 <p className="text-sm text-muted-foreground">
-                  {formatDuration(track.duration_s)} · {track.clips.length} clip
-                  {track.clips.length !== 1 ? "s" : ""} · {track.words.length} words
+                  {formatDuration(track.duration_s)} · {track.clips.length} clip{track.clips.length !== 1 ? "s" : ""} · {track.words.length} words
                 </p>
               </div>
-              <button
-                onClick={handleGenerateAll}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-lime px-4 py-2.5 text-sm font-medium text-black sm:w-auto"
-              >
-                <Wand2 className="h-4 w-4" />
-                Generate All
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleDeleteTrack(track.id)}
+                  disabled={deletingTrackId === track.id}
+                  className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:border-destructive/50 hover:text-destructive transition-colors"
+                >
+                  {deletingTrackId === track.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  <span className="hidden sm:inline">Delete</span>
+                </button>
+                <button
+                  onClick={handleGenerateAll}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-lime px-4 py-2.5 text-sm font-medium text-black sm:w-auto"
+                >
+                  <Wand2 className="h-4 w-4" />
+                  Generate All
+                </button>
+              </div>
             </div>
 
             {track.clips.map((clip) => {
@@ -528,69 +597,52 @@ export default function AudioToVideoPage() {
 
               return (
                 <div key={clip.id} className="rounded-2xl border border-border bg-card p-4 sm:p-5">
-
-                  {/* Clip header — stacks on mobile */}
                   <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="font-semibold">Clip {clip.clip_index + 1}</p>
                       <p className="text-xs text-muted-foreground">
-                        {formatTime(clip.start_s)} – {formatTime(clip.end_s)} ·{" "}
-                        {clip.words?.length ?? 0} words
+                        {formatTime(clip.start_s)} – {formatTime(clip.end_s)} · {clip.words?.length ?? 0} words
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {videoStatus === "done" && (
-                        <span className="flex items-center gap-1 text-xs text-green-500">
-                          <CheckCircle2 className="h-3.5 w-3.5" /> Done
-                        </span>
+                      {videoStatus === "done" && clip.video?.video_path && (
+                        <a
+                          href={fileUrl(clip.video.video_path)}
+                          download={`clip_${clip.clip_index + 1}.mp4`}
+                          className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-lime/50 hover:text-foreground transition-colors"
+                        >
+                          <Download className="h-3.5 w-3.5" /> Download
+                        </a>
                       )}
-                      {videoStatus === "failed" && (
-                        <span className="flex items-center gap-1 text-xs text-destructive">
-                          <AlertCircle className="h-3.5 w-3.5" /> Failed
-                        </span>
-                      )}
+                      {videoStatus === "done" && <span className="flex items-center gap-1 text-xs text-green-500"><CheckCircle2 className="h-3.5 w-3.5" /> Done</span>}
+                      {videoStatus === "failed" && <span className="flex items-center gap-1 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" /> Failed</span>}
                       <button
                         onClick={() => handleGenerateClip(clip.id)}
                         disabled={isGenerating}
                         className="flex items-center gap-1.5 rounded-lg border border-lime/40 bg-lime/10 px-3 py-1.5 text-xs font-medium text-lime transition-colors hover:bg-lime/20 disabled:opacity-50"
                       >
-                        {isGenerating ? (
-                          <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</>
-                        ) : (
-                          <><Wand2 className="h-3.5 w-3.5" /> {videoStatus === "done" ? "Regenerate" : "Generate"}</>
-                        )}
+                        {isGenerating
+                          ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</>
+                          : <><Wand2 className="h-3.5 w-3.5" /> {videoStatus === "done" ? "Regenerate" : "Generate"}</>}
                       </button>
                     </div>
                   </div>
 
-                  {/* Template selector — grid always, 1 col on xs, 3 on sm+ */}
+                  {/* Template selector */}
                   <div>
-                    <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Template
-                    </p>
+                    <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Template</p>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                       {TEMPLATES.map((t) => (
                         <button
                           key={t.id}
-                          onClick={() =>
-                            setClipConfigs((c) => ({
-                              ...c,
-                              [clip.id]: { ...cfg, template_id: t.id },
-                            }))
-                          }
+                          onClick={() => setClipConfigs((c) => ({ ...c, [clip.id]: { ...cfg, template_id: t.id } }))}
                           className={`flex items-center gap-3 rounded-xl border p-3 text-left transition-all sm:flex-col sm:items-start sm:gap-0 ${
-                            cfg.template_id === t.id
-                              ? "border-lime ring-1 ring-lime"
-                              : "border-border hover:border-lime/50"
+                            cfg.template_id === t.id ? "border-lime ring-1 ring-lime" : "border-border hover:border-lime/50"
                           }`}
                         >
                           <div className="flex gap-1.5 sm:mb-2">
                             {t.colors.map((c) => (
-                              <div
-                                key={c}
-                                className="h-4 w-4 rounded-full"
-                                style={{ background: c }}
-                              />
+                              <div key={c} className="h-4 w-4 rounded-full" style={{ background: c }} />
                             ))}
                           </div>
                           <div>
@@ -610,18 +662,11 @@ export default function AudioToVideoPage() {
             })}
 
             <div className="flex items-center justify-between pt-1">
-              <button
-                onClick={() => setStep(0)}
-                className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
-              >
+              <button onClick={() => setStep(0)} className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
               <button
-                onClick={() => {
-                  setActiveReviewClip(0);
-                  setEditingClipId(track.clips[0]?.id ?? null);
-                  setStep(2);
-                }}
+                onClick={() => { setActiveReviewClip(0); setEditingClipId(track.clips[0]?.id ?? null); setStep(2); }}
                 className="flex items-center gap-2 rounded-lg bg-lime px-4 py-2.5 text-sm font-medium text-black"
               >
                 Review & Edit <ChevronRight className="h-4 w-4" />
@@ -634,19 +679,14 @@ export default function AudioToVideoPage() {
         {step === 2 && track && (
           <div className="space-y-4">
 
-            {/* Clip tabs — scrollable on mobile */}
+            {/* Clip tabs */}
             <div className="flex gap-1 overflow-x-auto border-b border-border">
               {track.clips.map((clip, i) => (
                 <button
                   key={clip.id}
-                  onClick={() => {
-                    setActiveReviewClip(i);
-                    setEditingClipId(clip.id);
-                  }}
+                  onClick={() => { setActiveReviewClip(i); setEditingClipId(clip.id); }}
                   className={`shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-                    activeReviewClip === i
-                      ? "border-lime text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
+                    activeReviewClip === i ? "border-lime text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Clip {i + 1}
@@ -662,23 +702,34 @@ export default function AudioToVideoPage() {
 
                 {/* Video preview */}
                 <div className="space-y-3">
-                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Preview
-                  </p>
+                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Preview</p>
                   {activeClip.video?.status === "done" && activeClip.video.video_path ? (
-                    <div className="flex justify-center">
-                      {/* Constrain to 9:16 — max 300px wide so it fits the panel */}
-                      <div className="overflow-hidden rounded-xl border border-border bg-black w-full max-w-[300px]"
-                           style={{ aspectRatio: "9/16" }}>
-                        <video
-                          ref={videoRef}
-                          key={activeClip.id}
-                          src={`/files/${activeClip.video.video_path}`}
-                          controls
-                          className="w-full h-full object-cover"
-                        />
+                    <>
+                      {/* 9:16 portrait container */}
+                      <div className="flex justify-center">
+                        <div
+                          className="overflow-hidden rounded-xl border border-border bg-black w-full max-w-[280px]"
+                          style={{ aspectRatio: "9/16" }}
+                        >
+                          <video
+                            ref={videoRef}
+                            key={activeClip.id}
+                            src={fileUrl(activeClip.video.video_path)}
+                            controls
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
                       </div>
-                    </div>
+                      {/* Download button */}
+                      <a
+                        href={fileUrl(activeClip.video.video_path)}
+                        download={`clip_${activeClip.clip_index + 1}.mp4`}
+                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm text-foreground hover:border-lime/50 hover:bg-muted transition-colors"
+                      >
+                        <Download className="h-4 w-4" />
+                        Download MP4
+                      </a>
+                    </>
                   ) : activeClip.video?.status === "generating" || generating[activeClip.id] ? (
                     <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card sm:h-64">
                       <Loader2 className="h-8 w-8 animate-spin text-lime" />
@@ -687,9 +738,7 @@ export default function AudioToVideoPage() {
                   ) : activeClip.video?.status === "failed" ? (
                     <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 sm:h-64">
                       <AlertCircle className="h-8 w-8 text-destructive" />
-                      <p className="px-4 text-center text-sm text-destructive">
-                        {activeClip.video.error || "Generation failed"}
-                      </p>
+                      <p className="px-4 text-center text-sm text-destructive">{activeClip.video.error || "Generation failed"}</p>
                       <button
                         onClick={() => handleGenerateClip(activeClip.id)}
                         className="flex items-center gap-1.5 rounded-lg border border-lime/40 px-3 py-1.5 text-xs text-foreground"
@@ -720,12 +769,8 @@ export default function AudioToVideoPage() {
 
                 {/* Lyrics editor */}
                 <div className="space-y-3">
-
-                  {/* Lyrics header — wraps on mobile */}
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Lyrics / Words
-                    </p>
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Lyrics / Words</p>
                     <div className="flex gap-2">
                       <button
                         onClick={() => handleSaveLyrics(activeClip.id)}
@@ -735,11 +780,7 @@ export default function AudioToVideoPage() {
                         {savingLyrics ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
                       </button>
                       <button
-                        onClick={() =>
-                          handleSaveLyrics(activeClip.id).then(() =>
-                            handleGenerateClip(activeClip.id),
-                          )
-                        }
+                        onClick={() => handleSaveLyrics(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
                         disabled={savingLyrics || generating[activeClip.id]}
                         className="flex items-center gap-1.5 rounded-lg bg-lime px-3 py-1.5 text-xs font-medium text-black disabled:opacity-50"
                       >
@@ -751,9 +792,7 @@ export default function AudioToVideoPage() {
 
                   <div className="max-h-80 overflow-y-auto rounded-xl border border-border bg-card sm:max-h-[420px]">
                     {(clipWords[activeClip.id] ?? activeClip.words).length === 0 ? (
-                      <div className="p-6 text-center text-sm text-muted-foreground">
-                        No words transcribed for this clip
-                      </div>
+                      <div className="p-6 text-center text-sm text-muted-foreground">No words transcribed for this clip</div>
                     ) : (
                       <table className="w-full text-xs">
                         <thead className="sticky top-0 border-b border-border bg-card">
@@ -769,31 +808,21 @@ export default function AudioToVideoPage() {
                               <td className="px-3 py-1.5">
                                 <input
                                   value={w.word}
-                                  onChange={(e) =>
-                                    handleWordChange(activeClip.id, wi, "word", e.target.value)
-                                  }
+                                  onChange={(e) => handleWordChange(activeClip.id, wi, "word", e.target.value)}
                                   className="w-full min-w-0 bg-transparent font-mono outline-none focus:text-lime"
                                 />
                               </td>
                               <td className="px-2 py-1.5 text-right">
                                 <input
-                                  type="number"
-                                  step="0.01"
-                                  value={w.start_s.toFixed(2)}
-                                  onChange={(e) =>
-                                    handleWordChange(activeClip.id, wi, "start_s", parseFloat(e.target.value) || 0)
-                                  }
+                                  type="number" step="0.01" value={w.start_s.toFixed(2)}
+                                  onChange={(e) => handleWordChange(activeClip.id, wi, "start_s", parseFloat(e.target.value) || 0)}
                                   className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
                                 />
                               </td>
                               <td className="px-2 py-1.5 text-right">
                                 <input
-                                  type="number"
-                                  step="0.01"
-                                  value={w.end_s.toFixed(2)}
-                                  onChange={(e) =>
-                                    handleWordChange(activeClip.id, wi, "end_s", parseFloat(e.target.value) || 0)
-                                  }
+                                  type="number" step="0.01" value={w.end_s.toFixed(2)}
+                                  onChange={(e) => handleWordChange(activeClip.id, wi, "end_s", parseFloat(e.target.value) || 0)}
                                   className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
                                 />
                               </td>
@@ -808,10 +837,7 @@ export default function AudioToVideoPage() {
             )}
 
             <div className="flex items-center justify-between pt-1">
-              <button
-                onClick={() => setStep(1)}
-                className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
-              >
+              <button onClick={() => setStep(1)} className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
               <button
@@ -829,9 +855,7 @@ export default function AudioToVideoPage() {
           <div className="space-y-5">
             <div>
               <h2 className="text-base font-bold sm:text-lg">Assign Clips to Variations</h2>
-              <p className="text-sm text-muted-foreground">
-                Assign each generated clip to an artist variation for scheduling
-              </p>
+              <p className="text-sm text-muted-foreground">Assign each generated clip to an artist variation for scheduling</p>
             </div>
 
             {track.clips.map((clip) => {
@@ -840,33 +864,37 @@ export default function AudioToVideoPage() {
 
               return (
                 <div key={clip.id} className="rounded-2xl border border-border bg-card p-4 sm:p-5">
-
-                  {/* Clip header */}
                   <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="font-semibold">Clip {clip.clip_index + 1}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatTime(clip.start_s)} – {formatTime(clip.end_s)}
-                      </p>
+                      <p className="text-xs text-muted-foreground">{formatTime(clip.start_s)} – {formatTime(clip.end_s)}</p>
                     </div>
-                    {videoStatus !== "done" && !assigned && (
-                      <span className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
-                        {videoStatus === "generating" ? "Generating…" : "No video yet"}
-                      </span>
-                    )}
-                    {assigned && (
-                      <span className="flex items-center gap-1 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-xs text-green-500">
-                        <CheckCircle2 className="h-3 w-3" /> {assigned.variationName}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {videoStatus === "done" && clip.video?.video_path && (
+                        <a
+                          href={fileUrl(clip.video.video_path)}
+                          download={`clip_${clip.clip_index + 1}.mp4`}
+                          className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground hover:border-lime/50 hover:text-foreground transition-colors"
+                        >
+                          <Download className="h-3.5 w-3.5" /> Download
+                        </a>
+                      )}
+                      {videoStatus !== "done" && !assigned && (
+                        <span className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
+                          {videoStatus === "generating" ? "Generating…" : "No video yet"}
+                        </span>
+                      )}
+                      {assigned && (
+                        <span className="flex items-center gap-1 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-xs text-green-500">
+                          <CheckCircle2 className="h-3 w-3" /> {assigned.variationName}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Variation picker */}
                   {videoStatus === "done" && !assigned && (
                     <div>
-                      <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        Choose Variation
-                      </p>
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Choose Variation</p>
                       <div className="flex flex-wrap gap-2">
                         {artistDetail?.variations?.map((v: any) => (
                           <button
@@ -875,11 +903,7 @@ export default function AudioToVideoPage() {
                             disabled={assigning[clip.id]}
                             className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors hover:border-lime/50 hover:bg-lime/5 disabled:opacity-50"
                           >
-                            {assigning[clip.id] ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <User className="h-3.5 w-3.5 text-muted-foreground" />
-                            )}
+                            {assigning[clip.id] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <User className="h-3.5 w-3.5 text-muted-foreground" />}
                             {v.name}
                           </button>
                         ))}
@@ -894,10 +918,7 @@ export default function AudioToVideoPage() {
             })}
 
             <div className="flex items-center justify-between pt-1">
-              <button
-                onClick={() => setStep(2)}
-                className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
-              >
+              <button onClick={() => setStep(2)} className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
               <button
