@@ -30,6 +30,11 @@ import {
   Trash2,
   Download,
   FolderOpen,
+  Monitor,
+  ImageIcon,
+  CirclePlus,
+  Pause,
+  Play,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -83,9 +88,10 @@ interface TrackSummary {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TEMPLATES = [
-  { id: "minimal", label: "Minimal", description: "Dark + neon-green", colors: ["#0a0a0f", "#00ffaa"] },
-  { id: "vivid",   label: "Vivid",   description: "Purple + hot-pink", colors: ["#120028", "#ff5ac8"] },
-  { id: "neon",    label: "Neon",    description: "Navy + cyan glow",  colors: ["#000814", "#00dcff"] },
+  { id: "minimal", label: "Minimal", dot: "#00ff88" },
+  { id: "vivid",   label: "Vivid",   dot: "#ff37af" },
+  { id: "neon",    label: "Neon",    dot: "#00d2ff" },
+  { id: "inferno", label: "Inferno", dot: "#ffffff" },
 ];
 
 const STEPS = ["Upload", "Configure", "Edit", "Assign"];
@@ -178,17 +184,28 @@ export default function AudioToVideoPage() {
   const [deletingTrackId, setDeletingTrackId] = useState<number | null>(null);
   const [openingTrackId, setOpeningTrackId] = useState<number | null>(null);
 
-  // Configure state — per clip template + bg
-  const [clipConfigs, setClipConfigs] = useState<Record<number, { template_id: string; bg_path?: string }>>({});
+  // Configure / generate state
+  const [clipConfigs, setClipConfigs] = useState<Record<number, {
+    template_id: string;
+    bg_path?: string;
+    cover_path?: string;
+  }>>({});
   const [generating, setGenerating] = useState<Record<number, boolean>>({});
   const [generationErrors, setGenerationErrors] = useState<Record<number, string>>({});
+
+  // Overlay Studio — per-clip lyrics text (textarea) and cover upload
+  const [clipLyricsText, setClipLyricsText] = useState<Record<number, string>>({});
+  const [uploadingAsset, setUploadingAsset] = useState<Record<number, boolean>>({});
 
   // Review state — per clip words being edited
   const [clipWords, setClipWords] = useState<Record<number, AudioWord[]>>({});
   const [editingClipId, setEditingClipId] = useState<number | null>(null);
   const [savingLyrics, setSavingLyrics] = useState(false);
   const [activeReviewClip, setActiveReviewClip] = useState(0);
+  const [isPreviewPaused, setIsPreviewPaused] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const bgInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
   // Assign state
   const [assignedClips, setAssignedClips] = useState<Record<number, { variationId: number; variationName: string } | null>>({});
@@ -351,7 +368,7 @@ export default function AudioToVideoPage() {
     setGenerating((g) => ({ ...g, [clipId]: true }));
     setGenerationErrors((e) => ({ ...e, [clipId]: "" }));
     try {
-      await generateAudioVideoClip(clipId, cfg.template_id, cfg.bg_path);
+      await generateAudioVideoClip(clipId, cfg.template_id, cfg.bg_path, cfg.cover_path);
       startPolling();
     } catch (err: any) {
       setGenerationErrors((e) => ({ ...e, [clipId]: err?.response?.data?.detail || err?.message || "Generation failed" }));
@@ -382,6 +399,24 @@ export default function AudioToVideoPage() {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
+  // ── Lyrics text helpers ──────────────────────────────────────────────────
+
+  /** Convert words array → multi-line textarea text (5 words per line) */
+  const wordsToText = (words: AudioWord[]): string => {
+    if (!words.length) return "";
+    const lines: string[] = [];
+    for (let i = 0; i < words.length; i += 5) {
+      lines.push(words.slice(i, i + 5).map((w) => w.word).join(" "));
+    }
+    return lines.join("\n");
+  };
+
+  /** Get lyrics text for a clip, deriving from clipWords if not yet set */
+  const getLyricsText = (clipId: number): string => {
+    if (clipLyricsText[clipId] !== undefined) return clipLyricsText[clipId];
+    return wordsToText(clipWords[clipId] ?? []);
+  };
+
   // ── Lyrics editing ────────────────────────────────────────────────────────
 
   const handleWordChange = (clipId: number, wordIndex: number, field: keyof AudioWord, value: string | number) => {
@@ -390,6 +425,26 @@ export default function AudioToVideoPage() {
       updated[wordIndex] = { ...updated[wordIndex], [field]: value };
       return { ...cw, [clipId]: updated };
     });
+  };
+
+  /** Save lyrics from textarea: split lines→words, update word text (keeps timestamps) */
+  const handleSaveLyricsText = async (clipId: number) => {
+    const text  = getLyricsText(clipId);
+    const newWords = text.split(/\s+/).filter(Boolean);
+    const existing = clipWords[clipId] ?? [];
+    const merged: AudioWord[] = newWords.map((word, i) => ({
+      ...(existing[i] ?? { start_s: 0, end_s: 0 }),
+      word,
+    }));
+    setClipWords((cw) => ({ ...cw, [clipId]: merged }));
+    setSavingLyrics(true);
+    try {
+      await updateAudioClipLyrics(clipId, merged);
+    } catch (err: any) {
+      alert(err?.response?.data?.detail || "Failed to save lyrics");
+    } finally {
+      setSavingLyrics(false);
+    }
   };
 
   const handleSaveLyrics = async (clipId: number) => {
@@ -401,6 +456,36 @@ export default function AudioToVideoPage() {
       alert(err?.response?.data?.detail || "Failed to save lyrics");
     } finally {
       setSavingLyrics(false);
+    }
+  };
+
+  // ── Asset upload (BG / cover image) ──────────────────────────────────────
+
+  const handleAssetUpload = async (
+    clipId: number,
+    file: File,
+    assetType: "bg" | "cover",
+  ) => {
+    setUploadingAsset((u) => ({ ...u, [clipId]: true }));
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const token = localStorage.getItem("token");
+      const res = await fetch(
+        `/api/audio-to-video/clips/${clipId}/upload-asset?asset_type=${assetType}`,
+        { method: "POST", body: formData, headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const key = assetType === "cover" ? "cover_path" : "bg_path";
+      setClipConfigs((c) => ({
+        ...c,
+        [clipId]: { ...(c[clipId] ?? { template_id: "minimal" }), [key]: data.path },
+      }));
+    } catch (err: any) {
+      alert("Upload failed: " + err.message);
+    } finally {
+      setUploadingAsset((u) => ({ ...u, [clipId]: false }));
     }
   };
 
@@ -758,303 +843,294 @@ export default function AudioToVideoPage() {
           </div>
         )}
 
-        {/* ── Step 2: Review & Edit ────────────────────────────────────────── */}
-        {step === 2 && track && (
-          <div className="space-y-4">
+        {/* ── Step 2: Overlay Studio ──────────────────────────────────────── */}
+        {step === 2 && track && (() => {
+          const cfg        = clipConfigs[activeClip?.id ?? -1] ?? { template_id: "minimal" };
+          const lyricsText = activeClip ? getLyricsText(activeClip.id) : "";
+          const lineCount  = lyricsText.split("\n").filter(Boolean).length;
+          const isGen      = !!(activeClip && (generating[activeClip.id] || activeClip.video?.status === "generating"));
 
-            {/* Clip tabs */}
-            <div className="flex gap-1 overflow-x-auto border-b border-border">
-              {track.clips.map((clip, i) => (
-                <button
-                  key={clip.id}
-                  onClick={() => { setActiveReviewClip(i); setEditingClipId(clip.id); }}
-                  className={`shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-                    activeReviewClip === i
-                      ? "border-lime text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Clip {i + 1}
-                  {clip.video?.status === "done" && (
-                    <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-green-400" />
-                  )}
-                </button>
-              ))}
-            </div>
+          return (
+            <div className="space-y-3">
 
-            {activeClip && (
-              /* Side-by-side: video left, Overlay Studio right */
-              <div className="grid gap-4 md:grid-cols-[1fr_1.15fr]">
+              {/* Clip tabs */}
+              <div className="flex gap-1 overflow-x-auto border-b border-border">
+                {track.clips.map((clip, i) => (
+                  <button
+                    key={clip.id}
+                    onClick={() => { setActiveReviewClip(i); setEditingClipId(clip.id); }}
+                    className={`shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                      activeReviewClip === i
+                        ? "border-lime text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Clip {i + 1}
+                    {clip.video?.status === "done" && (
+                      <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-green-400" />
+                    )}
+                  </button>
+                ))}
+              </div>
 
-                {/* ── Left: Video Preview ─────────────────────────────────── */}
-                <div className="space-y-3">
-                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Preview
-                  </p>
+              {activeClip && (
+                /* ── Main layout: Studio LEFT · Phone Preview RIGHT ── */
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
 
-                  {activeClip.video?.status === "done" && activeClip.video.video_path ? (
-                    <>
-                      {/* 9:16 portrait container */}
-                      <div className="flex justify-center">
-                        <div
-                          className="overflow-hidden rounded-2xl border border-border bg-black w-full max-w-[260px]"
-                          style={{ aspectRatio: "9/16" }}
+                  {/* ══ LEFT: Overlay Studio ══════════════════════════════════ */}
+                  <div className="lg:w-[380px] shrink-0 rounded-2xl border border-border bg-card p-5 space-y-5">
+
+                    {/* Header */}
+                    <div>
+                      <div className="flex items-center gap-2.5">
+                        <Monitor className="h-5 w-5 text-foreground" />
+                        <h2 className="text-lg font-bold">Overlay Studio</h2>
+                      </div>
+                      <p className="mt-0.5 text-sm text-muted-foreground">
+                        Configure your cinematic music template.
+                      </p>
+                    </div>
+
+                    {/* BG + Album Cover upload zones */}
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Hidden inputs */}
+                      <input ref={bgInputRef} type="file" accept="image/*" className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f && activeClip) handleAssetUpload(activeClip.id, f, "bg");
+                          e.target.value = "";
+                        }} />
+                      <input ref={coverInputRef} type="file" accept="image/*" className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f && activeClip) handleAssetUpload(activeClip.id, f, "cover");
+                          e.target.value = "";
+                        }} />
+
+                      <div>
+                        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Background
+                        </p>
+                        <button
+                          onClick={() => bgInputRef.current?.click()}
+                          disabled={uploadingAsset[activeClip.id]}
+                          className="w-full rounded-xl border-2 border-dashed border-border/50 bg-muted/20 px-3 py-4 flex flex-col items-center gap-1.5 hover:border-border transition-colors disabled:opacity-50"
                         >
+                          {uploadingAsset[activeClip.id]
+                            ? <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                            : <ImageIcon className="h-5 w-5 text-muted-foreground" />}
+                          <span className="text-xs text-muted-foreground">
+                            {cfg.bg_path ? "✓ BG set" : "Change BG"}
+                          </span>
+                        </button>
+                      </div>
+
+                      <div>
+                        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Album Cover
+                        </p>
+                        <button
+                          onClick={() => coverInputRef.current?.click()}
+                          disabled={uploadingAsset[activeClip.id]}
+                          className="w-full rounded-xl border-2 border-dashed border-border/50 bg-muted/20 px-3 py-4 flex flex-col items-center gap-1.5 hover:border-border transition-colors disabled:opacity-50"
+                        >
+                          {uploadingAsset[activeClip.id]
+                            ? <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                            : <CirclePlus className="h-5 w-5 text-muted-foreground" />}
+                          <span className="text-xs text-muted-foreground">
+                            {cfg.cover_path ? "✓ Cover set" : "Change Cover"}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Lyrics Content textarea */}
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Lyrics Content
+                        </p>
+                        <span className="text-xs text-muted-foreground">
+                          {lineCount} {lineCount === 1 ? "Line" : "Lines"}
+                        </span>
+                      </div>
+                      <textarea
+                        value={lyricsText}
+                        onChange={(e) =>
+                          setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }))
+                        }
+                        rows={6}
+                        spellCheck={false}
+                        className="w-full rounded-xl border border-border bg-background px-3.5 py-3 text-sm leading-relaxed resize-none outline-none focus:border-lime/60 transition-colors font-mono"
+                        placeholder="Lyrics will appear here after transcription…"
+                      />
+                    </div>
+
+                    {/* Design Variant — 2 × 2 grid */}
+                    <div>
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Design Variant
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {TEMPLATES.map((tmpl) => {
+                          const isActive = cfg.template_id === tmpl.id;
+                          return (
+                            <button
+                              key={tmpl.id}
+                              onClick={() =>
+                                setClipConfigs((c) => ({
+                                  ...c,
+                                  [activeClip.id]: { ...cfg, template_id: tmpl.id },
+                                }))
+                              }
+                              className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left transition-all ${
+                                isActive
+                                  ? "border-foreground/60 bg-muted/40"
+                                  : "border-border/50 hover:border-border"
+                              }`}
+                            >
+                              <div
+                                className="h-3 w-3 shrink-0 rounded-full"
+                                style={{ background: tmpl.dot }}
+                              />
+                              <span className="text-sm font-medium">{tmpl.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {generationErrors[activeClip.id] && (
+                      <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        {generationErrors[activeClip.id]}
+                      </p>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      {/* Pause / Play Preview */}
+                      <button
+                        onClick={() => {
+                          if (!videoRef.current) return;
+                          if (isPreviewPaused) {
+                            videoRef.current.play();
+                          } else {
+                            videoRef.current.pause();
+                          }
+                          setIsPreviewPaused((p) => !p);
+                        }}
+                        disabled={activeClip.video?.status !== "done"}
+                        className="flex items-center justify-center gap-2 rounded-xl border border-border bg-muted/30 px-4 py-2.5 text-sm font-medium hover:bg-muted/60 disabled:opacity-40 transition-colors"
+                      >
+                        {isPreviewPaused
+                          ? <><Play className="h-4 w-4" /> Play Preview</>
+                          : <><Pause className="h-4 w-4" /> Pause Preview</>}
+                      </button>
+
+                      {/* Export Frame */}
+                      {activeClip.video?.status === "done" && activeClip.video.video_path ? (
+                        <a
+                          href={fileUrl(activeClip.video.video_path)}
+                          download={`clip_${activeClip.clip_index + 1}.mp4`}
+                          className="flex items-center justify-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:opacity-90 transition-opacity"
+                        >
+                          <Download className="h-4 w-4" /> Export Frame
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
+                          disabled={isGen || savingLyrics}
+                          className="flex items-center justify-center gap-2 rounded-xl bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-40 transition-opacity"
+                        >
+                          {isGen
+                            ? <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</>
+                            : <><Wand2 className="h-4 w-4" /> Generate</>}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Regenerate (if already done) */}
+                    {activeClip.video?.status === "done" && (
+                      <button
+                        onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
+                        disabled={isGen || savingLyrics}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2 text-sm text-muted-foreground hover:border-lime/40 hover:text-foreground disabled:opacity-40 transition-colors"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Save lyrics &amp; Regenerate
+                      </button>
+                    )}
+                  </div>
+
+                  {/* ══ RIGHT: Phone preview ══════════════════════════════════ */}
+                  <div className="flex flex-1 items-start justify-center pt-2">
+                    <div className="w-full max-w-[300px]">
+                      {/* Phone frame */}
+                      <div className="relative rounded-[36px] border-[3px] border-border/60 bg-black overflow-hidden shadow-2xl"
+                           style={{ aspectRatio: "9/16" }}>
+                        {activeClip.video?.status === "done" && activeClip.video.video_path ? (
                           <video
                             ref={videoRef}
                             key={activeClip.id}
                             src={fileUrl(activeClip.video.video_path)}
                             controls
                             playsInline
+                            autoPlay
+                            loop
                             className="w-full h-full object-cover"
                           />
-                        </div>
-                      </div>
-                      {/* Download */}
-                      <a
-                        href={fileUrl(activeClip.video.video_path)}
-                        download={`clip_${activeClip.clip_index + 1}.mp4`}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:border-lime/50 hover:bg-muted transition-colors"
-                      >
-                        <Download className="h-4 w-4 text-lime" />
-                        Export Frame as Video
-                      </a>
-                    </>
-                  ) : activeClip.video?.status === "generating" || generating[activeClip.id] ? (
-                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card"
-                         style={{ aspectRatio: "9/16", maxWidth: 260, margin: "0 auto", width: "100%" }}>
-                      <Loader2 className="h-10 w-10 animate-spin text-lime" />
-                      <p className="text-sm text-muted-foreground">Generating video…</p>
-                    </div>
-                  ) : activeClip.video?.status === "failed" ? (
-                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-destructive/30 bg-destructive/5"
-                         style={{ aspectRatio: "9/16", maxWidth: 260, margin: "0 auto", width: "100%" }}>
-                      <AlertCircle className="h-10 w-10 text-destructive" />
-                      <p className="px-6 text-center text-sm text-destructive">
-                        {activeClip.video.error || "Generation failed"}
-                      </p>
-                      <button
-                        onClick={() => handleGenerateClip(activeClip.id)}
-                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 px-3 py-1.5 text-xs text-foreground"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" /> Retry
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card"
-                         style={{ aspectRatio: "9/16", maxWidth: 260, margin: "0 auto", width: "100%" }}>
-                      <FileVideo className="h-10 w-10 text-muted-foreground/30" />
-                      <p className="text-sm text-muted-foreground">No video yet</p>
-                      <button
-                        onClick={() => handleGenerateClip(activeClip.id)}
-                        className="flex items-center gap-1.5 rounded-lg bg-lime px-3 py-1.5 text-xs font-medium text-black"
-                      >
-                        <Wand2 className="h-3.5 w-3.5" /> Generate
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Timing pill */}
-                  <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-                    <Clock className="h-3.5 w-3.5 shrink-0" />
-                    {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
-                    <span className="ml-auto">{(activeClip.end_s - activeClip.start_s).toFixed(1)}s</span>
-                  </div>
-                </div>
-
-                {/* ── Right: Overlay Studio ───────────────────────────────── */}
-                <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
-
-                  {/* Studio header */}
-                  <div className="flex items-center justify-between">
-                    <p className="flex items-center gap-2 text-sm font-semibold">
-                      <Wand2 className="h-4 w-4 text-lime" />
-                      Overlay Studio
-                    </p>
-                    <span className="text-xs text-muted-foreground">
-                      {(clipWords[activeClip.id] ?? activeClip.words).length} words
-                    </span>
-                  </div>
-
-                  {/* Template selector (compact row) */}
-                  <div>
-                    <p className="mb-1.5 text-xs font-medium text-muted-foreground">Template</p>
-                    <div className="flex gap-2">
-                      {TEMPLATES.map((tmpl) => {
-                        const cfg = clipConfigs[activeClip.id] ?? { template_id: "minimal" };
-                        const active = cfg.template_id === tmpl.id;
-                        return (
-                          <button
-                            key={tmpl.id}
-                            onClick={() =>
-                              setClipConfigs((c) => ({
-                                ...c,
-                                [activeClip.id]: { ...cfg, template_id: tmpl.id },
-                              }))
-                            }
-                            className={`flex-1 rounded-xl border py-2.5 text-center transition-all ${
-                              active
-                                ? "border-lime ring-1 ring-lime bg-lime/5"
-                                : "border-border hover:border-lime/40"
-                            }`}
-                          >
-                            <div className="mb-1 flex justify-center gap-1">
-                              {tmpl.colors.map((c) => (
-                                <div
-                                  key={c}
-                                  className="h-3 w-3 rounded-full"
-                                  style={{ background: c }}
-                                />
-                              ))}
-                            </div>
-                            <p className={`text-[11px] font-semibold ${active ? "text-lime" : "text-foreground"}`}>
-                              {tmpl.label}
+                        ) : isGen ? (
+                          <div className="flex h-full flex-col items-center justify-center gap-3">
+                            <Loader2 className="h-10 w-10 animate-spin text-lime" />
+                            <p className="text-sm text-white/60">Generating…</p>
+                          </div>
+                        ) : activeClip.video?.status === "failed" ? (
+                          <div className="flex h-full flex-col items-center justify-center gap-3 px-6">
+                            <AlertCircle className="h-10 w-10 text-destructive" />
+                            <p className="text-center text-xs text-white/60">
+                              {activeClip.video.error || "Generation failed"}
                             </p>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
+                          </div>
+                        ) : (
+                          <div className="flex h-full flex-col items-center justify-center gap-3">
+                            <FileVideo className="h-12 w-12 text-white/20" />
+                            <p className="text-sm text-white/40">No video yet</p>
+                          </div>
+                        )}
+                      </div>
 
-                  {/* Generate / Regenerate */}
-                  <button
-                    onClick={() => handleGenerateClip(activeClip.id)}
-                    disabled={generating[activeClip.id] || activeClip.video?.status === "generating"}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-lime py-2.5 text-sm font-semibold text-black disabled:opacity-50 transition-opacity"
-                  >
-                    {generating[activeClip.id] || activeClip.video?.status === "generating" ? (
-                      <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</>
-                    ) : (
-                      <><Wand2 className="h-4 w-4" />
-                        {activeClip.video?.status === "done" ? "Regenerate Video" : "Generate Video"}</>
-                    )}
-                  </button>
-
-                  {generationErrors[activeClip.id] && (
-                    <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                      {generationErrors[activeClip.id]}
-                    </p>
-                  )}
-
-                  {/* Lyrics editor */}
-                  <div>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <p className="text-xs font-medium text-muted-foreground">Lyrics (editable)</p>
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={() => handleSaveLyrics(activeClip.id)}
-                          disabled={savingLyrics}
-                          className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium hover:border-lime/50 disabled:opacity-50 transition-colors"
-                        >
-                          {savingLyrics ? <Loader2 className="inline h-3 w-3 animate-spin" /> : "Save"}
-                        </button>
-                        <button
-                          onClick={() =>
-                            handleSaveLyrics(activeClip.id).then(() =>
-                              handleGenerateClip(activeClip.id)
-                            )
-                          }
-                          disabled={savingLyrics || generating[activeClip.id]}
-                          className="flex items-center gap-1 rounded-lg border border-lime/40 bg-lime/10 px-2.5 py-1 text-xs font-medium text-lime disabled:opacity-50 transition-colors"
-                        >
-                          <RefreshCw className="h-3 w-3" /> Save & Regen
-                        </button>
+                      {/* Below phone: timing info */}
+                      <div className="mt-3 flex items-center justify-between px-1 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" />
+                          {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
+                        </span>
+                        <span>{(activeClip.end_s - activeClip.start_s).toFixed(1)}s</span>
                       </div>
                     </div>
-
-                    <div className="max-h-64 overflow-y-auto rounded-xl border border-border">
-                      {(clipWords[activeClip.id] ?? activeClip.words).length === 0 ? (
-                        <div className="p-5 text-center text-sm text-muted-foreground">
-                          No words transcribed for this clip
-                        </div>
-                      ) : (
-                        <table className="w-full text-xs">
-                          <thead className="sticky top-0 border-b border-border bg-card">
-                            <tr>
-                              <th className="px-3 py-2 text-left font-medium text-muted-foreground">Word</th>
-                              <th className="px-2 py-2 text-right font-medium text-muted-foreground">Start</th>
-                              <th className="px-2 py-2 text-right font-medium text-muted-foreground">End</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(clipWords[activeClip.id] ?? activeClip.words).map((w, wi) => (
-                              <tr key={wi} className="border-b border-border/50 hover:bg-muted/30">
-                                <td className="px-3 py-1.5">
-                                  <input
-                                    value={w.word}
-                                    onChange={(e) =>
-                                      handleWordChange(activeClip.id, wi, "word", e.target.value)
-                                    }
-                                    className="w-full min-w-0 bg-transparent font-mono outline-none focus:text-lime"
-                                  />
-                                </td>
-                                <td className="px-2 py-1.5 text-right">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={w.start_s.toFixed(2)}
-                                    onChange={(e) =>
-                                      handleWordChange(
-                                        activeClip.id, wi, "start_s",
-                                        parseFloat(e.target.value) || 0,
-                                      )
-                                    }
-                                    className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
-                                  />
-                                </td>
-                                <td className="px-2 py-1.5 text-right">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={w.end_s.toFixed(2)}
-                                    onChange={(e) =>
-                                      handleWordChange(
-                                        activeClip.id, wi, "end_s",
-                                        parseFloat(e.target.value) || 0,
-                                      )
-                                    }
-                                    className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
-                                  />
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
                   </div>
 
-                  {/* Download (only when ready) */}
-                  {activeClip.video?.status === "done" && activeClip.video.video_path && (
-                    <a
-                      href={fileUrl(activeClip.video.video_path)}
-                      download={`clip_${activeClip.clip_index + 1}.mp4`}
-                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-foreground hover:border-lime/40 hover:bg-muted transition-colors"
-                    >
-                      <Download className="h-4 w-4 text-lime" />
-                      Download MP4
-                    </a>
-                  )}
                 </div>
-              </div>
-            )}
+              )}
 
-            <div className="flex items-center justify-between pt-1">
-              <button
-                onClick={() => setStep(1)}
-                className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
-              >
-                <ChevronLeft className="h-4 w-4" /> Back
-              </button>
-              <button
-                onClick={() => setStep(3)}
-                className="flex items-center gap-2 rounded-lg bg-lime px-4 py-2.5 text-sm font-medium text-black"
-              >
-                Assign <ChevronRight className="h-4 w-4" />
-              </button>
+              {/* Nav */}
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  onClick={() => setStep(1)}
+                  className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
+                >
+                  <ChevronLeft className="h-4 w-4" /> Back
+                </button>
+                <button
+                  onClick={() => setStep(3)}
+                  className="flex items-center gap-2 rounded-lg bg-lime px-4 py-2.5 text-sm font-medium text-black"
+                >
+                  Assign <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── Step 3: Assign ───────────────────────────────────────────────── */}
         {step === 3 && track && (

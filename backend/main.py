@@ -6339,6 +6339,7 @@ class AudioSplitRequest(BaseModel):
 class AudioGenerateRequest(BaseModel):
     template_id: str = "minimal"
     background_image_path: Optional[str] = None
+    album_cover_path: Optional[str] = None
 
 
 class AudioLyricsWord(BaseModel):
@@ -6696,6 +6697,42 @@ async def get_audio_clip(
         await database.close()
 
 
+@app.post("/api/audio-to-video/clips/{clip_id}/upload-asset")
+async def upload_audio_clip_asset(
+    clip_id: int,
+    asset_type: str = Query("cover", enum=["cover", "bg"]),
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Upload a cover image or background image for an audio clip."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT ac.*, at.artist_id FROM audio_clips ac "
+            "JOIN audio_tracks at ON at.id = ac.audio_track_id "
+            "WHERE ac.id = ?", (clip_id,)
+        )
+        clip = await cur.fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        clip = dict(clip)
+        cur = await database.execute(
+            "SELECT slug FROM artists WHERE id = ?", (clip["artist_id"],)
+        )
+        artist = await cur.fetchone()
+        slug = dict(artist)["slug"] if artist else "unknown"
+    finally:
+        await database.close()
+
+    ext = Path(file.filename or "asset.jpg").suffix.lower() or ".jpg"
+    save_dir = Path("uploads") / slug / "audio" / asset_type
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / f"clip_{clip_id}_{asset_type}{ext}"
+    content = await file.read()
+    save_path.write_bytes(content)
+    return {"path": str(save_path), "asset_type": asset_type}
+
+
 @app.post("/api/audio-to-video/clips/{clip_id}/generate")
 async def generate_audio_video_clip(
     clip_id: int,
@@ -6773,6 +6810,7 @@ async def generate_audio_video_clip(
                 template_id=data.template_id,
                 output_path=video_path,
                 background_image_path=data.background_image_path,
+                album_cover_path=data.album_cover_path,
                 title=track.get("title", ""),
                 artist=track.get("artist_name", ""),
             )

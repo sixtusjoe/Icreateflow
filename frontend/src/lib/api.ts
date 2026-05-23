@@ -586,11 +586,13 @@ export const generateAudioVideoClip = (
   clipId: number,
   templateId: string,
   backgroundImagePath?: string,
+  albumCoverPath?: string,
 ) =>
   api
     .post(`/api/audio-to-video/clips/${clipId}/generate`, {
       template_id: templateId,
       background_image_path: backgroundImagePath ?? null,
+      album_cover_path: albumCoverPath ?? null,
     })
     .then((r) => r.data);
 
