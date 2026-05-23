@@ -341,7 +341,7 @@ export default function AudioToVideoPage() {
                   i === step
                     ? "bg-lime text-black"
                     : i < step
-                    ? "bg-lime/30 text-black cursor-pointer"
+                    ? "bg-lime/30 text-lime cursor-pointer"
                     : "bg-muted text-muted-foreground cursor-default"
                 }`}
               >
@@ -382,7 +382,7 @@ export default function AudioToVideoPage() {
                     onClick={() => setSelectedArtistId(a.id)}
                     className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
                       selectedArtistId === a.id
-                        ? "border-lime bg-lime/10 text-black"
+                        ? "border-lime bg-lime/10 text-foreground"
                         : "border-border bg-card hover:border-lime/50"
                     }`}
                   >
@@ -462,7 +462,7 @@ export default function AudioToVideoPage() {
                     onClick={() => setClipCount(n)}
                     className={`rounded-xl border py-4 text-center transition-colors ${
                       clipCount === n
-                        ? "border-lime bg-lime/10 text-black"
+                        ? "border-lime bg-lime/10 text-foreground"
                         : "border-border bg-card hover:border-lime/50"
                     }`}
                   >
@@ -552,7 +552,7 @@ export default function AudioToVideoPage() {
                       <button
                         onClick={() => handleGenerateClip(clip.id)}
                         disabled={isGenerating}
-                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 bg-lime/10 px-3 py-1.5 text-xs font-medium text-black transition-colors hover:bg-lime/20 disabled:opacity-50"
+                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 bg-lime/10 px-3 py-1.5 text-xs font-medium text-lime transition-colors hover:bg-lime/20 disabled:opacity-50"
                       >
                         {isGenerating ? (
                           <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</>
@@ -645,7 +645,7 @@ export default function AudioToVideoPage() {
                   }}
                   className={`shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
                     activeReviewClip === i
-                      ? "border-lime text-black"
+                      ? "border-lime text-foreground"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -689,7 +689,7 @@ export default function AudioToVideoPage() {
                       </p>
                       <button
                         onClick={() => handleGenerateClip(activeClip.id)}
-                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 px-3 py-1.5 text-xs text-black"
+                        className="flex items-center gap-1.5 rounded-lg border border-lime/40 px-3 py-1.5 text-xs text-foreground"
                       >
                         <RefreshCw className="h-3.5 w-3.5" /> Retry
                       </button>
