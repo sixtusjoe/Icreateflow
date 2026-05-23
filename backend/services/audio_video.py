@@ -96,28 +96,31 @@ ROTATING_TEMPLATES = {"minimal", "neon"}
 W, H = 1080, 1920
 
 # ── Layout ───────────────────────────────────────────────────────────────────
-CARD_X0      = 42
-CARD_X1      = W - 42         # 1038
-CARD_Y0      = 68
-CARD_Y1      = 918
-CARD_RADIUS  = 42
-CARD_W       = CARD_X1 - CARD_X0   # 996
+# Card spans the top ~49 % of the frame — large, nearly square
+CARD_X0      = 40
+CARD_X1      = W - 40          # 1040
+CARD_Y0      = 50
+CARD_Y1      = 990
+CARD_RADIUS  = 44
+CARD_W       = CARD_X1 - CARD_X0   # 1000
 
 ART_CX       = W // 2          # 540
-ART_CY       = 430             # centre of art zone
-ART_R        = 318             # disc radius (diameter 636)
-ART_SQ       = 600             # square art side length
+ART_CY       = 460             # disc/art centre
 
-# Disc PNG canvas (larger than disc for glow headroom)
-DISC_CANVAS  = ART_R * 2 + 84  # 720
-DISC_X       = ART_CX - DISC_CANVAS // 2   # 540 - 360 = 180
-DISC_Y       = ART_CY - DISC_CANVAS // 2   # 430 - 360 = 70
+# Disc fills ~76 % of the card width → prominent like Figma design
+ART_R        = 382             # disc radius → diameter 764 px
+ART_SQ       = 720             # square art side (vivid/inferno)
 
-NP_Y         = 862             # "NOW PLAYING" y (inside card)
-BAR_X0       = 82
-BAR_X1       = W - 82          # 998
-BAR_Y        = 965
-BAR_H        = 4
+# Disc PNG canvas with enough glow headroom
+DISC_CANVAS  = 900             # ART_R*2 + 136
+DISC_X       = ART_CX - DISC_CANVAS // 2   # 540 - 450 = 90
+DISC_Y       = ART_CY - DISC_CANVAS // 2   # 460 - 450 = 10
+
+NP_Y         = 924             # "NOW PLAYING" inside card near bottom
+BAR_X0       = 80
+BAR_X1       = W - 80          # 1000
+BAR_Y        = 1038
+BAR_H        = 5
 
 FONTS_DIR    = Path(__file__).parent.parent / "fonts"
 KARAOKE_DELAY_S = 0.15
