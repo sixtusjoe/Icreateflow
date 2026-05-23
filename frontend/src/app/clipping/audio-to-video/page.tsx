@@ -109,6 +109,51 @@ function fileUrl(path: string): string {
   return `/api/files/${path}`;
 }
 
+// ─── Confirm Modal ────────────────────────────────────────────────────────────
+
+function ConfirmModal({
+  title,
+  message,
+  confirmLabel = "Delete",
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      {/* Panel */}
+      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl">
+        <div className="mb-1 flex items-center gap-2">
+          <Trash2 className="h-4 w-4 text-destructive" />
+          <h3 className="text-base font-semibold">{title}</h3>
+        </div>
+        <p className="mb-6 text-sm text-muted-foreground">{message}</p>
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white hover:bg-destructive/90 transition-colors"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function AudioToVideoPage() {
@@ -148,6 +193,22 @@ export default function AudioToVideoPage() {
   // Assign state
   const [assignedClips, setAssignedClips] = useState<Record<number, { variationId: number; variationName: string } | null>>({});
   const [assigning, setAssigning] = useState<Record<number, boolean>>({});
+
+  // Confirm modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  const showConfirm = (title: string, message: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      setConfirmModal({
+        title,
+        message,
+        onConfirm: () => { setConfirmModal(null); resolve(true); },
+      });
+    });
 
   // Poll interval ref
   const pollRef = useRef<NodeJS.Timeout | null>(null);
@@ -205,7 +266,11 @@ export default function AudioToVideoPage() {
   };
 
   const handleDeleteTrack = async (trackId: number) => {
-    if (!confirm("Delete this track and all its generated videos?")) return;
+    const ok = await showConfirm(
+      "Delete Track",
+      "This will permanently delete the track and all its generated video clips. This cannot be undone.",
+    );
+    if (!ok) return;
     setDeletingTrackId(trackId);
     try {
       await deleteAudioTrack(trackId);
@@ -352,6 +417,17 @@ export default function AudioToVideoPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+
+      {/* ── Confirm modal ───────────────────────────────────────────────────── */}
+      {confirmModal && (
+        <ConfirmModal
+          title={confirmModal.title}
+          message={confirmModal.message}
+          confirmLabel="Delete"
+          onConfirm={confirmModal.onConfirm}
+          onCancel={() => setConfirmModal(null)}
+        />
+      )}
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="border-b border-border/40 px-4 py-3 sm:px-6 sm:py-4">
