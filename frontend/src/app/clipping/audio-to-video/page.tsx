@@ -809,13 +809,10 @@ export default function AudioToVideoPage() {
                           }`}
                         >
                           <div className="flex gap-1.5 sm:mb-2">
-                            {t.colors.map((c) => (
-                              <div key={c} className="h-4 w-4 rounded-full" style={{ background: c }} />
-                            ))}
+                            <div className="h-4 w-4 rounded-full" style={{ background: t.dot }} />
                           </div>
                           <div>
                             <p className="text-xs font-semibold">{t.label}</p>
-                            <p className="text-xs text-muted-foreground">{t.description}</p>
                           </div>
                         </button>
                       ))}
