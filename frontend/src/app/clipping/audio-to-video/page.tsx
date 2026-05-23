@@ -769,7 +769,9 @@ export default function AudioToVideoPage() {
                   key={clip.id}
                   onClick={() => { setActiveReviewClip(i); setEditingClipId(clip.id); }}
                   className={`shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-                    activeReviewClip === i ? "border-lime text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+                    activeReviewClip === i
+                      ? "border-lime text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Clip {i + 1}
@@ -781,17 +783,21 @@ export default function AudioToVideoPage() {
             </div>
 
             {activeClip && (
-              <div className="grid gap-4 lg:grid-cols-2">
+              /* Side-by-side: video left, Overlay Studio right */
+              <div className="grid gap-4 md:grid-cols-[1fr_1.15fr]">
 
-                {/* Video preview */}
+                {/* ── Left: Video Preview ─────────────────────────────────── */}
                 <div className="space-y-3">
-                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Preview</p>
+                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Preview
+                  </p>
+
                   {activeClip.video?.status === "done" && activeClip.video.video_path ? (
                     <>
                       {/* 9:16 portrait container */}
                       <div className="flex justify-center">
                         <div
-                          className="overflow-hidden rounded-xl border border-border bg-black w-full max-w-[280px]"
+                          className="overflow-hidden rounded-2xl border border-border bg-black w-full max-w-[260px]"
                           style={{ aspectRatio: "9/16" }}
                         >
                           <video
@@ -799,29 +805,34 @@ export default function AudioToVideoPage() {
                             key={activeClip.id}
                             src={fileUrl(activeClip.video.video_path)}
                             controls
+                            playsInline
                             className="w-full h-full object-cover"
                           />
                         </div>
                       </div>
-                      {/* Download button */}
+                      {/* Download */}
                       <a
                         href={fileUrl(activeClip.video.video_path)}
                         download={`clip_${activeClip.clip_index + 1}.mp4`}
-                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm text-foreground hover:border-lime/50 hover:bg-muted transition-colors"
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:border-lime/50 hover:bg-muted transition-colors"
                       >
-                        <Download className="h-4 w-4" />
-                        Download MP4
+                        <Download className="h-4 w-4 text-lime" />
+                        Export Frame as Video
                       </a>
                     </>
                   ) : activeClip.video?.status === "generating" || generating[activeClip.id] ? (
-                    <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card sm:h-64">
-                      <Loader2 className="h-8 w-8 animate-spin text-lime" />
+                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card"
+                         style={{ aspectRatio: "9/16", maxWidth: 260, margin: "0 auto", width: "100%" }}>
+                      <Loader2 className="h-10 w-10 animate-spin text-lime" />
                       <p className="text-sm text-muted-foreground">Generating video…</p>
                     </div>
                   ) : activeClip.video?.status === "failed" ? (
-                    <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 sm:h-64">
-                      <AlertCircle className="h-8 w-8 text-destructive" />
-                      <p className="px-4 text-center text-sm text-destructive">{activeClip.video.error || "Generation failed"}</p>
+                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-destructive/30 bg-destructive/5"
+                         style={{ aspectRatio: "9/16", maxWidth: 260, margin: "0 auto", width: "100%" }}>
+                      <AlertCircle className="h-10 w-10 text-destructive" />
+                      <p className="px-6 text-center text-sm text-destructive">
+                        {activeClip.video.error || "Generation failed"}
+                      </p>
                       <button
                         onClick={() => handleGenerateClip(activeClip.id)}
                         className="flex items-center gap-1.5 rounded-lg border border-lime/40 px-3 py-1.5 text-xs text-foreground"
@@ -830,8 +841,9 @@ export default function AudioToVideoPage() {
                       </button>
                     </div>
                   ) : (
-                    <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card sm:h-64">
-                      <FileVideo className="h-8 w-8 text-muted-foreground/40" />
+                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card"
+                         style={{ aspectRatio: "9/16", maxWidth: 260, margin: "0 auto", width: "100%" }}>
+                      <FileVideo className="h-10 w-10 text-muted-foreground/30" />
                       <p className="text-sm text-muted-foreground">No video yet</p>
                       <button
                         onClick={() => handleGenerateClip(activeClip.id)}
@@ -842,85 +854,196 @@ export default function AudioToVideoPage() {
                     </div>
                   )}
 
-                  <div className="rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-                    <div className="flex items-center gap-2">
-                      <Clock className="h-3.5 w-3.5 shrink-0" />
-                      {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
-                    </div>
+                  {/* Timing pill */}
+                  <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+                    <Clock className="h-3.5 w-3.5 shrink-0" />
+                    {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
+                    <span className="ml-auto">{(activeClip.end_s - activeClip.start_s).toFixed(1)}s</span>
                   </div>
                 </div>
 
-                {/* Lyrics editor */}
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Lyrics / Words</p>
+                {/* ── Right: Overlay Studio ───────────────────────────────── */}
+                <div className="rounded-2xl border border-border bg-card p-4 space-y-4">
+
+                  {/* Studio header */}
+                  <div className="flex items-center justify-between">
+                    <p className="flex items-center gap-2 text-sm font-semibold">
+                      <Wand2 className="h-4 w-4 text-lime" />
+                      Overlay Studio
+                    </p>
+                    <span className="text-xs text-muted-foreground">
+                      {(clipWords[activeClip.id] ?? activeClip.words).length} words
+                    </span>
+                  </div>
+
+                  {/* Template selector (compact row) */}
+                  <div>
+                    <p className="mb-1.5 text-xs font-medium text-muted-foreground">Template</p>
                     <div className="flex gap-2">
-                      <button
-                        onClick={() => handleSaveLyrics(activeClip.id)}
-                        disabled={savingLyrics}
-                        className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:border-lime/50"
-                      >
-                        {savingLyrics ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
-                      </button>
-                      <button
-                        onClick={() => handleSaveLyrics(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
-                        disabled={savingLyrics || generating[activeClip.id]}
-                        className="flex items-center gap-1.5 rounded-lg bg-lime px-3 py-1.5 text-xs font-medium text-black disabled:opacity-50"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                        <span className="hidden xs:inline">Save & </span>Regenerate
-                      </button>
+                      {TEMPLATES.map((tmpl) => {
+                        const cfg = clipConfigs[activeClip.id] ?? { template_id: "minimal" };
+                        const active = cfg.template_id === tmpl.id;
+                        return (
+                          <button
+                            key={tmpl.id}
+                            onClick={() =>
+                              setClipConfigs((c) => ({
+                                ...c,
+                                [activeClip.id]: { ...cfg, template_id: tmpl.id },
+                              }))
+                            }
+                            className={`flex-1 rounded-xl border py-2.5 text-center transition-all ${
+                              active
+                                ? "border-lime ring-1 ring-lime bg-lime/5"
+                                : "border-border hover:border-lime/40"
+                            }`}
+                          >
+                            <div className="mb-1 flex justify-center gap-1">
+                              {tmpl.colors.map((c) => (
+                                <div
+                                  key={c}
+                                  className="h-3 w-3 rounded-full"
+                                  style={{ background: c }}
+                                />
+                              ))}
+                            </div>
+                            <p className={`text-[11px] font-semibold ${active ? "text-lime" : "text-foreground"}`}>
+                              {tmpl.label}
+                            </p>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
-                  <div className="max-h-80 overflow-y-auto rounded-xl border border-border bg-card sm:max-h-[420px]">
-                    {(clipWords[activeClip.id] ?? activeClip.words).length === 0 ? (
-                      <div className="p-6 text-center text-sm text-muted-foreground">No words transcribed for this clip</div>
+                  {/* Generate / Regenerate */}
+                  <button
+                    onClick={() => handleGenerateClip(activeClip.id)}
+                    disabled={generating[activeClip.id] || activeClip.video?.status === "generating"}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-lime py-2.5 text-sm font-semibold text-black disabled:opacity-50 transition-opacity"
+                  >
+                    {generating[activeClip.id] || activeClip.video?.status === "generating" ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</>
                     ) : (
-                      <table className="w-full text-xs">
-                        <thead className="sticky top-0 border-b border-border bg-card">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-medium text-muted-foreground">Word</th>
-                            <th className="px-2 py-2 text-right font-medium text-muted-foreground">Start</th>
-                            <th className="px-2 py-2 text-right font-medium text-muted-foreground">End</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(clipWords[activeClip.id] ?? activeClip.words).map((w, wi) => (
-                            <tr key={wi} className="border-b border-border/50 hover:bg-muted/30">
-                              <td className="px-3 py-1.5">
-                                <input
-                                  value={w.word}
-                                  onChange={(e) => handleWordChange(activeClip.id, wi, "word", e.target.value)}
-                                  className="w-full min-w-0 bg-transparent font-mono outline-none focus:text-lime"
-                                />
-                              </td>
-                              <td className="px-2 py-1.5 text-right">
-                                <input
-                                  type="number" step="0.01" value={w.start_s.toFixed(2)}
-                                  onChange={(e) => handleWordChange(activeClip.id, wi, "start_s", parseFloat(e.target.value) || 0)}
-                                  className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
-                                />
-                              </td>
-                              <td className="px-2 py-1.5 text-right">
-                                <input
-                                  type="number" step="0.01" value={w.end_s.toFixed(2)}
-                                  onChange={(e) => handleWordChange(activeClip.id, wi, "end_s", parseFloat(e.target.value) || 0)}
-                                  className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
-                                />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                      <><Wand2 className="h-4 w-4" />
+                        {activeClip.video?.status === "done" ? "Regenerate Video" : "Generate Video"}</>
                     )}
+                  </button>
+
+                  {generationErrors[activeClip.id] && (
+                    <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      {generationErrors[activeClip.id]}
+                    </p>
+                  )}
+
+                  {/* Lyrics editor */}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <p className="text-xs font-medium text-muted-foreground">Lyrics (editable)</p>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => handleSaveLyrics(activeClip.id)}
+                          disabled={savingLyrics}
+                          className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium hover:border-lime/50 disabled:opacity-50 transition-colors"
+                        >
+                          {savingLyrics ? <Loader2 className="inline h-3 w-3 animate-spin" /> : "Save"}
+                        </button>
+                        <button
+                          onClick={() =>
+                            handleSaveLyrics(activeClip.id).then(() =>
+                              handleGenerateClip(activeClip.id)
+                            )
+                          }
+                          disabled={savingLyrics || generating[activeClip.id]}
+                          className="flex items-center gap-1 rounded-lg border border-lime/40 bg-lime/10 px-2.5 py-1 text-xs font-medium text-lime disabled:opacity-50 transition-colors"
+                        >
+                          <RefreshCw className="h-3 w-3" /> Save & Regen
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="max-h-64 overflow-y-auto rounded-xl border border-border">
+                      {(clipWords[activeClip.id] ?? activeClip.words).length === 0 ? (
+                        <div className="p-5 text-center text-sm text-muted-foreground">
+                          No words transcribed for this clip
+                        </div>
+                      ) : (
+                        <table className="w-full text-xs">
+                          <thead className="sticky top-0 border-b border-border bg-card">
+                            <tr>
+                              <th className="px-3 py-2 text-left font-medium text-muted-foreground">Word</th>
+                              <th className="px-2 py-2 text-right font-medium text-muted-foreground">Start</th>
+                              <th className="px-2 py-2 text-right font-medium text-muted-foreground">End</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(clipWords[activeClip.id] ?? activeClip.words).map((w, wi) => (
+                              <tr key={wi} className="border-b border-border/50 hover:bg-muted/30">
+                                <td className="px-3 py-1.5">
+                                  <input
+                                    value={w.word}
+                                    onChange={(e) =>
+                                      handleWordChange(activeClip.id, wi, "word", e.target.value)
+                                    }
+                                    className="w-full min-w-0 bg-transparent font-mono outline-none focus:text-lime"
+                                  />
+                                </td>
+                                <td className="px-2 py-1.5 text-right">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={w.start_s.toFixed(2)}
+                                    onChange={(e) =>
+                                      handleWordChange(
+                                        activeClip.id, wi, "start_s",
+                                        parseFloat(e.target.value) || 0,
+                                      )
+                                    }
+                                    className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
+                                  />
+                                </td>
+                                <td className="px-2 py-1.5 text-right">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={w.end_s.toFixed(2)}
+                                    onChange={(e) =>
+                                      handleWordChange(
+                                        activeClip.id, wi, "end_s",
+                                        parseFloat(e.target.value) || 0,
+                                      )
+                                    }
+                                    className="w-14 bg-transparent text-right font-mono outline-none focus:text-lime"
+                                  />
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Download (only when ready) */}
+                  {activeClip.video?.status === "done" && activeClip.video.video_path && (
+                    <a
+                      href={fileUrl(activeClip.video.video_path)}
+                      download={`clip_${activeClip.clip_index + 1}.mp4`}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-foreground hover:border-lime/40 hover:bg-muted transition-colors"
+                    >
+                      <Download className="h-4 w-4 text-lime" />
+                      Download MP4
+                    </a>
+                  )}
                 </div>
               </div>
             )}
 
             <div className="flex items-center justify-between pt-1">
-              <button onClick={() => setStep(1)} className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm">
+              <button
+                onClick={() => setStep(1)}
+                className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
+              >
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
               <button

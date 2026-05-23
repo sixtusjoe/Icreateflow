@@ -6720,9 +6720,9 @@ async def generate_audio_video_clip(
         )
         words = [dict(w) for w in await cur.fetchall()]
 
-        # Get artist slug from audio_tracks
+        # Get artist slug + name from audio_tracks
         cur = await database.execute(
-            "SELECT at.*, ar.slug FROM audio_tracks at "
+            "SELECT at.*, ar.slug, ar.name AS artist_name FROM audio_tracks at "
             "JOIN artists ar ON ar.id = at.artist_id "
             "WHERE at.id = ?",
             (clip["audio_track_id"],),
@@ -6773,6 +6773,8 @@ async def generate_audio_video_clip(
                 template_id=data.template_id,
                 output_path=video_path,
                 background_image_path=data.background_image_path,
+                title=track.get("title", ""),
+                artist=track.get("artist_name", ""),
             )
         except Exception as e:
             err = str(e)
