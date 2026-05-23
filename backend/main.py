@@ -6392,84 +6392,86 @@ async def upload_audio_track(
     ):
         raise HTTPException(400, "Unsupported audio format")
 
-    # Save uploaded file
+    # Single DB connection for whole request
     database = await db.get_db()
     try:
+        # Get artist slug
         cur = await database.execute("SELECT slug FROM artists WHERE id = ?", (artist_id,))
         artist_row = await cur.fetchone()
         if not artist_row:
             raise HTTPException(404, "Artist not found")
         artist_slug = artist_row["slug"]
-    finally:
-        await database.close()
 
-    audio_dir = Path("uploads") / artist_slug / "audio_to_video"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-
-    # Unique filename to avoid collisions
-    import uuid as _uuid
-    safe_name = f"{_uuid.uuid4().hex}_{Path(file.filename).name}"
-    audio_path = audio_dir / safe_name
-    contents = await file.read()
-    audio_path.write_bytes(contents)
-
-    # Get duration via ffprobe
-    duration_s: Optional[float] = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format",
-            str(audio_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        # Look up OpenAI key — same pattern as other endpoints
+        _u_settings = await db.get_user_settings(database, user["id"])
+        openai_key = (
+            _u_settings.get("openai_api_key")
+            or await db.get_setting(database, "openai_api_key")
+            or os.environ.get("OPENAI_API_KEY")
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-        import json as _json
-        ffprobe_data = _json.loads(stdout)
-        duration_s = float(ffprobe_data.get("format", {}).get("duration", 0)) or None
-    except Exception as e:
-        print(f"[audio-to-video] ffprobe failed: {e}")
+        if not openai_key:
+            raise HTTPException(500, "OpenAI API key not configured — add one in Settings")
 
-    # Whisper transcription
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_key:
-        raise HTTPException(500, "OpenAI API key not configured")
+        # Save uploaded file to disk
+        audio_dir = Path("uploads") / artist_slug / "audio_to_video"
+        audio_dir.mkdir(parents=True, exist_ok=True)
 
-    words = []
-    try:
-        import httpx as _httpx
-        with open(str(audio_path), "rb") as audio_f:
-            audio_bytes = audio_f.read()
+        import uuid as _uuid
+        safe_name = f"{_uuid.uuid4().hex}_{Path(file.filename).name}"
+        audio_path = audio_dir / safe_name
+        contents = await file.read()
+        audio_path.write_bytes(contents)
 
-        def _whisper_request():
-            with _httpx.Client(timeout=300) as client:
-                resp = client.post(
-                    "https://api.openai.com/v1/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {openai_key}"},
-                    data={
-                        "model": "whisper-1",
-                        "response_format": "verbose_json",
-                        "timestamp_granularities[]": "word",
-                    },
-                    files={"file": (safe_name, audio_bytes, "audio/mpeg")},
-                )
-                if not resp.is_success:
-                    raise RuntimeError(f"Whisper API error {resp.status_code}: {resp.text[:200]}")
-                return resp.json()
+        # Get duration via ffprobe
+        duration_s: Optional[float] = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format",
+                str(audio_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            import json as _json
+            ffprobe_data = _json.loads(stdout)
+            duration_s = float(ffprobe_data.get("format", {}).get("duration", 0)) or None
+        except Exception as e:
+            print(f"[audio-to-video] ffprobe failed: {e}")
 
-        whisper_result = await asyncio.to_thread(_whisper_request)
-        raw_words = whisper_result.get("words") or []
-        words = [
-            {"word": w["word"].strip(), "start_s": float(w["start"]), "end_s": float(w["end"])}
-            for w in raw_words
-            if w.get("word", "").strip()
-        ]
-    except Exception as e:
-        print(f"[audio-to-video] Whisper transcription failed: {e}")
-        # Continue without words — user can edit manually
+        # Whisper word-level transcription
+        words = []
+        try:
+            import httpx as _httpx
+            audio_bytes = audio_path.read_bytes()
 
-    # Save to DB
-    database = await db.get_db()
-    try:
+            def _whisper_request():
+                with _httpx.Client(timeout=300) as client:
+                    resp = client.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {openai_key}"},
+                        data={
+                            "model": "whisper-1",
+                            "response_format": "verbose_json",
+                            "timestamp_granularities[]": "word",
+                        },
+                        files={"file": (safe_name, audio_bytes, "audio/mpeg")},
+                    )
+                    if not resp.is_success:
+                        raise RuntimeError(f"Whisper API error {resp.status_code}: {resp.text[:200]}")
+                    return resp.json()
+
+            whisper_result = await asyncio.to_thread(_whisper_request)
+            raw_words = whisper_result.get("words") or []
+            words = [
+                {"word": w["word"].strip(), "start_s": float(w["start"]), "end_s": float(w["end"])}
+                for w in raw_words
+                if w.get("word", "").strip()
+            ]
+        except Exception as e:
+            print(f"[audio-to-video] Whisper transcription failed: {e}")
+            # Continue without words — user can edit manually
+
+        # Save track + words to DB
         cur = await database.execute(
             "INSERT INTO audio_tracks (artist_id, title, local_path, duration_s) VALUES (?, ?, ?, ?)",
             (artist_id, title or Path(file.filename).stem, str(audio_path), duration_s),
@@ -6553,54 +6555,46 @@ async def split_audio_track(
         if not track:
             raise HTTPException(404, "Audio track not found")
         track = dict(track)
-    finally:
-        await database.close()
 
-    duration = track.get("duration_s") or 0
-    if duration <= 0:
-        raise HTTPException(400, "Track duration is unknown — cannot split")
+        duration = track.get("duration_s") or 0
+        if duration <= 0:
+            raise HTTPException(400, "Track duration is unknown — cannot split")
 
-    audio_path = track["local_path"]
-    clip_dir = Path(audio_path).parent / f"clips_{track_id}"
-    clip_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = track["local_path"]
+        clip_dir = Path(audio_path).parent / f"clips_{track_id}"
+        clip_dir.mkdir(parents=True, exist_ok=True)
 
-    clip_duration = duration / data.clips
-    created_clips = []
+        clip_duration = duration / data.clips
+        created_clips = []
 
-    # Delete existing clips for this track
-    database = await db.get_db()
-    try:
+        # Remove existing clips for this track (re-split)
         await database.execute(
             "DELETE FROM audio_clips WHERE audio_track_id = ?", (track_id,)
         )
         await database.commit()
-    finally:
-        await database.close()
 
-    for i in range(data.clips):
-        start_s = i * clip_duration
-        end_s = min((i + 1) * clip_duration, duration)
-        clip_path = str(clip_dir / f"clip_{i:02d}.mp3")
+        for i in range(data.clips):
+            start_s = i * clip_duration
+            end_s = min((i + 1) * clip_duration, duration)
+            clip_path = str(clip_dir / f"clip_{i:02d}.mp3")
 
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", audio_path,
-            "-ss", str(start_s),
-            "-to", str(end_s),
-            "-c", "copy",
-            clip_path,
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        if proc.returncode != 0:
-            raise HTTPException(500, f"FFmpeg split failed for clip {i}: {stderr.decode()[:200]}")
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", audio_path,
+                "-ss", str(start_s),
+                "-to", str(end_s),
+                "-c", "copy",
+                clip_path,
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode != 0:
+                raise HTTPException(500, f"FFmpeg split failed for clip {i}: {stderr.decode()[:200]}")
 
-        database = await db.get_db()
-        try:
             cur = await database.execute(
                 "INSERT INTO audio_clips (audio_track_id, clip_index, start_s, end_s, local_path) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -6608,12 +6602,8 @@ async def split_audio_track(
             )
             await database.commit()
             clip_id = cur.lastrowid
-        finally:
-            await database.close()
 
-        # Assign words to clip
-        database = await db.get_db()
-        try:
+            # Assign words to this clip based on timing
             await database.execute(
                 "UPDATE audio_words SET clip_index = ? "
                 "WHERE audio_track_id = ? AND start_s >= ? AND start_s < ?",
@@ -6627,18 +6617,18 @@ async def split_audio_track(
             )
             word_count_row = await cur.fetchone()
             word_count = word_count_row["cnt"] if word_count_row else 0
-        finally:
-            await database.close()
 
-        created_clips.append({
-            "clip_id": clip_id,
-            "clip_index": i,
-            "start_s": start_s,
-            "end_s": end_s,
-            "word_count": word_count,
-        })
+            created_clips.append({
+                "clip_id": clip_id,
+                "clip_index": i,
+                "start_s": start_s,
+                "end_s": end_s,
+                "word_count": word_count,
+            })
 
-    return {"track_id": track_id, "clips": created_clips}
+        return {"track_id": track_id, "clips": created_clips}
+    finally:
+        await database.close()
 
 
 @app.get("/api/audio-to-video/clips/{clip_id}")
