@@ -249,9 +249,13 @@ export default function AudioToVideoPage() {
       setTrack(trackData);
       const configs: Record<number, { template_id: string }> = {};
       const words: Record<number, AudioWord[]> = {};
+      // trackData.clips don't carry per-clip words; distribute from the flat
+      // trackData.words array (each word has a clip_index field from the DB).
       for (const clip of trackData.clips) {
         configs[clip.id] = { template_id: clip.video?.template_id ?? "minimal" };
-        words[clip.id] = clip.words ?? [];
+        words[clip.id] = (trackData.words ?? []).filter(
+          (w: any) => w.clip_index === clip.clip_index,
+        );
       }
       setClipConfigs(configs);
       setClipWords(words);
@@ -320,9 +324,12 @@ export default function AudioToVideoPage() {
       setTrack(trackData);
       const configs: Record<number, { template_id: string }> = {};
       const words: Record<number, AudioWord[]> = {};
+      // Distribute flat trackData.words to each clip by clip_index
       for (const clip of trackData.clips) {
         configs[clip.id] = { template_id: "minimal" };
-        words[clip.id] = clip.words ?? [];
+        words[clip.id] = (trackData.words ?? []).filter(
+          (w: any) => w.clip_index === clip.clip_index,
+        );
       }
       setClipConfigs(configs);
       setClipWords(words);
