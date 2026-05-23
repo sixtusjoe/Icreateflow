@@ -6576,14 +6576,18 @@ async def split_audio_track(
         for i in range(data.clips):
             start_s = i * clip_duration
             end_s = min((i + 1) * clip_duration, duration)
-            clip_path = str(clip_dir / f"clip_{i:02d}.mp3")
+            seg_duration = end_s - start_s
+            # Always output as AAC-in-M4A so any input format (WAV, MP3, FLAC,
+            # M4A, OGG …) is accepted.  -ss before -i = fast seek.
+            clip_path = str(clip_dir / f"clip_{i:02d}.m4a")
 
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
-                "-i", audio_path,
                 "-ss", str(start_s),
-                "-to", str(end_s),
-                "-c", "copy",
+                "-i", audio_path,
+                "-t", str(seg_duration),
+                "-c:a", "aac", "-b:a", "192k",
+                "-vn",
                 clip_path,
             ]
             proc = await asyncio.create_subprocess_exec(
