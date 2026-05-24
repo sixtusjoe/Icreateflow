@@ -61,6 +61,8 @@ interface AudioVideoState {
   video_path?: string;
   error?: string;
   template_id?: string;
+  background_image_path?: string;
+  album_cover_path?: string;
 }
 
 interface AudioClipData {
@@ -490,6 +492,7 @@ export default function AudioToVideoPage() {
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
   const previewCanvasRef = useRef<HTMLDivElement>(null);
   const [exportingFrame, setExportingFrame] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -554,12 +557,17 @@ export default function AudioToVideoPage() {
     try {
       const trackData: AudioTrackData = await getAudioTrack(trackId);
       setTrack(trackData);
-      const configs: Record<number, { template_id: string }> = {};
+      const configs: Record<number, { template_id: string; bg_path?: string; cover_path?: string }> = {};
       const words: Record<number, AudioWord[]> = {};
       // trackData.clips don't carry per-clip words; distribute from the flat
       // trackData.words array (each word has a clip_index field from the DB).
       for (const clip of trackData.clips) {
-        configs[clip.id] = { template_id: clip.video?.template_id ?? "minimal" };
+        configs[clip.id] = {
+          template_id: clip.video?.template_id ?? "minimal",
+          // Restore saved image paths so regeneration carries them forward
+          bg_path: clip.video?.background_image_path ?? undefined,
+          cover_path: clip.video?.album_cover_path ?? undefined,
+        };
         words[clip.id] = (trackData.words ?? []).filter(
           (w: any) => w.clip_index === clip.clip_index,
         );
@@ -629,11 +637,15 @@ export default function AudioToVideoPage() {
       await splitAudioTrack(trackId, clipCount);
       const trackData = await getAudioTrack(trackId);
       setTrack(trackData);
-      const configs: Record<number, { template_id: string }> = {};
+      const configs: Record<number, { template_id: string; bg_path?: string; cover_path?: string }> = {};
       const words: Record<number, AudioWord[]> = {};
       // Distribute flat trackData.words to each clip by clip_index
       for (const clip of trackData.clips) {
-        configs[clip.id] = { template_id: "minimal" };
+        configs[clip.id] = {
+          template_id: clip.video?.template_id ?? "minimal",
+          bg_path: clip.video?.background_image_path ?? undefined,
+          cover_path: clip.video?.album_cover_path ?? undefined,
+        };
         words[clip.id] = (trackData.words ?? []).filter(
           (w: any) => w.clip_index === clip.clip_index,
         );
@@ -1444,32 +1456,103 @@ export default function AudioToVideoPage() {
                         )}
                       </button>
 
-                      {/* Export Frame — always captures the live HTML preview as PNG */}
+                      {/* Export Preview — records the live HTML preview as WebM video with audio */}
                       <button
                         onClick={async () => {
-                          if (!previewCanvasRef.current) return;
+                          if (!previewCanvasRef.current || !activeClip || !audioPreviewRef.current) return;
                           setExportingFrame(true);
+                          setRecordingSeconds(0);
+
+                          const clipDuration = activeClip.end_s - activeClip.start_s;
+                          const audio = audioPreviewRef.current;
+                          const previewEl = previewCanvasRef.current;
+                          const rect = previewEl.getBoundingClientRect();
+
+                          // Offscreen canvas for frame capture
+                          const offCanvas = document.createElement("canvas");
+                          offCanvas.width = Math.round(rect.width * 2);
+                          offCanvas.height = Math.round(rect.height * 2);
+                          const ctx = offCanvas.getContext("2d")!;
+
+                          // Video stream from canvas
+                          const videoStream = offCanvas.captureStream(30);
+
+                          // Audio stream from the audio element (captureStream / mozCaptureStream)
+                          let allTracks = [...videoStream.getVideoTracks()];
                           try {
-                            const dataUrl = await toPng(previewCanvasRef.current, {
-                              pixelRatio: 2,
-                              style: { borderRadius: "0" },
-                            });
-                            const link = document.createElement("a");
-                            link.download = `clip_${activeClip.clip_index + 1}_preview.png`;
-                            link.href = dataUrl;
-                            link.click();
-                          } catch (err) {
-                            console.error("Export failed", err);
-                          } finally {
-                            setExportingFrame(false);
-                          }
+                            const audioStream: MediaStream =
+                              (audio as any).captureStream?.() ??
+                              (audio as any).mozCaptureStream?.();
+                            if (audioStream) allTracks = [...allTracks, ...audioStream.getAudioTracks()];
+                          } catch (_) { /* no audio stream — video only */ }
+
+                          const mimeType =
+                            ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+                              .find((t) => MediaRecorder.isTypeSupported(t)) ?? "video/webm";
+
+                          const recorder = new MediaRecorder(new MediaStream(allTracks), { mimeType });
+                          const chunks: BlobPart[] = [];
+                          recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+                          // Countdown timer
+                          let elapsed = 0;
+                          const timer = setInterval(() => {
+                            elapsed++;
+                            setRecordingSeconds(elapsed);
+                          }, 1000);
+
+                          // Start audio + recording from beginning
+                          audio.currentTime = 0;
+                          recorder.start(200);
+                          audio.play().catch(() => {});
+                          setIsPreviewPaused(false);
+
+                          // Frame capture loop — as fast as html-to-image allows (~10fps)
+                          let running = true;
+                          const captureFrames = async () => {
+                            while (running) {
+                              const t0 = performance.now();
+                              try {
+                                const { toCanvas: toCanvasFn } = await import("html-to-image");
+                                const frame = await toCanvasFn(previewEl, { pixelRatio: 2, cacheBust: false });
+                                ctx.drawImage(frame, 0, 0, offCanvas.width, offCanvas.height);
+                              } catch (_) { /* ignore */ }
+                              // cap at ~15fps max to avoid overwhelming
+                              const took = performance.now() - t0;
+                              if (took < 66) await new Promise((r) => setTimeout(r, 66 - took));
+                            }
+                          };
+                          captureFrames();
+
+                          // Stop after full clip duration + 300ms buffer
+                          await new Promise<void>((resolve) => setTimeout(resolve, (clipDuration + 0.3) * 1000));
+
+                          running = false;
+                          clearInterval(timer);
+                          recorder.stop();
+                          audio.pause();
+                          setIsPreviewPaused(true);
+
+                          // Wait for recorder to flush all chunks
+                          await new Promise<void>((resolve) => { recorder.onstop = () => resolve(); });
+
+                          const blob = new Blob(chunks, { type: "video/webm" });
+                          const url = URL.createObjectURL(blob);
+                          const link = document.createElement("a");
+                          link.href = url;
+                          link.download = `clip_${activeClip.clip_index + 1}_preview.webm`;
+                          link.click();
+                          setTimeout(() => URL.revokeObjectURL(url), 10_000);
+
+                          setExportingFrame(false);
+                          setRecordingSeconds(0);
                         }}
                         disabled={exportingFrame}
                         className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors disabled:opacity-50"
                       >
                         {exportingFrame
-                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Exporting…</>
-                          : <><Download className="w-4 h-4" /> Export Frame</>}
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Recording {recordingSeconds}s…</>
+                          : <><Download className="w-4 h-4" /> Export Video</>}
                       </button>
                     </div>
 

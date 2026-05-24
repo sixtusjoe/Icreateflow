@@ -6777,16 +6777,16 @@ async def generate_audio_video_clip(
         if existing:
             await database.execute(
                 "UPDATE audio_video_clips SET status = 'generating', error = NULL, "
-                "template_id = ?, background_image_path = ?, video_path = NULL WHERE audio_clip_id = ?",
-                (data.template_id, data.background_image_path, clip_id),
+                "template_id = ?, background_image_path = ?, album_cover_path = ?, video_path = NULL WHERE audio_clip_id = ?",
+                (data.template_id, data.background_image_path, data.album_cover_path, clip_id),
             )
             await database.commit()
             avc_id = existing["id"]
         else:
             cur = await database.execute(
-                "INSERT INTO audio_video_clips (audio_clip_id, template_id, background_image_path, status) "
-                "VALUES (?, ?, ?, 'generating')",
-                (clip_id, data.template_id, data.background_image_path),
+                "INSERT INTO audio_video_clips (audio_clip_id, template_id, background_image_path, album_cover_path, status) "
+                "VALUES (?, ?, ?, ?, 'generating')",
+                (clip_id, data.template_id, data.background_image_path, data.album_cover_path),
             )
             await database.commit()
             avc_id = cur.lastrowid
