@@ -6907,7 +6907,9 @@ async def render_audio_clip_preview(
                 cwd=str(render_script.parent),
             )
             if result.returncode != 0:
-                raise RuntimeError(f"Remotion render failed: {result.stderr[-500:]}")
+                stderr_tail = result.stderr[-1000:] if result.stderr else "(no stderr)"
+                stdout_tail = result.stdout[-500:] if result.stdout else ""
+                raise RuntimeError(f"Remotion render failed.\nSTDERR: {stderr_tail}\nSTDOUT: {stdout_tail}")
             print(f"[render-preview] clip {clip_id} done: {video_path}")
 
         except Exception as e:
@@ -6919,7 +6921,7 @@ async def render_audio_clip_preview(
             if err:
                 await database2.execute(
                     "UPDATE audio_video_clips SET status = 'failed', error = ? WHERE id = ?",
-                    (err[:500], avc_id),
+                    (err[:2000], avc_id),
                 )
             else:
                 await database2.execute(

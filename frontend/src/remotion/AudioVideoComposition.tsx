@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import {
   useCurrentFrame,
   useVideoConfig,
@@ -7,6 +7,8 @@ import {
   interpolate,
   spring,
   AbsoluteFill,
+  delayRender,
+  continueRender,
 } from "remotion";
 
 /* ── Types ────────────────────────────────────────────────────────────────── */
@@ -89,6 +91,37 @@ function keyframeLerp(t: number, duration: number, values: number[]): number {
   const segT = (phase - segIdx * segDur) / segDur;
   return values[segIdx] + (values[segIdx + 1] - values[segIdx]) * segT;
 }
+
+/* ── SafeImg — drop-in Img replacement that won't crash on load failure ──── */
+
+const SafeImg: React.FC<
+  React.ImgHTMLAttributes<HTMLImageElement> & { fallback?: React.ReactNode }
+> = ({ fallback, onLoad, onError, ...props }) => {
+  const [handle] = useState(() => delayRender("Loading image: " + (props.src ?? "?")));
+  const [failed, setFailed] = useState(false);
+
+  const handleLoad = useCallback(() => {
+    continueRender(handle);
+  }, [handle]);
+
+  const handleError = useCallback(() => {
+    console.warn("[SafeImg] Failed to load:", props.src);
+    setFailed(true);
+    continueRender(handle);
+  }, [handle, props.src]);
+
+  if (failed) {
+    return fallback ? <>{fallback}</> : null;
+  }
+
+  return (
+    <img
+      {...props}
+      onLoad={handleLoad}
+      onError={handleError}
+    />
+  );
+};
 
 /* ── Seeded random for deterministic particles/flames ─────────────────────── */
 
@@ -251,7 +284,7 @@ const MinimalArt: React.FC<{ t: number; coverUrl: string | null; accent: string 
         }}
       >
         {coverUrl ? (
-          <Img src={coverUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <SafeImg src={coverUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <div style={{ width: "100%", height: "100%", backgroundColor: "rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <div style={{ width: "50%", height: "50%", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.2)" }} />
@@ -310,7 +343,7 @@ const VividArt: React.FC<{ t: number; coverUrl: string | null }> = ({ t, coverUr
         }}
       >
         {coverUrl ? (
-          <Img src={coverUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <SafeImg src={coverUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <div style={{ width: "100%", height: "100%", backgroundColor: "rgba(255,255,255,0.1)" }} />
         )}
@@ -377,7 +410,7 @@ const NeonArt: React.FC<{ t: number; coverUrl: string | null }> = ({ t, coverUrl
           }}
         >
           {coverUrl ? (
-            <Img src={coverUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={coverUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{ width: "100%", height: "100%", backgroundColor: "rgba(255,255,255,0.1)" }} />
           )}
@@ -423,7 +456,7 @@ const InfernoArt: React.FC<{ t: number; coverUrl: string | null }> = ({ t, cover
       >
         <div style={{ width: "100%", height: "100%", position: "relative", overflow: "hidden", filter: "grayscale(1) contrast(1.25)" }}>
           {coverUrl ? (
-            <Img
+            <SafeImg
               src={coverUrl}
               style={{ width: "100%", height: "100%", objectFit: "cover", opacity: 0.9, mixBlendMode: "screen" }}
             />
@@ -599,7 +632,7 @@ export const AudioVideoComposition: React.FC<CompositionProps> = ({
       <AbsoluteFill>
         {bgImageUrl ? (
           <div style={{ position: "absolute", inset: 0 }}>
-            <Img
+            <SafeImg
               src={bgImageUrl}
               style={{
                 width: "100%",

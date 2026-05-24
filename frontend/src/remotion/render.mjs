@@ -87,6 +87,7 @@ async function main() {
       gl: "swangle",
       disableWebSecurity: true, // allow loading local file URLs
     },
+    timeoutInMilliseconds: 60000, // 60s per frame timeout (generous for image loading)
     onProgress: ({ progress }) => {
       const pct = Math.round(progress * 100);
       if (pct % 10 === 0) {

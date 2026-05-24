@@ -1500,7 +1500,9 @@ export default function AudioToVideoPage() {
                                   return;
                                 }
                                 if (updated?.video?.status === "failed") {
-                                  console.error("Render failed:", updated.video.error);
+                                  const errMsg = updated.video.error || "Render failed";
+                                  console.error("Render failed:", errMsg);
+                                  setGenerationErrors((e) => ({ ...e, [clip.id]: `Export render failed: ${errMsg.slice(0, 200)}` }));
                                   setIsExportRecording(false);
                                   return;
                                 }
@@ -1509,8 +1511,9 @@ export default function AudioToVideoPage() {
                                 return poll();
                               };
                               await poll();
-                            } catch (err) {
+                            } catch (err: any) {
                               console.error("Render request failed", err);
+                              setGenerationErrors((e) => ({ ...e, [clip.id]: `Export request failed: ${err?.message || "unknown error"}` }));
                               setIsExportRecording(false);
                             }
                           }}
