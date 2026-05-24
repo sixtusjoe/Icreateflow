@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { toPng } from "html-to-image";
 import { motion, AnimatePresence } from "motion/react";
 import {
   getArtists,
@@ -487,6 +488,8 @@ export default function AudioToVideoPage() {
   const bgInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
+  const previewCanvasRef = useRef<HTMLDivElement>(null);
+  const [exportingFrame, setExportingFrame] = useState(false);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -769,31 +772,47 @@ export default function AudioToVideoPage() {
   const wordPositionMapRef = useRef(wordPositionMap);
   useEffect(() => { wordPositionMapRef.current = wordPositionMap; }, [wordPositionMap]);
 
-  // Attach timeupdate listener — syncs karaoke highlight to audio position
+  // RAF-based karaoke sync — polls at ~60fps, reads fresh refs each frame
   useEffect(() => {
-    const audio = audioPreviewRef.current;
-    if (!audio) return;
+    let rafId: number;
 
-    const handleTimeUpdate = () => {
-      const clip = activeClipRef.current;
-      if (!clip) return;
-      // Whisper timestamps are absolute from full track start.
-      // Audio currentTime is relative to the clip segment (starts at 0).
-      // Add clip.start_s to convert to absolute time.
-      const t = audio.currentTime + (clip.start_s ?? 0);
-      const ws = clipWordsRef.current[clip.id] ?? [];
-      if (ws.length === 0) return;
-      const idx = ws.findIndex((w) => t >= w.start_s && t < w.end_s);
-      if (idx === -1) return;
-      const pos = wordPositionMapRef.current[idx];
-      if (!pos) return;
-      setOverlayLineIndex(pos.lineIdx);
-      setOverlayWordIndex(pos.wordIdx);
+    const tick = () => {
+      const audio = audioPreviewRef.current;
+      const clip  = activeClipRef.current;
+
+      if (audio && clip && !audio.paused) {
+        // Whisper timestamps are absolute from full track start.
+        // audio.currentTime is relative to the clip segment (starts at 0).
+        const t  = audio.currentTime + (clip.start_s ?? 0);
+        const ws = clipWordsRef.current[clip.id] ?? [];
+
+        if (ws.length > 0) {
+          // Find exact active word
+          let idx = ws.findIndex((w) => t >= w.start_s && t < w.end_s);
+
+          // Between words? Keep last passed word highlighted instead of going dark
+          if (idx === -1) {
+            for (let i = ws.length - 1; i >= 0; i--) {
+              if (t >= ws[i].start_s) { idx = i; break; }
+            }
+          }
+
+          if (idx !== -1) {
+            const pos = wordPositionMapRef.current[idx];
+            if (pos) {
+              setOverlayLineIndex(pos.lineIdx);
+              setOverlayWordIndex(pos.wordIdx);
+            }
+          }
+        }
+      }
+
+      rafId = requestAnimationFrame(tick);
     };
 
-    audio.addEventListener("timeupdate", handleTimeUpdate);
-    return () => audio.removeEventListener("timeupdate", handleTimeUpdate);
-  // Only re-attach when the clip changes (new audio src) — refs handle the rest
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  // Restart RAF loop only when clip changes — refs handle fresh data each frame
   }, [activeClip?.id]);
 
   // ── Lyrics text helpers ──────────────────────────────────────────────────
@@ -1354,7 +1373,8 @@ export default function AudioToVideoPage() {
                             setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
                           }
                         }}
-                        className="w-full h-32 bg-background border border-border rounded-xl p-3 text-sm text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium"
+                        className="w-full h-32 bg-background border border-border rounded-xl p-3 text-sm text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
+                        style={{ scrollbarWidth: "none" }}
                         placeholder="Enter lyrics here..."
                       />
                     </div>
@@ -1424,47 +1444,57 @@ export default function AudioToVideoPage() {
                         )}
                       </button>
 
-                      {activeClip.video?.status === "done" && activeClip.video.video_path ? (
-                        /* Already generated — download existing MP4 */
-                        <a
-                          href={fileUrl(activeClip.video.video_path)}
-                          download={`clip_${activeClip.clip_index + 1}.mp4`}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
-                        >
-                          <Download className="w-4 h-4" /> Export Frame
-                        </a>
-                      ) : (
-                        /* Not yet generated */
-                        <button
-                          onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
-                          disabled={isGen || savingLyrics}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors disabled:opacity-50"
-                        >
-                          {isGen
-                            ? <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>
-                            : <><Wand2 className="w-4 h-4" /> Generate</>}
-                        </button>
-                      )}
+                      {/* Export Frame — always captures the live HTML preview as PNG */}
+                      <button
+                        onClick={async () => {
+                          if (!previewCanvasRef.current) return;
+                          setExportingFrame(true);
+                          try {
+                            const dataUrl = await toPng(previewCanvasRef.current, {
+                              pixelRatio: 2,
+                              style: { borderRadius: "0" },
+                            });
+                            const link = document.createElement("a");
+                            link.download = `clip_${activeClip.clip_index + 1}_preview.png`;
+                            link.href = dataUrl;
+                            link.click();
+                          } catch (err) {
+                            console.error("Export failed", err);
+                          } finally {
+                            setExportingFrame(false);
+                          }
+                        }}
+                        disabled={exportingFrame}
+                        className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors disabled:opacity-50"
+                      >
+                        {exportingFrame
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Exporting…</>
+                          : <><Download className="w-4 h-4" /> Export Frame</>}
+                      </button>
                     </div>
 
-                    {/* Regenerate — always visible when done, shows dirty badge if settings changed */}
-                    {activeClip.video?.status === "done" && (
-                      <button
-                        onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
-                        disabled={isGen || savingLyrics}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-40 transition-colors"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        {clipConfigDirty[activeClip.id]
-                          ? <><span>Regenerate with new settings</span><span className="ml-1 rounded-full bg-amber-500/20 text-amber-500 text-[10px] px-1.5 py-0.5">Updated</span></>
-                          : "Save lyrics & Regenerate"}
-                      </button>
-                    )}
+                    {/* Generate / Regenerate — always visible */}
+                    <button
+                      onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
+                      disabled={isGen || savingLyrics}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-40 transition-colors"
+                    >
+                      {isGen
+                        ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</>
+                        : activeClip.video?.status === "done"
+                          ? <>
+                              <RefreshCw className="h-3.5 w-3.5" />
+                              {clipConfigDirty[activeClip.id]
+                                ? <><span>Regenerate with new settings</span><span className="ml-1 rounded-full bg-amber-500/20 text-amber-500 text-[10px] px-1.5 py-0.5">Updated</span></>
+                                : "Save lyrics & Regenerate"}
+                            </>
+                          : <><Wand2 className="h-3.5 w-3.5" /> Generate Video</>}
+                    </button>
                   </div>
 
                   {/* ══ RIGHT: 9:16 Canvas (Figma Design) ═════════════════════ */}
                   <div className="flex flex-1 items-start justify-center pt-2">
-                    <div className="relative w-full max-w-[360px] md:max-w-[420px] aspect-[9/16] bg-black rounded-[2.5rem] overflow-hidden shadow-2xl ring-4 ring-neutral-800 flex-shrink-0 isolate">
+                    <div ref={previewCanvasRef} className="relative w-full max-w-[360px] md:max-w-[420px] aspect-[9/16] bg-black rounded-[2.5rem] overflow-hidden shadow-2xl ring-4 ring-neutral-800 flex-shrink-0 isolate">
 
                       {/* Background / Environment Layer */}
                       <div className="absolute inset-0 z-0 bg-black">
