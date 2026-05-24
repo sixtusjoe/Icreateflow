@@ -6889,13 +6889,13 @@ async def render_audio_clip_preview(
     }
 
     async def _run_render():
+        """Async background render — uses asyncio subprocess to avoid blocking the event loop."""
+        import asyncio as _asyncio
         err = None
         try:
-            import subprocess
-            # Path to the Remotion render script (installed alongside frontend)
+            # Path to the Remotion render script
             render_script = Path("/srv/icreateflow/frontend/src/remotion/render.mjs")
             if not render_script.exists():
-                # Dev fallback
                 render_script = Path(__file__).parent.parent / "frontend" / "src" / "remotion" / "render.mjs"
 
             # Render silent video — skip audio in Remotion to avoid Chromium download timeout.
@@ -6903,50 +6903,51 @@ async def render_audio_clip_preview(
             silent_props = {**remotion_props, "audioUrl": None}
             silent_video_path = video_path.replace(".mp4", "_silent.mp4")
 
-            result = subprocess.run(
-                [
-                    "node", str(render_script),
-                    "--props", json.dumps(silent_props),
-                    "--output", silent_video_path,
-                    "--duration", str(clip_duration),
-                ],
-                capture_output=True, text=True,
-                timeout=600,  # 10 min max
+            print(f"[render-preview] Starting Remotion render for clip {clip_id}...")
+            proc = await _asyncio.create_subprocess_exec(
+                "node", str(render_script),
+                "--props", json.dumps(silent_props),
+                "--output", silent_video_path,
+                "--duration", str(clip_duration),
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
                 cwd=str(render_script.parent),
             )
-            if result.returncode != 0:
-                stderr_tail = result.stderr[-1000:] if result.stderr else "(no stderr)"
-                stdout_tail = result.stdout[-500:] if result.stdout else ""
-                raise RuntimeError(f"Remotion render failed.\nSTDERR: {stderr_tail}\nSTDOUT: {stdout_tail}")
+            stdout_bytes, stderr_bytes = await _asyncio.wait_for(proc.communicate(), timeout=600)
+            stdout_txt = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+            stderr_txt = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"Remotion render failed.\nSTDERR: {stderr_txt[-1000:]}\nSTDOUT: {stdout_txt[-500:]}"
+                )
+            print(f"[render-preview] Remotion done, muxing audio for clip {clip_id}...")
 
             # Mux audio into the silent video using FFmpeg
             audio_local = clip.get("local_path")
             if audio_local:
                 # Resolve audio path: local_path is relative to data dir
-                # Backend cwd=/srv/icreateflow/backend, data dir is ../data/
                 data_dir = Path(__file__).parent.parent / "data"
                 audio_abs = str(data_dir / audio_local)
                 if not Path(audio_abs).exists():
-                    # Fallback: maybe relative to cwd
-                    audio_abs = audio_local
-                # Trim to clip start/end
-                ffmpeg_result = subprocess.run(
-                    [
-                        "ffmpeg", "-y",
-                        "-i", silent_video_path,
-                        "-ss", str(clip["start_s"]),
-                        "-t", str(clip_duration),
-                        "-i", audio_abs,
-                        "-c:v", "copy",
-                        "-c:a", "aac",
-                        "-shortest",
-                        video_path,
-                    ],
-                    capture_output=True, text=True, timeout=120,
+                    audio_abs = audio_local  # fallback: relative to cwd
+                ffmpeg_proc = await _asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y",
+                    "-i", silent_video_path,
+                    "-ss", str(clip["start_s"]),
+                    "-t", str(clip_duration),
+                    "-i", audio_abs,
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-shortest",
+                    video_path,
+                    stdout=_asyncio.subprocess.PIPE,
+                    stderr=_asyncio.subprocess.PIPE,
                 )
+                _, ff_stderr = await _asyncio.wait_for(ffmpeg_proc.communicate(), timeout=120)
                 Path(silent_video_path).unlink(missing_ok=True)
-                if ffmpeg_result.returncode != 0:
-                    raise RuntimeError(f"FFmpeg mux failed: {ffmpeg_result.stderr[-500:]}")
+                if ffmpeg_proc.returncode != 0:
+                    ff_err_txt = ff_stderr.decode(errors="replace") if ff_stderr else ""
+                    raise RuntimeError(f"FFmpeg mux failed: {ff_err_txt[-500:]}")
             else:
                 # No audio — just rename silent video
                 Path(silent_video_path).rename(video_path)
