@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { toBlob } from "html-to-image";
 import { motion, AnimatePresence } from "motion/react";
 import {
   getArtists,
@@ -490,6 +491,8 @@ export default function AudioToVideoPage() {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
   const previewCanvasRef = useRef<HTMLDivElement>(null);
+  const recordingRef = useRef(false);
+  const [recordingPreview, setRecordingPreview] = useState(false);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -1441,21 +1444,93 @@ export default function AudioToVideoPage() {
                         )}
                       </button>
 
-                      {/* Export Video — download the backend-generated MP4 */}
-                      {activeClip.video?.status === "done" && activeClip.video.video_path ? (
-                        <a
-                          href={fileUrl(activeClip.video.video_path)}
-                          download={`clip_${activeClip.clip_index + 1}.mp4`}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
+                      {/* Export Preview — records the live animated preview as a video */}
+                      {recordingPreview ? (
+                        <button
+                          onClick={() => { recordingRef.current = false; }}
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-colors"
                         >
-                          <Download className="w-4 h-4" /> Export Video
-                        </a>
+                          <Loader2 className="w-4 h-4 animate-spin" /> Recording… tap to stop
+                        </button>
                       ) : (
                         <button
-                          disabled
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/20 text-foreground/40 font-semibold rounded-xl cursor-not-allowed"
+                          onClick={async () => {
+                            const previewEl = previewCanvasRef.current;
+                            const audioEl  = audioPreviewRef.current;
+                            if (!previewEl || !audioEl) return;
+
+                            setRecordingPreview(true);
+                            recordingRef.current = true;
+
+                            // Off-screen canvas matching the preview element size
+                            const W = previewEl.offsetWidth;
+                            const H = previewEl.offsetHeight;
+                            const canvas = document.createElement("canvas");
+                            canvas.width  = W;
+                            canvas.height = H;
+                            const ctx = canvas.getContext("2d")!;
+                            ctx.fillStyle = "#000";
+                            ctx.fillRect(0, 0, W, H);
+
+                            // Canvas video stream at up to 15fps
+                            const canvasStream = canvas.captureStream(15);
+
+                            // Audio stream from the preview <audio> element
+                            let audioStream: MediaStream | null = null;
+                            try { audioStream = (audioEl as any).captureStream?.() ?? null; } catch { /**/ }
+
+                            const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
+                            if (audioStream) tracks.push(...audioStream.getAudioTracks());
+                            const combined = new MediaStream(tracks);
+
+                            // Pick the best supported codec
+                            const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+                              .find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
+                            const recOpts: MediaRecorderOptions = { videoBitsPerSecond: 6_000_000 };
+                            if (mimeType) recOpts.mimeType = mimeType;
+
+                            const chunks: Blob[] = [];
+                            const recorder = new MediaRecorder(combined, recOpts);
+                            recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+                            recorder.onstop = () => {
+                              const blob = new Blob(chunks, { type: mimeType || "video/webm" });
+                              const url  = URL.createObjectURL(blob);
+                              const a    = document.createElement("a");
+                              a.href     = url;
+                              a.download = `clip_${activeClip.clip_index + 1}_preview.webm`;
+                              a.click();
+                              setTimeout(() => URL.revokeObjectURL(url), 10_000);
+                              setRecordingPreview(false);
+                              recordingRef.current = false;
+                            };
+
+                            // Collect data every 500 ms
+                            recorder.start(500);
+
+                            // Play audio from the beginning
+                            audioEl.currentTime = 0;
+                            await audioEl.play().catch(() => { /**/ });
+                            setIsPreviewPaused(false);
+
+                            // Frame capture loop — draws current DOM state to canvas as fast as possible
+                            while (recordingRef.current && !audioEl.ended) {
+                              try {
+                                const frameBlob = await toBlob(previewEl, { pixelRatio: 1 });
+                                if (frameBlob && recordingRef.current) {
+                                  const bitmap = await createImageBitmap(frameBlob);
+                                  ctx.drawImage(bitmap, 0, 0, W, H);
+                                  bitmap.close();
+                                }
+                              } catch { /* skip frame on error */ }
+                            }
+
+                            if (recorder.state !== "inactive") recorder.stop();
+                            audioEl.pause();
+                            setIsPreviewPaused(true);
+                          }}
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
                         >
-                          <Download className="w-4 h-4" /> Export Video
+                          <Download className="w-4 h-4" /> Export Preview
                         </button>
                       )}
                     </div>
