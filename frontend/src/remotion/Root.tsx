@@ -4,15 +4,15 @@ import { AudioVideoComposition, type CompositionProps } from "./AudioVideoCompos
 
 export const RemotionRoot: React.FC = () => {
   return (
-    <Composition
+    <Composition<CompositionProps>
       id="AudioVideo"
       component={AudioVideoComposition}
-      durationInFrames={30 * 30} // default 30s at 30fps, overridden at render time
+      durationInFrames={30 * 30}
       fps={30}
       width={1080}
       height={1920}
       defaultProps={{
-        themeId: "minimal" as const,
+        themeId: "minimal",
         accentColor: "#00FFAA",
         textGlow: "0 0 15px rgba(0,255,170,0.5)",
         bgImageUrl: null,
@@ -21,7 +21,7 @@ export const RemotionRoot: React.FC = () => {
         words: [],
         clipStartS: 0,
         clipDuration: 30,
-      } satisfies CompositionProps}
+      }}
     />
   );
 };
