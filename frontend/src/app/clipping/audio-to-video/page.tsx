@@ -948,6 +948,7 @@ export default function AudioToVideoPage() {
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
+    <>
     <div className="min-h-screen bg-background text-foreground">
 
       {/* ── Confirm modal ───────────────────────────────────────────────────── */}
@@ -2103,5 +2104,6 @@ export default function AudioToVideoPage() {
         </div>
       </div>
     )}
+    </>
   );
 }
