@@ -1460,7 +1460,6 @@ export default function AudioToVideoPage() {
                           if (!previewCanvasRef.current) return;
                           setExportingFrame(true);
                           try {
-                            const { toPng } = await import("html-to-image");
                             const dataUrl = await toPng(previewCanvasRef.current, {
                               pixelRatio: 2,
                               style: { borderRadius: "0" },
