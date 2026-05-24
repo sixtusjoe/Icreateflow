@@ -1493,6 +1493,8 @@ export default function AudioToVideoPage() {
                             const recorder = new MediaRecorder(combined, recOpts);
                             recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
                             recorder.onstop = () => {
+                              // Restore loop so normal preview playback works again
+                              audioEl.loop = true;
                               const blob = new Blob(chunks, { type: mimeType || "video/webm" });
                               const url  = URL.createObjectURL(blob);
                               const a    = document.createElement("a");
@@ -1507,13 +1509,19 @@ export default function AudioToVideoPage() {
                             // Collect data every 500 ms
                             recorder.start(500);
 
+                            // Disable loop for recording so audio.ended fires naturally
+                            audioEl.loop = false;
+
                             // Play audio from the beginning
                             audioEl.currentTime = 0;
                             await audioEl.play().catch(() => { /**/ });
                             setIsPreviewPaused(false);
 
+                            // Clip duration — stop recording when audio reaches end
+                            const clipDuration = activeClip.end_s - activeClip.start_s;
+
                             // Frame capture loop — draws current DOM state to canvas as fast as possible
-                            while (recordingRef.current && !audioEl.ended) {
+                            while (recordingRef.current && !audioEl.ended && audioEl.currentTime < clipDuration) {
                               try {
                                 const frameBlob = await toBlob(previewEl, { pixelRatio: 1 });
                                 if (frameBlob && recordingRef.current) {
@@ -1525,6 +1533,8 @@ export default function AudioToVideoPage() {
                             }
 
                             if (recorder.state !== "inactive") recorder.stop();
+                            // loop restoration also happens in onstop; cover the cancel path here
+                            audioEl.loop = true;
                             audioEl.pause();
                             setIsPreviewPaused(true);
                           }}
