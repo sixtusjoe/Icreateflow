@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   getArtists,
@@ -14,6 +14,7 @@ import {
   generateAudioVideoClip,
   updateAudioClipLyrics,
   assignAudioClip,
+  uploadAudioClipAsset,
 } from "@/lib/api";
 import {
   Upload,
@@ -469,7 +470,12 @@ export default function AudioToVideoPage() {
 
   // Overlay Studio — per-clip lyrics text (textarea) and cover upload
   const [clipLyricsText, setClipLyricsText] = useState<Record<number, string>>({});
-  const [uploadingAsset, setUploadingAsset] = useState<Record<number, boolean>>({});
+  // key = `${clipId}-bg` or `${clipId}-cover` to track each independently
+  const [uploadingAsset, setUploadingAsset] = useState<Record<string, boolean>>({});
+  // tracks whether config changed after last generate (dirty = needs regen before export)
+  const [clipConfigDirty, setClipConfigDirty] = useState<Record<number, boolean>>({});
+  // clip id that should auto-download when its generation completes
+  const [autoDownloadClipId, setAutoDownloadClipId] = useState<number | null>(null);
 
   // Review state — per clip words being edited
   const [clipWords, setClipWords] = useState<Record<number, AudioWord[]>>({});
@@ -671,7 +677,24 @@ export default function AudioToVideoPage() {
       for (const c of updatedClips) {
         const status = c.video?.status;
         if (status === "generating" || status === "pending") allDone = false;
-        if (status !== "generating") setGenerating((g) => ({ ...g, [c.id]: false }));
+        if (status !== "generating") {
+          setGenerating((g) => ({ ...g, [c.id]: false }));
+          // When generation finishes successfully, clear dirty flag
+          if (status === "done") {
+            setClipConfigDirty((d) => ({ ...d, [c.id]: false }));
+            // Auto-download if this clip was queued for it
+            setAutoDownloadClipId((prev) => {
+              if (prev === c.id && c.video?.video_path) {
+                const a = document.createElement("a");
+                a.href = fileUrl(c.video.video_path);
+                a.download = `clip_${c.clip_index + 1}.mp4`;
+                a.click();
+                return null;
+              }
+              return prev;
+            });
+          }
+        }
       }
       setTrack((t) => t ? { ...t, clips: updatedClips.map((c) => ({ ...c, words: c.words ?? [] })) } : t);
       if (allDone && pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -680,38 +703,9 @@ export default function AudioToVideoPage() {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
-  // ── Overlay karaoke preview animation ─────────────────────────────────────
+  // ── Overlay karaoke preview — timeupdate-driven sync ─────────────────────
 
-  useEffect(() => {
-    if (step !== 2 || isPreviewPaused) {
-      setOverlayWordIndex(-1);
-      return;
-    }
-
-    const currentLyricsText = activeClip ? getLyricsText(activeClip.id) : "";
-    const lines = currentLyricsText
-      .split("\n")
-      .map((line: string) => line.trim().split(/\s+/).filter(Boolean))
-      .filter((line: string[]) => line.length > 0);
-
-    if (lines.length === 0) return;
-
-    const currentWords = lines[overlayLineIndex % lines.length] || [];
-    let wordIdx = -1;
-
-    const interval = setInterval(() => {
-      wordIdx++;
-      if (wordIdx >= currentWords.length) {
-        setOverlayLineIndex((prev) => (prev + 1) % lines.length);
-        wordIdx = -1;
-      }
-      setOverlayWordIndex(wordIdx);
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, [step, isPreviewPaused, overlayLineIndex, activeClip?.id]);
-
-  // Reset karaoke on lyrics or clip change; pause audio
+  // Reset karaoke on clip change; pause audio
   useEffect(() => {
     setOverlayLineIndex(0);
     setOverlayWordIndex(-1);
@@ -729,6 +723,63 @@ export default function AudioToVideoPage() {
       setIsPreviewPaused(true);
     }
   }, [step]);
+
+  // ── Lyrics text helpers (defined early — needed by karaoke useMemo) ────────
+
+  const wordsToTextEarly = (words: AudioWord[]): string => {
+    if (!words.length) return "";
+    const lines: string[] = [];
+    for (let i = 0; i < words.length; i += 5) {
+      lines.push(words.slice(i, i + 5).map((w) => w.word).join(" "));
+    }
+    return lines.join("\n");
+  };
+
+  // ── Karaoke sync: build word→position map from the active clip's lyrics ───
+
+  // Derive lyric lines for the active clip (mirrors what the canvas renders)
+  const activeKaraokeLyrics = useMemo((): string[][] => {
+    if (!activeClip) return [];
+    const text = clipLyricsText[activeClip.id] !== undefined
+      ? clipLyricsText[activeClip.id]
+      : wordsToTextEarly(clipWords[activeClip.id] ?? []);
+    return text
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/).filter(Boolean))
+      .filter((line) => line.length > 0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClip?.id, clipLyricsText, clipWords]);
+
+  // flat index → { lineIdx, wordIdx } — built once per lyrics change
+  const wordPositionMap = useMemo(() => {
+    const map: Array<{ lineIdx: number; wordIdx: number }> = [];
+    activeKaraokeLyrics.forEach((line, li) =>
+      line.forEach((_, wi) => map.push({ lineIdx: li, wordIdx: wi }))
+    );
+    return map;
+  }, [activeKaraokeLyrics]);
+
+  // Attach timeupdate listener — syncs karaoke highlight to audio position
+  useEffect(() => {
+    const audio = audioPreviewRef.current;
+    if (!audio) return;
+
+    const words = activeClip ? (clipWords[activeClip.id] ?? []) : [];
+
+    const handleTimeUpdate = () => {
+      const t = audio.currentTime;
+      if (words.length === 0) return;
+      const idx = words.findIndex((w) => t >= w.start_s && t < w.end_s);
+      if (idx === -1) return;
+      const pos = wordPositionMap[idx];
+      if (!pos) return;
+      setOverlayLineIndex(pos.lineIdx);
+      setOverlayWordIndex(pos.wordIdx);
+    };
+
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    return () => audio.removeEventListener("timeupdate", handleTimeUpdate);
+  }, [activeClip?.id, wordPositionMap, clipWords]);
 
   // ── Lyrics text helpers ──────────────────────────────────────────────────
 
@@ -797,26 +848,21 @@ export default function AudioToVideoPage() {
     file: File,
     assetType: "bg" | "cover",
   ) => {
-    setUploadingAsset((u) => ({ ...u, [clipId]: true }));
+    const assetKey = `${clipId}-${assetType}`;
+    setUploadingAsset((u) => ({ ...u, [assetKey]: true }));
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const token = localStorage.getItem("token");
-      const res = await fetch(
-        `/api/audio-to-video/clips/${clipId}/upload-asset?asset_type=${assetType}`,
-        { method: "POST", body: formData, headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      const key = assetType === "cover" ? "cover_path" : "bg_path";
+      const data = await uploadAudioClipAsset(clipId, file, assetType);
+      const configKey = assetType === "cover" ? "cover_path" : "bg_path";
       setClipConfigs((c) => ({
         ...c,
-        [clipId]: { ...(c[clipId] ?? { template_id: "minimal" }), [key]: data.path },
+        [clipId]: { ...(c[clipId] ?? { template_id: "minimal" }), [configKey]: data.path },
       }));
+      // Mark dirty so Export Frame knows a re-generate is needed
+      setClipConfigDirty((d) => ({ ...d, [clipId]: true }));
     } catch (err: any) {
-      alert("Upload failed: " + err.message);
+      alert("Upload failed: " + (err?.response?.data?.detail || err.message));
     } finally {
-      setUploadingAsset((u) => ({ ...u, [clipId]: false }));
+      setUploadingAsset((u) => ({ ...u, [assetKey]: false }));
     }
   };
 
@@ -1179,11 +1225,8 @@ export default function AudioToVideoPage() {
           const coverUrl   = cfg.cover_path ? fileUrl(cfg.cover_path) : "";
           const bgUrl      = cfg.bg_path ? fileUrl(cfg.bg_path) : "";
 
-          // Parse lyrics into lines of words for karaoke preview
-          const lyricLines = lyricsText
-            .split("\n")
-            .map((line: string) => line.trim().split(/\s+/).filter(Boolean))
-            .filter((line: string[]) => line.length > 0);
+          // Use the pre-computed lyric lines (same source as the karaoke sync)
+          const lyricLines = activeKaraokeLyrics;
 
           return (
             <div className="space-y-3">
@@ -1255,14 +1298,14 @@ export default function AudioToVideoPage() {
                         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Background</label>
                         <button
                           onClick={() => bgInputRef.current?.click()}
-                          disabled={uploadingAsset[activeClip.id]}
+                          disabled={uploadingAsset[`${activeClip.id}-bg`]}
                           className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
                         >
-                          {uploadingAsset[activeClip.id]
+                          {uploadingAsset[`${activeClip.id}-bg`]
                             ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
                             : <ImageIcon className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
                           <span className="text-xs font-medium text-muted-foreground">
-                            {cfg.bg_path ? "BG set" : "Change BG"}
+                            {cfg.bg_path ? "✓ BG set" : "Change BG"}
                           </span>
                         </button>
                       </div>
@@ -1270,14 +1313,14 @@ export default function AudioToVideoPage() {
                         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Album Cover</label>
                         <button
                           onClick={() => coverInputRef.current?.click()}
-                          disabled={uploadingAsset[activeClip.id]}
+                          disabled={uploadingAsset[`${activeClip.id}-cover`]}
                           className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
                         >
-                          {uploadingAsset[activeClip.id]
+                          {uploadingAsset[`${activeClip.id}-cover`]
                             ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
                             : <Disc className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
                           <span className="text-xs font-medium text-muted-foreground">
-                            {cfg.cover_path ? "Cover set" : "Change Cover"}
+                            {cfg.cover_path ? "✓ Cover set" : "Change Cover"}
                           </span>
                         </button>
                       </div>
@@ -1290,9 +1333,12 @@ export default function AudioToVideoPage() {
                       </label>
                       <textarea
                         value={lyricsText}
-                        onChange={(e) =>
-                          setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }))
-                        }
+                        onChange={(e) => {
+                          setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }));
+                          if (activeClip.video?.status === "done") {
+                            setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                          }
+                        }}
                         className="w-full h-32 bg-background border border-border rounded-xl p-3 text-sm text-foreground focus:outline-none focus:border-lime/50 resize-none font-medium"
                         placeholder="Enter lyrics here..."
                       />
@@ -1305,12 +1351,15 @@ export default function AudioToVideoPage() {
                         {Object.values(OVERLAY_THEMES).map((t) => (
                           <button
                             key={t.id}
-                            onClick={() =>
+                            onClick={() => {
                               setClipConfigs((c) => ({
                                 ...c,
                                 [activeClip.id]: { ...cfg, template_id: t.id },
-                              }))
-                            }
+                              }));
+                              if (activeClip.video?.status === "done") {
+                                setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                              }
+                            }}
                             className={`py-3 px-3 rounded-xl border-2 transition-all flex items-center justify-start gap-3 ${
                               themeId === t.id
                                 ? "border-foreground bg-muted/40"
@@ -1360,7 +1409,8 @@ export default function AudioToVideoPage() {
                         )}
                       </button>
 
-                      {activeClip.video?.status === "done" && activeClip.video.video_path ? (
+                      {activeClip.video?.status === "done" && activeClip.video.video_path && !clipConfigDirty[activeClip.id] ? (
+                        /* Clean state — direct download */
                         <a
                           href={fileUrl(activeClip.video.video_path)}
                           download={`clip_${activeClip.clip_index + 1}.mp4`}
@@ -1368,7 +1418,22 @@ export default function AudioToVideoPage() {
                         >
                           <Download className="w-4 h-4" /> Export Frame
                         </a>
+                      ) : activeClip.video?.status === "done" && clipConfigDirty[activeClip.id] ? (
+                        /* Settings changed after last generate — regen then auto-download */
+                        <button
+                          onClick={() => {
+                            setAutoDownloadClipId(activeClip.id);
+                            handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id));
+                          }}
+                          disabled={isGen || savingLyrics}
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-lime text-black font-semibold rounded-xl hover:bg-lime/90 transition-colors disabled:opacity-50"
+                        >
+                          {isGen
+                            ? <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>
+                            : <><RefreshCw className="w-4 h-4" /> Regen &amp; Export</>}
+                        </button>
                       ) : (
+                        /* Not yet generated */
                         <button
                           onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
                           disabled={isGen || savingLyrics}
@@ -1381,8 +1446,8 @@ export default function AudioToVideoPage() {
                       )}
                     </div>
 
-                    {/* Regenerate (if already done) */}
-                    {activeClip.video?.status === "done" && (
+                    {/* Regenerate only (if already done and clean) */}
+                    {activeClip.video?.status === "done" && !clipConfigDirty[activeClip.id] && (
                       <button
                         onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
                         disabled={isGen || savingLyrics}

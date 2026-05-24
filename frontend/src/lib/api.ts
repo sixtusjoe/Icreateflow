@@ -608,3 +608,18 @@ export const assignAudioClip = (clipId: number, artistAccountId: number) =>
       artist_account_id: artistAccountId,
     })
     .then((r) => r.data);
+
+export const uploadAudioClipAsset = (
+  clipId: number,
+  file: File,
+  assetType: "bg" | "cover",
+): Promise<{ path: string; asset_type: string }> => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return api
+    .post(
+      `/api/audio-to-video/clips/${clipId}/upload-asset?asset_type=${assetType}`,
+      formData,
+    )
+    .then((r) => r.data);
+};
