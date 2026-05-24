@@ -1511,7 +1511,7 @@ export default function AudioToVideoPage() {
                                   }
                                   res();
                                 };
-                                img.onerror = res;
+                                img.onerror = () => res();
                                 img.src = bgSrc;
                               });
                             } else {
@@ -1542,7 +1542,7 @@ export default function AudioToVideoPage() {
                                   covCtx.restore();
                                   res();
                                 };
-                                img.onerror = res;
+                                img.onerror = () => res();
                                 img.src = coverSrc;
                               });
                             }
