@@ -17,6 +17,7 @@ import {
   uploadAudioClipAsset,
   uploadAudioClipVideo,
 } from "@/lib/api";
+import { createCanvasRenderer } from "./canvasRenderer";
 import {
   Upload,
   Music2,
@@ -100,20 +101,6 @@ const TEMPLATES = [
 ];
 
 const STEPS = ["Upload", "Configure", "Edit", "Assign"];
-
-// ─── Canvas export helpers ────────────────────────────────────────────────────
-
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
-}
-
-const THEME_DARK_RGB: Record<string, [number,number,number]> = {
-  minimal: [8,  10, 14],
-  vivid:   [18,  0, 26],
-  neon:    [0,   0,  0],
-  inferno: [10,  8,  8],
-};
 
 // ─── Figma Design: Themes ────────────────────────────────────────────────────
 
@@ -1480,8 +1467,8 @@ export default function AudioToVideoPage() {
                             if (!audioEl) return;
 
                             const clip  = activeClip;
-                            const cfg   = clipConfigs[clip.id] ?? { template_id: "minimal" };
-                            const tid   = (cfg.template_id ?? "minimal") as ThemeId;
+                            const clipCfg   = clipConfigs[clip.id] ?? { template_id: "minimal" };
+                            const tid   = (clipCfg.template_id ?? "minimal") as ThemeId;
                             const theme = OVERLAY_THEMES[tid] ?? OVERLAY_THEMES.minimal;
                             const words = clipWordsRef.current[clip.id] ?? [];
                             const clipDuration = clip.end_s - clip.start_s;
@@ -1489,180 +1476,21 @@ export default function AudioToVideoPage() {
                             setIsExportRecording(true);
                             exportAbortRef.current = false;
 
-                            const CW = 1080, CH = 1920;
-                            const ART_CX = CW / 2;
-                            const ART_CY = Math.round(CH * 0.36); // 691
-                            const ART_R  = 330;
-                            const COVER_D = ART_R * 2;            // 660
-                            const GROUP_SZ = 5;
-
-                            // ── Pre-render blurred background ──────────────
-                            const bgOff = document.createElement("canvas");
-                            bgOff.width = CW; bgOff.height = CH;
-                            const bgCtx = bgOff.getContext("2d")!;
-                            const bgSrc = cfg.bg_path ? fileUrl(cfg.bg_path) : null;
-                            if (bgSrc) {
-                              await new Promise<void>((res) => {
-                                const img = new Image();
-                                img.crossOrigin = "anonymous";
-                                img.onload = () => {
-                                  const ratio = img.width / img.height;
-                                  let dw = CW, dh = CH;
-                                  if (ratio > CW/CH) { dh = CH; dw = ratio*CH; }
-                                  else               { dw = CW; dh = CW/ratio; }
-                                  bgCtx.filter = "blur(32px)";
-                                  bgCtx.drawImage(img,(CW-dw)/2,(CH-dh)/2,dw,dh);
-                                  bgCtx.filter = "none";
-                                  if (tid === "inferno") {
-                                    bgCtx.fillStyle = "rgba(0,0,0,0.45)";
-                                    bgCtx.fillRect(0,0,CW,CH);
-                                  }
-                                  res();
-                                };
-                                img.onerror = () => res();
-                                img.src = bgSrc;
-                              });
-                            } else {
-                              const d = THEME_DARK_RGB[tid] ?? [8,10,14];
-                              bgCtx.fillStyle = `rgb(${d[0]},${d[1]},${d[2]})`;
-                              bgCtx.fillRect(0,0,CW,CH);
-                            }
-
-                            // ── Pre-render album cover (circular) ──────────
-                            const covOff = document.createElement("canvas");
-                            covOff.width = COVER_D; covOff.height = COVER_D;
-                            const covCtx = covOff.getContext("2d")!;
-                            const coverSrc = cfg.cover_path ? fileUrl(cfg.cover_path) : null;
-                            if (coverSrc) {
-                              await new Promise<void>((res) => {
-                                const img = new Image();
-                                img.crossOrigin = "anonymous";
-                                img.onload = () => {
-                                  const ratio = img.width / img.height;
-                                  let dw, dh;
-                                  if (ratio > 1) { dh=COVER_D; dw=ratio*COVER_D; }
-                                  else           { dw=COVER_D; dh=COVER_D/ratio; }
-                                  covCtx.save();
-                                  covCtx.beginPath();
-                                  covCtx.arc(ART_R,ART_R,ART_R,0,Math.PI*2);
-                                  covCtx.clip();
-                                  covCtx.drawImage(img,(COVER_D-dw)/2,(COVER_D-dh)/2,dw,dh);
-                                  covCtx.restore();
-                                  res();
-                                };
-                                img.onerror = () => res();
-                                img.src = coverSrc;
-                              });
-                            }
-
-                            // ── Recording canvas ───────────────────────────
-                            const recCanvas = document.createElement("canvas");
-                            recCanvas.width = CW; recCanvas.height = CH;
-                            const ctx = recCanvas.getContext("2d")!;
-
-                            // Word groups (match ASS grouping)
-                            const groups: AudioWord[][] = [];
-                            for (let i = 0; i < words.length; i += GROUP_SZ)
-                              groups.push(words.slice(i, i + GROUP_SZ));
-
-                            const [acR,acG,acB] = hexToRgb(theme.accent);
-                            const dark = THEME_DARK_RGB[tid] ?? [8,10,14];
-
-                            const renderFrame = () => {
-                              // Background (pre-blurred)
-                              ctx.drawImage(bgOff, 0, 0);
-
-                              // Gradient overlay — dark top + bottom
-                              const grad = ctx.createLinearGradient(0,0,0,CH);
-                              grad.addColorStop(0,    `rgba(${dark[0]},${dark[1]},${dark[2]},0.88)`);
-                              grad.addColorStop(0.44, `rgba(${dark[0]},${dark[1]},${dark[2]},0.20)`);
-                              grad.addColorStop(0.56, `rgba(${dark[0]},${dark[1]},${dark[2]},0.20)`);
-                              grad.addColorStop(1,    `rgba(${dark[0]},${dark[1]},${dark[2]},0.90)`);
-                              ctx.fillStyle = grad;
-                              ctx.fillRect(0,0,CW,CH);
-
-                              // Template colour tints
-                              if (tid === "vivid") {
-                                const rg = ctx.createRadialGradient(-200,-200,0,-200,-200,700);
-                                rg.addColorStop(0,"rgba(255,90,200,0.22)");
-                                rg.addColorStop(1,"rgba(255,90,200,0)");
-                                ctx.fillStyle = rg; ctx.fillRect(0,0,CW,CH);
-                              }
-
-                              // Album cover glow
-                              const glowR = ctx.createRadialGradient(ART_CX,ART_CY,ART_R*0.7,ART_CX,ART_CY,ART_R*2.2);
-                              glowR.addColorStop(0,`rgba(${acR},${acG},${acB},0.20)`);
-                              glowR.addColorStop(1,`rgba(${acR},${acG},${acB},0)`);
-                              ctx.fillStyle = glowR; ctx.fillRect(0,0,CW,CH);
-
-                              // Album cover
-                              ctx.save();
-                              ctx.beginPath();
-                              ctx.arc(ART_CX,ART_CY,ART_R,0,Math.PI*2);
-                              if (coverSrc) {
-                                ctx.clip();
-                                ctx.drawImage(covOff, ART_CX-ART_R, ART_CY-ART_R);
-                                ctx.restore();
-                                // Thin ring
-                                ctx.beginPath();
-                                ctx.arc(ART_CX,ART_CY,ART_R+1.5,0,Math.PI*2);
-                                ctx.strokeStyle="rgba(255,255,255,0.15)";
-                                ctx.lineWidth=3;
-                                ctx.stroke();
-                              } else {
-                                ctx.fillStyle=`rgba(${acR},${acG},${acB},0.08)`;
-                                ctx.fill();
-                                ctx.strokeStyle=`rgba(${acR},${acG},${acB},0.30)`;
-                                ctx.lineWidth=3; ctx.stroke();
-                                ctx.restore();
-                              }
-
-                              // Karaoke text
-                              const tAbs = audioEl.currentTime + (clip.start_s ?? 0);
-                              let wi = -1;
-                              for (let i = 0; i < words.length; i++) {
-                                if (words[i].start_s <= tAbs) wi = i; else break;
-                              }
-                              const gi = wi >= 0 ? Math.floor(wi / GROUP_SZ) : 0;
-                              const grp = groups[gi] ?? [];
-                              const li  = wi >= 0 ? wi - gi * GROUP_SZ : -1;
-
-                              if (grp.length > 0) {
-                                let fs = 80;
-                                ctx.font = `bold ${fs}px "TikTok Sans",-apple-system,sans-serif`;
-                                ctx.textBaseline = "middle";
-                                const parts = grp.map((w,i) => w.word + (i < grp.length-1 ? " " : ""));
-                                let tw = parts.reduce((s,p) => s + ctx.measureText(p).width, 0);
-                                if (tw > 940) {
-                                  fs = Math.floor(fs * 940 / tw);
-                                  ctx.font = `bold ${fs}px "TikTok Sans",-apple-system,sans-serif`;
-                                  tw = parts.reduce((s,p) => s + ctx.measureText(p).width, 0);
-                                }
-                                let x = CW/2 - tw/2;
-                                const y = CH * 0.80;
-                                parts.forEach((p,i) => {
-                                  const pw = ctx.measureText(p).width;
-                                  if (i === li) {
-                                    ctx.fillStyle=`rgb(${acR},${acG},${acB})`;
-                                    ctx.shadowColor=`rgba(${acR},${acG},${acB},0.75)`;
-                                    ctx.shadowBlur=28;
-                                  } else if (i < li) {
-                                    ctx.fillStyle="rgba(255,255,255,0.40)";
-                                    ctx.shadowBlur=0;
-                                  } else {
-                                    ctx.fillStyle="rgba(255,255,255,0.88)";
-                                    ctx.shadowColor="rgba(0,0,0,0.8)";
-                                    ctx.shadowBlur=10;
-                                  }
-                                  ctx.fillText(p, x, y);
-                                  x += pw;
-                                  ctx.shadowBlur=0;
-                                });
-                              }
-                            };
+                            // ── Create full-fidelity canvas renderer ───────
+                            const renderer = await createCanvasRenderer({
+                              width: 1080,
+                              height: 1920,
+                              themeId: tid,
+                              theme: { accent: theme.accent, textGlow: theme.textGlow },
+                              words,
+                              bgImageUrl: clipCfg.bg_path ? fileUrl(clipCfg.bg_path) : null,
+                              coverImageUrl: clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null,
+                              clipStartS: clip.start_s,
+                              clipDuration,
+                            });
 
                             // ── MediaRecorder ──────────────────────────────
-                            const canvasStream = recCanvas.captureStream(30);
+                            const canvasStream = renderer.canvas.captureStream(30);
                             let audioStream: MediaStream | null = null;
                             try { audioStream = (audioEl as any).captureStream?.() ?? null; } catch { /**/ }
                             const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
@@ -1683,6 +1511,7 @@ export default function AudioToVideoPage() {
                             recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
                             recorder.onstop = () => {
                               audioEl.loop = true;
+                              renderer.destroy();
                               const blob = new Blob(chunks, { type: mimeType || "video/webm" });
                               const url  = URL.createObjectURL(blob);
                               // Revoke any previous export URL
@@ -1706,10 +1535,10 @@ export default function AudioToVideoPage() {
                                 if (recorder.state !== "inactive") recorder.stop();
                                 audioEl.pause(); audioEl.loop = true;
                                 setIsPreviewPaused(true);
-                                if (exportAbortRef.current) setIsExportRecording(false);
+                                if (exportAbortRef.current) { renderer.destroy(); setIsExportRecording(false); }
                                 return;
                               }
-                              renderFrame();
+                              renderer.renderFrame(audioEl.currentTime);
                               requestAnimationFrame(loop);
                             };
                             requestAnimationFrame(loop);
