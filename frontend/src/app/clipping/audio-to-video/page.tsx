@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { toPng } from "html-to-image";
 import { motion, AnimatePresence } from "motion/react";
 import {
   getArtists,
@@ -491,7 +490,6 @@ export default function AudioToVideoPage() {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
   const previewCanvasRef = useRef<HTMLDivElement>(null);
-  const [exportingFrame, setExportingFrame] = useState(false);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -1227,9 +1225,6 @@ export default function AudioToVideoPage() {
                             cfg.template_id === t.id ? "border-foreground ring-1 ring-foreground" : "border-border hover:border-foreground/40"
                           }`}
                         >
-                          <div className="flex gap-1.5 sm:mb-2">
-                            <div className="h-4 w-4 rounded-full" style={{ background: t.dot }} />
-                          </div>
                           <div>
                             <p className="text-xs font-semibold">{t.label}</p>
                           </div>
@@ -1411,14 +1406,6 @@ export default function AudioToVideoPage() {
                                 : "border-border bg-background hover:border-muted-foreground"
                             }`}
                           >
-                            <div
-                              className="w-4 h-4 rounded-full shadow-lg shrink-0"
-                              style={{
-                                backgroundColor: t.accent,
-                                boxShadow: themeId === t.id ? `0 0 10px ${t.accent}` : "none",
-                                border: t.id === "inferno" ? "1px solid rgba(128,128,128,0.4)" : "none",
-                              }}
-                            />
                             <span className="text-sm font-semibold truncate">{t.name}</span>
                           </button>
                         ))}
@@ -1454,33 +1441,23 @@ export default function AudioToVideoPage() {
                         )}
                       </button>
 
-                      {/* Export Frame — instant PNG screenshot of the live preview */}
-                      <button
-                        onClick={async () => {
-                          if (!previewCanvasRef.current) return;
-                          setExportingFrame(true);
-                          try {
-                            const dataUrl = await toPng(previewCanvasRef.current, {
-                              pixelRatio: 2,
-                              style: { borderRadius: "0" },
-                            });
-                            const link = document.createElement("a");
-                            link.download = `clip_${activeClip.clip_index + 1}_preview.png`;
-                            link.href = dataUrl;
-                            link.click();
-                          } catch (err) {
-                            console.error("Export failed", err);
-                          } finally {
-                            setExportingFrame(false);
-                          }
-                        }}
-                        disabled={exportingFrame}
-                        className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors disabled:opacity-50"
-                      >
-                        {exportingFrame
-                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Exporting…</>
-                          : <><Download className="w-4 h-4" /> Export Frame</>}
-                      </button>
+                      {/* Export Video — download the backend-generated MP4 */}
+                      {activeClip.video?.status === "done" && activeClip.video.video_path ? (
+                        <a
+                          href={fileUrl(activeClip.video.video_path)}
+                          download={`clip_${activeClip.clip_index + 1}.mp4`}
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
+                        >
+                          <Download className="w-4 h-4" /> Export Video
+                        </a>
+                      ) : (
+                        <button
+                          disabled
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/20 text-foreground/40 font-semibold rounded-xl cursor-not-allowed"
+                        >
+                          <Download className="w-4 h-4" /> Export Video
+                        </button>
+                      )}
                     </div>
 
                     {/* Generate / Regenerate — always visible */}
