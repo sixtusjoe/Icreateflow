@@ -4,9 +4,10 @@ import { AudioVideoComposition, type CompositionProps } from "./AudioVideoCompos
 
 export const RemotionRoot: React.FC = () => {
   return (
-    <Composition<CompositionProps>
+    <Composition
       id="AudioVideo"
-      component={AudioVideoComposition}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      component={AudioVideoComposition as any}
       durationInFrames={30 * 30}
       fps={30}
       width={1080}
