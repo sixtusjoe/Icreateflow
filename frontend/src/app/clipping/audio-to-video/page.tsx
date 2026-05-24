@@ -799,14 +799,13 @@ export default function AudioToVideoPage() {
         const ws = clipWordsRef.current[clip.id] ?? [];
 
         if (ws.length > 0) {
-          // Find exact active word
-          let idx = ws.findIndex((w) => t >= w.start_s && t < w.end_s);
-
-          // Between words? Keep last passed word highlighted instead of going dark
-          if (idx === -1) {
-            for (let i = ws.length - 1; i >= 0; i--) {
-              if (t >= ws[i].start_s) { idx = i; break; }
-            }
+          // "Last started word" approach — far more reliable than Whisper's end_s
+          // (many words have end_s = start_s = 0ms duration, making range checks impossible).
+          // Simply find the last word whose start_s has been reached.
+          let idx = -1;
+          for (let i = 0; i < ws.length; i++) {
+            if (ws[i].start_s <= t) idx = i;
+            else break; // words are sorted by start_s — stop early
           }
 
           if (idx !== -1) {
@@ -1679,10 +1678,10 @@ export default function AudioToVideoPage() {
                           {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
                             <motion.div
                               key={overlayLineIndex % lyricLines.length}
-                              initial={{ opacity: 0, y: 15 }}
+                              initial={{ opacity: 0, y: 10 }}
                               animate={{ opacity: 1, y: 0 }}
-                              exit={{ opacity: 0, y: -15 }}
-                              transition={{ duration: 0.3, ease: "easeOut" }}
+                              exit={{ opacity: 0, y: -10 }}
+                              transition={{ duration: 0.12, ease: "easeOut" }}
                               className="text-center w-full"
                             >
                               <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
