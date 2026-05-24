@@ -480,6 +480,7 @@ export default function AudioToVideoPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const bgInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const audioPreviewRef = useRef<HTMLAudioElement>(null);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -710,11 +711,24 @@ export default function AudioToVideoPage() {
     return () => clearInterval(interval);
   }, [step, isPreviewPaused, overlayLineIndex, activeClip?.id]);
 
-  // Reset karaoke on lyrics or clip change
+  // Reset karaoke on lyrics or clip change; pause audio
   useEffect(() => {
     setOverlayLineIndex(0);
     setOverlayWordIndex(-1);
-  }, [activeClip?.id, clipLyricsText]);
+    setIsPreviewPaused(true);
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      audioPreviewRef.current.currentTime = 0;
+    }
+  }, [activeClip?.id]);
+
+  // Pause audio when leaving step 2
+  useEffect(() => {
+    if (step !== 2 && audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      setIsPreviewPaused(true);
+    }
+  }, [step]);
 
   // ── Lyrics text helpers ──────────────────────────────────────────────────
 
@@ -1159,7 +1173,6 @@ export default function AudioToVideoPage() {
         {step === 2 && track && (() => {
           const cfg        = clipConfigs[activeClip?.id ?? -1] ?? { template_id: "minimal" };
           const lyricsText = activeClip ? getLyricsText(activeClip.id) : "";
-          const lineCount  = lyricsText.split("\n").filter(Boolean).length;
           const isGen      = !!(activeClip && (generating[activeClip.id] || activeClip.video?.status === "generating"));
           const themeId    = (cfg.template_id || "minimal") as ThemeId;
           const theme      = OVERLAY_THEMES[themeId] ?? OVERLAY_THEMES.minimal;
@@ -1199,8 +1212,8 @@ export default function AudioToVideoPage() {
                 /* ── Main layout: Settings Panel LEFT · 9:16 Canvas RIGHT ── */
                 <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-center">
 
-                  {/* ══ LEFT: Settings Panel (Figma Overlay Studio) ═══════════ */}
-                  <div className="w-full xl:max-w-lg shrink-0 rounded-2xl border border-neutral-800 bg-neutral-900 p-6 space-y-6 shadow-2xl xl:max-h-[900px] overflow-y-auto">
+                  {/* ══ LEFT: Settings Panel (Overlay Studio) ═══════════════ */}
+                  <div className="w-full xl:max-w-lg shrink-0 rounded-2xl border border-border bg-card p-6 space-y-6 shadow-2xl xl:max-h-[900px] overflow-y-auto">
 
                     {/* Hidden file inputs */}
                     <input ref={bgInputRef} type="file" accept="image/*" className="hidden"
@@ -1216,43 +1229,54 @@ export default function AudioToVideoPage() {
                         e.target.value = "";
                       }} />
 
+                    {/* Hidden audio element for preview playback */}
+                    {activeClip.local_path && (
+                      <audio
+                        ref={audioPreviewRef}
+                        src={fileUrl(activeClip.local_path)}
+                        loop
+                        preload="auto"
+                        className="hidden"
+                      />
+                    )}
+
                     {/* Header */}
                     <div>
                       <div className="flex items-center gap-3 mb-2">
-                        <MonitorPlay className="w-6 h-6 text-white" />
-                        <h1 className="text-2xl font-bold text-white">Overlay Studio</h1>
+                        <MonitorPlay className="w-6 h-6 text-foreground" />
+                        <h1 className="text-2xl font-bold text-foreground">Overlay Studio</h1>
                       </div>
-                      <p className="text-neutral-400 text-sm">Configure your cinematic music template.</p>
+                      <p className="text-muted-foreground text-sm">Configure your cinematic music template.</p>
                     </div>
 
                     {/* Media Uploads */}
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">Background</label>
+                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Background</label>
                         <button
                           onClick={() => bgInputRef.current?.click()}
                           disabled={uploadingAsset[activeClip.id]}
-                          className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-neutral-700 hover:border-neutral-500 rounded-xl cursor-pointer transition-colors bg-neutral-950/50 group disabled:opacity-50"
+                          className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
                         >
                           {uploadingAsset[activeClip.id]
-                            ? <Loader2 className="w-5 h-5 animate-spin text-neutral-500" />
-                            : <ImageIcon className="w-5 h-5 text-neutral-500 group-hover:text-neutral-300" />}
-                          <span className="text-xs font-medium text-neutral-400">
+                            ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                            : <ImageIcon className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
+                          <span className="text-xs font-medium text-muted-foreground">
                             {cfg.bg_path ? "BG set" : "Change BG"}
                           </span>
                         </button>
                       </div>
                       <div>
-                        <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">Album Cover</label>
+                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Album Cover</label>
                         <button
                           onClick={() => coverInputRef.current?.click()}
                           disabled={uploadingAsset[activeClip.id]}
-                          className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-neutral-700 hover:border-neutral-500 rounded-xl cursor-pointer transition-colors bg-neutral-950/50 group disabled:opacity-50"
+                          className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
                         >
                           {uploadingAsset[activeClip.id]
-                            ? <Loader2 className="w-5 h-5 animate-spin text-neutral-500" />
-                            : <Disc className="w-5 h-5 text-neutral-500 group-hover:text-neutral-300" />}
-                          <span className="text-xs font-medium text-neutral-400">
+                            ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                            : <Disc className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
+                          <span className="text-xs font-medium text-muted-foreground">
                             {cfg.cover_path ? "Cover set" : "Change Cover"}
                           </span>
                         </button>
@@ -1261,23 +1285,22 @@ export default function AudioToVideoPage() {
 
                     {/* Lyrics Editor */}
                     <div>
-                      <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 flex justify-between">
-                        <span>Lyrics Content</span>
-                        <span className="text-neutral-600">{lineCount} lines</span>
+                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">
+                        Lyrics Content
                       </label>
                       <textarea
                         value={lyricsText}
                         onChange={(e) =>
                           setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }))
                         }
-                        className="w-full h-32 bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-sm text-neutral-200 focus:outline-none focus:border-white/50 resize-none font-medium"
+                        className="w-full h-32 bg-background border border-border rounded-xl p-3 text-sm text-foreground focus:outline-none focus:border-lime/50 resize-none font-medium"
                         placeholder="Enter lyrics here..."
                       />
                     </div>
 
                     {/* Variant Selector */}
                     <div>
-                      <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-3 block">Design Variant</label>
+                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 block">Design Variant</label>
                       <div className="grid grid-cols-2 gap-3">
                         {Object.values(OVERLAY_THEMES).map((t) => (
                           <button
@@ -1290,8 +1313,8 @@ export default function AudioToVideoPage() {
                             }
                             className={`py-3 px-3 rounded-xl border-2 transition-all flex items-center justify-start gap-3 ${
                               themeId === t.id
-                                ? "border-white bg-white/10"
-                                : "border-neutral-800 bg-neutral-950 hover:border-neutral-600"
+                                ? "border-foreground bg-muted/40"
+                                : "border-border bg-background hover:border-muted-foreground"
                             }`}
                           >
                             <div
@@ -1299,7 +1322,7 @@ export default function AudioToVideoPage() {
                               style={{
                                 backgroundColor: t.accent,
                                 boxShadow: themeId === t.id ? `0 0 10px ${t.accent}` : "none",
-                                border: t.id === "inferno" ? "1px solid rgba(255,255,255,0.2)" : "none",
+                                border: t.id === "inferno" ? "1px solid rgba(128,128,128,0.4)" : "none",
                               }}
                             />
                             <span className="text-sm font-semibold truncate">{t.name}</span>
@@ -1315,10 +1338,20 @@ export default function AudioToVideoPage() {
                     )}
 
                     {/* Action Buttons */}
-                    <div className="pt-4 border-t border-neutral-800 flex gap-3">
+                    <div className="pt-4 border-t border-border flex gap-3">
                       <button
-                        onClick={() => setIsPreviewPaused((p) => !p)}
-                        className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-neutral-800 text-white font-semibold rounded-xl hover:bg-neutral-700 transition-colors"
+                        onClick={() => {
+                          const next = !isPreviewPaused;
+                          setIsPreviewPaused(!isPreviewPaused);
+                          if (audioPreviewRef.current) {
+                            if (next) {
+                              audioPreviewRef.current.pause();
+                            } else {
+                              audioPreviewRef.current.play().catch(() => {});
+                            }
+                          }
+                        }}
+                        className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
                       >
                         {isPreviewPaused ? (
                           <><Play className="w-4 h-4 fill-current" /> Play Preview</>
@@ -1331,7 +1364,7 @@ export default function AudioToVideoPage() {
                         <a
                           href={fileUrl(activeClip.video.video_path)}
                           download={`clip_${activeClip.clip_index + 1}.mp4`}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-white text-black font-semibold rounded-xl hover:bg-neutral-200 transition-colors"
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-lime text-black font-semibold rounded-xl hover:bg-lime/90 transition-colors"
                         >
                           <Download className="w-4 h-4" /> Export Frame
                         </a>
@@ -1339,7 +1372,7 @@ export default function AudioToVideoPage() {
                         <button
                           onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
                           disabled={isGen || savingLyrics}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-white text-black font-semibold rounded-xl hover:bg-neutral-200 transition-colors disabled:opacity-50"
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-lime text-black font-semibold rounded-xl hover:bg-lime/90 transition-colors disabled:opacity-50"
                         >
                           {isGen
                             ? <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>
@@ -1353,7 +1386,7 @@ export default function AudioToVideoPage() {
                       <button
                         onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
                         disabled={isGen || savingLyrics}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-neutral-800 py-2.5 text-sm text-neutral-400 hover:border-neutral-600 hover:text-white disabled:opacity-40 transition-colors"
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-lime/40 hover:text-foreground disabled:opacity-40 transition-colors"
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
                         Save lyrics &amp; Regenerate
