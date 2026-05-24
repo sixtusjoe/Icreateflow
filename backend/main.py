@@ -6850,11 +6850,14 @@ async def render_audio_clip_preview(
     finally:
         await database.close()
 
-    # Output path
+    # Output path — use data dir so the file is served correctly
     artist_slug = track["slug"]
-    out_dir = Path("output") / artist_slug / "audio_clips"
+    _data_dir = Path(__file__).parent.parent / "data"
+    out_dir = _data_dir / "output" / artist_slug / "audio_clips"
     out_dir.mkdir(parents=True, exist_ok=True)
     video_path = str(out_dir / f"clip_{clip_id}_preview.mp4")
+    # Relative path stored in DB (for /api/files/ serving)
+    video_rel_path = f"output/{artist_slug}/audio_clips/clip_{clip_id}_preview.mp4"
 
     # Theme accent colours
     THEME_ACCENTS = {
@@ -6895,11 +6898,16 @@ async def render_audio_clip_preview(
                 # Dev fallback
                 render_script = Path(__file__).parent.parent / "frontend" / "src" / "remotion" / "render.mjs"
 
+            # Render silent video — skip audio in Remotion to avoid Chromium download timeout.
+            # We mux the audio in afterwards with FFmpeg.
+            silent_props = {**remotion_props, "audioUrl": None}
+            silent_video_path = video_path.replace(".mp4", "_silent.mp4")
+
             result = subprocess.run(
                 [
                     "node", str(render_script),
-                    "--props", json.dumps(remotion_props),
-                    "--output", video_path,
+                    "--props", json.dumps(silent_props),
+                    "--output", silent_video_path,
                     "--duration", str(clip_duration),
                 ],
                 capture_output=True, text=True,
@@ -6910,6 +6918,39 @@ async def render_audio_clip_preview(
                 stderr_tail = result.stderr[-1000:] if result.stderr else "(no stderr)"
                 stdout_tail = result.stdout[-500:] if result.stdout else ""
                 raise RuntimeError(f"Remotion render failed.\nSTDERR: {stderr_tail}\nSTDOUT: {stdout_tail}")
+
+            # Mux audio into the silent video using FFmpeg
+            audio_local = clip.get("local_path")
+            if audio_local:
+                # Resolve audio path: local_path is relative to data dir
+                # Backend cwd=/srv/icreateflow/backend, data dir is ../data/
+                data_dir = Path(__file__).parent.parent / "data"
+                audio_abs = str(data_dir / audio_local)
+                if not Path(audio_abs).exists():
+                    # Fallback: maybe relative to cwd
+                    audio_abs = audio_local
+                # Trim to clip start/end
+                ffmpeg_result = subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", silent_video_path,
+                        "-ss", str(clip["start_s"]),
+                        "-t", str(clip_duration),
+                        "-i", audio_abs,
+                        "-c:v", "copy",
+                        "-c:a", "aac",
+                        "-shortest",
+                        video_path,
+                    ],
+                    capture_output=True, text=True, timeout=120,
+                )
+                Path(silent_video_path).unlink(missing_ok=True)
+                if ffmpeg_result.returncode != 0:
+                    raise RuntimeError(f"FFmpeg mux failed: {ffmpeg_result.stderr[-500:]}")
+            else:
+                # No audio — just rename silent video
+                Path(silent_video_path).rename(video_path)
+
             print(f"[render-preview] clip {clip_id} done: {video_path}")
 
         except Exception as e:
@@ -6926,7 +6967,7 @@ async def render_audio_clip_preview(
             else:
                 await database2.execute(
                     "UPDATE audio_video_clips SET status = 'done', video_path = ? WHERE id = ?",
-                    (video_path, avc_id),
+                    (video_rel_path, avc_id),
                 )
             await database2.commit()
         finally:
