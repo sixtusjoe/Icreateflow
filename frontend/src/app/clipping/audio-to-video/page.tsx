@@ -15,9 +15,8 @@ import {
   updateAudioClipLyrics,
   assignAudioClip,
   uploadAudioClipAsset,
-  uploadAudioClipVideo,
+  renderAudioClipPreview,
 } from "@/lib/api";
-import { createCanvasRenderer } from "./canvasRenderer";
 import {
   Upload,
   Music2,
@@ -1452,96 +1451,68 @@ export default function AudioToVideoPage() {
                         )}
                       </button>
 
-                      {/* Export Video — canvas re-render → smooth recording */}
+                      {/* Export Video — Remotion server-side render */}
                       {isExportRecording ? (
                         <button
-                          onClick={() => { exportAbortRef.current = true; }}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-colors"
+                          disabled
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl"
                         >
-                          <Loader2 className="w-4 h-4 animate-spin" /> Recording… tap to stop
+                          <Loader2 className="w-4 h-4 animate-spin" /> Rendering…
                         </button>
                       ) : (
                         <button
                           onClick={async () => {
-                            const audioEl = audioPreviewRef.current;
-                            if (!audioEl) return;
-
-                            const clip  = activeClip;
-                            const clipCfg   = clipConfigs[clip.id] ?? { template_id: "minimal" };
-                            const tid   = (clipCfg.template_id ?? "minimal") as ThemeId;
-                            const theme = OVERLAY_THEMES[tid] ?? OVERLAY_THEMES.minimal;
-                            const words = clipWordsRef.current[clip.id] ?? [];
-                            const clipDuration = clip.end_s - clip.start_s;
+                            const clip = activeClip;
+                            if (!clip) return;
+                            const clipCfg = clipConfigs[clip.id] ?? { template_id: "minimal" };
 
                             setIsExportRecording(true);
-                            exportAbortRef.current = false;
 
-                            // ── Create full-fidelity canvas renderer ───────
-                            const renderer = await createCanvasRenderer({
-                              width: 1080,
-                              height: 1920,
-                              themeId: tid,
-                              theme: { accent: theme.accent, textGlow: theme.textGlow },
-                              words,
-                              bgImageUrl: clipCfg.bg_path ? fileUrl(clipCfg.bg_path) : null,
-                              coverImageUrl: clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null,
-                              clipStartS: clip.start_s,
-                              clipDuration,
-                            });
+                            try {
+                              // Trigger server-side Remotion render
+                              await renderAudioClipPreview(clip.id, {
+                                template_id: clipCfg.template_id ?? "minimal",
+                                background_image_path: clipCfg.bg_path || null,
+                                album_cover_path: clipCfg.cover_path || null,
+                              });
 
-                            // ── MediaRecorder ──────────────────────────────
-                            const canvasStream = renderer.canvas.captureStream(30);
-                            let audioStream: MediaStream | null = null;
-                            try { audioStream = (audioEl as any).captureStream?.() ?? null; } catch { /**/ }
-                            const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
-                            if (audioStream) tracks.push(...audioStream.getAudioTracks());
-                            const combined = new MediaStream(tracks);
-
-                            const mimeType = [
-                              "video/mp4;codecs=avc1","video/mp4",
-                              "video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm",
-                            ].find(m => MediaRecorder.isTypeSupported(m)) ?? "";
-                            const isMP4 = mimeType.startsWith("video/mp4");
-                            const ext   = isMP4 ? "mp4" : "webm";
-
-                            const chunks: Blob[] = [];
-                            const recOpts: MediaRecorderOptions = { videoBitsPerSecond: 8_000_000 };
-                            if (mimeType) recOpts.mimeType = mimeType;
-                            const recorder = new MediaRecorder(combined, recOpts);
-                            recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-                            recorder.onstop = () => {
-                              audioEl.loop = true;
-                              renderer.destroy();
-                              const blob = new Blob(chunks, { type: mimeType || "video/webm" });
-                              const url  = URL.createObjectURL(blob);
-                              // Revoke any previous export URL
-                              setExportedBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url; });
-                              setExportedBlob(blob);
-                              setExportedExt(ext);
-                              setExportClipIndex(clip.clip_index);
-                              exportClipIdRef.current = clip.id;
+                              // Poll until done
+                              const poll = async (): Promise<void> => {
+                                const updated = await getAudioClip(clip.id);
+                                if (updated?.video?.status === "done" && updated.video.video_path) {
+                                  // Render complete — show modal with server video URL
+                                  const videoUrl = fileUrl(updated.video.video_path);
+                                  setExportedBlobUrl(videoUrl);
+                                  setExportedBlob(null); // no local blob — it's on the server
+                                  setExportedExt("mp4");
+                                  setExportClipIndex(clip.clip_index);
+                                  exportClipIdRef.current = clip.id;
+                                  // Update track state
+                                  setTrack(prev => prev ? {
+                                    ...prev,
+                                    clips: prev.clips.map(c =>
+                                      c.id === clip.id
+                                        ? { ...c, video: { status: "done" as const, video_path: updated.video!.video_path! } }
+                                        : c
+                                    ),
+                                  } : null);
+                                  setIsExportRecording(false);
+                                  return;
+                                }
+                                if (updated?.video?.status === "failed") {
+                                  console.error("Render failed:", updated.video.error);
+                                  setIsExportRecording(false);
+                                  return;
+                                }
+                                // Still generating — poll again in 3s
+                                await new Promise(r => setTimeout(r, 3000));
+                                return poll();
+                              };
+                              await poll();
+                            } catch (err) {
+                              console.error("Render request failed", err);
                               setIsExportRecording(false);
-                            };
-
-                            recorder.start(500);
-                            audioEl.loop = false;
-                            audioEl.currentTime = 0;
-                            await audioEl.play().catch(() => { /**/ });
-                            setIsPreviewPaused(false);
-
-                            // ── RAF capture loop (smooth 30fps) ────────────
-                            const loop = () => {
-                              if (exportAbortRef.current || audioEl.ended || audioEl.currentTime >= clipDuration) {
-                                if (recorder.state !== "inactive") recorder.stop();
-                                audioEl.pause(); audioEl.loop = true;
-                                setIsPreviewPaused(true);
-                                if (exportAbortRef.current) { renderer.destroy(); setIsExportRecording(false); }
-                                return;
-                              }
-                              renderer.renderFrame(audioEl.currentTime);
-                              requestAnimationFrame(loop);
-                            };
-                            requestAnimationFrame(loop);
+                            }
                           }}
                           className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
                         >
@@ -1863,7 +1834,6 @@ export default function AudioToVideoPage() {
             </div>
             <button
               onClick={() => {
-                URL.revokeObjectURL(exportedBlobUrl);
                 setExportedBlobUrl(null);
                 setExportedBlob(null);
               }}
@@ -1886,47 +1856,23 @@ export default function AudioToVideoPage() {
 
           {/* Actions */}
           <div className="flex gap-3 p-4">
-            <button
-              onClick={() => {
-                const a = document.createElement("a");
-                a.href = exportedBlobUrl;
-                a.download = `clip_${exportClipIndex + 1}.${exportedExt}`;
-                a.click();
-              }}
+            <a
+              href={exportedBlobUrl}
+              download={`clip_${exportClipIndex + 1}.${exportedExt}`}
               className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm"
             >
               <Download className="w-4 h-4" /> Download
-            </button>
+            </a>
             <button
-              disabled={uploadingExport}
-              onClick={async () => {
-                if (!exportedBlob || !exportClipIdRef.current) return;
-                setUploadingExport(true);
-                try {
-                  const result = await uploadAudioClipVideo(exportClipIdRef.current, exportedBlob, exportedExt);
-                  setTrack(prev => prev ? {
-                    ...prev,
-                    clips: prev.clips.map(c =>
-                      c.id === exportClipIdRef.current
-                        ? { ...c, video: { status: "done" as const, video_path: result.video_path } }
-                        : c
-                    ),
-                  } : null);
-                  URL.revokeObjectURL(exportedBlobUrl);
-                  setExportedBlobUrl(null);
-                  setExportedBlob(null);
-                  setStep(3);
-                } catch (err) {
-                  console.error("Upload failed", err);
-                } finally {
-                  setUploadingExport(false);
-                }
+              onClick={() => {
+                // Video is already on the server — just go to Assign step
+                setExportedBlobUrl(null);
+                setExportedBlob(null);
+                setStep(3);
               }}
-              className="flex-1 flex items-center justify-center gap-2 py-3.5 border border-border font-semibold rounded-xl hover:border-foreground/40 hover:bg-white/5 transition-colors text-sm disabled:opacity-50"
+              className="flex-1 flex items-center justify-center gap-2 py-3.5 border border-border font-semibold rounded-xl hover:border-foreground/40 hover:bg-white/5 transition-colors text-sm"
             >
-              {uploadingExport
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading…</>
-                : <><MonitorPlay className="w-4 h-4" /> Assign to Variation</>}
+              <MonitorPlay className="w-4 h-4" /> Assign to Variation
             </button>
           </div>
 

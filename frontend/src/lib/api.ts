@@ -621,6 +621,18 @@ export const uploadAudioClipVideo = (
     .then((r) => r.data);
 };
 
+export const renderAudioClipPreview = (
+  clipId: number,
+  config: {
+    template_id: string;
+    background_image_path?: string | null;
+    album_cover_path?: string | null;
+  },
+): Promise<{ status: string; clip_id: number }> =>
+  api
+    .post(`/api/audio-to-video/clips/${clipId}/render-preview`, config)
+    .then((r) => r.data);
+
 export const uploadAudioClipAsset = (
   clipId: number,
   file: File,

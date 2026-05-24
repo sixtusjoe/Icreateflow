@@ -6792,6 +6792,148 @@ async def upload_audio_clip_video(
     return {"video_path": video_path, "status": "done"}
 
 
+@app.post("/api/audio-to-video/clips/{clip_id}/render-preview")
+async def render_audio_clip_preview(
+    clip_id: int,
+    data: AudioGenerateRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    """Kick off Remotion server-side render for an audio clip preview."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_clips WHERE id = ?", (clip_id,))
+        clip = await cur.fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        clip = dict(clip)
+
+        cur = await database.execute(
+            "SELECT word, start_s, end_s FROM audio_words "
+            "WHERE audio_track_id = ? AND clip_index = ? ORDER BY start_s",
+            (clip["audio_track_id"], clip["clip_index"]),
+        )
+        words = [dict(w) for w in await cur.fetchall()]
+
+        cur = await database.execute(
+            "SELECT at.*, ar.slug, ar.name AS artist_name FROM audio_tracks at "
+            "JOIN artists ar ON ar.id = at.artist_id WHERE at.id = ?",
+            (clip["audio_track_id"],),
+        )
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Audio track not found")
+        track = dict(track)
+
+        # Create or reset the AudioVideoClip row
+        cur = await database.execute(
+            "SELECT id FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,)
+        )
+        existing = await cur.fetchone()
+        if existing:
+            await database.execute(
+                "UPDATE audio_video_clips SET status = 'generating', error = NULL, "
+                "template_id = ?, background_image_path = ?, album_cover_path = ?, video_path = NULL "
+                "WHERE audio_clip_id = ?",
+                (data.template_id, data.background_image_path, data.album_cover_path, clip_id),
+            )
+            await database.commit()
+            avc_id = existing["id"]
+        else:
+            cur = await database.execute(
+                "INSERT INTO audio_video_clips (audio_clip_id, template_id, background_image_path, album_cover_path, status) "
+                "VALUES (?, ?, ?, ?, 'generating')",
+                (clip_id, data.template_id, data.background_image_path, data.album_cover_path),
+            )
+            await database.commit()
+            avc_id = cur.lastrowid
+    finally:
+        await database.close()
+
+    # Output path
+    artist_slug = track["slug"]
+    out_dir = Path("output") / artist_slug / "audio_clips"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    video_path = str(out_dir / f"clip_{clip_id}_preview.mp4")
+
+    # Theme accent colours
+    THEME_ACCENTS = {
+        "minimal": ("#00FFAA", "0 0 15px rgba(0,255,170,0.5)"),
+        "vivid":   ("#FF5AC8", "0 0 20px rgba(255,90,200,0.6)"),
+        "neon":    ("#00DCFF", "0 0 25px rgba(0,220,255,0.8)"),
+        "inferno": ("#FFFFFF", "0 0 20px rgba(255,255,255,0.9)"),
+    }
+    accent, text_glow = THEME_ACCENTS.get(data.template_id or "minimal", THEME_ACCENTS["minimal"])
+
+    # Build absolute URLs for assets (accessible from headless Chrome on localhost)
+    base = "http://127.0.0.1:8100/api/files"
+    bg_url = f"{base}/{data.background_image_path}" if data.background_image_path else None
+    cover_url = f"{base}/{data.album_cover_path}" if data.album_cover_path else None
+    audio_url = f"{base}/{clip['local_path']}" if clip.get("local_path") else None
+
+    clip_duration = clip["end_s"] - clip["start_s"]
+
+    remotion_props = {
+        "themeId": data.template_id or "minimal",
+        "accentColor": accent,
+        "textGlow": text_glow,
+        "bgImageUrl": bg_url,
+        "coverImageUrl": cover_url,
+        "audioUrl": audio_url,
+        "words": words,
+        "clipStartS": clip["start_s"],
+        "clipDuration": clip_duration,
+    }
+
+    async def _run_render():
+        err = None
+        try:
+            import subprocess
+            # Path to the Remotion render script (installed alongside frontend)
+            render_script = Path("/srv/icreateflow/frontend/src/remotion/render.mjs")
+            if not render_script.exists():
+                # Dev fallback
+                render_script = Path(__file__).parent.parent / "frontend" / "src" / "remotion" / "render.mjs"
+
+            result = subprocess.run(
+                [
+                    "node", str(render_script),
+                    "--props", json.dumps(remotion_props),
+                    "--output", video_path,
+                    "--duration", str(clip_duration),
+                ],
+                capture_output=True, text=True,
+                timeout=600,  # 10 min max
+                cwd=str(render_script.parent),
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Remotion render failed: {result.stderr[-500:]}")
+            print(f"[render-preview] clip {clip_id} done: {video_path}")
+
+        except Exception as e:
+            err = str(e)
+            print(f"[render-preview] clip {clip_id} failed: {e}")
+
+        database2 = await db.get_db()
+        try:
+            if err:
+                await database2.execute(
+                    "UPDATE audio_video_clips SET status = 'failed', error = ? WHERE id = ?",
+                    (err[:500], avc_id),
+                )
+            else:
+                await database2.execute(
+                    "UPDATE audio_video_clips SET status = 'done', video_path = ? WHERE id = ?",
+                    (video_path, avc_id),
+                )
+            await database2.commit()
+        finally:
+            await database2.close()
+
+    background_tasks.add_task(_run_render)
+    return {"status": "generating", "clip_id": clip_id}
+
+
 @app.post("/api/audio-to-video/clips/{clip_id}/generate")
 async def generate_audio_video_clip(
     clip_id: int,
