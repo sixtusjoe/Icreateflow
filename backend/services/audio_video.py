@@ -5,17 +5,19 @@ Four cinematic templates: minimal | neon | vivid | inferno
 
 Pipeline per clip:
   1. Render 1080×1920 background PNG (Pillow):
-       – gradient / tinted background
-       – rounded-rect card (upper ~48 % of frame)
-       – album art: square for vivid/inferno; disc left for FFmpeg on minimal/neon
-       – "NOW PLAYING" label inside card
-       – progress bar track below card
+       – full-screen blurred background image (or dark gradient)
+       – heavy dark gradient overlay top+bottom, lighter in middle
+       – template-specific colour tint
+       – album art centred in upper 40 % of frame
+         · minimal  → circular art + dashed orbit ring  (FFmpeg rotating overlay)
+         · neon     → vinyl disc with album art centre   (FFmpeg rotating overlay)
+         · vivid    → square art with rounded corners + pink glow
+         · inferno  → large square art, slightly desaturated
   2. For minimal/neon: render rotating vinyl-disc as transparent RGBA PNG
   3. Build ASS karaoke subtitle file (Whisper word timestamps)
   4. FFmpeg assembly:
        – loop background PNG
        – (minimal/neon only) overlay rotating disc via `rotate` filter
-       – animate progress bar fill (drawbox)
        – burn karaoke subtitles (ass filter)
        – mux audio
 """
@@ -32,97 +34,71 @@ from PIL import Image, ImageDraw, ImageFont, ImageFile, ImageFilter
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # ---------------------------------------------------------------------------
-# Template definitions
+# Template definitions  (match HTML OVERLAY_THEMES)
 # ---------------------------------------------------------------------------
 
 TEMPLATES = {
     "minimal": {
-        "bg_top":         (8, 10, 14),
-        "bg_bot":         (18, 22, 32),
-        "card_color":     (16, 18, 28, 225),
-        "card_border":    (255, 255, 255, 18),
-        "accent_color":   (0, 255, 136),
-        "highlight_rgb":  (0, 255, 136),
-        "bar_color":      (0, 255, 136),
-        "text_color":     (255, 255, 255),
-        "glow_color":     (0, 255, 136),
-        "art_style":      "disc_dashed",   # circular art + dashed ring
-        "disc_dark":      (10, 10, 14),
+        "bg_top":        (8, 10, 14),
+        "bg_bot":        (18, 22, 32),
+        "overlay_top":   (8, 10, 14),       # dark slate
+        "accent_color":  (0, 255, 170),     # #00FFAA
+        "highlight_rgb": (0, 255, 170),
+        "text_color":    (255, 255, 255),
+        "glow_color":    (0, 255, 170),
+        "art_style":     "disc_dashed",
+        "disc_dark":     (10, 10, 14),
     },
     "neon": {
-        "bg_top":         (5, 12, 30),
-        "bg_bot":         (8, 20, 48),
-        "card_color":     (10, 18, 44, 225),
-        "card_border":    (0, 200, 255, 30),
-        "accent_color":   (0, 210, 255),
-        "highlight_rgb":  (0, 210, 255),
-        "bar_color":      (0, 210, 255),
-        "text_color":     (210, 235, 255),
-        "glow_color":     (0, 180, 220),
-        "art_style":      "disc_vinyl",    # vinyl disc + album art in centre
-        "disc_dark":      (8, 12, 22),
+        "bg_top":        (0, 0, 0),
+        "bg_bot":        (0, 0, 0),
+        "overlay_top":   (0, 0, 0),
+        "accent_color":  (0, 220, 255),     # #00DCFF
+        "highlight_rgb": (0, 220, 255),
+        "text_color":    (210, 235, 255),
+        "glow_color":    (0, 180, 220),
+        "art_style":     "disc_vinyl",
+        "disc_dark":     (8, 12, 22),
     },
     "vivid": {
-        "bg_top":         (55, 0, 90),
-        "bg_bot":         (18, 0, 55),
-        "card_color":     (75, 8, 120, 215),
-        "card_border":    (200, 80, 255, 40),
-        "accent_color":   (255, 55, 175),
-        "highlight_rgb":  (255, 55, 175),
-        "bar_color":      (255, 55, 175),
-        "text_color":     (255, 255, 255),
-        "glow_color":     (210, 60, 200),
-        "art_style":      "square",        # square album art
-        "disc_dark":      None,
+        "bg_top":        (18, 0, 26),       # #12001a
+        "bg_bot":        (18, 0, 26),
+        "overlay_top":   (26, 0, 36),       # #1a0024
+        "accent_color":  (255, 90, 200),    # #FF5AC8
+        "highlight_rgb": (255, 90, 200),
+        "text_color":    (255, 255, 255),
+        "glow_color":    (210, 60, 200),
+        "art_style":     "square",
+        "disc_dark":     None,
     },
     "inferno": {
-        "bg_top":         (10, 8, 8),
-        "bg_bot":         (4, 3, 3),
-        "card_color":     (20, 16, 16, 230),
-        "card_border":    (255, 255, 255, 12),
-        "accent_color":   (240, 240, 240),
-        "highlight_rgb":  (255, 200, 100),
-        "bar_color":      (230, 230, 230),
-        "text_color":     (255, 255, 255),
-        "glow_color":     (160, 140, 110),
-        "art_style":      "square",        # large square album art
-        "disc_dark":      None,
+        "bg_top":        (10, 8, 8),
+        "bg_bot":        (4, 3, 3),
+        "overlay_top":   (10, 8, 8),
+        "accent_color":  (240, 240, 240),
+        "highlight_rgb": (255, 200, 100),
+        "text_color":    (255, 255, 255),
+        "glow_color":    (160, 140, 110),
+        "art_style":     "square",
+        "disc_dark":     None,
     },
 }
 
-# Templates where album art is a rotating disc overlay (rendered separately)
 ROTATING_TEMPLATES = {"minimal", "neon"}
 
 W, H = 1080, 1920
 
-# ── Layout ───────────────────────────────────────────────────────────────────
-# Card spans the top ~49 % of the frame — large, nearly square
-CARD_X0      = 40
-CARD_X1      = W - 40          # 1040
-CARD_Y0      = 50
-CARD_Y1      = 990
-CARD_RADIUS  = 44
-CARD_W       = CARD_X1 - CARD_X0   # 1000
+# ── Layout ────────────────────────────────────────────────────────────────────
+ART_CX      = W // 2               # 540 — horizontal centre
+ART_CY      = int(H * 0.36)        # 691 — art centre at 36 % from top
+ART_R       = 330                  # circular art radius
+ART_SQ      = 680                  # square art side (vivid / inferno)
 
-ART_CX       = W // 2          # 540
-ART_CY       = 460             # disc/art centre
+DISC_CANVAS = ART_R * 2 + 180      # 840 — PNG size with glow headroom
+DISC_X      = ART_CX - DISC_CANVAS // 2   # 540 - 420 = 120
+DISC_Y      = ART_CY - DISC_CANVAS // 2   # 691 - 420 = 271
 
-# Disc fills ~76 % of the card width → prominent like Figma design
-ART_R        = 382             # disc radius → diameter 764 px
-ART_SQ       = 720             # square art side (vivid/inferno)
-
-# Disc PNG canvas with enough glow headroom
-DISC_CANVAS  = 900             # ART_R*2 + 136
-DISC_X       = ART_CX - DISC_CANVAS // 2   # 540 - 450 = 90
-DISC_Y       = ART_CY - DISC_CANVAS // 2   # 460 - 450 = 10
-
-NP_Y         = 924             # "NOW PLAYING" inside card near bottom
-BAR_X0       = 80
-BAR_X1       = W - 80          # 1000
-BAR_Y        = 1038
-BAR_H        = 5
-
-FONTS_DIR    = Path(__file__).parent.parent / "fonts"
+FONTS_DIR       = Path(__file__).parent.parent / "fonts"
 KARAOKE_DELAY_S = 0.15
 
 
@@ -138,31 +114,7 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
-def _rounded_rect(draw: ImageDraw.ImageDraw, xy, radius: int, fill=None, outline=None, outline_width=1):
-    x0, y0, x1, y1 = xy
-    if fill:
-        draw.rectangle([x0 + radius, y0, x1 - radius, y1], fill=fill)
-        draw.rectangle([x0, y0 + radius, x1, y1 - radius], fill=fill)
-        draw.ellipse([x0, y0, x0 + 2 * radius, y0 + 2 * radius], fill=fill)
-        draw.ellipse([x1 - 2*radius, y0, x1, y0 + 2*radius], fill=fill)
-        draw.ellipse([x0, y1 - 2*radius, x0 + 2*radius, y1], fill=fill)
-        draw.ellipse([x1 - 2*radius, y1 - 2*radius, x1, y1], fill=fill)
-    if outline:
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius,
-                                outline=outline, width=outline_width)
-
-
-def _gradient_bg(draw: ImageDraw.ImageDraw, top: tuple, bot: tuple):
-    for y in range(H):
-        ratio = y / H
-        r = int(top[0] + (bot[0] - top[0]) * ratio)
-        g = int(top[1] + (bot[1] - top[1]) * ratio)
-        b = int(top[2] + (bot[2] - top[2]) * ratio)
-        draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
-
-
 def _circle_crop(img: Image.Image, size: int) -> Image.Image:
-    """Crop+resize an image to a circular RGBA thumbnail."""
     img = img.convert("RGBA").resize((size, size), Image.LANCZOS)
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).ellipse([0, 0, size, size], fill=255)
@@ -172,7 +124,6 @@ def _circle_crop(img: Image.Image, size: int) -> Image.Image:
 
 
 def _square_crop(img: Image.Image, size: int) -> Image.Image:
-    """Centre-crop and resize an image to size×size."""
     img = img.convert("RGBA")
     w, h = img.size
     ratio = w / h
@@ -187,12 +138,33 @@ def _square_crop(img: Image.Image, size: int) -> Image.Image:
 
 
 def _soft_glow(draw: ImageDraw.ImageDraw, cx: int, cy: int,
-               radius: int, color: tuple, layers: int = 6):
+               radius: int, color: tuple, layers: int = 8):
     for i in range(layers, 0, -1):
-        rad   = radius + i * 12
-        alpha = int(22 * (1 - i / (layers + 1)))
+        rad   = radius + i * 14
+        alpha = int(30 * (1 - i / (layers + 1)))
         draw.ellipse([cx - rad, cy - rad, cx + rad, cy + rad],
-                     fill=(*color, alpha))
+                     fill=(*color[:3], alpha))
+
+
+def _gradient_overlay(canvas: Image.Image, dark: tuple,
+                      top_alpha: int, mid_alpha: int, bot_alpha: int,
+                      mid_frac: float = 0.50) -> Image.Image:
+    """
+    Apply a vertical gradient overlay that darkens the top and bottom
+    of the frame while leaving the middle lighter.
+    """
+    ov   = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(ov)
+    for y in range(H):
+        frac = y / H
+        if frac < mid_frac:
+            ratio = frac / mid_frac
+            alpha = int(top_alpha + (mid_alpha - top_alpha) * ratio)
+        else:
+            ratio = (frac - mid_frac) / (1.0 - mid_frac)
+            alpha = int(mid_alpha + (bot_alpha - mid_alpha) * ratio)
+        draw.line([(0, y), (W, y)], fill=(*dark[:3], alpha))
+    return Image.alpha_composite(canvas.convert("RGBA"), ov)
 
 
 # ---------------------------------------------------------------------------
@@ -204,71 +176,55 @@ def render_album_disc(
     album_cover_path: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
-    """
-    Render the rotating disc as a transparent RGBA PNG.
-    – minimal  → circular album art + dashed orbit ring
-    – neon     → vinyl record with album art composited in centre
-    """
+    """Render the rotating disc as a transparent RGBA PNG."""
     t    = TEMPLATES.get(template_id, TEMPLATES["neon"])
-    size = DISC_CANVAS      # 720
+    size = DISC_CANVAS
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw   = ImageDraw.Draw(canvas)
 
-    cx = cy = size // 2     # 360
-    r  = ART_R              # 318
+    cx = cy = size // 2
+    r  = ART_R
 
     art_style = t.get("art_style", "disc_vinyl")
     gc        = t.get("glow_color", t["accent_color"])
 
-    # ── Outer glow ───────────────────────────────────────────────────────────
-    for i in range(5, 0, -1):
-        rad   = r + i * 11
-        alpha = int(28 * (1 - i / 6))
+    # Outer glow
+    for i in range(6, 0, -1):
+        rad   = r + i * 12
+        alpha = int(32 * (1 - i / 7))
         draw.ellipse([cx - rad, cy - rad, cx + rad, cy + rad],
-                     fill=(*gc, alpha))
+                     fill=(*gc[:3], alpha))
 
     if art_style == "disc_vinyl":
-        # ── Dark vinyl body ──────────────────────────────────────────────────
         disc_dark = t.get("disc_dark", (10, 10, 18))
         draw.ellipse([cx - r, cy - r, cx + r, cy + r],
                      fill=(*disc_dark, 255))
 
-        # ── Groove rings ─────────────────────────────────────────────────────
         groove_radii  = [r - 8, r - 38, r - 68, r - 98, r - 128]
         groove_alphas = [160, 110, 75, 50, 30]
-        for i, (grad, alph) in enumerate(zip(groove_radii, groove_alphas)):
+        for grad, alph in zip(groove_radii, groove_alphas):
             if grad < 20:
                 break
             draw.ellipse([cx - grad, cy - grad, cx + grad, cy + grad],
                          outline=(80, 80, 100, alph), width=2)
 
-        # ── Centre label area ─────────────────────────────────────────────────
-        label_r = 140
+        label_r = 130
         if album_cover_path and Path(album_cover_path).exists():
             cover = _circle_crop(Image.open(album_cover_path), label_r * 2)
             canvas.paste(cover, (cx - label_r, cy - label_r), cover)
         else:
-            # accent-coloured label circle
             draw.ellipse([cx - label_r, cy - label_r,
                           cx + label_r, cy + label_r],
                          fill=(*t["accent_color"], 240))
-            sub_r   = 48
-            sub_col = tuple(max(0, c - 55) for c in t["accent_color"])
-            draw.ellipse([cx - sub_r, cy - sub_r, cx + sub_r, cy + sub_r],
-                         fill=(*sub_col, 255))
 
-        # ── Spindle hole ──────────────────────────────────────────────────────
         draw.ellipse([cx - 12, cy - 12, cx + 12, cy + 12],
                      fill=(0, 0, 0, 0))
-
-        # ── Marker dot so spin is visible ─────────────────────────────────────
         mk_r = r - 38
         draw.ellipse([cx + mk_r - 7, cy - 7, cx + mk_r + 7, cy + 7],
                      fill=(*t["accent_color"], 200))
 
-    else:  # disc_dashed — circular album art + dashed ring
-        # ── Album art circle ─────────────────────────────────────────────────
-        art_r = r - 20
+    else:  # disc_dashed
+        art_r = r - 16
         if album_cover_path and Path(album_cover_path).exists():
             cover = _circle_crop(Image.open(album_cover_path), art_r * 2)
             canvas.paste(cover, (cx - art_r, cy - art_r), cover)
@@ -276,24 +232,21 @@ def render_album_disc(
             disc_dark = t.get("disc_dark", (10, 10, 14))
             draw.ellipse([cx - art_r, cy - art_r, cx + art_r, cy + art_r],
                          fill=(*disc_dark, 255))
-            # Minimal inner ring details
-            for i, (rad, alph) in enumerate([(art_r - 18, 130), (art_r - 55, 80), (art_r - 92, 50)]):
+            for rad, alph in [(art_r - 18, 130), (art_r - 55, 80), (art_r - 92, 50)]:
                 if rad < 20:
                     break
                 draw.ellipse([cx - rad, cy - rad, cx + rad, cy + rad],
                              outline=(*t["accent_color"], alph), width=2)
-            # Centre accent dot
             draw.ellipse([cx - 28, cy - 28, cx + 28, cy + 28],
                          fill=(*t["accent_color"], 220))
             draw.ellipse([cx - 11, cy - 11, cx + 11, cy + 11],
                          fill=(0, 0, 0, 0))
 
-        # ── Dashed orbit ring ────────────────────────────────────────────────
-        dash_r    = r + 2
-        dash_len  = 18
-        gap_len   = 12
-        step_deg  = math.degrees(math.atan2(dash_len + gap_len, dash_r))
-        angle     = 0
+        dash_r   = r + 4
+        dash_len = 18
+        gap_len  = 12
+        step_deg = math.degrees(math.atan2(dash_len + gap_len, dash_r))
+        angle    = 0
         while angle < 360:
             x0 = cx + dash_r * math.cos(math.radians(angle))
             y0 = cy + dash_r * math.sin(math.radians(angle))
@@ -301,7 +254,7 @@ def render_album_disc(
             x1 = cx + dash_r * math.cos(math.radians(a1))
             y1 = cy + dash_r * math.sin(math.radians(a1))
             draw.line([(x0, y0), (x1, y1)],
-                      fill=(*t["accent_color"], 160), width=2)
+                      fill=(*t["accent_color"], 160), width=3)
             angle += step_deg
 
     if output_path is None:
@@ -313,7 +266,7 @@ def render_album_disc(
 
 
 # ---------------------------------------------------------------------------
-# Background / card renderer
+# Background renderer — full-screen immersive (matches HTML preview)
 # ---------------------------------------------------------------------------
 
 def render_template_background(
@@ -326,18 +279,21 @@ def render_template_background(
 ) -> str:
     """
     Render the static 1080×1920 background PNG.
-    For rotating-disc templates (minimal/neon) the album art is NOT drawn here;
-    it is composited by FFmpeg from disc.png.
-    For vivid/inferno the album art is drawn directly into the card.
+
+    Layout matches the HTML preview:
+      – full-screen blurred background image (or solid dark gradient)
+      – heavy dark gradient overlay: dark top, lighter middle, dark bottom
+      – template colour tint (vivid: pink blobs; neon: cyan hint)
+      – album art centred at ~36 % from top
+        · minimal/neon: ambient glow only (disc handled by FFmpeg overlay)
+        · vivid/inferno: rounded-square art with glow
     """
     t = TEMPLATES.get(template_id, TEMPLATES["minimal"])
+
+    # ── Base solid colour ────────────────────────────────────────────────────
     canvas = Image.new("RGBA", (W, H), (*t["bg_top"], 255))
-    draw   = ImageDraw.Draw(canvas)
 
-    # ── Gradient background ──────────────────────────────────────────────────
-    _gradient_bg(draw, t["bg_top"], t["bg_bot"])
-
-    # ── Optional user background (blurred + darkened) ────────────────────────
+    # ── Full-screen background image ─────────────────────────────────────────
     if background_image_path and Path(background_image_path).exists():
         bg = Image.open(background_image_path).convert("RGBA")
         ratio = bg.width / bg.height
@@ -348,92 +304,92 @@ def render_template_background(
         bg  = bg.resize((new_w, new_h), Image.LANCZOS)
         xo  = (new_w - W) // 2
         yo  = (new_h - H) // 2
-        bg  = bg.crop((xo, yo, xo + W, yo + H))
-        bg  = bg.filter(ImageFilter.GaussianBlur(26))
-        ov  = Image.new("RGBA", (W, H), (0, 0, 0, 160))
-        canvas = Image.alpha_composite(bg, ov)
+        bg  = bg.crop((xo, yo, xo + W, yo + H)).convert("RGBA")
+
+        # Blur strength per template
+        blur = 32 if template_id != "inferno" else 40
+        bg   = bg.filter(ImageFilter.GaussianBlur(blur))
+
+        # Inferno: push toward greyscale
+        if template_id == "inferno":
+            from PIL import ImageEnhance
+            bg = ImageEnhance.Color(bg).enhance(0.25)
+
+        canvas = bg
+
+    # ── Gradient overlay (dark top + bottom, lighter middle) ─────────────────
+    dark = t["overlay_top"]
+    canvas = _gradient_overlay(canvas, dark,
+                               top_alpha=210, mid_alpha=70, bot_alpha=220,
+                               mid_frac=0.52)
+    draw = ImageDraw.Draw(canvas)
+
+    # ── Template-specific colour tints ────────────────────────────────────────
+    if template_id == "vivid":
+        tint = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        td   = ImageDraw.Draw(tint)
+        # Pink blob top-left
+        td.ellipse([-260, -260, 560, 560], fill=(255, 90, 200, 55))
+        # Purple blob bottom-right
+        td.ellipse([640, 1480, 1380, 2220], fill=(130, 30, 255, 60))
+        tint = tint.filter(ImageFilter.GaussianBlur(80))
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), tint)
         draw   = ImageDraw.Draw(canvas)
 
-    # ── Card ─────────────────────────────────────────────────────────────────
-    card_fill = (*t["card_color"][:3], t["card_color"][3])
-    _rounded_rect(draw, (CARD_X0, CARD_Y0, CARD_X1, CARD_Y1),
-                  CARD_RADIUS, fill=card_fill)
-    # Subtle card border
-    border = t.get("card_border")
-    if border:
-        _rounded_rect(draw, (CARD_X0, CARD_Y0, CARD_X1, CARD_Y1),
-                      CARD_RADIUS, outline=border, outline_width=1)
+    elif template_id == "neon":
+        tint = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        td   = ImageDraw.Draw(tint)
+        td.ellipse([ART_CX - 420, ART_CY - 420,
+                    ART_CX + 420, ART_CY + 420],
+                   fill=(0, 220, 255, 14))
+        tint = tint.filter(ImageFilter.GaussianBlur(60))
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), tint)
+        draw   = ImageDraw.Draw(canvas)
 
+    # ── Album art ─────────────────────────────────────────────────────────────
     art_style = t.get("art_style", "disc_vinyl")
 
     if art_style in ("disc_dashed", "disc_vinyl"):
-        # Album art handled by the rotating disc overlay — just draw ambient glow
-        gc = t.get("glow_color", t["accent_color"])
-        _soft_glow(draw, ART_CX, ART_CY, ART_R, gc, layers=6)
+        # Rotating disc handled by FFmpeg — paint ambient glow only
+        _soft_glow(draw, ART_CX, ART_CY, ART_R,
+                   t.get("glow_color", t["accent_color"]), layers=8)
 
     else:
-        # ── Square album art (vivid / inferno) ───────────────────────────────
+        # Square art (vivid / inferno)
         art_size = ART_SQ
         ax0 = ART_CX - art_size // 2
         ay0 = ART_CY - art_size // 2
         ax1 = ax0 + art_size
         ay1 = ay0 + art_size
-        art_radius = 28 if template_id == "vivid" else 16
+        art_radius = 36
 
-        # Glow behind art
         gc = t.get("glow_color", t["accent_color"])
-        for i in range(5, 0, -1):
-            pad   = i * 14
-            alpha = int(30 * (1 - i / 6))
+        for i in range(7, 0, -1):
+            pad   = i * 18
+            alpha = int(28 * (1 - i / 8))
             draw.rounded_rectangle(
                 [ax0 - pad, ay0 - pad, ax1 + pad, ay1 + pad],
-                radius=art_radius + pad // 2,
-                fill=(*gc, alpha),
+                radius=art_radius + pad // 2, fill=(*gc[:3], alpha),
             )
 
         if album_cover_path and Path(album_cover_path).exists():
             cover = _square_crop(Image.open(album_cover_path), art_size)
-            # Apply rounded mask
-            mask = Image.new("L", (art_size, art_size), 0)
+            mask  = Image.new("L", (art_size, art_size), 0)
             ImageDraw.Draw(mask).rounded_rectangle(
                 [0, 0, art_size, art_size], radius=art_radius, fill=255
             )
-            cover_rgba = cover.convert("RGBA")
-            canvas_chunk = Image.new("RGBA", (art_size, art_size), (0, 0, 0, 0))
-            canvas_chunk.paste(cover_rgba, mask=mask)
+            chunk = Image.new("RGBA", (art_size, art_size), (0, 0, 0, 0))
+            chunk.paste(cover.convert("RGBA"), mask=mask)
             canvas = canvas.convert("RGBA")
-            canvas.paste(canvas_chunk, (ax0, ay0), canvas_chunk)
+            canvas.paste(chunk, (ax0, ay0), chunk)
             draw = ImageDraw.Draw(canvas)
         else:
-            # Placeholder dark square
-            art_dark = tuple(max(0, c - 10) for c in t["bg_top"])
             draw.rounded_rectangle(
                 [ax0, ay0, ax1, ay1], radius=art_radius,
-                fill=(*art_dark, 255),
+                fill=(*t["bg_top"], 255),
             )
-            # Vinyl + cover mockup in placeholder
-            vc = ART_CX
-            vr = ART_CY
-            draw.ellipse([vc - 90, vr - 90, vc + 90, vr + 90],
-                         fill=(20, 20, 28, 255))
-            for rad, alph in [(82, 100), (55, 65), (28, 40)]:
-                draw.ellipse([vc - rad, vr - rad, vc + rad, vr + rad],
-                             outline=(*t["accent_color"], alph), width=2)
-            draw.ellipse([vc - 18, vr - 18, vc + 18, vr + 18],
-                         fill=(*t["accent_color"], 180))
-            draw.ellipse([vc - 7, vr - 7, vc + 7, vr + 7],
-                         fill=(0, 0, 0, 0))
-
-    # ── "NOW PLAYING" label inside card ──────────────────────────────────────
-    draw.text((W // 2, NP_Y), "NOW PLAYING",
-              font=_font(20), fill=(*t["text_color"], 72), anchor="mm")
-
-    # ── Progress bar track ────────────────────────────────────────────────────
-    bar_bg = (*t["text_color"], 22)
-    draw.rounded_rectangle(
-        [BAR_X0, BAR_Y, BAR_X1, BAR_Y + BAR_H],
-        radius=2, fill=bar_bg,
-    )
+            _soft_glow(draw, ART_CX, ART_CY, 140,
+                       gc, layers=5)
 
     result = canvas.convert("RGB")
     if output_path is None:
@@ -461,15 +417,12 @@ def build_ass_lyrics(
     template_id: str = "minimal",
     output_path: Optional[str] = None,
 ) -> str:
-    """ASS karaoke file.
-    PrimaryColour  = white  (spoken/current)
-    SecondaryColour= dark grey (upcoming, pre-karaoke)
-    """
+    """ASS karaoke file — \kf sweep highlights each word in accent colour."""
     t = TEMPLATES.get(template_id, TEMPLATES["minimal"])
-    r, g, b = t["highlight_rgb"]
-    accent_ass     = f"&H00{b:02X}{g:02X}{r:02X}&"
-    white_ass      = "&H00FFFFFF&"
-    dim_grey_ass   = "&H80808080&"   # upcoming words
+    r, g, b    = t["highlight_rgb"]
+    accent_ass = f"&H00{b:02X}{g:02X}{r:02X}&"
+    white_ass  = "&H00FFFFFF&"
+    dim_ass    = "&H80808080&"
 
     if output_path is None:
         tmp = tempfile.NamedTemporaryFile(
@@ -489,11 +442,11 @@ def build_ass_lyrics(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        # Alignment 2 = bottom-centre; MarginV 320 px from bottom
-        # Bold=1; Outline=4 + Shadow=2 for readability on any background
-        f"Style: Karaoke,TikTok Sans,72,{white_ass},{dim_grey_ass},"
-        "&H00000000&,&H90000000&,"
-        "1,0,0,0,100,100,1,0,1,4,2,2,80,80,320,1",
+        # Alignment 2 = bottom-centre; MarginV 300 px from bottom
+        # Fontsize 78; Bold; Outline 4 + Shadow 2 for readability
+        f"Style: Karaoke,TikTok Sans,78,{white_ass},{dim_ass},"
+        "&H00000000&,&HA0000000&,"
+        "1,0,0,0,100,100,2,0,1,4,2,2,80,80,300,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, "
@@ -502,7 +455,6 @@ def build_ass_lyrics(
 
     group_size = 5
     groups = [words[i:i + group_size] for i in range(0, len(words), group_size)]
-
     for group in groups:
         if not group:
             continue
@@ -510,10 +462,9 @@ def build_ass_lyrics(
         end   = min(group[-1]["end_s"] + 0.6, clip_duration)
         parts = []
         for w in group:
-            w_start = w["start_s"] + KARAOKE_DELAY_S
-            w_end   = w["end_s"]   + KARAOKE_DELAY_S
-            dur_cs  = max(1, int((w_end - w_start) * 100))
-            # \kf = fill sweep (grey → white) for current word
+            w_start  = w["start_s"] + KARAOKE_DELAY_S
+            w_end    = w["end_s"]   + KARAOKE_DELAY_S
+            dur_cs   = max(1, int((w_end - w_start) * 100))
             parts.append(f"{{\\kf{dur_cs}}}{w['word']}")
         text = " ".join(parts)
         lines.append(
@@ -557,35 +508,19 @@ async def generate_audio_video_clip(
     tmp_dir  = Path(tempfile.mkdtemp())
     bg_png   = str(tmp_dir / "bg.png")
     ass_file = str(tmp_dir / "lyrics.ass")
-
     needs_disc = template_id in ROTATING_TEMPLATES
 
     try:
-        # 1 — background
         await asyncio.to_thread(
             render_template_background,
             template_id, background_image_path, bg_png,
             title, artist, album_cover_path,
         )
-
-        # 2 — ASS karaoke
         await asyncio.to_thread(
             build_ass_lyrics, clip_words, duration, template_id, ass_file,
         )
 
-        # 3 — build FFmpeg command
-        t   = TEMPLATES.get(template_id, TEMPLATES["minimal"])
-        r, g, b = t["bar_color"]
-        bar_color_hex = f"{r:02x}{g:02x}{b:02x}ff"
-        bar_w = BAR_X1 - BAR_X0
-
         ass_escaped = ass_file.replace("\\", "/")
-        bar_expr = (
-            f"drawbox=x={BAR_X0}:y={BAR_Y}:"
-            f"w='({bar_w})*t/{duration:.3f}':h={BAR_H}:"
-            f"c=0x{bar_color_hex}:t=fill"
-        )
-
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         if needs_disc:
@@ -597,7 +532,7 @@ async def generate_audio_video_clip(
                 f"[1:v]format=rgba,"
                 f"rotate=2*PI*t/8:c=none:ow={DISC_CANVAS}:oh={DISC_CANVAS}[rot];"
                 f"[0:v][rot]overlay={DISC_X}:{DISC_Y}[bgd];"
-                f"[bgd]{bar_expr},ass={ass_escaped}[v]"
+                f"[bgd]ass={ass_escaped}[v]"
             )
             cmd = [
                 "ffmpeg", "-loglevel", "error", "-y",
@@ -607,7 +542,7 @@ async def generate_audio_video_clip(
                 "-filter_complex", filter_complex,
                 "-map", "[v]", "-map", "2:a",
                 "-t", str(duration),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart",
@@ -615,7 +550,7 @@ async def generate_audio_video_clip(
                 output_path,
             ]
         else:
-            filter_str = f"[0:v]{bar_expr},ass={ass_escaped}[v]"
+            filter_str = f"[0:v]ass={ass_escaped}[v]"
             cmd = [
                 "ffmpeg", "-loglevel", "error", "-y",
                 "-loop", "1", "-framerate", "30", "-i", bg_png,
@@ -623,7 +558,7 @@ async def generate_audio_video_clip(
                 "-filter_complex", filter_str,
                 "-map", "[v]", "-map", "1:a",
                 "-t", str(duration),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart",
