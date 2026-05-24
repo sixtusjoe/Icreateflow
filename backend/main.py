@@ -6733,6 +6733,65 @@ async def upload_audio_clip_asset(
     return {"path": str(save_path), "asset_type": asset_type}
 
 
+@app.post("/api/audio-to-video/clips/{clip_id}/upload-video")
+async def upload_audio_clip_video(
+    clip_id: int,
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Save a canvas-recorded preview video and mark the clip as done."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT ac.*, at.artist_id FROM audio_clips ac "
+            "JOIN audio_tracks at ON at.id = ac.audio_track_id "
+            "WHERE ac.id = ?", (clip_id,)
+        )
+        clip = await cur.fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        clip = dict(clip)
+        cur = await database.execute(
+            "SELECT slug FROM artists WHERE id = ?", (clip["artist_id"],)
+        )
+        artist = await cur.fetchone()
+        slug = dict(artist)["slug"] if artist else "unknown"
+    finally:
+        await database.close()
+
+    ext = Path(file.filename or "preview.webm").suffix.lower() or ".webm"
+    save_dir = Path("uploads") / slug / "audio" / "video"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / f"clip_{clip_id}_preview{ext}"
+    content = await file.read()
+    save_path.write_bytes(content)
+    video_path = str(save_path)
+
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT id FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,)
+        )
+        existing = await cur.fetchone()
+        if existing:
+            await database.execute(
+                "UPDATE audio_video_clips SET status='done', video_path=?, error=NULL "
+                "WHERE audio_clip_id=?",
+                (video_path, clip_id),
+            )
+        else:
+            await database.execute(
+                "INSERT INTO audio_video_clips (audio_clip_id, status, video_path) "
+                "VALUES (?, 'done', ?)",
+                (clip_id, video_path),
+            )
+        await database.commit()
+    finally:
+        await database.close()
+
+    return {"video_path": video_path, "status": "done"}
+
+
 @app.post("/api/audio-to-video/clips/{clip_id}/generate")
 async def generate_audio_video_clip(
     clip_id: int,

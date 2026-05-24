@@ -15,6 +15,7 @@ import {
   updateAudioClipLyrics,
   assignAudioClip,
   uploadAudioClipAsset,
+  uploadAudioClipVideo,
 } from "@/lib/api";
 import {
   Upload,
@@ -506,6 +507,12 @@ export default function AudioToVideoPage() {
   const previewCanvasRef = useRef<HTMLDivElement>(null);
   const [isExportRecording, setIsExportRecording] = useState(false);
   const exportAbortRef = useRef(false);
+  const [exportedBlob, setExportedBlob] = useState<Blob | null>(null);
+  const [exportedBlobUrl, setExportedBlobUrl] = useState<string | null>(null);
+  const [exportedExt, setExportedExt] = useState("webm");
+  const [exportClipIndex, setExportClipIndex] = useState(0);
+  const [uploadingExport, setUploadingExport] = useState(false);
+  const exportClipIdRef = useRef<number | null>(null);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -1677,11 +1684,12 @@ export default function AudioToVideoPage() {
                               audioEl.loop = true;
                               const blob = new Blob(chunks, { type: mimeType || "video/webm" });
                               const url  = URL.createObjectURL(blob);
-                              const a    = document.createElement("a");
-                              a.href = url;
-                              a.download = `clip_${clip.clip_index + 1}.${ext}`;
-                              a.click();
-                              setTimeout(() => URL.revokeObjectURL(url), 15_000);
+                              // Revoke any previous export URL
+                              setExportedBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url; });
+                              setExportedBlob(blob);
+                              setExportedExt(ext);
+                              setExportClipIndex(clip.clip_index);
+                              exportClipIdRef.current = clip.id;
                               setIsExportRecording(false);
                             };
 
@@ -2011,5 +2019,89 @@ export default function AudioToVideoPage() {
         )}
       </div>
     </div>
+
+    {/* ── Export Preview Modal ─────────────────────────────────────────── */}
+    {exportedBlobUrl && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+        <div className="relative flex flex-col bg-neutral-950 border border-neutral-800 rounded-2xl overflow-hidden w-full max-w-sm shadow-2xl">
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-800">
+            <div>
+              <p className="font-bold text-base">Clip {exportClipIndex + 1} — Ready</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Watch, then download or assign to a variation</p>
+            </div>
+            <button
+              onClick={() => {
+                URL.revokeObjectURL(exportedBlobUrl);
+                setExportedBlobUrl(null);
+                setExportedBlob(null);
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          {/* Video preview */}
+          <div className="bg-black aspect-[9/16] max-h-[55vh] flex items-center justify-center">
+            <video
+              src={exportedBlobUrl}
+              controls
+              autoPlay
+              playsInline
+              className="w-full h-full object-contain"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-3 p-4">
+            <button
+              onClick={() => {
+                const a = document.createElement("a");
+                a.href = exportedBlobUrl;
+                a.download = `clip_${exportClipIndex + 1}.${exportedExt}`;
+                a.click();
+              }}
+              className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm"
+            >
+              <Download className="w-4 h-4" /> Download
+            </button>
+            <button
+              disabled={uploadingExport}
+              onClick={async () => {
+                if (!exportedBlob || !exportClipIdRef.current) return;
+                setUploadingExport(true);
+                try {
+                  const result = await uploadAudioClipVideo(exportClipIdRef.current, exportedBlob, exportedExt);
+                  setTrack(prev => prev ? {
+                    ...prev,
+                    clips: prev.clips.map(c =>
+                      c.id === exportClipIdRef.current
+                        ? { ...c, video: { status: "done" as const, video_path: result.video_path } }
+                        : c
+                    ),
+                  } : null);
+                  URL.revokeObjectURL(exportedBlobUrl);
+                  setExportedBlobUrl(null);
+                  setExportedBlob(null);
+                  setStep(3);
+                } catch (err) {
+                  console.error("Upload failed", err);
+                } finally {
+                  setUploadingExport(false);
+                }
+              }}
+              className="flex-1 flex items-center justify-center gap-2 py-3.5 border border-border font-semibold rounded-xl hover:border-foreground/40 hover:bg-white/5 transition-colors text-sm disabled:opacity-50"
+            >
+              {uploadingExport
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading…</>
+                : <><MonitorPlay className="w-4 h-4" /> Assign to Variation</>}
+            </button>
+          </div>
+
+        </div>
+      </div>
+    )}
   );
 }
