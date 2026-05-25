@@ -20,6 +20,32 @@ import { parseArgs } from "util";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Cache file — stores the last bundle location so we can skip re-bundling
+// when running multiple renders. Invalidated if the entry point changes.
+const BUNDLE_CACHE_FILE = path.join(__dirname, ".bundle-cache.json");
+
+function getCachedBundle() {
+  try {
+    const { location, mtime } = JSON.parse(fs.readFileSync(BUNDLE_CACHE_FILE, "utf8"));
+    // Check the bundle output dir still exists
+    if (fs.existsSync(path.join(location, "index.html"))) {
+      // Check entry point hasn't changed since the bundle was created
+      const entryMtime = fs.statSync(path.resolve(__dirname, "index.ts")).mtimeMs;
+      if (entryMtime <= mtime) {
+        return location;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function saveBundleCache(location) {
+  try {
+    const mtime = fs.statSync(path.resolve(__dirname, "index.ts")).mtimeMs;
+    fs.writeFileSync(BUNDLE_CACHE_FILE, JSON.stringify({ location, mtime }));
+  } catch {}
+}
+
 const { values } = parseArgs({
   options: {
     props: { type: "string" },
@@ -86,11 +112,18 @@ async function main() {
   const chromiumPath = findChromium();
   console.log(`[render] Chromium: ${chromiumPath || "auto-download"}`);
 
-  console.log("[render] Bundling composition...");
-  const bundleLocation = await bundle({
-    entryPoint: path.resolve(__dirname, "index.ts"),
-    webpackOverride: (config) => config,
-  });
+  let bundleLocation = getCachedBundle();
+  if (bundleLocation) {
+    console.log(`[render] Using cached bundle: ${bundleLocation}`);
+  } else {
+    console.log("[render] Bundling composition...");
+    bundleLocation = await bundle({
+      entryPoint: path.resolve(__dirname, "index.ts"),
+      webpackOverride: (config) => config,
+    });
+    saveBundleCache(bundleLocation);
+    console.log(`[render] Bundle cached for future renders.`);
+  }
 
   console.log("[render] Selecting composition...");
   const composition = await selectComposition({
