@@ -6906,7 +6906,9 @@ async def render_audio_clip_preview(
 
             print(f"[render-preview] Starting Remotion render for clip {clip_id}...")
             proc = await _asyncio.create_subprocess_exec(
-                "node", str(render_script),
+                "node",
+                "--max-old-space-size=2048",  # cap Node heap at 2 GB
+                str(render_script),
                 "--props", json.dumps(silent_props),
                 "--output", silent_video_path,
                 "--duration", str(clip_duration),

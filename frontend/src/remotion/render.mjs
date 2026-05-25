@@ -87,12 +87,19 @@ async function main() {
       gl: "swangle",
       disableWebSecurity: true, // allow loading local file URLs
     },
-    timeoutInMilliseconds: 60000, // 60s per frame timeout (generous for image loading)
-    onProgress: ({ progress }) => {
+    // Limit concurrency to 1 to avoid exhausting RAM on low-memory servers.
+    // Each parallel frame renders a full Chromium tab — 1 tab per frame at a time.
+    concurrency: 1,
+    timeoutInMilliseconds: 60000,
+    // Lower CRF for faster encode (CRF 28 = good quality, smaller file, faster)
+    // Use x264 fast preset to reduce CPU time per frame
+    encoderOptions: {
+      crf: 23,
+      preset: "ultrafast",
+    },
+    onProgress: ({ progress, renderedFrames, encodedFrames }) => {
       const pct = Math.round(progress * 100);
-      if (pct % 10 === 0) {
-        process.stdout.write(`[render] Progress: ${pct}%\n`);
-      }
+      process.stdout.write(`[render] Progress: ${pct}% (rendered ${renderedFrames}, encoded ${encodedFrames})\n`);
     },
   });
 
