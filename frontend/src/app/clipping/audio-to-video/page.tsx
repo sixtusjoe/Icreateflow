@@ -15,7 +15,6 @@ import {
   updateAudioClipLyrics,
   assignAudioClip,
   uploadAudioClipAsset,
-  renderAudioClipPreview,
 } from "@/lib/api";
 import {
   Upload,
@@ -492,6 +491,7 @@ export default function AudioToVideoPage() {
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
   const previewCanvasRef = useRef<HTMLDivElement>(null);
   const [isExportRecording, setIsExportRecording] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
   const exportAbortRef = useRef(false);
   const [exportedBlob, setExportedBlob] = useState<Blob | null>(null);
   const [exportedBlobUrl, setExportedBlobUrl] = useState<string | null>(null);
@@ -499,13 +499,18 @@ export default function AudioToVideoPage() {
   const [exportClipIndex, setExportClipIndex] = useState(0);
   const [uploadingExport, setUploadingExport] = useState(false);
   const exportClipIdRef = useRef<number | null>(null);
+  const exportAudioCtxRef = useRef<AudioContext | null>(null);
+  // Persists blob URLs per clip so "View Export" button can reopen the modal
+  const [exportedBlobUrlByClip, setExportedBlobUrlByClip] = useState<Record<number, string>>({});
+  // WebGL render mode — "match" = exact HTML fidelity, "upgraded" = bloom + soft particles
+  const [renderMode, setRenderMode] = useState<"match" | "upgraded">("match");
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
   const [overlayWordIndex, setOverlayWordIndex] = useState(-1);
 
-  // Assign state
-  const [assignedClips, setAssignedClips] = useState<Record<number, { variationId: number; variationName: string } | null>>({});
+  // Assign state — a clip can be assigned to multiple variations
+  const [assignedClips, setAssignedClips] = useState<Record<number, Array<{ variationId: number; variationName: string }>>>({});
   const [assigning, setAssigning] = useState<Record<number, boolean>>({});
 
   // Confirm modal state
@@ -920,10 +925,15 @@ export default function AudioToVideoPage() {
   // ── Assign to variation ───────────────────────────────────────────────────
 
   const handleAssign = async (clipId: number, variationId: number, variationName: string) => {
+    const already = assignedClips[clipId] ?? [];
+    if (already.some((a) => a.variationId === variationId)) return;
     setAssigning((a) => ({ ...a, [clipId]: true }));
     try {
       await assignAudioClip(clipId, variationId);
-      setAssignedClips((ac) => ({ ...ac, [clipId]: { variationId, variationName } }));
+      setAssignedClips((ac) => ({
+        ...ac,
+        [clipId]: [...(ac[clipId] ?? []), { variationId, variationName }],
+      }));
     } catch (err: any) {
       alert(err?.response?.data?.detail || "Failed to assign clip");
     } finally {
@@ -1429,97 +1439,165 @@ export default function AudioToVideoPage() {
                     )}
 
                     {/* Action Buttons */}
-                    <div className="pt-4 border-t border-border flex gap-3">
-                      <button
-                        onClick={() => {
-                          const next = !isPreviewPaused;
-                          setIsPreviewPaused(!isPreviewPaused);
-                          if (audioPreviewRef.current) {
-                            if (next) {
-                              audioPreviewRef.current.pause();
-                            } else {
-                              audioPreviewRef.current.play().catch(() => {});
-                            }
-                          }
-                        }}
-                        className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
-                      >
-                        {isPreviewPaused ? (
-                          <><Play className="w-4 h-4 fill-current" /> Play Preview</>
-                        ) : (
-                          <><Pause className="w-4 h-4 fill-current" /> Pause Preview</>
-                        )}
-                      </button>
+                    <div className="pt-4 border-t border-border space-y-3">
 
-                      {/* Export Video — Remotion server-side render */}
-                      {isExportRecording ? (
+                      {/* Render mode toggle */}
+                      <div className="flex gap-2">
+                        {(["match", "upgraded"] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            onClick={() => setRenderMode(mode)}
+                            className={`flex-1 py-2 text-xs font-semibold rounded-xl border transition-all ${
+                              renderMode === mode
+                                ? "border-foreground bg-foreground text-background"
+                                : "border-border text-muted-foreground hover:border-foreground/40"
+                            }`}
+                          >
+                            {mode === "match" ? "🎯 Match Preview" : "✨ Upgraded (Bloom)"}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex gap-3">
                         <button
-                          disabled
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl"
-                        >
-                          <Loader2 className="w-4 h-4 animate-spin" /> Rendering…
-                        </button>
-                      ) : (
-                        <button
-                          onClick={async () => {
-                            const clip = activeClip;
-                            if (!clip) return;
-                            const clipCfg = clipConfigs[clip.id] ?? { template_id: "minimal" };
-
-                            setIsExportRecording(true);
-
-                            try {
-                              // Trigger server-side Remotion render
-                              await renderAudioClipPreview(clip.id, {
-                                template_id: clipCfg.template_id ?? "minimal",
-                                background_image_path: clipCfg.bg_path || null,
-                                album_cover_path: clipCfg.cover_path || null,
-                              });
-
-                              // Poll until done
-                              const poll = async (): Promise<void> => {
-                                const updated = await getAudioClip(clip.id);
-                                if (updated?.video?.status === "done" && updated.video.video_path) {
-                                  // Render complete — show modal with server video URL
-                                  const videoUrl = fileUrl(updated.video.video_path);
-                                  setExportedBlobUrl(videoUrl);
-                                  setExportedBlob(null); // no local blob — it's on the server
-                                  setExportedExt("mp4");
-                                  setExportClipIndex(clip.clip_index);
-                                  exportClipIdRef.current = clip.id;
-                                  // Update track state
-                                  setTrack(prev => prev ? {
-                                    ...prev,
-                                    clips: prev.clips.map(c =>
-                                      c.id === clip.id
-                                        ? { ...c, video: { status: "done" as const, video_path: updated.video!.video_path! } }
-                                        : c
-                                    ),
-                                  } : null);
-                                  setIsExportRecording(false);
-                                  return;
-                                }
-                                if (updated?.video?.status === "failed") {
-                                  const errMsg = updated.video.error || "Render failed";
-                                  console.error("Render failed:", errMsg);
-                                  setGenerationErrors((e) => ({ ...e, [clip.id]: `Export render failed: ${errMsg.slice(0, 200)}` }));
-                                  setIsExportRecording(false);
-                                  return;
-                                }
-                                // Still generating — poll again in 3s
-                                await new Promise(r => setTimeout(r, 3000));
-                                return poll();
-                              };
-                              await poll();
-                            } catch (err: any) {
-                              console.error("Render request failed", err);
-                              setGenerationErrors((e) => ({ ...e, [clip.id]: `Export request failed: ${err?.message || "unknown error"}` }));
-                              setIsExportRecording(false);
+                          onClick={() => {
+                            const next = !isPreviewPaused;
+                            setIsPreviewPaused(!isPreviewPaused);
+                            if (audioPreviewRef.current) {
+                              if (next) audioPreviewRef.current.pause();
+                              else audioPreviewRef.current.play().catch(() => {});
                             }
                           }}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
+                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
                         >
-                          <Download className="w-4 h-4" /> Export Preview
+                          {isPreviewPaused
+                            ? <><Play className="w-4 h-4 fill-current" /> Play Preview</>
+                            : <><Pause className="w-4 h-4 fill-current" /> Pause Preview</>}
+                        </button>
+
+                        {/* WebGL Export — canvas.captureStream + MediaRecorder */}
+                        {isExportRecording ? (
+                          <button disabled className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Recording… {exportProgress}%
+                          </button>
+                        ) : (
+                          <button
+                            onClick={async () => {
+                              const clip = activeClip;
+                              if (!clip || !clip.local_path) return;
+                              const clipCfg = clipConfigs[clip.id] ?? { template_id: "minimal" };
+                              const tid2 = (clipCfg.template_id ?? "minimal") as ThemeId;
+                              const theme2 = OVERLAY_THEMES[tid2] ?? OVERLAY_THEMES.minimal;
+                              const bgImageUrl = clipCfg.bg_path ? fileUrl(clipCfg.bg_path) : null;
+                              const coverImageUrl = clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null;
+                              const words2 = clipWords[clip.id] ?? [];
+                              const clipDuration = clip.end_s - clip.start_s;
+
+                              setIsExportRecording(true);
+                              setExportProgress(0);
+                              exportAbortRef.current = false;
+                              setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
+
+                              try {
+                                const renderer = await createCanvasRenderer({
+                                  width: 1080, height: 1920,
+                                  themeId: tid2, theme: theme2,
+                                  words: words2, bgImageUrl, coverImageUrl,
+                                  clipStartS: clip.start_s,
+                                  clipDuration,
+                                  renderMode,
+                                });
+
+                                const recAudio = new Audio();
+                                recAudio.crossOrigin = "anonymous";
+                                recAudio.src = fileUrl(clip.local_path!);
+                                await new Promise<void>((res, rej) => {
+                                  recAudio.oncanplay = () => res();
+                                  recAudio.onerror = () => rej(new Error("Audio load failed"));
+                                  recAudio.load();
+                                });
+
+                                const audioCtx = new AudioContext();
+                                exportAudioCtxRef.current = audioCtx;
+                                const audioSrc = audioCtx.createMediaElementSource(recAudio);
+                                const audioDest = audioCtx.createMediaStreamDestination();
+                                audioSrc.connect(audioDest);
+                                audioSrc.connect(audioCtx.destination);
+
+                                const videoStream = renderer.canvas.captureStream(30);
+                                const combined = new MediaStream([
+                                  ...videoStream.getVideoTracks(),
+                                  ...audioDest.stream.getAudioTracks(),
+                                ]);
+                                const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+                                  ? "video/webm;codecs=vp9,opus"
+                                  : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+                                  ? "video/webm;codecs=vp8,opus"
+                                  : "video/webm";
+                                const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 8_000_000 });
+                                const chunks: BlobPart[] = [];
+                                recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+                                recAudio.currentTime = 0;
+                                await recAudio.play();
+                                recorder.start(250);
+
+                                let rafId = 0;
+                                const tick = () => {
+                                  if (exportAbortRef.current) { recorder.stop(); recAudio.pause(); return; }
+                                  const t = recAudio.currentTime;
+                                  renderer.renderFrame(t);
+                                  setExportProgress(Math.min(99, Math.round((t / clipDuration) * 100)));
+                                  if (t < clipDuration && !recAudio.ended) {
+                                    rafId = requestAnimationFrame(tick);
+                                  } else {
+                                    recAudio.pause();
+                                    recorder.stop();
+                                  }
+                                };
+                                rafId = requestAnimationFrame(tick);
+
+                                recorder.onstop = () => {
+                                  cancelAnimationFrame(rafId);
+                                  renderer.destroy();
+                                  audioCtx.close();
+                                  exportAudioCtxRef.current = null;
+                                  const blob = new Blob(chunks, { type: mimeType });
+                                  const url = URL.createObjectURL(blob);
+                                  setExportedBlobUrl(url);
+                                  setExportedBlob(blob);
+                                  setExportedExt("webm");
+                                  setExportClipIndex(clip.clip_index);
+                                  exportClipIdRef.current = clip.id;
+                                  setExportedBlobUrlByClip((prev) => ({ ...prev, [clip.id]: url }));
+                                  setExportProgress(100);
+                                  setIsExportRecording(false);
+                                };
+                              } catch (err: any) {
+                                console.error("WebGL export failed", err);
+                                setGenerationErrors((e) => ({ ...e, [clip.id]: `Export failed: ${err?.message ?? "unknown"}` }));
+                                setIsExportRecording(false);
+                              }
+                            }}
+                            className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
+                          >
+                            <Download className="w-4 h-4" /> Export Video
+                          </button>
+                        )}
+                      </div>
+
+                      {/* View Last Export — reopen modal */}
+                      {exportedBlobUrlByClip[activeClip.id] && !isExportRecording && (
+                        <button
+                          onClick={() => {
+                            setExportedBlobUrl(exportedBlobUrlByClip[activeClip.id]);
+                            setExportClipIndex(activeClip.clip_index);
+                            exportClipIdRef.current = activeClip.id;
+                          }}
+                          className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors"
+                        >
+                          <MonitorPlay className="h-3.5 w-3.5" /> View Last Export
                         </button>
                       )}
                     </div>
@@ -1742,7 +1820,8 @@ export default function AudioToVideoPage() {
 
             {track.clips.map((clip) => {
               const videoStatus = clip.video?.status;
-              const assigned = assignedClips[clip.id];
+              const assignedList = assignedClips[clip.id] ?? [];
+              const hasVideo = videoStatus === "done" || !!exportedBlobUrlByClip[clip.id];
 
               return (
                 <div key={clip.id} className="rounded-2xl border border-border bg-card p-4 sm:p-5">
@@ -1751,7 +1830,7 @@ export default function AudioToVideoPage() {
                       <p className="font-semibold">Clip {clip.clip_index + 1}</p>
                       <p className="text-xs text-muted-foreground">{formatTime(clip.start_s)} – {formatTime(clip.end_s)}</p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {videoStatus === "done" && clip.video?.video_path && (
                         <a
                           href={fileUrl(clip.video.video_path)}
@@ -1761,34 +1840,45 @@ export default function AudioToVideoPage() {
                           <Download className="h-3.5 w-3.5" /> Download
                         </a>
                       )}
-                      {videoStatus !== "done" && !assigned && (
+                      {!hasVideo && (
                         <span className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-500">
                           {videoStatus === "generating" ? "Generating…" : "No video yet"}
                         </span>
                       )}
-                      {assigned && (
-                        <span className="flex items-center gap-1 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-xs text-green-500">
-                          <CheckCircle2 className="h-3 w-3" /> {assigned.variationName}
+                      {assignedList.map((a) => (
+                        <span key={a.variationId} className="flex items-center gap-1 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-xs text-green-500">
+                          <CheckCircle2 className="h-3 w-3" /> {a.variationName}
                         </span>
-                      )}
+                      ))}
                     </div>
                   </div>
 
-                  {videoStatus === "done" && !assigned && (
+                  {hasVideo && (
                     <div>
                       <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Choose Variation</p>
                       <div className="flex flex-wrap gap-2">
-                        {artistDetail?.variations?.map((v: any) => (
-                          <button
-                            key={v.id}
-                            onClick={() => handleAssign(clip.id, v.id, v.name)}
-                            disabled={assigning[clip.id]}
-                            className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors hover:border-foreground/40 hover:bg-foreground/5 disabled:opacity-50"
-                          >
-                            {assigning[clip.id] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <User className="h-3.5 w-3.5 text-muted-foreground" />}
-                            {v.name}
-                          </button>
-                        ))}
+                        {artistDetail?.variations?.map((v: any) => {
+                          const isAlreadyAssigned = assignedList.some((a) => a.variationId === v.id);
+                          return (
+                            <button
+                              key={v.id}
+                              onClick={() => handleAssign(clip.id, v.id, v.name)}
+                              disabled={assigning[clip.id] || isAlreadyAssigned}
+                              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors disabled:opacity-50 ${
+                                isAlreadyAssigned
+                                  ? "border-green-500/40 bg-green-500/10 text-green-500 cursor-default"
+                                  : "border-border bg-background hover:border-foreground/40 hover:bg-foreground/5"
+                              }`}
+                            >
+                              {assigning[clip.id] && !isAlreadyAssigned
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : isAlreadyAssigned
+                                ? <CheckCircle2 className="h-3.5 w-3.5" />
+                                : <User className="h-3.5 w-3.5 text-muted-foreground" />}
+                              {v.name}
+                            </button>
+                          );
+                        })}
                         {!artistDetail?.variations?.length && (
                           <p className="text-sm text-muted-foreground">No variations found</p>
                         )}
@@ -1873,14 +1963,28 @@ export default function AudioToVideoPage() {
               <Download className="w-4 h-4" /> Download
             </a>
             <button
-              onClick={() => {
+              onClick={async () => {
+                if (exportedBlob && exportClipIdRef.current != null) {
+                  setUploadingExport(true);
+                  try {
+                    await uploadAudioClipVideo(exportClipIdRef.current, exportedBlob, "webm");
+                  } catch (err: any) {
+                    alert("Upload failed: " + (err?.response?.data?.detail || err?.message || "unknown"));
+                    setUploadingExport(false);
+                    return;
+                  }
+                  setUploadingExport(false);
+                }
                 setExportedBlobUrl(null);
                 setExportedBlob(null);
                 setStep(3);
               }}
-              className="flex-1 flex items-center justify-center gap-2 py-3 border border-border text-foreground font-semibold rounded-xl hover:bg-muted transition-colors text-sm"
+              disabled={uploadingExport}
+              className="flex-1 flex items-center justify-center gap-2 py-3 border border-border text-foreground font-semibold rounded-xl hover:bg-muted transition-colors text-sm disabled:opacity-50"
             >
-              <MonitorPlay className="w-4 h-4" /> Assign to Variation
+              {uploadingExport
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading…</>
+                : <><MonitorPlay className="w-4 h-4" /> Assign to Variation</>}
             </button>
           </div>
 
