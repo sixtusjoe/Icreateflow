@@ -167,14 +167,15 @@ async function main() {
 
       if (files.length === 0) throw err; // No frames rendered at all — give up
 
-      // Frame files are named element-NNN.jpeg, 0-indexed from first frame
-      const lastFileName = files[files.length - 1]; // e.g. "element-143.jpeg"
-      const lastFileIdx = parseInt(lastFileName.replace("element-", "").replace(".jpeg", ""), 10);
-      const nextFrame = startFrame + lastFileIdx + 1;
+      // Remotion names frame files by ABSOLUTE frame index (element-143.jpeg = frame 143).
+      // So just parse the last file's numeric suffix to get the last rendered frame.
+      const lastFileName = files[files.length - 1]; // e.g. "element-0143.jpeg"
+      const lastAbsoluteFrame = parseInt(lastFileName.replace(/^element-/, "").replace(/\.[^.]+$/, ""), 10);
+      const nextFrame = lastAbsoluteFrame + 1;
 
       if (nextFrame >= durationInFrames) break; // All done
 
-      console.log(`[render] Browser double-crash at frame ~${nextFrame}. Resuming from frame ${nextFrame} (attempt ${resumeAttempts + 1})...`);
+      console.log(`[render] Browser double-crash. Last frame rendered: ${lastAbsoluteFrame}. Resuming from frame ${nextFrame} (attempt ${resumeAttempts + 1})...`);
       startFrame = nextFrame;
       resumeAttempts++;
 
