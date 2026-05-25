@@ -157,15 +157,22 @@ async function main() {
       break;
     } catch (err) {
       const msg = err?.message || String(err);
-      if (!msg.includes("Target closed") && !msg.includes("Session closed")) throw err;
+      // Recoverable browser crash patterns:
+      //   "Target closed" / "Session closed" — Chromium process died
+      //   "timeout ... exceeded" with "render" — page timed out because session closed
+      const isBrowserCrash = msg.includes("Target closed")
+        || msg.includes("Session closed")
+        || (msg.includes("timeout") && msg.includes("render"));
 
-      // Browser double-crashed: find the last successfully written frame file,
-      // then resume from the next frame.
+      // Find what frames we've rendered so far regardless of whether we think it's recoverable
       const files = fs.readdirSync(framesDir)
         .filter(f => f.startsWith("element-") && f.endsWith(".jpeg"))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
-      if (files.length === 0) throw err; // No frames rendered at all — give up
+      // If it's not a known crash pattern AND we haven't rendered anything, re-throw
+      if (!isBrowserCrash && files.length === 0) throw err;
+      // If we rendered nothing and it's a crash, give up too
+      if (files.length === 0) throw err;
 
       // Remotion names frame files by ABSOLUTE frame index (element-143.jpeg = frame 143).
       // So just parse the last file's numeric suffix to get the last rendered frame.
