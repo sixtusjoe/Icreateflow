@@ -21,6 +21,23 @@ export interface ThemeColors {
 
 export type ThemeId = "minimal" | "vivid" | "neon" | "inferno";
 
+export interface LayerOverrides {
+  /** Full preview snapshot (bg + card) with cover/zigzag/lyrics hidden */
+  layerCanvas: HTMLCanvasElement;
+  /** The spinning cover element captured as a PNG (empty canvas for no-spin themes) */
+  coverCanvas: HTMLCanvasElement;
+  /** Cover centre X in 1080×1920 px */
+  coverCX: number;
+  /** Cover centre Y in 1080×1920 px */
+  coverCY: number;
+  /** Cover width in 1080×1920 px (0 = no spinning cover, it's baked into layerCanvas) */
+  coverCW: number;
+  /** Cover height in 1080×1920 px */
+  coverCH: number;
+  /** Seconds per full rotation (null = no spin) */
+  spinDuration: number | null;
+}
+
 export interface RendererConfig {
   width: number;
   height: number;
@@ -32,6 +49,8 @@ export interface RendererConfig {
   clipStartS: number;
   clipDuration: number;
   renderMode?: "match" | "upgraded"; // "match" = exact HTML fidelity, "upgraded" = bloom + softer particles
+  /** When provided, uses layer-composite mode (CSS-captured PNGs) instead of procedural WebGL */
+  layerOverrides?: LayerOverrides;
 }
 
 export interface CanvasRenderer {
@@ -451,6 +470,39 @@ void main(){
   outColor = vec4(scene.rgb + bloom.rgb * u_strength, scene.a);
 }`;
 
+// Cover-rotation vertex shader — positions a unit quad and applies 2D spin
+const VS_COVER_ROT = `#version 300 es
+precision highp float;
+in vec2 a_pos;           // unit quad vertex in [-0.5, 0.5]
+uniform vec2 u_res;
+uniform vec2 u_center;   // cover centre in output px (Y-down screen space)
+uniform vec2 u_size;     // cover (width, height) in output px
+uniform float u_angle;   // rotation in radians
+out vec2 v_uv;
+void main(){
+  vec2 local = a_pos * u_size;
+  float c = cos(u_angle), s = sin(u_angle);
+  vec2 rotated = vec2(c*local.x - s*local.y, s*local.x + c*local.y);
+  vec2 screen = rotated + u_center;
+  // UV: (0,0)=bottom-left  (1,1)=top-right  (matches UNPACK_FLIP_Y convention)
+  v_uv = vec2(a_pos.x + 0.5, 0.5 - a_pos.y);
+  gl_Position = vec4(
+    screen.x / u_res.x * 2.0 - 1.0,
+    1.0 - screen.y / u_res.y * 2.0,
+    0.0, 1.0
+  );
+}`;
+
+// Simple pass-through fragment shader used with VS_COVER_ROT
+const FS_COVER_BLIT = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_tex;
+out vec4 outColor;
+void main(){
+  outColor = texture(u_tex, v_uv);
+}`;
+
 /* ── WebGL Helpers ────────────────────────────────────────────────────────── */
 
 function mkShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
@@ -608,9 +660,223 @@ function runBlurPass(
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
+/* ── Layer-Composite Renderer ─────────────────────────────────────────────── */
+// Used in "match" mode: composites CSS-captured PNG layers in WebGL.
+// Blit layerCanvas (bg+card), draw spinning cover, animate zigzag + lyrics.
+
+async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<CanvasRenderer> {
+  const { width: CW, height: CH, theme, words } = cfg;
+  const lo = cfg.layerOverrides!;
+  const { layerCanvas, coverCanvas, coverCX, coverCY, coverCW, coverCH, spinDuration } = lo;
+  const [acR, acG, acB] = hexToRgb01(theme.accent);
+
+  // Layout constants (must match page.tsx CSS percentages)
+  const CARD_Y  = Math.round(CH * 0.06);
+  const CARD_H  = Math.round(CH * 0.46);
+  const ZIG_X   = Math.round(CW * 0.13);
+  const ZIG_Y   = Math.round(CH * 0.588);
+  const ZIG_W   = Math.round(CW * 0.74);
+  const ZIG_H   = 30;
+  const LYRIC_Y = Math.round(CH * 0.80);
+  const GROUP_SZ = 5;
+
+  // WebGL2 canvas
+  const canvas = document.createElement("canvas");
+  canvas.width = CW; canvas.height = CH;
+  const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, preserveDrawingBuffer: true })!;
+  if (!gl) throw new Error("WebGL2 not supported");
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.viewport(0, 0, CW, CH);
+
+  // Shader programs
+  const blitProg     = mkProg(gl, VS_SCREEN, FS_BLIT);
+  const coverRotProg = mkProg(gl, VS_COVER_ROT, FS_COVER_BLIT);
+  const zigProg      = mkProg(gl, VS_ZIGZAG, FS_ZIGZAG);
+
+  // Geometry — full-screen quad
+  const fullQuad = mkQuadBuf(gl, 0, 0, CW, CH);
+
+  // Unit quad for cover rotation: a_pos in [-0.5, 0.5]
+  const coverUnitBuf = gl.createBuffer()!;
+  gl.bindBuffer(gl.ARRAY_BUFFER, coverUnitBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -0.5, -0.5,  0.5, -0.5, -0.5,  0.5,
+     0.5, -0.5,  0.5,  0.5, -0.5,  0.5,
+  ]), gl.STATIC_DRAW);
+
+  // Zigzag geometry (dynamic, rebuilt per frame)
+  const zigBuf = gl.createBuffer()!;
+  const zigPoints: [number, number][] = [[0, 15]];
+  for (let i = 0; i < 80; i++) {
+    zigPoints.push([((i + 1) / 80) * ZIG_W, i % 2 === 0 ? 5 : 25]);
+  }
+
+  // Textures
+  const layerTex = mkTex(gl);
+  uploadImageToTex(gl, layerTex, layerCanvas);
+
+  const coverTex = mkTex(gl);
+  if (coverCW > 0) uploadImageToTex(gl, coverTex, coverCanvas);
+
+  // Text canvas (Canvas 2D → WebGL texture) for dynamic lyrics
+  const textCanvas = document.createElement("canvas");
+  textCanvas.width = CW; textCanvas.height = CH;
+  const tctx = textCanvas.getContext("2d")!;
+  const textTex = mkTex(gl);
+
+  let lastGroupIdx = -999, lastWordIdx = -999;
+
+  function renderTextCanvas(audioTime: number) {
+    const tAbs = audioTime + (cfg.clipStartS ?? 0);
+    let wi = -1;
+    for (let i = 0; i < words.length; i++) {
+      if (words[i].start_s <= tAbs) wi = i;
+      else break;
+    }
+    const gi = wi >= 0 ? Math.floor(wi / GROUP_SZ) : 0;
+    const li = wi >= 0 ? wi - gi * GROUP_SZ : -1;
+    if (gi === lastGroupIdx && li === lastWordIdx) return;
+    lastGroupIdx = gi; lastWordIdx = li;
+
+    tctx.clearRect(0, 0, CW, CH);
+
+    // Lyrics only — "NOW PLAYING" label is already baked into layerCanvas
+    const group = words.slice(gi * GROUP_SZ, gi * GROUP_SZ + GROUP_SZ);
+    if (group.length === 0) { uploadImageToTex(gl, textTex, textCanvas); return; }
+
+    const fontSize = CW * 0.040;
+    tctx.font = `bold ${fontSize}px -apple-system,'Segoe UI',sans-serif`;
+    tctx.textBaseline = "middle";
+    const parts = group.map(w => w.word + " ");
+    let tw = 0;
+    parts.forEach(p => { tw += tctx.measureText(p).width; });
+    let x = CW / 2 - tw / 2;
+    tctx.save();
+    parts.forEach((p, i) => {
+      const pw = tctx.measureText(p).width;
+      if (i === li) {
+        tctx.fillStyle = theme.accent;
+        tctx.shadowColor = `rgba(${Math.round(acR*255)},${Math.round(acG*255)},${Math.round(acB*255)},0.75)`;
+        tctx.shadowBlur = 28;
+      } else if (i < li) {
+        tctx.fillStyle = "rgba(255,255,255,0.40)";
+        tctx.shadowBlur = 0;
+      } else {
+        tctx.fillStyle = "rgba(255,255,255,0.88)";
+        tctx.shadowColor = "rgba(0,0,0,0.8)";
+        tctx.shadowBlur = 10;
+      }
+      tctx.fillText(p, x, LYRIC_Y);
+      x += pw;
+      tctx.shadowBlur = 0;
+    });
+    tctx.restore();
+    uploadImageToTex(gl, textTex, textCanvas);
+  }
+
+  function buildZigzagStrip(progressFraction: number): { data: Float32Array; count: number } {
+    const WIDTH = 4;
+    const verts: number[] = [];
+    const maxI = Math.round(zigPoints.length * Math.max(0, Math.min(1, progressFraction)));
+    for (let i = 0; i < maxI; i++) {
+      const [px, py] = zigPoints[i];
+      const nx = ZIG_X + px;
+      const ny = ZIG_Y - ZIG_H / 2 + py;
+      verts.push(nx, ny - WIDTH, nx, ny + WIDTH);
+    }
+    return { data: new Float32Array(verts), count: verts.length / 2 };
+  }
+
+  let spinAngle = 0;
+  let lastAudioTime = -1;
+
+  function renderFrame(audioCurrentTime: number) {
+    // Advance spin angle
+    if (spinDuration !== null && lastAudioTime >= 0) {
+      const dt = audioCurrentTime - lastAudioTime;
+      spinAngle += dt * (2 * Math.PI / spinDuration);
+    }
+    lastAudioTime = audioCurrentTime;
+
+    // Update text texture when word group changes
+    renderTextCanvas(audioCurrentTime);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, CW, CH);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // 1. Blit layer canvas (bg + card with frosted glass baked in)
+    gl.useProgram(blitProg);
+    uni2f(gl, blitProg, "u_res", CW, CH);
+    uniTex(gl, blitProg, "u_tex", layerTex, 0);
+    uni1f(gl, blitProg, "u_alpha", 1.0);
+    drawQuad(gl, blitProg, fullQuad);
+
+    // 2. Spinning cover (only for themes where the cover element was captured separately)
+    if (coverCW > 0) {
+      gl.useProgram(coverRotProg);
+      uni2f(gl, coverRotProg, "u_res", CW, CH);
+      uni2f(gl, coverRotProg, "u_center", coverCX, coverCY);
+      uni2f(gl, coverRotProg, "u_size", coverCW, coverCH);
+      uni1f(gl, coverRotProg, "u_angle", spinAngle);
+      uniTex(gl, coverRotProg, "u_tex", coverTex, 0);
+      const posLoc = gl.getAttribLocation(coverRotProg, "a_pos");
+      gl.bindBuffer(gl.ARRAY_BUFFER, coverUnitBuf);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.disableVertexAttribArray(posLoc);
+    }
+
+    // 3. Zigzag progress bar
+    const progress = Math.min(1, Math.max(0, audioCurrentTime / cfg.clipDuration));
+    const { data: bgData, count: bgCount } = buildZigzagStrip(1.0);
+    gl.useProgram(zigProg);
+    uni2f(gl, zigProg, "u_res", CW, CH);
+    gl.bindBuffer(gl.ARRAY_BUFFER, zigBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, bgData, gl.DYNAMIC_DRAW);
+    const zigLoc = gl.getAttribLocation(zigProg, "a_pos");
+    gl.enableVertexAttribArray(zigLoc);
+    gl.vertexAttribPointer(zigLoc, 2, gl.FLOAT, false, 0, 0);
+    uni3f(gl, zigProg, "u_color", 1, 1, 1);
+    uni1f(gl, zigProg, "u_alpha", 0.15);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, bgCount);
+    const { data: fgData, count: fgCount } = buildZigzagStrip(progress);
+    gl.bufferData(gl.ARRAY_BUFFER, fgData, gl.DYNAMIC_DRAW);
+    uni3f(gl, zigProg, "u_color", acR, acG, acB);
+    uni1f(gl, zigProg, "u_alpha", 0.85);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, fgCount);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.disableVertexAttribArray(zigLoc);
+
+    // 4. Lyrics text overlay
+    gl.useProgram(blitProg);
+    uni2f(gl, blitProg, "u_res", CW, CH);
+    uniTex(gl, blitProg, "u_tex", textTex, 0);
+    uni1f(gl, blitProg, "u_alpha", 1.0);
+    drawQuad(gl, blitProg, fullQuad);
+  }
+
+  function destroy() {
+    gl.deleteBuffer(fullQuad);
+    gl.deleteBuffer(coverUnitBuf);
+    gl.deleteBuffer(zigBuf);
+    for (const tex of [layerTex, coverTex, textTex]) gl.deleteTexture(tex);
+    const ext = gl.getExtension("WEBGL_lose_context");
+    ext?.loseContext();
+  }
+
+  return { canvas, renderFrame, destroy };
+}
+
 /* ── Factory ──────────────────────────────────────────────────────────────── */
 
 export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasRenderer> {
+  // Delegate to layer-composite renderer when layer overrides are provided
+  if (cfg.layerOverrides) return createLayerCompositeRenderer(cfg);
   const { width: CW, height: CH, themeId: tid, theme, words } = cfg;
   const upgraded = cfg.renderMode === "upgraded";
   const [acR, acG, acB] = hexToRgb01(theme.accent);

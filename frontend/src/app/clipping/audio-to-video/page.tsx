@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   getArtists,
@@ -17,7 +17,7 @@ import {
   uploadAudioClipAsset,
   uploadAudioClipVideo,
 } from "@/lib/api";
-import { createCanvasRenderer } from "./canvasRenderer";
+import { createCanvasRenderer, type LayerOverrides } from "./canvasRenderer";
 import {
   Upload,
   Music2,
@@ -230,7 +230,11 @@ function OverlayFlames({ isPlaying }: { isPlaying: boolean }) {
 
 // ─── Figma Design: Art Components ────────────────────────────────────────────
 
-function MinimalArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover: string }) {
+function MinimalArt({ isPlaying, albumCover, coverRef }: {
+  isPlaying: boolean;
+  albumCover: string;
+  coverRef?: React.RefObject<HTMLDivElement | null>;
+}) {
   return (
     <div className="relative w-full h-full flex items-center justify-center">
       <motion.div
@@ -245,6 +249,7 @@ function MinimalArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover:
       />
       <div className="absolute w-[40%] h-[40%] rounded-full bg-[#00FFAA] blur-3xl opacity-20" />
       <motion.div
+        ref={coverRef}
         animate={{ scale: isPlaying ? [1, 1.03, 1] : 1 }}
         transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
         className="absolute w-[45%] h-[45%] rounded-full overflow-hidden border-2 border-white/20 shadow-[0_0_30px_rgba(0,255,170,0.3)]"
@@ -300,7 +305,11 @@ function VividArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover: s
   );
 }
 
-function NeonArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover: string }) {
+function NeonArt({ isPlaying, albumCover, coverRef }: {
+  isPlaying: boolean;
+  albumCover: string;
+  coverRef?: React.RefObject<HTMLDivElement | null>;
+}) {
   return (
     <div className="relative w-full h-full flex items-center justify-center">
       <motion.div
@@ -312,6 +321,7 @@ function NeonArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover: st
         }}
       />
       <motion.div
+        ref={coverRef}
         animate={{ rotate: isPlaying ? 360 : 0 }}
         transition={{ duration: 5, repeat: Infinity, ease: "linear" }}
         className="relative w-[85%] h-[85%] rounded-full bg-neutral-950 border border-[#00DCFF]/50 shadow-[0_0_50px_rgba(0,220,255,0.4)] flex items-center justify-center overflow-hidden"
@@ -492,6 +502,10 @@ export default function AudioToVideoPage() {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
   const previewCanvasRef = useRef<HTMLDivElement>(null);
+  // Layer-composite capture refs
+  const coverArtRef    = useRef<HTMLDivElement>(null);
+  const zigzagLayerRef = useRef<HTMLDivElement>(null);
+  const lyricsLayerRef = useRef<HTMLDivElement>(null);
   const [isExportRecording, setIsExportRecording] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const exportAbortRef = useRef(false);
@@ -1502,6 +1516,72 @@ export default function AudioToVideoPage() {
                               setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
 
                               try {
+                                // ── Layer-composite capture for "match" mode ──
+                                let layerOverrides: LayerOverrides | undefined;
+                                if (renderMode === "match") {
+                                  const { toCanvas } = await import("html-to-image");
+                                  const previewEl = previewCanvasRef.current!;
+                                  const pixelRatio = 1080 / previewEl.offsetWidth;
+
+                                  // Spin durations per theme (null = no separate spinning cover)
+                                  const SPIN: Record<string, number | null> = {
+                                    minimal: 20, neon: 5, vivid: null, inferno: null,
+                                  };
+                                  const spinDuration = SPIN[tid2] ?? null;
+                                  const hasCoverSpin = spinDuration !== null;
+
+                                  // Measure cover element position before hiding anything
+                                  let coverCX = 0, coverCY = 0, coverCW = 0, coverCH = 0;
+                                  let capturedCoverCanvas = document.createElement("canvas");
+                                  const coverEl = hasCoverSpin ? coverArtRef.current : null;
+
+                                  if (coverEl) {
+                                    const previewRect = previewEl.getBoundingClientRect();
+                                    const coverRect   = coverEl.getBoundingClientRect();
+                                    coverCW = coverRect.width  * pixelRatio;
+                                    coverCH = coverRect.height * pixelRatio;
+                                    coverCX = (coverRect.left - previewRect.left + coverRect.width  / 2) * pixelRatio;
+                                    coverCY = (coverRect.top  - previewRect.top  + coverRect.height / 2) * pixelRatio;
+
+                                    // Capture cover element as PNG (at export resolution)
+                                    capturedCoverCanvas = await toCanvas(coverEl, {
+                                      width: coverRect.width,
+                                      height: coverRect.height,
+                                      pixelRatio,
+                                      skipFonts: true,
+                                    });
+                                  }
+
+                                  // Hide cover + zigzag + lyrics before capturing the layer canvas
+                                  if (coverEl) coverEl.style.visibility = "hidden";
+                                  if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "hidden";
+                                  if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "hidden";
+
+                                  // Temporarily remove border-radius so capture is a clean rectangle
+                                  const savedBR = previewEl.style.borderRadius;
+                                  previewEl.style.borderRadius = "0";
+
+                                  const capturedLayerCanvas = await toCanvas(previewEl, {
+                                    width:  previewEl.offsetWidth,
+                                    height: previewEl.offsetHeight,
+                                    pixelRatio,
+                                    skipFonts: true,
+                                  });
+
+                                  // Restore
+                                  previewEl.style.borderRadius = savedBR;
+                                  if (coverEl) coverEl.style.visibility = "visible";
+                                  if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "visible";
+                                  if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "visible";
+
+                                  layerOverrides = {
+                                    layerCanvas: capturedLayerCanvas,
+                                    coverCanvas: capturedCoverCanvas,
+                                    coverCX, coverCY, coverCW, coverCH,
+                                    spinDuration,
+                                  };
+                                }
+
                                 const renderer = await createCanvasRenderer({
                                   width: 1080, height: 1920,
                                   themeId: tid2, theme: theme2,
@@ -1509,6 +1589,7 @@ export default function AudioToVideoPage() {
                                   clipStartS: clip.start_s,
                                   clipDuration,
                                   renderMode,
+                                  layerOverrides,
                                 });
 
                                 const recAudio = new Audio();
@@ -1665,9 +1746,9 @@ export default function AudioToVideoPage() {
                               transition={{ duration: 0.4 }}
                               className="absolute inset-0"
                             >
-                              {themeId === "minimal" && <MinimalArt isPlaying={!isPreviewPaused} albumCover={coverUrl} />}
+                              {themeId === "minimal" && <MinimalArt isPlaying={!isPreviewPaused} albumCover={coverUrl} coverRef={coverArtRef} />}
                               {themeId === "vivid" && <VividArt isPlaying={!isPreviewPaused} albumCover={coverUrl} />}
-                              {themeId === "neon" && <NeonArt isPlaying={!isPreviewPaused} albumCover={coverUrl} />}
+                              {themeId === "neon" && <NeonArt isPlaying={!isPreviewPaused} albumCover={coverUrl} coverRef={coverArtRef} />}
                               {themeId === "inferno" && <InfernoArt isPlaying={!isPreviewPaused} albumCover={coverUrl} />}
                             </motion.div>
                           </AnimatePresence>
@@ -1682,7 +1763,7 @@ export default function AudioToVideoPage() {
                       </div>
 
                       {/* 2. PROGRESS BAR — zigzag waveform at top-[58.8%] */}
-                      <div className="absolute top-[58.8%] left-[13%] w-[74%] h-[30px] -mt-[15px] z-10">
+                      <div ref={zigzagLayerRef} className="absolute top-[58.8%] left-[13%] w-[74%] h-[30px] -mt-[15px] z-10">
                         <svg viewBox="0 0 1000 30" className="w-full h-full drop-shadow-lg" preserveAspectRatio="none">
                           <defs>
                             <clipPath id="zigzag-clip">
@@ -1722,7 +1803,7 @@ export default function AudioToVideoPage() {
                       </div>
 
                       {/* 3. KARAOKE LYRICS — bottom third at top-[70.3%] */}
-                      <div className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
+                      <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
                         <AnimatePresence mode="wait">
                           {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
                             <motion.div
