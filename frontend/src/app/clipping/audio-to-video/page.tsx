@@ -1826,28 +1826,32 @@ export default function AudioToVideoPage() {
 
     {/* ── Export Preview Modal ─────────────────────────────────────────── */}
     {exportedBlobUrl && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
-        <div className="relative flex flex-col bg-neutral-950 border border-neutral-800 rounded-2xl overflow-hidden w-full max-w-sm shadow-2xl">
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        {/* Backdrop */}
+        <div
+          className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          onClick={() => { setExportedBlobUrl(null); setExportedBlob(null); }}
+        />
+
+        {/* Panel */}
+        <div className="relative flex flex-col w-full max-w-sm rounded-2xl border border-border bg-card shadow-2xl overflow-hidden">
 
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-800">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border">
             <div>
-              <p className="font-bold text-base">Clip {exportClipIndex + 1} — Ready</p>
+              <p className="font-semibold text-base text-foreground">Clip {exportClipIndex + 1} — Ready</p>
               <p className="text-xs text-muted-foreground mt-0.5">Watch, then download or assign to a variation</p>
             </div>
             <button
-              onClick={() => {
-                setExportedBlobUrl(null);
-                setExportedBlob(null);
-              }}
-              className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground"
+              onClick={() => { setExportedBlobUrl(null); setExportedBlob(null); }}
+              className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
 
           {/* Video preview */}
-          <div className="bg-black aspect-[9/16] max-h-[55vh] flex items-center justify-center">
+          <div className="bg-black aspect-[9/16] max-h-[60vh] flex items-center justify-center">
             <video
               controls
               autoPlay
@@ -1864,18 +1868,17 @@ export default function AudioToVideoPage() {
             <a
               href={exportedBlobUrl}
               download={`clip_${exportClipIndex + 1}.${exportedExt}`}
-              className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm"
+              className="flex-1 flex items-center justify-center gap-2 py-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm"
             >
               <Download className="w-4 h-4" /> Download
             </a>
             <button
               onClick={() => {
-                // Video is already on the server — just go to Assign step
                 setExportedBlobUrl(null);
                 setExportedBlob(null);
                 setStep(3);
               }}
-              className="flex-1 flex items-center justify-center gap-2 py-3.5 border border-border font-semibold rounded-xl hover:border-foreground/40 hover:bg-white/5 transition-colors text-sm"
+              className="flex-1 flex items-center justify-center gap-2 py-3 border border-border text-foreground font-semibold rounded-xl hover:bg-muted transition-colors text-sm"
             >
               <MonitorPlay className="w-4 h-4" /> Assign to Variation
             </button>
