@@ -150,10 +150,24 @@ async function main() {
   console.log(`[render] All frames rendered. Encoding with FFmpeg...`);
 
   // ── Encode with system FFmpeg ─────────────────────────────────────────────
+  // Build a concat file listing frames in sorted order.
+  // (Remotion v4 uses dynamic zero-padding: 3 digits for <1000 frames,
+  // 4 digits for <10000 frames, etc. — simpler to just sort the dir.)
+  const frameFiles = fs.readdirSync(framesDir)
+    .filter(f => f.endsWith(".jpeg") || f.endsWith(".png"))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  if (frameFiles.length === 0) throw new Error("No frame files found after rendering");
+
+  const concatFile = path.join(framesDir, "_concat.txt");
+  fs.writeFileSync(concatFile, frameFiles.map(f => `file '${path.join(framesDir, f)}'`).join("\n"));
+
   const result = spawnSync(ffmpegPath, [
     "-y",
-    "-framerate", String(fps),
-    "-i", path.join(framesDir, "element-%08d.jpeg"),
+    "-r", String(fps),
+    "-f", "concat",
+    "-safe", "0",
+    "-i", concatFile,
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-crf", "23",
