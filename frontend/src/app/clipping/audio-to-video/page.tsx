@@ -385,6 +385,47 @@ function InfernoArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover:
   );
 }
 
+// ─── Layer-capture helpers ────────────────────────────────────────────────────
+
+/**
+ * Fetch every <img> inside `root`, replace its src with a same-origin blob URL,
+ * and return a cleanup function that restores the original srcs.
+ *
+ * html-to-image renders via SVG foreignObject. Browsers refuse to serialize
+ * <img> elements that were loaded WITHOUT crossOrigin="anonymous", so any image
+ * served from the API (/api/files/…) shows up blank in the capture. Replacing
+ * the src with a blob: URL (which is always same-origin) lets the library embed
+ * them correctly without touching the visible page.
+ */
+async function inlineImagesAsBlobURLs(root: HTMLElement): Promise<() => void> {
+  const imgs = Array.from(root.querySelectorAll<HTMLImageElement>("img[src]"));
+  const blobURLs: string[] = [];
+  const origSrcs: string[] = [];
+
+  await Promise.all(
+    imgs.map(async (img, i) => {
+      const src = img.src;
+      if (!src || src.startsWith("data:") || src.startsWith("blob:")) return;
+      try {
+        const res = await fetch(src, { credentials: "include" });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        const blobURL = URL.createObjectURL(blob);
+        blobURLs.push(blobURL);
+        origSrcs[i] = src;
+        img.src = blobURL;
+        // Wait for the browser to swap the src so it's in place before capture
+        try { await img.decode(); } catch { /* ignore */ }
+      } catch { /* skip failed fetches */ }
+    })
+  );
+
+  return () => {
+    imgs.forEach((img, i) => { if (origSrcs[i]) img.src = origSrcs[i]; });
+    blobURLs.forEach(u => URL.revokeObjectURL(u));
+  };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatTime(s: number): string {
@@ -1543,6 +1584,8 @@ export default function AudioToVideoPage() {
                                     coverCX = (coverRect.left - previewRect.left + coverRect.width  / 2) * pixelRatio;
                                     coverCY = (coverRect.top  - previewRect.top  + coverRect.height / 2) * pixelRatio;
 
+                                    // Pre-fetch images so html-to-image can embed them
+                                    const restoreCoverImgs = await inlineImagesAsBlobURLs(coverEl);
                                     // Capture cover element as PNG (at export resolution)
                                     capturedCoverCanvas = await toCanvas(coverEl, {
                                       width: coverRect.width,
@@ -1550,12 +1593,16 @@ export default function AudioToVideoPage() {
                                       pixelRatio,
                                       skipFonts: true,
                                     });
+                                    restoreCoverImgs();
                                   }
 
                                   // Hide cover + zigzag + lyrics before capturing the layer canvas
                                   if (coverEl) coverEl.style.visibility = "hidden";
                                   if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "hidden";
                                   if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "hidden";
+
+                                  // Pre-fetch images in the full preview so html-to-image can embed them
+                                  const restorePreviewImgs = await inlineImagesAsBlobURLs(previewEl);
 
                                   // Temporarily remove border-radius so capture is a clean rectangle
                                   const savedBR = previewEl.style.borderRadius;
@@ -1570,6 +1617,7 @@ export default function AudioToVideoPage() {
 
                                   // Restore
                                   previewEl.style.borderRadius = savedBR;
+                                  restorePreviewImgs();
                                   if (coverEl) coverEl.style.visibility = "visible";
                                   if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "visible";
                                   if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "visible";
