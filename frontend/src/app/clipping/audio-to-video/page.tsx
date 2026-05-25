@@ -426,6 +426,124 @@ async function inlineImagesAsBlobURLs(root: HTMLElement): Promise<() => void> {
   };
 }
 
+/**
+ * Simulate backdrop-filter: blur() for elements that use it (e.g. the frosted
+ * glass card). SVG foreignObject — what html-to-image uses internally — silently
+ * drops backdrop-filter, leaving the card looking like a flat transparent pane.
+ *
+ * Strategy:
+ *  1. Fetch the bg image and draw it at preview size with canvas blur.
+ *  2. For every element that carries a backdrop-blur Tailwind class, extract the
+ *     portion of the blurred bg that sits behind it, inject it as a
+ *     background-image, and override backdrop-filter to "none" (inline styles
+ *     win over class-based styles).
+ *  3. Return a cleanup function that restores all original styles.
+ *
+ * If there is no bg image we still zero out backdrop-filter so the capture
+ * doesn't get confused — the card will just show its tint colour.
+ */
+async function simulateBackdropBlur(
+  previewEl: HTMLElement,
+  bgImageUrl: string | null,
+): Promise<() => void> {
+  const restores: Array<() => void> = [];
+
+  // Find every element that has a Tailwind backdrop-blur class
+  const backdropEls = Array.from(
+    previewEl.querySelectorAll<HTMLElement>('[class*="backdrop-blur"]'),
+  );
+  if (!backdropEls.length) return () => {};
+
+  const PW = previewEl.offsetWidth;
+  const PH = previewEl.offsetHeight;
+
+  // Build a blurred version of the bg image at preview size
+  let blurCanvas: HTMLCanvasElement | null = null;
+  let blobToRevoke: string | null = null;
+
+  if (bgImageUrl) {
+    try {
+      const res = await fetch(bgImageUrl, { credentials: "include" });
+      if (res.ok) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        blobToRevoke = blobUrl;
+        const img = new Image();
+        img.src = blobUrl;
+        await new Promise<void>((resolve) => {
+          img.onload  = () => resolve();
+          img.onerror = () => resolve(); // don't block on failure
+        });
+
+        blurCanvas = document.createElement("canvas");
+        blurCanvas.width  = PW;
+        blurCanvas.height = PH;
+        const blurCtx = blurCanvas.getContext("2d")!;
+
+        // Cover-fit the image to preview dimensions
+        const scale  = Math.max(PW / img.naturalWidth, PH / img.naturalHeight);
+        const drawW  = img.naturalWidth  * scale;
+        const drawH  = img.naturalHeight * scale;
+        const drawX  = (PW - drawW) / 2;
+        const drawY  = (PH - drawH) / 2;
+
+        // backdrop-blur-xl ≈ blur(24px), backdrop-blur-2xl ≈ blur(40px)
+        blurCtx.filter = "blur(24px)";
+        blurCtx.drawImage(img, drawX, drawY, drawW, drawH);
+        blurCtx.filter = "none";
+      }
+    } catch { /* skip */ }
+    if (blobToRevoke) URL.revokeObjectURL(blobToRevoke);
+  }
+
+  const previewRect = previewEl.getBoundingClientRect();
+
+  for (const el of backdropEls) {
+    const rect   = el.getBoundingClientRect();
+    const relX   = rect.left - previewRect.left;
+    const relY   = rect.top  - previewRect.top;
+    const relW   = rect.width;
+    const relH   = rect.height;
+
+    const saved = {
+      backdropFilter:        el.style.backdropFilter,
+      webkitBackdropFilter:  (el.style as any).webkitBackdropFilter,
+      backgroundImage:       el.style.backgroundImage,
+      backgroundSize:        el.style.backgroundSize,
+      backgroundPosition:    el.style.backgroundPosition,
+    };
+
+    // Kill backdrop-filter (inline style overrides the Tailwind class)
+    el.style.setProperty("backdrop-filter",         "none", "important");
+    el.style.setProperty("-webkit-backdrop-filter", "none", "important");
+
+    // Inject the blurred bg region behind this element
+    if (blurCanvas) {
+      const regionCanvas = document.createElement("canvas");
+      regionCanvas.width  = Math.ceil(relW);
+      regionCanvas.height = Math.ceil(relH);
+      const rCtx = regionCanvas.getContext("2d")!;
+      rCtx.drawImage(blurCanvas, relX, relY, relW, relH, 0, 0, relW, relH);
+      const dataUrl = regionCanvas.toDataURL("image/jpeg", 0.92);
+      el.style.backgroundImage    = `url(${dataUrl})`;
+      el.style.backgroundSize     = "cover";
+      el.style.backgroundPosition = "center";
+    }
+
+    restores.push(() => {
+      el.style.removeProperty("backdrop-filter");
+      el.style.removeProperty("-webkit-backdrop-filter");
+      el.style.backdropFilter                    = saved.backdropFilter;
+      (el.style as any).webkitBackdropFilter     = saved.webkitBackdropFilter;
+      el.style.backgroundImage                   = saved.backgroundImage;
+      el.style.backgroundSize                    = saved.backgroundSize;
+      el.style.backgroundPosition                = saved.backgroundPosition;
+    });
+  }
+
+  return () => restores.forEach(fn => fn());
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatTime(s: number): string {
@@ -1601,8 +1719,10 @@ export default function AudioToVideoPage() {
                                   if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "hidden";
                                   if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "hidden";
 
-                                  // Pre-fetch images in the full preview so html-to-image can embed them
+                                  // Pre-fetch images so html-to-image can embed them
                                   const restorePreviewImgs = await inlineImagesAsBlobURLs(previewEl);
+                                  // Simulate backdrop-filter (not supported by SVG foreignObject)
+                                  const restoreBackdrop = await simulateBackdropBlur(previewEl, bgImageUrl);
 
                                   // Temporarily remove border-radius so capture is a clean rectangle
                                   const savedBR = previewEl.style.borderRadius;
@@ -1615,8 +1735,9 @@ export default function AudioToVideoPage() {
                                     skipFonts: true,
                                   });
 
-                                  // Restore
+                                  // Restore everything
                                   previewEl.style.borderRadius = savedBR;
+                                  restoreBackdrop();
                                   restorePreviewImgs();
                                   if (coverEl) coverEl.style.visibility = "visible";
                                   if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "visible";
