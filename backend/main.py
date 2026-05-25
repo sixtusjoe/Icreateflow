@@ -6871,9 +6871,40 @@ async def render_audio_clip_preview(
 
     # Build absolute URLs for assets (accessible from headless Chrome on localhost)
     base = "http://127.0.0.1:8100/api/files"
-    bg_url = f"{base}/{data.background_image_path}" if data.background_image_path else None
     cover_url = f"{base}/{data.album_cover_path}" if data.album_cover_path else None
     audio_url = f"{base}/{clip['local_path']}" if clip.get("local_path") else None
+
+    # Pre-blur background server-side → pass as data URL.
+    # This eliminates the heavy filter:blur(32px) CSS in the Remotion composition,
+    # preventing large off-screen buffer allocations that crash headless Chromium.
+    def _preblur_bg(rel_path: str | None) -> str | None:
+        if not rel_path:
+            return None
+        try:
+            from PIL import Image, ImageFilter
+            import io as _io, base64 as _b64
+            abs_path = str(_data_dir / rel_path)
+            img = Image.open(abs_path).convert("RGB")
+            # Cover-fit to 1080×1920
+            TW, TH = 1080, 1920
+            iw, ih = img.size
+            scale = max(TW / iw, TH / ih)
+            nw, nh = int(iw * scale), int(ih * scale)
+            img = img.resize((nw, nh), Image.LANCZOS)
+            left = (nw - TW) // 2
+            top = (nh - TH) // 2
+            img = img.crop((left, top, left + TW, top + TH))
+            # Apply Gaussian blur equivalent to CSS blur(32px)
+            img = img.filter(ImageFilter.GaussianBlur(radius=18))
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=72)
+            b64 = _b64.b64encode(buf.getvalue()).decode()
+            return f"data:image/jpeg;base64,{b64}"
+        except Exception as _e:
+            print(f"[render-preview] pre-blur failed, falling back to URL: {_e}")
+            return f"{base}/{rel_path}"
+
+    bg_url = _preblur_bg(data.background_image_path)
 
     clip_duration = clip["end_s"] - clip["start_s"]
 

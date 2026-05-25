@@ -604,8 +604,9 @@ export const AudioVideoComposition: React.FC<CompositionProps> = ({
                 width: "100%",
                 height: "100%",
                 objectFit: "cover",
-                filter: "blur(32px)",
-                transform: "scale(1.1)", // prevent blur edge artifacts
+                // No CSS blur — the bgImageUrl is pre-blurred server-side
+                // to avoid large off-screen buffers crashing headless Chromium
+                transform: "scale(1.05)", // slight zoom to hide any edge artifacts
                 opacity: themeId === "inferno" ? 0.55 : 0.80,
               }}
             />
@@ -682,7 +683,8 @@ export const AudioVideoComposition: React.FC<CompositionProps> = ({
           backgroundColor: THEME_CARD_BG[themeId],
           border: `1px solid ${THEME_CARD_BORDER[themeId]}`,
           boxShadow: THEME_CARD_SHADOW[themeId],
-          backdropFilter: themeId === "minimal" ? "blur(40px)" : themeId === "vivid" ? "blur(48px)" : themeId === "neon" ? "blur(12px)" : "blur(40px)",
+          // backdropFilter removed to avoid large off-screen buffers crashing headless Chromium
+          // The pre-blurred background achieves a similar frosted effect visually
         }}
       >
         {/* 6. Template art */}

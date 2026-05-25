@@ -86,10 +86,6 @@ async function main() {
     chromiumOptions: {
       gl: "swangle",
       disableWebSecurity: true, // allow loading local file URLs
-      // Multi-process mode prevents the recurring --single-process crashes
-      // that happen every ~9 frames on Linux servers.
-      // We have 5+ GB free RAM so the extra cost is acceptable.
-      enableMultiProcessOnLinux: true,
     },
     // Limit concurrency to 1 to avoid exhausting RAM on low-memory servers.
     // Each parallel frame renders a full Chromium tab — 1 tab per frame at a time.
