@@ -1166,17 +1166,19 @@ export default function AudioToVideoPage() {
     }
     setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
     pendingExportClipRef.current = clip;
+    // Pause any playing preview audio — user will hear fresh audio when recording starts
+    if (audioPreviewRef.current) audioPreviewRef.current.pause();
     setIsRecordingModalOpen(true);
-    // Auto-play the preview audio so the user can see karaoke in motion
-    if (audioPreviewRef.current) {
-      audioPreviewRef.current.currentTime = 0;
-      audioPreviewRef.current.play().catch(() => {});
-    }
   };
 
   // Phase 2 — called by "Start Recording" button inside the modal (or directly for upgraded mode)
   const handleBeginRecording = async (clip: AudioClipData) => {
     if (!clip.local_path) return;
+    // Kill any preview audio that might be playing before we start recording
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      audioPreviewRef.current.currentTime = 0;
+    }
     const clipCfg       = clipConfigs[clip.id] ?? { template_id: "minimal" };
     const themeId2      = (clipCfg.template_id ?? "minimal") as ThemeId;
     const theme2        = OVERLAY_THEMES[themeId2] ?? OVERLAY_THEMES.minimal;
@@ -2252,52 +2254,20 @@ export default function AudioToVideoPage() {
             )}
           </div>
 
-          {/* ── PREVIEW AREA — captureTargetRef is the crop target ── */}
-          <div className="flex-1 flex items-center justify-center bg-black relative">
-            {/* Crop frame indicator (outside captureTargetRef — never recorded) */}
-            {isPreviewPhase && (
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                <div style={{
-                  aspectRatio: "9/16",
-                  height: "calc(100vh - 140px)",
-                  maxWidth: "calc((100vh - 140px) * 9 / 16)",
-                  position: "relative",
-                }}>
-                  {/* Animated dashed border */}
-                  <div style={{
-                    position: "absolute", inset: "-3px",
-                    borderRadius: "4px",
-                    border: "2px dashed rgba(255,255,255,0.6)",
-                    animation: "none",
-                  }} />
-                  {/* Corner markers */}
-                  {[
-                    { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
-                    { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
-                    { bottom: -4, left: -4, borderBottom: "3px solid white", borderLeft: "3px solid white", borderRadius: "0 0 0 3px" },
-                    { bottom: -4, right: -4, borderBottom: "3px solid white", borderRight: "3px solid white", borderRadius: "0 0 3px 0" },
-                  ].map((s, i) => (
-                    <div key={i} style={{ position: "absolute", width: 18, height: 18, ...s as React.CSSProperties }} />
-                  ))}
-                  {/* Label */}
-                  <div style={{
-                    position: "absolute", top: -28, left: "50%", transform: "translateX(-50%)",
-                    fontSize: 11, color: "rgba(255,255,255,0.7)", whiteSpace: "nowrap",
-                    background: "rgba(0,0,0,0.6)", padding: "2px 8px", borderRadius: 4,
-                  }}>
-                    Capture area — only this region is recorded
-                  </div>
-                </div>
-              </div>
-            )}
+          {/* ── PREVIEW AREA — captureTargetRef is the crop target ──
+               Layout: captureTarget is always sized to (100vh - 48px) so its
+               position never shifts when the bottom bar appears/disappears.
+               The bottom "Start Exporting" bar is absolutely positioned so it
+               doesn't affect the flex layout. ── */}
+          <div className="flex-1 relative bg-black flex items-center justify-center">
 
-            {/* The actual capture target */}
+            {/* The actual capture target — sized consistently in both phases */}
             <div
               ref={captureTargetRef}
               style={{
                 aspectRatio: "9/16",
-                height: "calc(100vh - 140px)",
-                maxWidth: "calc((100vh - 140px) * 9 / 16)",
+                height: "calc(100vh - 48px)",   // always: full height minus top bar only
+                maxWidth: "calc((100vh - 48px) * 9 / 16)",
                 overflow: "hidden",
                 position: "relative",
               }}
@@ -2314,23 +2284,67 @@ export default function AudioToVideoPage() {
                 coverArtRef={coverArtRef}
               />
             </div>
-          </div>
 
-          {/* ── BOTTOM BAR — Start Recording button (preview phase only) ── */}
-          {isPreviewPhase && (
-            <div className="shrink-0 h-20 flex items-center justify-center px-6 gap-4 bg-black/80">
-              <button
-                onClick={() => {
-                  if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
-                }}
-                className="flex items-center gap-2 px-8 py-3 rounded-xl font-semibold text-sm transition-colors"
-                style={{ background: "white", color: "black" }}
+            {/* Crop frame + Start Exporting button — absolutely positioned so they
+                never push the captureTarget around. These are never recorded. */}
+            {isPreviewPhase && (
+              <div
+                className="absolute inset-0 pointer-events-none flex items-center justify-center"
               >
-                <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "red", marginRight: 4 }} />
-                Start Recording
-              </button>
-            </div>
-          )}
+                {/* Crop frame indicator — matches captureTarget exactly */}
+                <div style={{
+                  aspectRatio: "9/16",
+                  height: "calc(100vh - 48px)",
+                  maxWidth: "calc((100vh - 48px) * 9 / 16)",
+                  position: "relative",
+                  pointerEvents: "none",
+                }}>
+                  {/* Dashed border */}
+                  <div style={{
+                    position: "absolute", inset: "-3px",
+                    border: "2px dashed rgba(255,255,255,0.5)",
+                    borderRadius: 4,
+                    pointerEvents: "none",
+                  }} />
+                  {/* Corner markers */}
+                  {([
+                    { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
+                    { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
+                    { bottom: -4, left: -4, borderBottom: "3px solid white", borderLeft: "3px solid white", borderRadius: "0 0 0 3px" },
+                    { bottom: -4, right: -4, borderBottom: "3px solid white", borderRight: "3px solid white", borderRadius: "0 0 3px 0" },
+                  ] as React.CSSProperties[]).map((s, i) => (
+                    <div key={i} style={{ position: "absolute", width: 18, height: 18, ...s }} />
+                  ))}
+                  {/* Capture area label */}
+                  <div style={{
+                    position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
+                    fontSize: 11, color: "rgba(255,255,255,0.6)", whiteSpace: "nowrap",
+                    background: "rgba(0,0,0,0.55)", padding: "2px 8px", borderRadius: 4,
+                    pointerEvents: "none",
+                  }}>
+                    Only this region is recorded
+                  </div>
+
+                  {/* Start Exporting button — at the bottom of the crop frame */}
+                  <div style={{
+                    position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)",
+                    pointerEvents: "all",
+                  }}>
+                    <button
+                      onClick={() => {
+                        if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
+                      }}
+                      className="flex items-center gap-2 px-8 py-3 rounded-xl font-semibold text-sm transition-colors"
+                      style={{ background: "white", color: "black", whiteSpace: "nowrap" }}
+                    >
+                      <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "red", flexShrink: 0 }} />
+                      Start Exporting
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>{/* end flex-1 preview area */}
         </div>
       );
     })()}
