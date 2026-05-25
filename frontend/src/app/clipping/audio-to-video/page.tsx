@@ -17,7 +17,7 @@ import {
   uploadAudioClipAsset,
   uploadAudioClipVideo,
 } from "@/lib/api";
-import { createCanvasRenderer, type LayerOverrides } from "./canvasRenderer";
+import { createCanvasRenderer } from "./canvasRenderer";
 import {
   Upload,
   Music2,
@@ -385,298 +385,6 @@ function InfernoArt({ isPlaying, albumCover }: { isPlaying: boolean; albumCover:
   );
 }
 
-// ─── Layer-capture helpers ────────────────────────────────────────────────────
-
-/**
- * Fetch every <img> inside `root`, replace its src with a same-origin blob URL,
- * and return a cleanup function that restores the original srcs.
- *
- * html-to-image renders via SVG foreignObject. Browsers refuse to serialize
- * <img> elements that were loaded WITHOUT crossOrigin="anonymous", so any image
- * served from the API (/api/files/…) shows up blank in the capture. Replacing
- * the src with a blob: URL (which is always same-origin) lets the library embed
- * them correctly without touching the visible page.
- */
-async function inlineImagesAsBlobURLs(root: HTMLElement): Promise<() => void> {
-  const imgs = Array.from(root.querySelectorAll<HTMLImageElement>("img[src]"));
-  const blobURLs: string[] = [];
-  const origSrcs: string[] = [];
-
-  await Promise.all(
-    imgs.map(async (img, i) => {
-      const src = img.src;
-      if (!src || src.startsWith("data:") || src.startsWith("blob:")) return;
-      try {
-        const res = await fetch(src, { credentials: "include" });
-        if (!res.ok) return;
-        const blob = await res.blob();
-        const blobURL = URL.createObjectURL(blob);
-        blobURLs.push(blobURL);
-        origSrcs[i] = src;
-        img.src = blobURL;
-        // Wait for the browser to swap the src so it's in place before capture
-        try { await img.decode(); } catch { /* ignore */ }
-      } catch { /* skip failed fetches */ }
-    })
-  );
-
-  return () => {
-    imgs.forEach((img, i) => { if (origSrcs[i]) img.src = origSrcs[i]; });
-    blobURLs.forEach(u => URL.revokeObjectURL(u));
-  };
-}
-
-/**
- * Simulate backdrop-filter: blur() for elements that use it (e.g. the frosted
- * glass card). SVG foreignObject — what html-to-image uses internally — silently
- * drops backdrop-filter, leaving the card looking like a flat transparent pane.
- *
- * Strategy:
- *  1. Fetch the bg image and draw it at preview size with canvas blur.
- *  2. For every element that carries a backdrop-blur Tailwind class, extract the
- *     portion of the blurred bg that sits behind it, inject it as a
- *     background-image, and override backdrop-filter to "none" (inline styles
- *     win over class-based styles).
- *  3. Return a cleanup function that restores all original styles.
- *
- * If there is no bg image we still zero out backdrop-filter so the capture
- * doesn't get confused — the card will just show its tint colour.
- */
-async function simulateBackdropBlur(
-  previewEl: HTMLElement,
-  bgImageUrl: string | null,
-): Promise<() => void> {
-  const restores: Array<() => void> = [];
-
-  // Find every element that has a Tailwind backdrop-blur class
-  const backdropEls = Array.from(
-    previewEl.querySelectorAll<HTMLElement>('[class*="backdrop-blur"]'),
-  );
-  if (!backdropEls.length) return () => {};
-
-  const PW = previewEl.offsetWidth;
-  const PH = previewEl.offsetHeight;
-
-  // Build a blurred version of the bg image at preview size
-  let blurCanvas: HTMLCanvasElement | null = null;
-  let blobToRevoke: string | null = null;
-
-  if (bgImageUrl) {
-    try {
-      const res = await fetch(bgImageUrl, { credentials: "include" });
-      if (res.ok) {
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        blobToRevoke = blobUrl;
-        const img = new Image();
-        img.src = blobUrl;
-        await new Promise<void>((resolve) => {
-          img.onload  = () => resolve();
-          img.onerror = () => resolve(); // don't block on failure
-        });
-
-        blurCanvas = document.createElement("canvas");
-        blurCanvas.width  = PW;
-        blurCanvas.height = PH;
-        const blurCtx = blurCanvas.getContext("2d")!;
-
-        // Cover-fit the image to preview dimensions
-        const scale  = Math.max(PW / img.naturalWidth, PH / img.naturalHeight);
-        const drawW  = img.naturalWidth  * scale;
-        const drawH  = img.naturalHeight * scale;
-        const drawX  = (PW - drawW) / 2;
-        const drawY  = (PH - drawH) / 2;
-
-        // backdrop-blur-xl ≈ blur(24px), backdrop-blur-2xl ≈ blur(40px)
-        blurCtx.filter = "blur(24px)";
-        blurCtx.drawImage(img, drawX, drawY, drawW, drawH);
-        blurCtx.filter = "none";
-      }
-    } catch { /* skip */ }
-    if (blobToRevoke) URL.revokeObjectURL(blobToRevoke);
-  }
-
-  const previewRect = previewEl.getBoundingClientRect();
-
-  for (const el of backdropEls) {
-    const rect   = el.getBoundingClientRect();
-    const relX   = rect.left - previewRect.left;
-    const relY   = rect.top  - previewRect.top;
-    const relW   = rect.width;
-    const relH   = rect.height;
-
-    const saved = {
-      backdropFilter:        el.style.backdropFilter,
-      webkitBackdropFilter:  (el.style as any).webkitBackdropFilter,
-      backgroundImage:       el.style.backgroundImage,
-      backgroundSize:        el.style.backgroundSize,
-      backgroundPosition:    el.style.backgroundPosition,
-    };
-
-    // Kill backdrop-filter (inline style overrides the Tailwind class)
-    el.style.setProperty("backdrop-filter",         "none", "important");
-    el.style.setProperty("-webkit-backdrop-filter", "none", "important");
-
-    // Inject the blurred bg region behind this element
-    if (blurCanvas) {
-      const regionCanvas = document.createElement("canvas");
-      regionCanvas.width  = Math.ceil(relW);
-      regionCanvas.height = Math.ceil(relH);
-      const rCtx = regionCanvas.getContext("2d")!;
-      rCtx.drawImage(blurCanvas, relX, relY, relW, relH, 0, 0, relW, relH);
-      const dataUrl = regionCanvas.toDataURL("image/jpeg", 0.92);
-      el.style.backgroundImage    = `url(${dataUrl})`;
-      el.style.backgroundSize     = "cover";
-      el.style.backgroundPosition = "center";
-    }
-
-    restores.push(() => {
-      el.style.removeProperty("backdrop-filter");
-      el.style.removeProperty("-webkit-backdrop-filter");
-      el.style.backdropFilter                    = saved.backdropFilter;
-      (el.style as any).webkitBackdropFilter     = saved.webkitBackdropFilter;
-      el.style.backgroundImage                   = saved.backgroundImage;
-      el.style.backgroundSize                    = saved.backgroundSize;
-      el.style.backgroundPosition                = saved.backgroundPosition;
-    });
-  }
-
-  return () => restores.forEach(fn => fn());
-}
-
-/**
- * Pre-capture all lyric frames for the layer-composite WebGL renderer.
- *
- * For each (groupIdx, wordHighlightIdx) pair we render an off-screen div
- * that exactly mirrors the HTML preview lyrics — Inter 800, text-3xl, tracking-tight,
- * flex-wrap centered — and capture it via html-to-image at export resolution.
- *
- * Returns:
- *  frames[gi][li + 1]  where li = -1 (no word highlighted) to groupSize-1
- *  rect                position of the lyric area in 1080×1920 output pixels
- */
-async function preCaptureAllLyricFrames(
-  words: AudioWord[],
-  theme: { accent: string; textGlow: string },
-  previewEl: HTMLElement,
-): Promise<{
-  frames: HTMLCanvasElement[][];
-  rect: { x1: number; y1: number; x2: number; y2: number };
-}> {
-  const GROUP_SZ = 5;
-  const OUTPUT_W = 1080;
-  const OUTPUT_H = 1920;
-  const numGroups = Math.ceil(words.length / GROUP_SZ);
-
-  // Lyric area in output pixels (matches CSS: left-[8%] right-[8%] top-[70.3%] bottom-[5%])
-  const rect = {
-    x1: Math.round(OUTPUT_W * 0.08),
-    y1: Math.round(OUTPUT_H * 0.703),
-    x2: Math.round(OUTPUT_W * 0.92),
-    y2: Math.round(OUTPUT_H * 0.95),
-  };
-
-  if (numGroups === 0) return { frames: [], rect };
-
-  const pw = previewEl.offsetWidth;
-  const ph = previewEl.offsetHeight;
-  const pixelRatio = OUTPUT_W / pw;
-
-  // Off-screen div dimensions in CSS pixels (same proportions as the lyric area)
-  const divW = pw * (0.92 - 0.08);           // 84% of preview width
-  const divH = ph * (0.95 - 0.703);          // 24.7% of preview height
-
-  // Ensure Inter 800 is loaded (Next.js already injects it, but wait to be safe)
-  try { await document.fonts.load(`800 30px Inter`); } catch { /* fallback OK */ }
-
-  const { toCanvas } = await import("html-to-image");
-  const frames: HTMLCanvasElement[][] = [];
-
-  for (let gi = 0; gi < numGroups; gi++) {
-    const group = words.slice(gi * GROUP_SZ, gi * GROUP_SZ + GROUP_SZ);
-    const groupFrames: HTMLCanvasElement[] = [];
-
-    // li = -1 (no word highlighted) through group.length - 1
-    for (let li = -1; li < group.length; li++) {
-      // ── Build off-screen container ───────────────────────────────────────────
-      const container = document.createElement("div");
-      container.style.cssText = [
-        "position:fixed",
-        "left:-9999px",
-        "top:0",
-        `width:${divW}px`,
-        `height:${divH}px`,
-        "display:flex",
-        "align-items:flex-start",
-        "justify-content:center",
-        "overflow:hidden",
-        "pointer-events:none",
-      ].join(";");
-
-      const inner = document.createElement("div");
-      inner.style.cssText = "text-align:center;width:100%";
-
-      const p = document.createElement("p");
-      // Mirror: text-3xl font-extrabold tracking-tight leading-[1.3] flex flex-wrap justify-center gap-x-2 gap-y-1
-      p.style.cssText = [
-        "font-family:'Inter',-apple-system,'Segoe UI',sans-serif",
-        "font-size:30px",
-        "font-weight:800",
-        "letter-spacing:-0.025em",
-        "line-height:1.3",
-        "display:flex",
-        "flex-wrap:wrap",
-        "justify-content:center",
-        "column-gap:8px",
-        "row-gap:4px",
-        "margin:0",
-        "padding:0",
-        "filter:drop-shadow(0 8px 5px rgba(0,0,0,0.08))",
-      ].join(";");
-
-      group.forEach((word, wIdx) => {
-        const span = document.createElement("span");
-        span.textContent = word.word;
-        span.style.display = "inline-block";
-        if (wIdx === li) {
-          // Highlighted
-          span.style.color = theme.accent;
-          span.style.textShadow = theme.textGlow;
-          span.style.transform = "scale(1.05)";
-        } else if (wIdx < li) {
-          // Past
-          span.style.color = "#ffffff";
-          span.style.textShadow = "0 4px 10px rgba(0,0,0,0.8)";
-        } else {
-          // Upcoming
-          span.style.color = "rgba(255,255,255,0.4)";
-          span.style.textShadow = "0 4px 10px rgba(0,0,0,0.8)";
-        }
-        p.appendChild(span);
-      });
-
-      inner.appendChild(p);
-      container.appendChild(inner);
-      document.body.appendChild(container);
-
-      const frameCanvas = await toCanvas(container, {
-        width: divW,
-        height: divH,
-        pixelRatio,
-        backgroundColor: null as any, // transparent
-        skipFonts: false,             // embed Inter so the SVG renders it correctly
-      });
-
-      document.body.removeChild(container);
-      groupFrames.push(frameCanvas);
-    }
-
-    frames.push(groupFrames);
-  }
-
-  return { frames, rect };
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatTime(s: number): string {
@@ -738,6 +446,192 @@ function ConfirmModal({
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── PreviewContent ───────────────────────────────────────────────────────────
+
+interface PreviewContentProps {
+  themeId: ThemeId;
+  theme: (typeof OVERLAY_THEMES)[ThemeId];
+  bgImageUrl: string | null;
+  coverImageUrl: string | null;
+  lyricLines: string[][];
+  isPlaying: boolean;
+  overlayLineIndex: number;
+  overlayWordIndex: number;
+  coverArtRef?: React.RefObject<HTMLDivElement | null>;
+  zigzagLayerRef?: React.RefObject<HTMLDivElement | null>;
+  lyricsLayerRef?: React.RefObject<HTMLDivElement | null>;
+  isGenerating?: boolean;
+}
+
+function PreviewContent({
+  themeId,
+  theme,
+  bgImageUrl,
+  coverImageUrl,
+  lyricLines,
+  isPlaying,
+  overlayLineIndex,
+  overlayWordIndex,
+  coverArtRef,
+  zigzagLayerRef,
+  lyricsLayerRef,
+  isGenerating,
+}: PreviewContentProps) {
+  const zigzagClipId = React.useId();
+  const albumCover = coverImageUrl ?? "";
+
+  return (
+    <>
+      {/* Background / Environment Layer */}
+      <div className="absolute inset-0 z-0 bg-black">
+        {bgImageUrl ? (
+          <img
+            src={bgImageUrl}
+            alt="Background"
+            className={`absolute inset-0 w-full h-full object-cover transition-all duration-700 ${
+              themeId === "inferno" ? "grayscale opacity-60" : "opacity-80"
+            }`}
+          />
+        ) : (
+          <div className={`absolute inset-0 ${theme.baseBg}`} />
+        )}
+        {/* Gradient overlay */}
+        <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradientOverlay} transition-colors duration-1000 mix-blend-multiply`} />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/80" />
+
+        {/* Particles / Flames */}
+        {themeId === "inferno" ? (
+          <OverlayFlames isPlaying={isPlaying} />
+        ) : (
+          <OverlayParticles color={theme.accent} isPlaying={isPlaying} />
+        )}
+      </div>
+
+      {/* 1. ALBUM ART & CARD — top-[6%] to h-[46%] */}
+      <div className={`absolute top-[6%] left-[8%] right-[8%] h-[46%] rounded-[2rem] flex flex-col p-6 z-10 transition-all duration-700 ${theme.cardClass}`}>
+        {/* Art Container */}
+        <div className="flex-1 w-full relative">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={themeId}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.05 }}
+              transition={{ duration: 0.4 }}
+              className="absolute inset-0"
+            >
+              {themeId === "minimal" && <MinimalArt isPlaying={isPlaying} albumCover={albumCover} coverRef={coverArtRef} />}
+              {themeId === "vivid" && <VividArt isPlaying={isPlaying} albumCover={albumCover} />}
+              {themeId === "neon" && <NeonArt isPlaying={isPlaying} albumCover={albumCover} coverRef={coverArtRef} />}
+              {themeId === "inferno" && <InfernoArt isPlaying={isPlaying} albumCover={albumCover} />}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+        {/* "NOW PLAYING" Label */}
+        <div className="h-10 mt-4 flex items-center justify-center">
+          <span className="text-[10px] font-bold tracking-[0.3em] text-white/50 uppercase">
+            Now Playing
+          </span>
+        </div>
+      </div>
+
+      {/* 2. PROGRESS BAR — zigzag waveform at top-[58.8%] */}
+      <div ref={zigzagLayerRef} className="absolute top-[58.8%] left-[13%] w-[74%] h-[30px] -mt-[15px] z-10">
+        <svg viewBox="0 0 1000 30" className="w-full h-full drop-shadow-lg" preserveAspectRatio="none">
+          <defs>
+            <clipPath id={`zigzag-clip-${zigzagClipId}`}>
+              <motion.rect
+                x="0" y="0" height="30"
+                initial={{ width: "0%" }}
+                animate={{ width: isPlaying ? "100%" : "0%" }}
+                transition={{
+                  duration: lyricLines.length * 2.5 || 10,
+                  repeat: isPlaying ? Infinity : 0,
+                  ease: "linear",
+                }}
+              />
+            </clipPath>
+          </defs>
+          {/* Background dimmed zigzag */}
+          <path
+            d={ZIGZAG_PATH}
+            fill="none"
+            stroke="rgba(255,255,255,0.15)"
+            strokeWidth="4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          {/* Foreground colored zigzag */}
+          <path
+            d={ZIGZAG_PATH}
+            fill="none"
+            stroke={theme.accent}
+            strokeWidth="4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            clipPath={`url(#zigzag-clip-${zigzagClipId})`}
+            style={{ filter: `drop-shadow(0 0 6px ${theme.accent})` }}
+          />
+        </svg>
+      </div>
+
+      {/* 3. KARAOKE LYRICS — bottom third at top-[70.3%] */}
+      <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
+        <AnimatePresence mode="wait">
+          {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
+            <motion.div
+              key={overlayLineIndex % lyricLines.length}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.12, ease: "easeOut" }}
+              className="text-center w-full"
+            >
+              <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
+                {lyricLines[overlayLineIndex % lyricLines.length].map((word: string, wIdx: number) => {
+                  const isHighlighted = isPlaying && wIdx === overlayWordIndex;
+                  const isPassed = isPlaying && wIdx < overlayWordIndex;
+
+                  return (
+                    <motion.span
+                      key={wIdx}
+                      initial={{
+                        color: isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
+                        textShadow: "0 4px 10px rgba(0,0,0,0.8)",
+                        scale: 1,
+                      }}
+                      animate={{
+                        color: isHighlighted
+                          ? theme.accent
+                          : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
+                        textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
+                        scale: isHighlighted ? 1.05 : 1,
+                      }}
+                      transition={{ duration: 0.15 }}
+                      className="inline-block transition-colors"
+                    >
+                      {word}
+                    </motion.span>
+                  );
+                })}
+              </p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Generating overlay */}
+      {isGenerating && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm">
+          <Loader2 className="h-10 w-10 animate-spin text-foreground" />
+          <p className="mt-3 text-sm text-white/60">Generating video...</p>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -810,8 +704,14 @@ export default function AudioToVideoPage() {
   const exportAudioCtxRef = useRef<AudioContext | null>(null);
   // Persists blob URLs per clip so "View Export" button can reopen the modal
   const [exportedBlobUrlByClip, setExportedBlobUrlByClip] = useState<Record<number, string>>({});
-  // WebGL render mode — "match" = exact HTML fidelity, "upgraded" = bloom + soft particles
+  // WebGL render mode — "match" = screen recording, "upgraded" = bloom + soft particles
   const [renderMode, setRenderMode] = useState<"match" | "upgraded">("match");
+
+  // Screen-recording state / refs
+  const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const captureTargetRef     = useRef<HTMLDivElement | null>(null);
+  const isRecordingActiveRef = useRef(false);
+  const recordingAudioRef    = useRef<HTMLAudioElement | null>(null);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -1108,7 +1008,9 @@ export default function AudioToVideoPage() {
     let rafId: number;
 
     const tick = () => {
-      const audio = audioPreviewRef.current;
+      const audio = isRecordingActiveRef.current
+        ? recordingAudioRef.current
+        : audioPreviewRef.current;
       const clip  = activeClipRef.current;
 
       if (audio && clip && !audio.paused) {
@@ -1246,6 +1148,242 @@ export default function AudioToVideoPage() {
       alert(err?.response?.data?.detail || "Failed to assign clip");
     } finally {
       setAssigning((a) => ({ ...a, [clipId]: false }));
+    }
+  };
+
+  // ─── Export ───────────────────────────────────────────────────────────────
+
+  const handleStartExport = async (clip: AudioClipData) => {
+    if (!clip.local_path) return;
+    const clipCfg       = clipConfigs[clip.id] ?? { template_id: "minimal" };
+    const themeId2      = (clipCfg.template_id ?? "minimal") as ThemeId;
+    const theme2        = OVERLAY_THEMES[themeId2] ?? OVERLAY_THEMES.minimal;
+    const bgImageUrl2   = clipCfg.bg_path ? fileUrl(clipCfg.bg_path) : null;
+    const coverImageUrl2 = clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null;
+    const words2        = clipWords[clip.id] ?? [];
+    const clipDuration  = clip.end_s - clip.start_s;
+
+    setIsExportRecording(true);
+    setExportProgress(0);
+    exportAbortRef.current = false;
+    setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
+
+    try {
+      if (renderMode === "upgraded") {
+        // ── Upgraded mode: WebGL canvas.captureStream ──────────────────────
+        const renderer = await createCanvasRenderer({
+          width: 1080, height: 1920,
+          themeId: themeId2, theme: theme2,
+          words: words2, bgImageUrl: bgImageUrl2, coverImageUrl: coverImageUrl2,
+          clipStartS: clip.start_s,
+          clipDuration,
+          renderMode,
+          layerOverrides: undefined,
+        });
+
+        const recAudio = new Audio();
+        recAudio.crossOrigin = "anonymous";
+        recAudio.src = fileUrl(clip.local_path!);
+        await new Promise<void>((res, rej) => {
+          recAudio.oncanplay = () => res();
+          recAudio.onerror = () => rej(new Error("Audio load failed"));
+          recAudio.load();
+        });
+
+        const audioCtx = new AudioContext();
+        exportAudioCtxRef.current = audioCtx;
+        const audioSrc  = audioCtx.createMediaElementSource(recAudio);
+        const audioDest = audioCtx.createMediaStreamDestination();
+        audioSrc.connect(audioDest);
+        audioSrc.connect(audioCtx.destination);
+
+        const videoStream = renderer.canvas.captureStream(30);
+        const combined = new MediaStream([
+          ...videoStream.getVideoTracks(),
+          ...audioDest.stream.getAudioTracks(),
+        ]);
+        const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+          ? "video/webm;codecs=vp9,opus"
+          : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+          ? "video/webm;codecs=vp8,opus"
+          : "video/webm";
+        const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 8_000_000 });
+        const chunks: BlobPart[] = [];
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+        recAudio.currentTime = 0;
+        await recAudio.play();
+        recorder.start(250);
+
+        let rafId = 0;
+        const tick = () => {
+          if (exportAbortRef.current) { recorder.stop(); recAudio.pause(); return; }
+          const t = recAudio.currentTime;
+          renderer.renderFrame(t);
+          setExportProgress(Math.min(99, Math.round((t / clipDuration) * 100)));
+          if (t < clipDuration && !recAudio.ended) {
+            rafId = requestAnimationFrame(tick);
+          } else {
+            recAudio.pause();
+            recorder.stop();
+          }
+        };
+        rafId = requestAnimationFrame(tick);
+
+        recorder.onstop = () => {
+          cancelAnimationFrame(rafId);
+          renderer.destroy();
+          audioCtx.close();
+          exportAudioCtxRef.current = null;
+          const blob = new Blob(chunks, { type: mimeType });
+          const url  = URL.createObjectURL(blob);
+          setExportedBlobUrl(url);
+          setExportedBlob(blob);
+          setExportedExt("webm");
+          setExportClipIndex(clip.clip_index);
+          exportClipIdRef.current = clip.id;
+          setExportedBlobUrlByClip((prev) => ({ ...prev, [clip.id]: url }));
+          setExportProgress(100);
+          setIsExportRecording(false);
+        };
+        return;
+      }
+
+      // ── Match mode: screen recording ───────────────────────────────────────
+      // 0. AudioContext created synchronously (preserve user-gesture activation)
+      const audioCtx = new AudioContext();
+      exportAudioCtxRef.current = audioCtx;
+
+      // 1. getDisplayMedia is the FIRST await — locks in gesture activation
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { preferCurrentTab: true } as any,
+        audio: false,
+      });
+      const [videoTrack] = displayStream.getVideoTracks();
+
+      // 2. Resume AudioContext (activation is fresh after the Share prompt)
+      await audioCtx.resume();
+
+      // 3. Open recording modal and let React flush + captureTargetRef attach
+      setIsRecordingModalOpen(true);
+      await new Promise<void>((r) => setTimeout(r, 80));
+
+      // 4. Crop stream to preview element only
+      const el = captureTargetRef.current;
+      if (!el) {
+        videoTrack.stop();
+        setIsRecordingModalOpen(false);
+        setIsExportRecording(false);
+        return;
+      }
+      if ("RestrictionTarget" in window && "restrictTo" in videoTrack) {
+        await (videoTrack as any).restrictTo(
+          await (window as any).RestrictionTarget.fromElement(el),
+        );
+      } else if ("CropTarget" in window && "cropTo" in videoTrack) {
+        await (videoTrack as any).cropTo(
+          await (window as any).CropTarget.fromElement(el),
+        );
+      } else {
+        videoTrack.stop();
+        setIsRecordingModalOpen(false);
+        setIsExportRecording(false);
+        alert("Export requires Chrome or Edge 104+");
+        return;
+      }
+
+      // 5. Resolution warning
+      const effH = (el.offsetHeight ?? 0) * devicePixelRatio;
+      if (effH < 1280) console.warn("Low-res export — effective height:", effH, "px");
+
+      // 6. Load audio fully buffered (same-origin — no crossOrigin needed)
+      const recAudio = new Audio();
+      recAudio.preload = "auto";
+      recAudio.src = fileUrl(clip.local_path!);
+      await new Promise<void>((res, rej) => {
+        recAudio.oncanplaythrough = () => res();
+        recAudio.onerror = () => rej(recAudio.error);
+        recAudio.load();
+      });
+
+      // 7. Wire Web Audio graph
+      const audioSrc  = audioCtx.createMediaElementSource(recAudio);
+      const audioDest = audioCtx.createMediaStreamDestination();
+      audioSrc.connect(audioDest);            // → recording
+      audioSrc.connect(audioCtx.destination); // → speakers
+
+      // 8. MediaRecorder
+      const combined = new MediaStream([videoTrack, audioDest.stream.getAudioTracks()[0]]);
+      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+        ? "video/webm;codecs=vp9,opus"
+        : "video/webm";
+      const rec     = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 12_000_000 });
+      const chunks: BlobPart[] = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+      // 9. Guards
+      let aborted = false;
+      const beforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+      window.addEventListener("beforeunload", beforeUnload);
+      const handleHidden = () => {
+        if (document.hidden && rec.state !== "inactive") { aborted = true; rec.stop(); }
+      };
+      document.addEventListener("visibilitychange", handleHidden);
+      videoTrack.addEventListener("ended", () => {
+        aborted = true;
+        if (rec.state !== "inactive") rec.stop();
+      }, { once: true });
+
+      // 10. START RECORDER BEFORE PLAYBACK — no clipped intro
+      recordingAudioRef.current    = recAudio;
+      isRecordingActiveRef.current = true;
+      rec.start();                   // ← capture first
+      recAudio.currentTime = 0;
+      await recAudio.play();         // ← then play; head of song is fully captured
+      recAudio.addEventListener("ended", () => {
+        if (rec.state !== "inactive") rec.stop();
+      }, { once: true });
+
+      let rafId = 0;
+      const progressTick = () => {
+        setExportProgress(Math.min(99, Math.round((recAudio.currentTime / clipDuration) * 100)));
+        if (!recAudio.ended) rafId = requestAnimationFrame(progressTick);
+      };
+      rafId = requestAnimationFrame(progressTick);
+
+      // 11. onstop — runs when song ends, tab is hidden, or user stops sharing
+      rec.onstop = () => {
+        cancelAnimationFrame(rafId);
+        window.removeEventListener("beforeunload", beforeUnload);
+        document.removeEventListener("visibilitychange", handleHidden);
+        videoTrack.stop();
+        audioCtx.close();
+        exportAudioCtxRef.current    = null;
+        isRecordingActiveRef.current = false;
+        recordingAudioRef.current    = null;
+        setIsRecordingModalOpen(false);
+        setIsExportRecording(false);
+        setExportProgress(100);
+        if (aborted) {
+          alert("Export cancelled — keep the tab in front next time");
+          return;
+        }
+        const blob = new Blob(chunks, { type: mimeType });
+        const url  = URL.createObjectURL(blob);
+        setExportedBlobUrl(url);
+        setExportedBlob(blob);
+        setExportedExt("webm");
+        setExportClipIndex(clip.clip_index);
+        exportClipIdRef.current = clip.id;
+        setExportedBlobUrlByClip((prev) => ({ ...prev, [clip.id]: url }));
+      };
+    } catch (err: any) {
+      console.error("Export failed", err);
+      setGenerationErrors((e) => ({ ...e, [clip.id]: `Export failed: ${err?.message ?? "unknown"}` }));
+      setIsExportRecording(false);
+      setIsRecordingModalOpen(false);
+      isRecordingActiveRef.current = false;
+      recordingAudioRef.current    = null;
     }
   };
 
@@ -1783,7 +1921,7 @@ export default function AudioToVideoPage() {
                             : <><Pause className="w-4 h-4 fill-current" /> Pause Preview</>}
                         </button>
 
-                        {/* WebGL Export — canvas.captureStream + MediaRecorder */}
+                        {/* Export — screen recording (match) or WebGL (upgraded) */}
                         {isExportRecording ? (
                           <button disabled className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl">
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -1791,186 +1929,7 @@ export default function AudioToVideoPage() {
                           </button>
                         ) : (
                           <button
-                            onClick={async () => {
-                              const clip = activeClip;
-                              if (!clip || !clip.local_path) return;
-                              const clipCfg = clipConfigs[clip.id] ?? { template_id: "minimal" };
-                              const tid2 = (clipCfg.template_id ?? "minimal") as ThemeId;
-                              const theme2 = OVERLAY_THEMES[tid2] ?? OVERLAY_THEMES.minimal;
-                              const bgImageUrl = clipCfg.bg_path ? fileUrl(clipCfg.bg_path) : null;
-                              const coverImageUrl = clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null;
-                              const words2 = clipWords[clip.id] ?? [];
-                              const clipDuration = clip.end_s - clip.start_s;
-
-                              setIsExportRecording(true);
-                              setExportProgress(0);
-                              exportAbortRef.current = false;
-                              setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
-
-                              try {
-                                // ── Layer-composite capture for "match" mode ──
-                                let layerOverrides: LayerOverrides | undefined;
-                                if (renderMode === "match") {
-                                  const { toCanvas } = await import("html-to-image");
-                                  const previewEl = previewCanvasRef.current!;
-                                  const pixelRatio = 1080 / previewEl.offsetWidth;
-
-                                  // Spin durations per theme (null = no separate spinning cover)
-                                  const SPIN: Record<string, number | null> = {
-                                    minimal: 20, neon: 5, vivid: null, inferno: null,
-                                  };
-                                  const spinDuration = SPIN[tid2] ?? null;
-                                  const hasCoverSpin = spinDuration !== null;
-
-                                  // Measure cover element position before hiding anything
-                                  let coverCX = 0, coverCY = 0, coverCW = 0, coverCH = 0;
-                                  let capturedCoverCanvas = document.createElement("canvas");
-                                  const coverEl = hasCoverSpin ? coverArtRef.current : null;
-
-                                  if (coverEl) {
-                                    const previewRect = previewEl.getBoundingClientRect();
-                                    const coverRect   = coverEl.getBoundingClientRect();
-                                    coverCW = coverRect.width  * pixelRatio;
-                                    coverCH = coverRect.height * pixelRatio;
-                                    coverCX = (coverRect.left - previewRect.left + coverRect.width  / 2) * pixelRatio;
-                                    coverCY = (coverRect.top  - previewRect.top  + coverRect.height / 2) * pixelRatio;
-
-                                    // Pre-fetch images so html-to-image can embed them
-                                    const restoreCoverImgs = await inlineImagesAsBlobURLs(coverEl);
-                                    // Capture cover element as PNG (at export resolution)
-                                    capturedCoverCanvas = await toCanvas(coverEl, {
-                                      width: coverRect.width,
-                                      height: coverRect.height,
-                                      pixelRatio,
-                                      skipFonts: true,
-                                    });
-                                    restoreCoverImgs();
-                                  }
-
-                                  // Hide cover + zigzag + lyrics before capturing the layer canvas
-                                  if (coverEl) coverEl.style.visibility = "hidden";
-                                  if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "hidden";
-                                  if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "hidden";
-
-                                  // Pre-fetch images so html-to-image can embed them
-                                  const restorePreviewImgs = await inlineImagesAsBlobURLs(previewEl);
-                                  // Simulate backdrop-filter (not supported by SVG foreignObject)
-                                  const restoreBackdrop = await simulateBackdropBlur(previewEl, bgImageUrl);
-
-                                  // Temporarily remove border-radius so capture is a clean rectangle
-                                  const savedBR = previewEl.style.borderRadius;
-                                  previewEl.style.borderRadius = "0";
-
-                                  const capturedLayerCanvas = await toCanvas(previewEl, {
-                                    width:  previewEl.offsetWidth,
-                                    height: previewEl.offsetHeight,
-                                    pixelRatio,
-                                    skipFonts: true,
-                                  });
-
-                                  // Restore everything
-                                  previewEl.style.borderRadius = savedBR;
-                                  restoreBackdrop();
-                                  restorePreviewImgs();
-                                  if (coverEl) coverEl.style.visibility = "visible";
-                                  if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "visible";
-                                  if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "visible";
-
-                                  // Pre-capture all lyric frames (html-to-image, Inter 800, no Canvas 2D)
-                                  const { frames: lyricFrames, rect: lyricRect } =
-                                    await preCaptureAllLyricFrames(words2, theme2, previewEl);
-
-                                  layerOverrides = {
-                                    layerCanvas: capturedLayerCanvas,
-                                    coverCanvas: capturedCoverCanvas,
-                                    coverCX, coverCY, coverCW, coverCH,
-                                    spinDuration,
-                                    lyricFrames,
-                                    lyricRect,
-                                  };
-                                }
-
-                                const renderer = await createCanvasRenderer({
-                                  width: 1080, height: 1920,
-                                  themeId: tid2, theme: theme2,
-                                  words: words2, bgImageUrl, coverImageUrl,
-                                  clipStartS: clip.start_s,
-                                  clipDuration,
-                                  renderMode,
-                                  layerOverrides,
-                                });
-
-                                const recAudio = new Audio();
-                                recAudio.crossOrigin = "anonymous";
-                                recAudio.src = fileUrl(clip.local_path!);
-                                await new Promise<void>((res, rej) => {
-                                  recAudio.oncanplay = () => res();
-                                  recAudio.onerror = () => rej(new Error("Audio load failed"));
-                                  recAudio.load();
-                                });
-
-                                const audioCtx = new AudioContext();
-                                exportAudioCtxRef.current = audioCtx;
-                                const audioSrc = audioCtx.createMediaElementSource(recAudio);
-                                const audioDest = audioCtx.createMediaStreamDestination();
-                                audioSrc.connect(audioDest);
-                                audioSrc.connect(audioCtx.destination);
-
-                                const videoStream = renderer.canvas.captureStream(30);
-                                const combined = new MediaStream([
-                                  ...videoStream.getVideoTracks(),
-                                  ...audioDest.stream.getAudioTracks(),
-                                ]);
-                                const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-                                  ? "video/webm;codecs=vp9,opus"
-                                  : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-                                  ? "video/webm;codecs=vp8,opus"
-                                  : "video/webm";
-                                const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 8_000_000 });
-                                const chunks: BlobPart[] = [];
-                                recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-
-                                recAudio.currentTime = 0;
-                                await recAudio.play();
-                                recorder.start(250);
-
-                                let rafId = 0;
-                                const tick = () => {
-                                  if (exportAbortRef.current) { recorder.stop(); recAudio.pause(); return; }
-                                  const t = recAudio.currentTime;
-                                  renderer.renderFrame(t);
-                                  setExportProgress(Math.min(99, Math.round((t / clipDuration) * 100)));
-                                  if (t < clipDuration && !recAudio.ended) {
-                                    rafId = requestAnimationFrame(tick);
-                                  } else {
-                                    recAudio.pause();
-                                    recorder.stop();
-                                  }
-                                };
-                                rafId = requestAnimationFrame(tick);
-
-                                recorder.onstop = () => {
-                                  cancelAnimationFrame(rafId);
-                                  renderer.destroy();
-                                  audioCtx.close();
-                                  exportAudioCtxRef.current = null;
-                                  const blob = new Blob(chunks, { type: mimeType });
-                                  const url = URL.createObjectURL(blob);
-                                  setExportedBlobUrl(url);
-                                  setExportedBlob(blob);
-                                  setExportedExt("webm");
-                                  setExportClipIndex(clip.clip_index);
-                                  exportClipIdRef.current = clip.id;
-                                  setExportedBlobUrlByClip((prev) => ({ ...prev, [clip.id]: url }));
-                                  setExportProgress(100);
-                                  setIsExportRecording(false);
-                                };
-                              } catch (err: any) {
-                                console.error("WebGL export failed", err);
-                                setGenerationErrors((e) => ({ ...e, [clip.id]: `Export failed: ${err?.message ?? "unknown"}` }));
-                                setIsExportRecording(false);
-                              }
-                            }}
+                            onClick={() => { if (activeClip) handleStartExport(activeClip); }}
                             className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
                           >
                             <Download className="w-4 h-4" /> Export Video
@@ -2015,153 +1974,20 @@ export default function AudioToVideoPage() {
                   {/* ══ RIGHT: 9:16 Canvas (Figma Design) ═════════════════════ */}
                   <div className="flex flex-1 items-start justify-center pt-2">
                     <div ref={previewCanvasRef} className="relative w-full max-w-[360px] md:max-w-[420px] aspect-[9/16] bg-black rounded-[2.5rem] overflow-hidden shadow-2xl ring-4 ring-neutral-800 flex-shrink-0 isolate">
-
-                      {/* Background / Environment Layer */}
-                      <div className="absolute inset-0 z-0 bg-black">
-                        {bgUrl ? (
-                          <img
-                            src={bgUrl}
-                            alt="Background"
-                            className={`absolute inset-0 w-full h-full object-cover transition-all duration-700 ${
-                              themeId === "inferno" ? "grayscale opacity-60" : "opacity-80"
-                            }`}
-                          />
-                        ) : (
-                          <div className={`absolute inset-0 ${theme.baseBg}`} />
-                        )}
-                        {/* Gradient overlay */}
-                        <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradientOverlay} transition-colors duration-1000 mix-blend-multiply`} />
-                        <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/80" />
-
-                        {/* Particles / Flames */}
-                        {themeId === "inferno" ? (
-                          <OverlayFlames isPlaying={!isPreviewPaused} />
-                        ) : (
-                          <OverlayParticles color={theme.accent} isPlaying={!isPreviewPaused} />
-                        )}
-                      </div>
-
-                      {/* 1. ALBUM ART & CARD — top-[6%] to h-[46%] */}
-                      <div className={`absolute top-[6%] left-[8%] right-[8%] h-[46%] rounded-[2rem] flex flex-col p-6 z-10 transition-all duration-700 ${theme.cardClass}`}>
-                        {/* Art Container */}
-                        <div className="flex-1 w-full relative">
-                          <AnimatePresence mode="wait">
-                            <motion.div
-                              key={themeId}
-                              initial={{ opacity: 0, scale: 0.95 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 1.05 }}
-                              transition={{ duration: 0.4 }}
-                              className="absolute inset-0"
-                            >
-                              {themeId === "minimal" && <MinimalArt isPlaying={!isPreviewPaused} albumCover={coverUrl} coverRef={coverArtRef} />}
-                              {themeId === "vivid" && <VividArt isPlaying={!isPreviewPaused} albumCover={coverUrl} />}
-                              {themeId === "neon" && <NeonArt isPlaying={!isPreviewPaused} albumCover={coverUrl} coverRef={coverArtRef} />}
-                              {themeId === "inferno" && <InfernoArt isPlaying={!isPreviewPaused} albumCover={coverUrl} />}
-                            </motion.div>
-                          </AnimatePresence>
-                        </div>
-
-                        {/* "NOW PLAYING" Label */}
-                        <div className="h-10 mt-4 flex items-center justify-center">
-                          <span className="text-[10px] font-bold tracking-[0.3em] text-white/50 uppercase">
-                            Now Playing
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* 2. PROGRESS BAR — zigzag waveform at top-[58.8%] */}
-                      <div ref={zigzagLayerRef} className="absolute top-[58.8%] left-[13%] w-[74%] h-[30px] -mt-[15px] z-10">
-                        <svg viewBox="0 0 1000 30" className="w-full h-full drop-shadow-lg" preserveAspectRatio="none">
-                          <defs>
-                            <clipPath id="zigzag-clip">
-                              <motion.rect
-                                x="0" y="0" height="30"
-                                initial={{ width: "0%" }}
-                                animate={{ width: !isPreviewPaused ? "100%" : "0%" }}
-                                transition={{
-                                  duration: lyricLines.length * 2.5 || 10,
-                                  repeat: !isPreviewPaused ? Infinity : 0,
-                                  ease: "linear",
-                                }}
-                              />
-                            </clipPath>
-                          </defs>
-                          {/* Background dimmed zigzag */}
-                          <path
-                            d={ZIGZAG_PATH}
-                            fill="none"
-                            stroke="rgba(255,255,255,0.15)"
-                            strokeWidth="4"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                          {/* Foreground colored zigzag */}
-                          <path
-                            d={ZIGZAG_PATH}
-                            fill="none"
-                            stroke={theme.accent}
-                            strokeWidth="4"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            clipPath="url(#zigzag-clip)"
-                            style={{ filter: `drop-shadow(0 0 6px ${theme.accent})` }}
-                          />
-                        </svg>
-                      </div>
-
-                      {/* 3. KARAOKE LYRICS — bottom third at top-[70.3%] */}
-                      <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
-                        <AnimatePresence mode="wait">
-                          {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
-                            <motion.div
-                              key={overlayLineIndex % lyricLines.length}
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              exit={{ opacity: 0, y: -10 }}
-                              transition={{ duration: 0.12, ease: "easeOut" }}
-                              className="text-center w-full"
-                            >
-                              <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
-                                {lyricLines[overlayLineIndex % lyricLines.length].map((word: string, wIdx: number) => {
-                                  const isHighlighted = !isPreviewPaused && wIdx === overlayWordIndex;
-                                  const isPassed = !isPreviewPaused && wIdx < overlayWordIndex;
-
-                                  return (
-                                    <motion.span
-                                      key={wIdx}
-                                      initial={{
-                                        color: isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
-                                        textShadow: "0 4px 10px rgba(0,0,0,0.8)",
-                                        scale: 1,
-                                      }}
-                                      animate={{
-                                        color: isHighlighted
-                                          ? theme.accent
-                                          : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
-                                        textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
-                                        scale: isHighlighted ? 1.05 : 1,
-                                      }}
-                                      transition={{ duration: 0.15 }}
-                                      className="inline-block transition-colors"
-                                    >
-                                      {word}
-                                    </motion.span>
-                                  );
-                                })}
-                              </p>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-
-                      {/* Generating overlay */}
-                      {isGen && (
-                        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm">
-                          <Loader2 className="h-10 w-10 animate-spin text-foreground" />
-                          <p className="mt-3 text-sm text-white/60">Generating video...</p>
-                        </div>
-                      )}
+                      <PreviewContent
+                        themeId={themeId}
+                        theme={theme}
+                        bgImageUrl={bgUrl || null}
+                        coverImageUrl={coverUrl || null}
+                        lyricLines={lyricLines}
+                        isPlaying={!isPreviewPaused}
+                        overlayLineIndex={overlayLineIndex}
+                        overlayWordIndex={overlayWordIndex}
+                        coverArtRef={coverArtRef}
+                        zigzagLayerRef={zigzagLayerRef}
+                        lyricsLayerRef={lyricsLayerRef}
+                        isGenerating={isGen}
+                      />
                     </div>
 
                     {/* Below canvas: timing info */}
@@ -2304,6 +2130,47 @@ export default function AudioToVideoPage() {
         )}
       </div>
     </div>
+
+    {/* ── Recording Modal ──────────────────────────────────────────────── */}
+    {isRecordingModalOpen && (() => {
+      const recClip = activeClip;
+      if (!recClip) return null;
+      const recCfg     = clipConfigs[recClip.id] ?? { template_id: "minimal" };
+      const recThemeId = (recCfg.template_id || "minimal") as ThemeId;
+      const recTheme   = OVERLAY_THEMES[recThemeId] ?? OVERLAY_THEMES.minimal;
+      const recBgUrl   = recCfg.bg_path    ? fileUrl(recCfg.bg_path)    : null;
+      const recCoverUrl = recCfg.cover_path ? fileUrl(recCfg.cover_path) : null;
+      return (
+        <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+          {/* ── OUTSIDE captureTargetRef — never recorded ── */}
+          <div className="h-10 flex items-center justify-between px-4 bg-red-600/20 shrink-0">
+            <span className="text-sm text-white font-medium">● RECORDING — Do not close or switch tabs</span>
+            <div className="w-48 h-1.5 bg-white/20 rounded-full overflow-hidden">
+              <div className="h-full bg-red-500 transition-none" style={{ width: `${exportProgress}%` }} />
+            </div>
+          </div>
+          {/* ── crop target — ONLY this enters the recording ── */}
+          <div className="flex-1 flex items-center justify-center bg-black">
+            <div
+              ref={captureTargetRef}
+              style={{ aspectRatio: "9/16", height: "100%", maxHeight: "calc(100vh - 40px)", overflow: "hidden", position: "relative" }}
+            >
+              <PreviewContent
+                themeId={recThemeId}
+                theme={recTheme}
+                bgImageUrl={recBgUrl}
+                coverImageUrl={recCoverUrl}
+                lyricLines={activeKaraokeLyrics}
+                isPlaying={true}
+                overlayLineIndex={overlayLineIndex}
+                overlayWordIndex={overlayWordIndex}
+                coverArtRef={coverArtRef}
+              />
+            </div>
+          </div>
+        </div>
+      );
+    })()}
 
     {/* ── Export Preview Modal ─────────────────────────────────────────── */}
     {exportedBlobUrl && (
