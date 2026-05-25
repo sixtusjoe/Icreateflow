@@ -500,7 +500,9 @@ function mkTex(gl: WebGL2RenderingContext): WebGLTexture {
 
 function uploadImageToTex(gl: WebGL2RenderingContext, tex: WebGLTexture, src: HTMLImageElement | HTMLCanvasElement) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);  // Canvas 2D / images have Y=0 at top; GL textures need Y=0 at bottom
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 }
 
 // Make a static position buffer for a screen-space quad (two triangles)
