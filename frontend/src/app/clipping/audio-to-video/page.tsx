@@ -1171,7 +1171,16 @@ export default function AudioToVideoPage() {
     setIsRecordingModalOpen(true);
   };
 
-  // Phase 2 — called by "Start Recording" button inside the modal (or directly for upgraded mode)
+  // Deterministic wait for a React ref to be attached — replaces unreliable setTimeout
+  async function waitForRef(ref: React.RefObject<HTMLElement | null>, tries = 60): Promise<HTMLElement | null> {
+    for (let i = 0; i < tries; i++) {
+      if (ref.current) return ref.current;
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    return null;
+  }
+
+  // Phase 2 — called by "Start Exporting" button inside the modal (or directly for upgraded mode)
   const handleBeginRecording = async (clip: AudioClipData) => {
     if (!clip.local_path) return;
     // Kill any preview audio that might be playing before we start recording
@@ -1303,43 +1312,54 @@ export default function AudioToVideoPage() {
       // 2. Resume AudioContext (activation is fresh after the Share prompt)
       await audioCtx.resume();
 
-      // 3. Modal is already open; give React a tick to ensure captureTargetRef is valid
-      await new Promise<void>((r) => setTimeout(r, 80));
-
-      // 4. Crop stream to preview element only
-      const el = captureTargetRef.current;
+      // 3. Wait deterministically for captureTargetRef to be in the DOM
+      const el = await waitForRef(captureTargetRef as React.RefObject<HTMLElement | null>);
       if (!el) {
         displayVideoTrack.stop();
-        setIsRecordingModalOpen(false);
-        setIsExportRecording(false);
+        audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Export Cancelled", message: "Preview element was not ready. Please try again." });
         return;
       }
 
-      // Canvas-crop cleanup refs (populated only in the fallback path below)
+      // 4. Verify surface is the current tab — crop is a no-op on monitor/window surfaces
+      const surface = (displayVideoTrack.getSettings() as any).displaySurface;
+      if (surface && surface !== "browser") {
+        displayVideoTrack.stop();
+        audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({
+          title: "Wrong surface selected",
+          message: 'Please click "Start Exporting" again and choose "This Tab" (not a window or entire screen).',
+        });
+        return;
+      }
+
+      // 5. Apply crop — ABORT HARD on any failure (never record uncropped)
       let canvasDrawRafId = 0;
       let rawVideoEl: HTMLVideoElement | null = null;
-
-      if ("RestrictionTarget" in window && "restrictTo" in displayVideoTrack) {
-        // Chrome 122+ — Element Capture (excludes overlapping overlays)
-        await (displayVideoTrack as any).restrictTo(
-          await (window as any).RestrictionTarget.fromElement(el),
-        );
-      } else if ("CropTarget" in window && "cropTo" in displayVideoTrack) {
-        // Chrome 104–121 — Region Capture (crops to element rect)
-        await (displayVideoTrack as any).cropTo(
-          await (window as any).CropTarget.fromElement(el),
-        );
-      } else {
-        // ── Canvas-crop fallback — works in Firefox, Safari, all browsers ──────
-        // Pipe the display stream through a canvas, drawing only the element rect
-        // on every animation frame. MediaRecorder records the canvas stream.
+      try {
+        if ("RestrictionTarget" in window && "restrictTo" in displayVideoTrack) {
+          // Chrome 122+ — Element Capture (excludes overlapping overlays entirely)
+          await (displayVideoTrack as any).restrictTo(
+            await (window as any).RestrictionTarget.fromElement(el),
+          );
+        } else if ("CropTarget" in window && "cropTo" in displayVideoTrack) {
+          // Chrome 104–121 — Region Capture (crops to element bounding rect)
+          await (displayVideoTrack as any).cropTo(
+            await (window as any).CropTarget.fromElement(el),
+          );
+        } else {
+          throw new Error("unsupported");
+        }
+      } catch {
+        // Canvas-crop fallback — works in Firefox / older Chrome / any browser
         const rawVideo = document.createElement("video");
         rawVideoEl = rawVideo;
         rawVideo.srcObject = displayStream;
         rawVideo.muted = true;
         await new Promise<void>((r) => { rawVideo.onloadedmetadata = () => r(); });
         await rawVideo.play();
-        // Wait one rAF so videoWidth/videoHeight are populated
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
         const streamW = rawVideo.videoWidth  || window.innerWidth;
@@ -1352,21 +1372,27 @@ export default function AudioToVideoPage() {
         const srcW    = Math.round(elRect.width  * scaleX);
         const srcH    = Math.round(elRect.height * scaleY);
 
-        const cropCanvas = document.createElement("canvas");
-        cropCanvas.width  = srcW || 540;
-        cropCanvas.height = srcH || 960;
-        const cropCtx = cropCanvas.getContext("2d")!;
+        if (srcW < 10 || srcH < 10) {
+          rawVideo.srcObject = null;
+          displayVideoTrack.stop();
+          audioCtx.close(); exportAudioCtxRef.current = null;
+          setIsRecordingModalOpen(false); setIsExportRecording(false);
+          setExportInfoModal({
+            title: "Export Cancelled",
+            message: "Could not lock recording to the preview. Use Chrome or Edge and share 'This Tab'.",
+          });
+          return;
+        }
 
+        const cropCanvas = document.createElement("canvas");
+        cropCanvas.width  = srcW;
+        cropCanvas.height = srcH;
+        const cropCtx = cropCanvas.getContext("2d")!;
         const drawLoop = () => {
-          if (srcW > 0 && srcH > 0) {
-            cropCtx.drawImage(rawVideo, srcX, srcY, srcW, srcH, 0, 0, cropCanvas.width, cropCanvas.height);
-          }
+          cropCtx.drawImage(rawVideo, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
           canvasDrawRafId = requestAnimationFrame(drawLoop);
         };
         canvasDrawRafId = requestAnimationFrame(drawLoop);
-
-        // Swap to the canvas-cropped stream for recording
-        // (displayVideoTrack stays alive — it feeds rawVideo and fires "ended")
         recordingVideoTrack = cropCanvas.captureStream(30).getVideoTracks()[0];
       }
 
@@ -2261,7 +2287,9 @@ export default function AudioToVideoPage() {
                doesn't affect the flex layout. ── */}
           <div className="flex-1 relative bg-black flex items-center justify-center">
 
-            {/* The actual capture target — sized consistently in both phases */}
+            {/* The actual capture target — sized consistently in both phases.
+                outline is drawn on the element itself so the guide can never
+                diverge from the actually-cropped region. */}
             <div
               ref={captureTargetRef}
               style={{
@@ -2270,6 +2298,8 @@ export default function AudioToVideoPage() {
                 maxWidth: "calc((100vh - 48px) * 9 / 16)",
                 overflow: "hidden",
                 position: "relative",
+                outline: isPreviewPhase ? "2px dashed rgba(255,255,255,0.55)" : "none",
+                outlineOffset: "-2px",
               }}
             >
               <PreviewContent
@@ -2299,13 +2329,6 @@ export default function AudioToVideoPage() {
                   position: "relative",
                   pointerEvents: "none",
                 }}>
-                  {/* Dashed border */}
-                  <div style={{
-                    position: "absolute", inset: "-3px",
-                    border: "2px dashed rgba(255,255,255,0.5)",
-                    borderRadius: 4,
-                    pointerEvents: "none",
-                  }} />
                   {/* Corner markers */}
                   {([
                     { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
