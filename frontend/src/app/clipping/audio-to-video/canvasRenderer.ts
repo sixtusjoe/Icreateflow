@@ -311,34 +311,6 @@ export async function createCanvasRenderer(
     zigzagPoints.push([x, y]);
   }
 
-  // ── Pre-render: frosted-glass card background ────────────────────────────
-  // Replicate CSS backdrop-filter:blur() using Canvas 2D ctx.filter (GPU-backed).
-  // Since bgCanvas is static, we compute this once and reuse every frame.
-  const cardBlurCanvas = document.createElement("canvas");
-  cardBlurCanvas.width = CARD_W;
-  cardBlurCanvas.height = CARD_H;
-  const cbCtx = cardBlurCanvas.getContext("2d")!;
-  // Draw a padded region from the bg to avoid hard blur boundary artifacts
-  const BLUR_PAD = 80;
-  const blurSrcCanvas = document.createElement("canvas");
-  blurSrcCanvas.width = CARD_W + BLUR_PAD * 2;
-  blurSrcCanvas.height = CARD_H + BLUR_PAD * 2;
-  const blurSrcCtx = blurSrcCanvas.getContext("2d")!;
-  blurSrcCtx.drawImage(
-    bgCanvas,
-    CARD_X - BLUR_PAD, CARD_Y - BLUR_PAD, CARD_W + BLUR_PAD * 2, CARD_H + BLUR_PAD * 2,
-    0, 0, CARD_W + BLUR_PAD * 2, CARD_H + BLUR_PAD * 2,
-  );
-  cbCtx.filter = "blur(28px)";
-  cbCtx.drawImage(blurSrcCanvas, BLUR_PAD, BLUR_PAD, CARD_W, CARD_H, 0, 0, CARD_W, CARD_H);
-  cbCtx.filter = "none";
-  // Slight darken tint on top of blur (matching the theme's semi-transparent card fill)
-  cbCtx.fillStyle = tid === "minimal" ? "rgba(10,12,18,0.55)"
-                  : tid === "vivid"   ? "rgba(26,0,36,0.55)"
-                  : tid === "neon"    ? "rgba(0,0,0,0.55)"
-                  :                     "rgba(8,6,6,0.55)";
-  cbCtx.fillRect(0, 0, CARD_W, CARD_H);
-
   // ── Recording canvas ───────────────────────────────────────────────────
   const canvas = document.createElement("canvas");
   canvas.width = CW;
@@ -455,12 +427,19 @@ export async function createCanvasRenderer(
   function drawCard() {
     ctx.save();
 
-    // Card background — frosted-glass blur (pre-rendered cardBlurCanvas)
-    ctx.save();
+    // Card background — semi-transparent fill (skip backdrop-blur for perf)
     roundedRect(ctx, CARD_X, CARD_Y, CARD_W, CARD_H, CARD_R);
-    ctx.clip();
-    ctx.drawImage(cardBlurCanvas, CARD_X, CARD_Y);
-    ctx.restore();
+
+    if (tid === "minimal") {
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+    } else if (tid === "vivid") {
+      ctx.fillStyle = "rgba(112,26,80,0.20)";
+    } else if (tid === "neon") {
+      ctx.fillStyle = "rgba(0,0,0,0.60)";
+    } else {
+      ctx.fillStyle = "rgba(0,0,0,0.40)";
+    }
+    ctx.fill();
 
     // Card border
     roundedRect(ctx, CARD_X, CARD_Y, CARD_W, CARD_H, CARD_R);
@@ -956,10 +935,6 @@ export async function createCanvasRenderer(
     sqCanvas.height = 0;
     infernoCanvas.width = 0;
     infernoCanvas.height = 0;
-    cardBlurCanvas.width = 0;
-    cardBlurCanvas.height = 0;
-    blurSrcCanvas.width = 0;
-    blurSrcCanvas.height = 0;
   }
 
   return { canvas, renderFrame, destroy };

@@ -7054,7 +7054,7 @@ async def render_audio_clip_preview(
 
         database2 = await db.get_db()
         try:
-            if err is not None:
+            if err:
                 await database2.execute(
                     "UPDATE audio_video_clips SET status = 'failed', error = ? WHERE id = ?",
                     (err[:2000], avc_id),
@@ -7159,7 +7159,7 @@ async def generate_audio_video_clip(
 
         database2 = await db.get_db()
         try:
-            if err is not None:
+            if err:
                 await database2.execute(
                     "UPDATE audio_video_clips SET status = 'failed', error = ? WHERE id = ?",
                     (err[:500], avc_id),
