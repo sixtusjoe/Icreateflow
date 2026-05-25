@@ -6850,9 +6850,10 @@ async def render_audio_clip_preview(
     finally:
         await database.close()
 
-    # Output path — use data dir so the file is served correctly
+    # Output path — use data dir so the file is served correctly.
+    # Use .resolve() because gunicorn may load main.py with a relative __file__.
     artist_slug = track["slug"]
-    _data_dir = Path(__file__).parent.parent / "data"
+    _data_dir = Path(__file__).resolve().parent.parent / "data"
     out_dir = _data_dir / "output" / artist_slug / "audio_clips"
     out_dir.mkdir(parents=True, exist_ok=True)
     video_path = str(out_dir / f"clip_{clip_id}_preview.mp4")
@@ -6925,29 +6926,33 @@ async def render_audio_clip_preview(
             # Mux audio into the silent video using FFmpeg
             audio_local = clip.get("local_path")
             if audio_local:
-                # Resolve audio path: local_path is relative to data dir
-                data_dir = Path(__file__).parent.parent / "data"
+                # Resolve audio path: local_path is relative to data dir.
+                # Use .resolve() because __file__ may be relative when loaded by gunicorn.
+                data_dir = Path(__file__).resolve().parent.parent / "data"
                 audio_abs = str(data_dir / audio_local)
                 if not Path(audio_abs).exists():
                     audio_abs = audio_local  # fallback: relative to cwd
+                # Seek in audio to clip start, let video stream copy as-is
                 ffmpeg_proc = await _asyncio.create_subprocess_exec(
                     "ffmpeg", "-y",
-                    "-i", silent_video_path,
-                    "-ss", str(clip["start_s"]),
-                    "-t", str(clip_duration),
+                    "-i", silent_video_path,          # video: already correct duration
+                    "-ss", str(clip["start_s"]),       # seek audio to clip start
                     "-i", audio_abs,
+                    "-map", "0:v:0",                   # take video from silent render
+                    "-map", "1:a:0",                   # take audio from source file
                     "-c:v", "copy",
                     "-c:a", "aac",
+                    "-t", str(clip_duration),          # limit total duration
                     "-shortest",
                     video_path,
                     stdout=_asyncio.subprocess.PIPE,
                     stderr=_asyncio.subprocess.PIPE,
                 )
-                _, ff_stderr = await _asyncio.wait_for(ffmpeg_proc.communicate(), timeout=120)
-                Path(silent_video_path).unlink(missing_ok=True)
+                _, ff_stderr = await _asyncio.wait_for(ffmpeg_proc.communicate(), timeout=300)
                 if ffmpeg_proc.returncode != 0:
                     ff_err_txt = ff_stderr.decode(errors="replace") if ff_stderr else ""
                     raise RuntimeError(f"FFmpeg mux failed: {ff_err_txt[-500:]}")
+                Path(silent_video_path).unlink(missing_ok=True)
             else:
                 # No audio — just rename silent video
                 Path(silent_video_path).rename(video_path)
