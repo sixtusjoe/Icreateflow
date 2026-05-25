@@ -507,6 +507,7 @@ class AudioVideoClip(Base):
     video_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="'pending'")
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    render_progress: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0–100 percent
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
 

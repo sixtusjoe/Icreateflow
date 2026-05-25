@@ -6943,13 +6943,69 @@ async def render_audio_clip_preview(
                 "--props", json.dumps(silent_props),
                 "--output", silent_video_path,
                 "--duration", str(clip_duration),
+                "--fps", "24",              # 24fps is fine for social media, 20% fewer frames vs 30fps
                 stdout=_asyncio.subprocess.PIPE,
                 stderr=_asyncio.subprocess.PIPE,
                 cwd=str(render_script.parent),
             )
-            stdout_bytes, stderr_bytes = await _asyncio.wait_for(proc.communicate(), timeout=600)
-            stdout_txt = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
-            stderr_txt = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+
+            # Stream stdout to parse progress percentages and update the DB in real time.
+            # Allow up to 2 hours for long clips (renders run ~6min/10s of clip on the server).
+            import re as _re
+            stdout_lines: list[str] = []
+            stderr_data: bytes = b""
+            last_pct = 0
+
+            async def _drain_stderr():
+                nonlocal stderr_data
+                try:
+                    stderr_data = await proc.stderr.read()
+                except Exception:
+                    pass
+
+            _stderr_task = _asyncio.create_task(_drain_stderr())
+
+            async def _stream_stdout():
+                nonlocal last_pct
+                _db3 = None
+                try:
+                    while True:
+                        line_bytes = await _asyncio.wait_for(proc.stdout.readline(), timeout=300)
+                        if not line_bytes:
+                            break
+                        line = line_bytes.decode(errors="replace").rstrip()
+                        stdout_lines.append(line)
+                        print(f"[render-preview] clip {clip_id}: {line}")
+                        m = _re.search(r"Progress:\s*(\d+)%", line)
+                        if m:
+                            pct = int(m.group(1))
+                            if pct != last_pct:
+                                last_pct = pct
+                                # Update progress in DB every 5% to avoid hammering Postgres
+                                if pct % 5 == 0 or pct >= 99:
+                                    try:
+                                        _db3 = await db.get_db()
+                                        await _db3.execute(
+                                            "UPDATE audio_video_clips SET render_progress = ? WHERE id = ?",
+                                            (pct, avc_id),
+                                        )
+                                        await _db3.commit()
+                                    except Exception as _pe:
+                                        print(f"[render-preview] progress update failed: {_pe}")
+                                    finally:
+                                        if _db3:
+                                            try: await _db3.close()
+                                            except Exception: pass
+                                            _db3 = None
+                except _asyncio.TimeoutError:
+                    raise RuntimeError(f"Remotion render timed out (no output for 300s) for clip {clip_id}")
+
+            await _asyncio.wait_for(_stream_stdout(), timeout=7200)
+            await proc.wait()
+            await _stderr_task
+
+            stdout_txt = "\n".join(stdout_lines)
+            stderr_txt = stderr_data.decode(errors="replace") if stderr_data else ""
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"Remotion render failed.\nSTDERR: {stderr_txt[-1000:]}\nSTDOUT: {stdout_txt[-500:]}"
