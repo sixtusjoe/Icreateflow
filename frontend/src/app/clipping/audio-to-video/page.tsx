@@ -712,6 +712,8 @@ export default function AudioToVideoPage() {
   const captureTargetRef     = useRef<HTMLDivElement | null>(null);
   const isRecordingActiveRef = useRef(false);
   const recordingAudioRef    = useRef<HTMLAudioElement | null>(null);
+  // Themed info/error modal for export messages (replaces browser alert())
+  const [exportInfoModal, setExportInfoModal] = useState<{ title: string; message: string } | null>(null);
 
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
@@ -1259,7 +1261,10 @@ export default function AudioToVideoPage() {
         video: { preferCurrentTab: true } as any,
         audio: false,
       });
-      const [videoTrack] = displayStream.getVideoTracks();
+      // displayVideoTrack = raw tab capture; recordingVideoTrack = what MediaRecorder
+      // actually records (may be swapped for a canvas-cropped track on non-Chrome).
+      const displayVideoTrack = displayStream.getVideoTracks()[0];
+      let   recordingVideoTrack = displayVideoTrack;
 
       // 2. Resume AudioContext (activation is fresh after the Share prompt)
       await audioCtx.resume();
@@ -1271,25 +1276,65 @@ export default function AudioToVideoPage() {
       // 4. Crop stream to preview element only
       const el = captureTargetRef.current;
       if (!el) {
-        videoTrack.stop();
+        displayVideoTrack.stop();
         setIsRecordingModalOpen(false);
         setIsExportRecording(false);
         return;
       }
-      if ("RestrictionTarget" in window && "restrictTo" in videoTrack) {
-        await (videoTrack as any).restrictTo(
+
+      // Canvas-crop cleanup refs (populated only in the fallback path below)
+      let canvasDrawRafId = 0;
+      let rawVideoEl: HTMLVideoElement | null = null;
+
+      if ("RestrictionTarget" in window && "restrictTo" in displayVideoTrack) {
+        // Chrome 122+ — Element Capture (excludes overlapping overlays)
+        await (displayVideoTrack as any).restrictTo(
           await (window as any).RestrictionTarget.fromElement(el),
         );
-      } else if ("CropTarget" in window && "cropTo" in videoTrack) {
-        await (videoTrack as any).cropTo(
+      } else if ("CropTarget" in window && "cropTo" in displayVideoTrack) {
+        // Chrome 104–121 — Region Capture (crops to element rect)
+        await (displayVideoTrack as any).cropTo(
           await (window as any).CropTarget.fromElement(el),
         );
       } else {
-        videoTrack.stop();
-        setIsRecordingModalOpen(false);
-        setIsExportRecording(false);
-        alert("Export requires Chrome or Edge 104+");
-        return;
+        // ── Canvas-crop fallback — works in Firefox, Safari, all browsers ──────
+        // Pipe the display stream through a canvas, drawing only the element rect
+        // on every animation frame. MediaRecorder records the canvas stream.
+        const rawVideo = document.createElement("video");
+        rawVideoEl = rawVideo;
+        rawVideo.srcObject = displayStream;
+        rawVideo.muted = true;
+        await new Promise<void>((r) => { rawVideo.onloadedmetadata = () => r(); });
+        await rawVideo.play();
+        // Wait one rAF so videoWidth/videoHeight are populated
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+        const streamW = rawVideo.videoWidth  || window.innerWidth;
+        const streamH = rawVideo.videoHeight || window.innerHeight;
+        const elRect  = el.getBoundingClientRect();
+        const scaleX  = streamW / window.innerWidth;
+        const scaleY  = streamH / window.innerHeight;
+        const srcX    = Math.round(elRect.left   * scaleX);
+        const srcY    = Math.round(elRect.top    * scaleY);
+        const srcW    = Math.round(elRect.width  * scaleX);
+        const srcH    = Math.round(elRect.height * scaleY);
+
+        const cropCanvas = document.createElement("canvas");
+        cropCanvas.width  = srcW || 540;
+        cropCanvas.height = srcH || 960;
+        const cropCtx = cropCanvas.getContext("2d")!;
+
+        const drawLoop = () => {
+          if (srcW > 0 && srcH > 0) {
+            cropCtx.drawImage(rawVideo, srcX, srcY, srcW, srcH, 0, 0, cropCanvas.width, cropCanvas.height);
+          }
+          canvasDrawRafId = requestAnimationFrame(drawLoop);
+        };
+        canvasDrawRafId = requestAnimationFrame(drawLoop);
+
+        // Swap to the canvas-cropped stream for recording
+        // (displayVideoTrack stays alive — it feeds rawVideo and fires "ended")
+        recordingVideoTrack = cropCanvas.captureStream(30).getVideoTracks()[0];
       }
 
       // 5. Resolution warning
@@ -1312,8 +1357,8 @@ export default function AudioToVideoPage() {
       audioSrc.connect(audioDest);            // → recording
       audioSrc.connect(audioCtx.destination); // → speakers
 
-      // 8. MediaRecorder
-      const combined = new MediaStream([videoTrack, audioDest.stream.getAudioTracks()[0]]);
+      // 8. MediaRecorder — uses recordingVideoTrack (cropped stream or canvas track)
+      const combined = new MediaStream([recordingVideoTrack, audioDest.stream.getAudioTracks()[0]]);
       const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
         ? "video/webm;codecs=vp9,opus"
         : "video/webm";
@@ -1321,7 +1366,7 @@ export default function AudioToVideoPage() {
       const chunks: BlobPart[] = [];
       rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
-      // 9. Guards
+      // 9. Guards — listen on displayVideoTrack for "user stops sharing"
       let aborted = false;
       const beforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
       window.addEventListener("beforeunload", beforeUnload);
@@ -1329,7 +1374,7 @@ export default function AudioToVideoPage() {
         if (document.hidden && rec.state !== "inactive") { aborted = true; rec.stop(); }
       };
       document.addEventListener("visibilitychange", handleHidden);
-      videoTrack.addEventListener("ended", () => {
+      displayVideoTrack.addEventListener("ended", () => {
         aborted = true;
         if (rec.state !== "inactive") rec.stop();
       }, { once: true });
@@ -1354,9 +1399,11 @@ export default function AudioToVideoPage() {
       // 11. onstop — runs when song ends, tab is hidden, or user stops sharing
       rec.onstop = () => {
         cancelAnimationFrame(rafId);
+        cancelAnimationFrame(canvasDrawRafId);
         window.removeEventListener("beforeunload", beforeUnload);
         document.removeEventListener("visibilitychange", handleHidden);
-        videoTrack.stop();
+        displayVideoTrack.stop();
+        if (rawVideoEl) { rawVideoEl.srcObject = null; rawVideoEl = null; }
         audioCtx.close();
         exportAudioCtxRef.current    = null;
         isRecordingActiveRef.current = false;
@@ -1365,7 +1412,10 @@ export default function AudioToVideoPage() {
         setIsExportRecording(false);
         setExportProgress(100);
         if (aborted) {
-          alert("Export cancelled — keep the tab in front next time");
+          setExportInfoModal({
+            title: "Export Cancelled",
+            message: "Recording stopped because the tab was hidden or sharing ended. Keep this tab in the foreground while recording.",
+          });
           return;
         }
         const blob = new Blob(chunks, { type: mimeType });
@@ -2171,6 +2221,25 @@ export default function AudioToVideoPage() {
         </div>
       );
     })()}
+
+    {/* ── Export Info Modal (themed, replaces browser alert) ──────────── */}
+    {exportInfoModal && (
+      <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setExportInfoModal(null)} />
+        <div className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl">
+          <h3 className="text-base font-semibold mb-2">{exportInfoModal.title}</h3>
+          <p className="text-sm text-muted-foreground mb-6">{exportInfoModal.message}</p>
+          <div className="flex justify-end">
+            <button
+              onClick={() => setExportInfoModal(null)}
+              className="rounded-xl bg-foreground px-5 py-2 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
 
     {/* ── Export Preview Modal ─────────────────────────────────────────── */}
     {exportedBlobUrl && (
