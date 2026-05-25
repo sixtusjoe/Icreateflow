@@ -544,6 +544,139 @@ async function simulateBackdropBlur(
   return () => restores.forEach(fn => fn());
 }
 
+/**
+ * Pre-capture all lyric frames for the layer-composite WebGL renderer.
+ *
+ * For each (groupIdx, wordHighlightIdx) pair we render an off-screen div
+ * that exactly mirrors the HTML preview lyrics — Inter 800, text-3xl, tracking-tight,
+ * flex-wrap centered — and capture it via html-to-image at export resolution.
+ *
+ * Returns:
+ *  frames[gi][li + 1]  where li = -1 (no word highlighted) to groupSize-1
+ *  rect                position of the lyric area in 1080×1920 output pixels
+ */
+async function preCaptureAllLyricFrames(
+  words: AudioWord[],
+  theme: { accent: string; textGlow: string },
+  previewEl: HTMLElement,
+): Promise<{
+  frames: HTMLCanvasElement[][];
+  rect: { x1: number; y1: number; x2: number; y2: number };
+}> {
+  const GROUP_SZ = 5;
+  const OUTPUT_W = 1080;
+  const OUTPUT_H = 1920;
+  const numGroups = Math.ceil(words.length / GROUP_SZ);
+
+  // Lyric area in output pixels (matches CSS: left-[8%] right-[8%] top-[70.3%] bottom-[5%])
+  const rect = {
+    x1: Math.round(OUTPUT_W * 0.08),
+    y1: Math.round(OUTPUT_H * 0.703),
+    x2: Math.round(OUTPUT_W * 0.92),
+    y2: Math.round(OUTPUT_H * 0.95),
+  };
+
+  if (numGroups === 0) return { frames: [], rect };
+
+  const pw = previewEl.offsetWidth;
+  const ph = previewEl.offsetHeight;
+  const pixelRatio = OUTPUT_W / pw;
+
+  // Off-screen div dimensions in CSS pixels (same proportions as the lyric area)
+  const divW = pw * (0.92 - 0.08);           // 84% of preview width
+  const divH = ph * (0.95 - 0.703);          // 24.7% of preview height
+
+  // Ensure Inter 800 is loaded (Next.js already injects it, but wait to be safe)
+  try { await document.fonts.load(`800 30px Inter`); } catch { /* fallback OK */ }
+
+  const { toCanvas } = await import("html-to-image");
+  const frames: HTMLCanvasElement[][] = [];
+
+  for (let gi = 0; gi < numGroups; gi++) {
+    const group = words.slice(gi * GROUP_SZ, gi * GROUP_SZ + GROUP_SZ);
+    const groupFrames: HTMLCanvasElement[] = [];
+
+    // li = -1 (no word highlighted) through group.length - 1
+    for (let li = -1; li < group.length; li++) {
+      // ── Build off-screen container ───────────────────────────────────────────
+      const container = document.createElement("div");
+      container.style.cssText = [
+        "position:fixed",
+        "left:-9999px",
+        "top:0",
+        `width:${divW}px`,
+        `height:${divH}px`,
+        "display:flex",
+        "align-items:flex-start",
+        "justify-content:center",
+        "overflow:hidden",
+        "pointer-events:none",
+      ].join(";");
+
+      const inner = document.createElement("div");
+      inner.style.cssText = "text-align:center;width:100%";
+
+      const p = document.createElement("p");
+      // Mirror: text-3xl font-extrabold tracking-tight leading-[1.3] flex flex-wrap justify-center gap-x-2 gap-y-1
+      p.style.cssText = [
+        "font-family:'Inter',-apple-system,'Segoe UI',sans-serif",
+        "font-size:30px",
+        "font-weight:800",
+        "letter-spacing:-0.025em",
+        "line-height:1.3",
+        "display:flex",
+        "flex-wrap:wrap",
+        "justify-content:center",
+        "column-gap:8px",
+        "row-gap:4px",
+        "margin:0",
+        "padding:0",
+        "filter:drop-shadow(0 8px 5px rgba(0,0,0,0.08))",
+      ].join(";");
+
+      group.forEach((word, wIdx) => {
+        const span = document.createElement("span");
+        span.textContent = word.word;
+        span.style.display = "inline-block";
+        if (wIdx === li) {
+          // Highlighted
+          span.style.color = theme.accent;
+          span.style.textShadow = theme.textGlow;
+          span.style.transform = "scale(1.05)";
+        } else if (wIdx < li) {
+          // Past
+          span.style.color = "#ffffff";
+          span.style.textShadow = "0 4px 10px rgba(0,0,0,0.8)";
+        } else {
+          // Upcoming
+          span.style.color = "rgba(255,255,255,0.4)";
+          span.style.textShadow = "0 4px 10px rgba(0,0,0,0.8)";
+        }
+        p.appendChild(span);
+      });
+
+      inner.appendChild(p);
+      container.appendChild(inner);
+      document.body.appendChild(container);
+
+      const frameCanvas = await toCanvas(container, {
+        width: divW,
+        height: divH,
+        pixelRatio,
+        backgroundColor: null as any, // transparent
+        skipFonts: false,             // embed Inter so the SVG renders it correctly
+      });
+
+      document.body.removeChild(container);
+      groupFrames.push(frameCanvas);
+    }
+
+    frames.push(groupFrames);
+  }
+
+  return { frames, rect };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatTime(s: number): string {
@@ -1743,11 +1876,17 @@ export default function AudioToVideoPage() {
                                   if (zigzagLayerRef.current) zigzagLayerRef.current.style.visibility = "visible";
                                   if (lyricsLayerRef.current) lyricsLayerRef.current.style.visibility = "visible";
 
+                                  // Pre-capture all lyric frames (html-to-image, Inter 800, no Canvas 2D)
+                                  const { frames: lyricFrames, rect: lyricRect } =
+                                    await preCaptureAllLyricFrames(words2, theme2, previewEl);
+
                                   layerOverrides = {
                                     layerCanvas: capturedLayerCanvas,
                                     coverCanvas: capturedCoverCanvas,
                                     coverCX, coverCY, coverCW, coverCH,
                                     spinDuration,
+                                    lyricFrames,
+                                    lyricRect,
                                   };
                                 }
 

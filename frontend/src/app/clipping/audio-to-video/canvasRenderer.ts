@@ -36,6 +36,14 @@ export interface LayerOverrides {
   coverCH: number;
   /** Seconds per full rotation (null = no spin) */
   spinDuration: number | null;
+  /**
+   * Pre-captured lyric frames: lyricFrames[groupIdx][li + 1]
+   * where li = -1 (no word highlighted yet) to groupSize-1 (last word highlighted).
+   * Each canvas is the full lyric area rendered at 1080×(area height) pixels.
+   */
+  lyricFrames: HTMLCanvasElement[][];
+  /** Position of the lyric area in output pixels (1080×1920 space) */
+  lyricRect: { x1: number; y1: number; x2: number; y2: number };
 }
 
 export interface RendererConfig {
@@ -503,6 +511,25 @@ void main(){
   outColor = texture(u_tex, v_uv);
 }`;
 
+// Sub-quad vertex shader — positions a quad and computes local UV (0..1 within the quad).
+// Used for blitting lyric textures at a specific screen rect.
+// Use with FS_BLIT: the FS_BLIT 1-v_uv.y flip cancels UNPACK_FLIP_Y so images appear upright.
+const VS_QUAD_LOCAL = `#version 300 es
+precision highp float;
+in vec2 a_pos;
+uniform vec2 u_res;
+uniform vec2 u_quad_min;
+uniform vec2 u_quad_max;
+out vec2 v_uv;
+void main(){
+  v_uv = (a_pos - u_quad_min) / (u_quad_max - u_quad_min);
+  gl_Position = vec4(
+    a_pos.x / u_res.x * 2.0 - 1.0,
+    1.0 - a_pos.y / u_res.y * 2.0,
+    0.0, 1.0
+  );
+}`;
+
 /* ── WebGL Helpers ────────────────────────────────────────────────────────── */
 
 function mkShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
@@ -667,17 +694,15 @@ function runBlurPass(
 async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<CanvasRenderer> {
   const { width: CW, height: CH, theme, words } = cfg;
   const lo = cfg.layerOverrides!;
-  const { layerCanvas, coverCanvas, coverCX, coverCY, coverCW, coverCH, spinDuration } = lo;
+  const { layerCanvas, coverCanvas, coverCX, coverCY, coverCW, coverCH, spinDuration,
+          lyricFrames, lyricRect } = lo;
   const [acR, acG, acB] = hexToRgb01(theme.accent);
 
   // Layout constants (must match page.tsx CSS percentages)
-  const CARD_Y  = Math.round(CH * 0.06);
-  const CARD_H  = Math.round(CH * 0.46);
   const ZIG_X   = Math.round(CW * 0.13);
   const ZIG_Y   = Math.round(CH * 0.588);
   const ZIG_W   = Math.round(CW * 0.74);
   const ZIG_H   = 30;
-  const LYRIC_Y = Math.round(CH * 0.80);
   const GROUP_SZ = 5;
 
   // WebGL2 canvas
@@ -690,12 +715,16 @@ async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<Canvas
   gl.viewport(0, 0, CW, CH);
 
   // Shader programs
-  const blitProg     = mkProg(gl, VS_SCREEN, FS_BLIT);
-  const coverRotProg = mkProg(gl, VS_COVER_ROT, FS_COVER_BLIT);
-  const zigProg      = mkProg(gl, VS_ZIGZAG, FS_ZIGZAG);
+  const blitProg      = mkProg(gl, VS_SCREEN, FS_BLIT);
+  const lyricQuadProg = mkProg(gl, VS_QUAD_LOCAL, FS_BLIT);
+  const coverRotProg  = mkProg(gl, VS_COVER_ROT, FS_COVER_BLIT);
+  const zigProg       = mkProg(gl, VS_ZIGZAG, FS_ZIGZAG);
 
   // Geometry — full-screen quad
   const fullQuad = mkQuadBuf(gl, 0, 0, CW, CH);
+
+  // Lyric quad — positioned at the lyric area in output pixels
+  const lyricQuad = mkQuadBuf(gl, lyricRect.x1, lyricRect.y1, lyricRect.x2, lyricRect.y2);
 
   // Unit quad for cover rotation: a_pos in [-0.5, 0.5]
   const coverUnitBuf = gl.createBuffer()!;
@@ -712,22 +741,27 @@ async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<Canvas
     zigPoints.push([((i + 1) / 80) * ZIG_W, i % 2 === 0 ? 5 : 25]);
   }
 
-  // Textures
+  // Static layer texture (bg + card baked together)
   const layerTex = mkTex(gl);
   uploadImageToTex(gl, layerTex, layerCanvas);
 
+  // Spinning cover texture
   const coverTex = mkTex(gl);
   if (coverCW > 0) uploadImageToTex(gl, coverTex, coverCanvas);
 
-  // Text canvas (Canvas 2D → WebGL texture) for dynamic lyrics
-  const textCanvas = document.createElement("canvas");
-  textCanvas.width = CW; textCanvas.height = CH;
-  const tctx = textCanvas.getContext("2d")!;
-  const textTex = mkTex(gl);
+  // ── Lyric textures — pre-captured HTML frames ────────────────────────────────
+  // lyricTextures[gi][li+1] mirrors the lyricFrames layout from LayerOverrides.
+  // li = -1 (index 0) means no word highlighted yet; li = 0..4 = word highlighted.
+  const lyricTextures: WebGLTexture[][] = lyricFrames.map(groupFrames =>
+    groupFrames.map(frameCanvas => {
+      const tex = mkTex(gl);
+      uploadImageToTex(gl, tex, frameCanvas);
+      return tex;
+    })
+  );
 
-  let lastGroupIdx = -999, lastWordIdx = -999;
-
-  function renderTextCanvas(audioTime: number) {
+  // ── Word-state helper ────────────────────────────────────────────────────────
+  function getWordState(audioTime: number): { gi: number; li: number } {
     const tAbs = audioTime + (cfg.clipStartS ?? 0);
     let wi = -1;
     for (let i = 0; i < words.length; i++) {
@@ -736,43 +770,7 @@ async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<Canvas
     }
     const gi = wi >= 0 ? Math.floor(wi / GROUP_SZ) : 0;
     const li = wi >= 0 ? wi - gi * GROUP_SZ : -1;
-    if (gi === lastGroupIdx && li === lastWordIdx) return;
-    lastGroupIdx = gi; lastWordIdx = li;
-
-    tctx.clearRect(0, 0, CW, CH);
-
-    // Lyrics only — "NOW PLAYING" label is already baked into layerCanvas
-    const group = words.slice(gi * GROUP_SZ, gi * GROUP_SZ + GROUP_SZ);
-    if (group.length === 0) { uploadImageToTex(gl, textTex, textCanvas); return; }
-
-    const fontSize = CW * 0.040;
-    tctx.font = `bold ${fontSize}px -apple-system,'Segoe UI',sans-serif`;
-    tctx.textBaseline = "middle";
-    const parts = group.map(w => w.word + " ");
-    let tw = 0;
-    parts.forEach(p => { tw += tctx.measureText(p).width; });
-    let x = CW / 2 - tw / 2;
-    tctx.save();
-    parts.forEach((p, i) => {
-      const pw = tctx.measureText(p).width;
-      if (i === li) {
-        tctx.fillStyle = theme.accent;
-        tctx.shadowColor = `rgba(${Math.round(acR*255)},${Math.round(acG*255)},${Math.round(acB*255)},0.75)`;
-        tctx.shadowBlur = 28;
-      } else if (i < li) {
-        tctx.fillStyle = "rgba(255,255,255,0.40)";
-        tctx.shadowBlur = 0;
-      } else {
-        tctx.fillStyle = "rgba(255,255,255,0.88)";
-        tctx.shadowColor = "rgba(0,0,0,0.8)";
-        tctx.shadowBlur = 10;
-      }
-      tctx.fillText(p, x, LYRIC_Y);
-      x += pw;
-      tctx.shadowBlur = 0;
-    });
-    tctx.restore();
-    uploadImageToTex(gl, textTex, textCanvas);
+    return { gi, li };
   }
 
   function buildZigzagStrip(progressFraction: number): { data: Float32Array; count: number } {
@@ -799,9 +797,6 @@ async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<Canvas
     }
     lastAudioTime = audioCurrentTime;
 
-    // Update text texture when word group changes
-    renderTextCanvas(audioCurrentTime);
-
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, CW, CH);
     gl.clearColor(0, 0, 0, 1);
@@ -814,7 +809,7 @@ async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<Canvas
     uni1f(gl, blitProg, "u_alpha", 1.0);
     drawQuad(gl, blitProg, fullQuad);
 
-    // 2. Spinning cover (only for themes where the cover element was captured separately)
+    // 2. Spinning cover (only for themes where the cover was captured separately)
     if (coverCW > 0) {
       gl.useProgram(coverRotProg);
       uni2f(gl, coverRotProg, "u_res", CW, CH);
@@ -852,19 +847,30 @@ async function createLayerCompositeRenderer(cfg: RendererConfig): Promise<Canvas
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.disableVertexAttribArray(zigLoc);
 
-    // 4. Lyrics text overlay
-    gl.useProgram(blitProg);
-    uni2f(gl, blitProg, "u_res", CW, CH);
-    uniTex(gl, blitProg, "u_tex", textTex, 0);
-    uni1f(gl, blitProg, "u_alpha", 1.0);
-    drawQuad(gl, blitProg, fullQuad);
+    // 4. Lyric overlay — blit the pre-captured html-to-image frame for this (group, word) state
+    if (lyricTextures.length > 0) {
+      const { gi, li } = getWordState(audioCurrentTime);
+      const frameIdx = li + 1; // 0 = no word highlighted, 1..n = word li highlighted
+      const lyricTexRow = lyricTextures[Math.min(gi, lyricTextures.length - 1)];
+      if (lyricTexRow && frameIdx < lyricTexRow.length) {
+        gl.useProgram(lyricQuadProg);
+        uni2f(gl, lyricQuadProg, "u_res", CW, CH);
+        uni2f(gl, lyricQuadProg, "u_quad_min", lyricRect.x1, lyricRect.y1);
+        uni2f(gl, lyricQuadProg, "u_quad_max", lyricRect.x2, lyricRect.y2);
+        uniTex(gl, lyricQuadProg, "u_tex", lyricTexRow[frameIdx], 0);
+        uni1f(gl, lyricQuadProg, "u_alpha", 1.0);
+        drawQuad(gl, lyricQuadProg, lyricQuad);
+      }
+    }
   }
 
   function destroy() {
     gl.deleteBuffer(fullQuad);
+    gl.deleteBuffer(lyricQuad);
     gl.deleteBuffer(coverUnitBuf);
     gl.deleteBuffer(zigBuf);
-    for (const tex of [layerTex, coverTex, textTex]) gl.deleteTexture(tex);
+    for (const tex of [layerTex, coverTex]) gl.deleteTexture(tex);
+    lyricTextures.forEach(row => row.forEach(tex => gl.deleteTexture(tex)));
     const ext = gl.getExtension("WEBGL_lose_context");
     ext?.loseContext();
   }
