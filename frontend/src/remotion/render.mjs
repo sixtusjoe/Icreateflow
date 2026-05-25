@@ -6,34 +6,33 @@
  * Usage:
  *   node render.mjs --props '{"themeId":"minimal",...}' --output /path/to/out.mp4 --duration 30
  *
- * Renders in chunks of CHUNK_FRAMES frames to prevent headless Chromium
- * memory accumulation that causes "Target closed" crashes every ~9 frames.
- * Each chunk starts a fresh browser; chunks are concatenated by FFmpeg.
+ * Strategy:
+ * 1. Use renderFrames() to capture PNG screenshots (no compositor binary needed)
+ * 2. Encode PNGs to H264 MP4 with system FFmpeg
+ *
+ * This bypasses @remotion/compositor-linux-x64-gnu/remotion which requires
+ * GLIBC_2.35 (not available on AlmaLinux 9 / RHEL 9 which ships GLIBC 2.34).
  */
 import { bundle } from "@remotion/bundler";
-import { renderMedia, selectComposition } from "@remotion/renderer";
+import { renderFrames, selectComposition } from "@remotion/renderer";
 import path from "path";
 import fs from "fs";
-import { execSync, spawnSync } from "child_process";
+import os from "os";
+import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 import { parseArgs } from "util";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Cache file — stores the last bundle location so we can skip re-bundling
-// when running multiple renders. Invalidated if the entry point changes.
+// Cache the bundle across invocations to skip webpack (~2-3 min overhead)
 const BUNDLE_CACHE_FILE = path.join(__dirname, ".bundle-cache.json");
 
 function getCachedBundle() {
   try {
     const { location, mtime } = JSON.parse(fs.readFileSync(BUNDLE_CACHE_FILE, "utf8"));
-    // Check the bundle output dir still exists
     if (fs.existsSync(path.join(location, "index.html"))) {
-      // Check entry point hasn't changed since the bundle was created
       const entryMtime = fs.statSync(path.resolve(__dirname, "index.ts")).mtimeMs;
-      if (entryMtime <= mtime) {
-        return location;
-      }
+      if (entryMtime <= mtime) return location;
     }
   } catch {}
   return null;
@@ -61,11 +60,6 @@ const durationSec = parseFloat(values.duration || "30");
 const fps = parseInt(values.fps || "30", 10);
 const durationInFrames = Math.ceil(durationSec * fps);
 
-// Restart Chromium every N frames to prevent memory accumulation.
-// Empirically, crashes happen every ~9 frames in --single-process mode.
-// Rendering 8 frames per chunk keeps well under that threshold.
-const CHUNK_FRAMES = 8;
-
 // Find system Chromium
 function findChromium() {
   const candidates = [
@@ -80,38 +74,21 @@ function findChromium() {
   return null;
 }
 
-async function renderChunk(bundleLocation, composition, chromiumPath, startFrame, endFrame, chunkPath) {
-  await renderMedia({
-    composition,
-    serveUrl: bundleLocation,
-    codec: "h264",
-    outputLocation: chunkPath,
-    inputProps,
-    frameRange: [startFrame, endFrame],
-    ...(chromiumPath ? { browserExecutable: chromiumPath } : {}),
-    chromiumOptions: {
-      gl: "swangle",
-      disableWebSecurity: true,
-    },
-    concurrency: 1,
-    timeoutInMilliseconds: 60000,
-    encoderOptions: {
-      crf: 23,
-      preset: "ultrafast",
-    },
-    onProgress: ({ progress, renderedFrames, encodedFrames }) => {
-      // Report global progress across all chunks
-      const globalRendered = startFrame + renderedFrames;
-      const pct = Math.round((globalRendered / durationInFrames) * 100);
-      process.stdout.write(`[render] Progress: ${pct}% (rendered ${globalRendered}, encoded ${startFrame + encodedFrames})\n`);
-    },
-  });
+// Find system FFmpeg
+function findFfmpeg() {
+  for (const p of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "ffmpeg"]) {
+    try { if (p.startsWith("/") && !fs.existsSync(p)) continue; return p; } catch {}
+  }
+  return "ffmpeg"; // rely on PATH
 }
 
 async function main() {
   const chromiumPath = findChromium();
+  const ffmpegPath = findFfmpeg();
   console.log(`[render] Chromium: ${chromiumPath || "auto-download"}`);
+  console.log(`[render] FFmpeg: ${ffmpegPath}`);
 
+  // ── Bundle ────────────────────────────────────────────────────────────────
   let bundleLocation = getCachedBundle();
   if (bundleLocation) {
     console.log(`[render] Using cached bundle: ${bundleLocation}`);
@@ -122,9 +99,10 @@ async function main() {
       webpackOverride: (config) => config,
     });
     saveBundleCache(bundleLocation);
-    console.log(`[render] Bundle cached for future renders.`);
+    console.log("[render] Bundle cached for future renders.");
   }
 
+  // ── Select composition ────────────────────────────────────────────────────
   console.log("[render] Selecting composition...");
   const composition = await selectComposition({
     serveUrl: bundleLocation,
@@ -132,81 +110,67 @@ async function main() {
     inputProps,
     ...(chromiumPath ? { browserExecutable: chromiumPath } : {}),
   });
-
-  // Override duration
   composition.durationInFrames = durationInFrames;
   composition.fps = fps;
 
   // Ensure output directory exists
   const outDir = path.dirname(outputLocation);
-  if (!fs.existsSync(outDir)) {
-    fs.mkdirSync(outDir, { recursive: true });
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+  // ── Render frames to PNGs ─────────────────────────────────────────────────
+  const framesDir = path.join(os.tmpdir(), `remotion-frames-${Date.now()}`);
+  fs.mkdirSync(framesDir, { recursive: true });
+
+  console.log(`[render] Rendering ${durationInFrames} frames (${durationSec}s @ ${fps}fps) → ${outputLocation}`);
+
+  let lastPct = -1;
+  await renderFrames({
+    composition,
+    serveUrl: bundleLocation,
+    outputDir: framesDir,
+    inputProps,
+    imageFormat: "jpeg",    // JPEG is faster to write/read than PNG for video encoding
+    jpegQuality: 90,
+    ...(chromiumPath ? { browserExecutable: chromiumPath } : {}),
+    chromiumOptions: {
+      gl: "swangle",
+      disableWebSecurity: true,
+    },
+    concurrency: 1,
+    timeoutInMilliseconds: 60000,
+    onFrameUpdate: (rendered) => {
+      const pct = Math.round((rendered / durationInFrames) * 100);
+      if (pct !== lastPct) {
+        lastPct = pct;
+        process.stdout.write(`[render] Progress: ${pct}% (rendered ${rendered}, encoded 0)\n`);
+      }
+    },
+  });
+
+  console.log(`[render] All frames rendered. Encoding with FFmpeg...`);
+
+  // ── Encode with system FFmpeg ─────────────────────────────────────────────
+  const result = spawnSync(ffmpegPath, [
+    "-y",
+    "-framerate", String(fps),
+    "-i", path.join(framesDir, "element-%08d.jpeg"),
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "23",
+    "-pix_fmt", "yuv420p",
+    outputLocation,
+  ], { stdio: "pipe", maxBuffer: 64 * 1024 * 1024 });
+
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString() || "";
+    throw new Error(`FFmpeg encoding failed:\n${stderr.slice(-2000)}`);
   }
 
-  const totalChunks = Math.ceil(durationInFrames / CHUNK_FRAMES);
-  console.log(`[render] Rendering ${durationInFrames} frames (${durationSec}s @ ${fps}fps) in ${totalChunks} chunks → ${outputLocation}`);
-
-  if (totalChunks === 1) {
-    // Single chunk — render directly
-    await renderChunk(bundleLocation, composition, chromiumPath, 0, durationInFrames - 1, outputLocation);
-  } else {
-    // Multi-chunk — render each chunk then FFmpeg concat
-    const tmpDir = path.join(path.dirname(outputLocation), `.chunks_${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const chunkPaths = [];
-
-    for (let i = 0; i < totalChunks; i++) {
-      const startFrame = i * CHUNK_FRAMES;
-      const endFrame = Math.min((i + 1) * CHUNK_FRAMES - 1, durationInFrames - 1);
-      const chunkPath = path.join(tmpDir, `chunk_${String(i).padStart(4, "0")}.mp4`);
-      console.log(`[render] Chunk ${i + 1}/${totalChunks}: frames ${startFrame}-${endFrame}`);
-
-      // Brief pause between chunks so previous Chromium can fully exit.
-      // "Unable to close browser" warnings leave lingering processes that
-      // cause "Session closed" errors in the next chunk if we start too soon.
-      if (i > 0) {
-        await new Promise(r => setTimeout(r, 800));
-      }
-
-      // Retry once if the chunk fails (e.g. due to lingering browser cleanup race)
-      let chunkDone = false;
-      for (let attempt = 0; attempt < 2 && !chunkDone; attempt++) {
-        try {
-          if (attempt > 0) {
-            console.log(`[render] Retrying chunk ${i + 1} (attempt ${attempt + 1})...`);
-            await new Promise(r => setTimeout(r, 1500));
-          }
-          await renderChunk(bundleLocation, composition, chromiumPath, startFrame, endFrame, chunkPath);
-          chunkDone = true;
-        } catch (chunkErr) {
-          if (attempt === 1) throw chunkErr; // propagate on second failure
-          console.error(`[render] Chunk ${i + 1} failed (will retry): ${chunkErr.message}`);
-        }
-      }
-      chunkPaths.push(chunkPath);
-    }
-
-    // Concatenate chunks with FFmpeg
-    console.log(`[render] Concatenating ${totalChunks} chunks...`);
-    const concatList = path.join(tmpDir, "concat.txt");
-    fs.writeFileSync(concatList, chunkPaths.map(p => `file '${p}'`).join("\n"));
-    const ffmpegResult = spawnSync("ffmpeg", [
-      "-y",
-      "-f", "concat",
-      "-safe", "0",
-      "-i", concatList,
-      "-c", "copy",
-      outputLocation,
-    ], { stdio: "pipe" });
-
-    if (ffmpegResult.status !== 0) {
-      throw new Error(`FFmpeg concat failed:\n${ffmpegResult.stderr?.toString()}`);
-    }
-
-    // Cleanup chunk files
-    chunkPaths.forEach(p => { try { fs.unlinkSync(p); } catch {} });
-    try { fs.unlinkSync(concatList); fs.rmdirSync(tmpDir); } catch {}
-  }
+  // Cleanup frames dir
+  try {
+    fs.readdirSync(framesDir).forEach(f => fs.unlinkSync(path.join(framesDir, f)));
+    fs.rmdirSync(framesDir);
+  } catch {}
 
   console.log(`[render] Done: ${outputLocation}`);
 }
