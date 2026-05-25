@@ -127,7 +127,29 @@ async function main() {
       const endFrame = Math.min((i + 1) * CHUNK_FRAMES - 1, durationInFrames - 1);
       const chunkPath = path.join(tmpDir, `chunk_${String(i).padStart(4, "0")}.mp4`);
       console.log(`[render] Chunk ${i + 1}/${totalChunks}: frames ${startFrame}-${endFrame}`);
-      await renderChunk(bundleLocation, composition, chromiumPath, startFrame, endFrame, chunkPath);
+
+      // Brief pause between chunks so previous Chromium can fully exit.
+      // "Unable to close browser" warnings leave lingering processes that
+      // cause "Session closed" errors in the next chunk if we start too soon.
+      if (i > 0) {
+        await new Promise(r => setTimeout(r, 800));
+      }
+
+      // Retry once if the chunk fails (e.g. due to lingering browser cleanup race)
+      let chunkDone = false;
+      for (let attempt = 0; attempt < 2 && !chunkDone; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`[render] Retrying chunk ${i + 1} (attempt ${attempt + 1})...`);
+            await new Promise(r => setTimeout(r, 1500));
+          }
+          await renderChunk(bundleLocation, composition, chromiumPath, startFrame, endFrame, chunkPath);
+          chunkDone = true;
+        } catch (chunkErr) {
+          if (attempt === 1) throw chunkErr; // propagate on second failure
+          console.error(`[render] Chunk ${i + 1} failed (will retry): ${chunkErr.message}`);
+        }
+      }
       chunkPaths.push(chunkPath);
     }
 
