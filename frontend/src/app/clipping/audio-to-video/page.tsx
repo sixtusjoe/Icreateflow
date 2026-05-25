@@ -709,9 +709,10 @@ export default function AudioToVideoPage() {
 
   // Screen-recording state / refs
   const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
-  const captureTargetRef     = useRef<HTMLDivElement | null>(null);
-  const isRecordingActiveRef = useRef(false);
-  const recordingAudioRef    = useRef<HTMLAudioElement | null>(null);
+  const captureTargetRef      = useRef<HTMLDivElement | null>(null);
+  const isRecordingActiveRef  = useRef(false);
+  const recordingAudioRef     = useRef<HTMLAudioElement | null>(null);
+  const pendingExportClipRef  = useRef<AudioClipData | null>(null); // clip staged in preview phase
   // Themed info/error modal for export messages (replaces browser alert())
   const [exportInfoModal, setExportInfoModal] = useState<{ title: string; message: string } | null>(null);
 
@@ -1155,7 +1156,26 @@ export default function AudioToVideoPage() {
 
   // ─── Export ───────────────────────────────────────────────────────────────
 
-  const handleStartExport = async (clip: AudioClipData) => {
+  // Phase 1 — open the preview modal; user will confirm recording in Phase 2
+  const handleStartExport = (clip: AudioClipData) => {
+    if (!clip.local_path) return;
+    if (renderMode === "upgraded") {
+      // Upgraded mode skips the preview modal and goes straight to WebGL recording
+      handleBeginRecording(clip);
+      return;
+    }
+    setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
+    pendingExportClipRef.current = clip;
+    setIsRecordingModalOpen(true);
+    // Auto-play the preview audio so the user can see karaoke in motion
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.currentTime = 0;
+      audioPreviewRef.current.play().catch(() => {});
+    }
+  };
+
+  // Phase 2 — called by "Start Recording" button inside the modal (or directly for upgraded mode)
+  const handleBeginRecording = async (clip: AudioClipData) => {
     if (!clip.local_path) return;
     const clipCfg       = clipConfigs[clip.id] ?? { template_id: "minimal" };
     const themeId2      = (clipCfg.template_id ?? "minimal") as ThemeId;
@@ -1255,6 +1275,7 @@ export default function AudioToVideoPage() {
       // 0. Guard: getDisplayMedia is desktop-only (not available on iOS / Android)
       if (!navigator.mediaDevices?.getDisplayMedia) {
         setIsExportRecording(false);
+        setIsRecordingModalOpen(false);
         setGenerationErrors((e) => ({
           ...e,
           [clip.id]: "Export requires a desktop browser (Chrome or Edge). Screen recording is not supported on mobile.",
@@ -1267,6 +1288,7 @@ export default function AudioToVideoPage() {
       exportAudioCtxRef.current = audioCtx;
 
       // 1. getDisplayMedia is the FIRST await — locks in gesture activation
+      //    Modal is already open (opened in Phase 1), captureTargetRef is already attached
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: { preferCurrentTab: true } as any,
         audio: false,
@@ -1279,8 +1301,7 @@ export default function AudioToVideoPage() {
       // 2. Resume AudioContext (activation is fresh after the Share prompt)
       await audioCtx.resume();
 
-      // 3. Open recording modal and let React flush + captureTargetRef attach
-      setIsRecordingModalOpen(true);
+      // 3. Modal is already open; give React a tick to ensure captureTargetRef is valid
       await new Promise<void>((r) => setTimeout(r, 80));
 
       // 4. Crop stream to preview element only
@@ -2193,27 +2214,93 @@ export default function AudioToVideoPage() {
 
     {/* ── Recording Modal ──────────────────────────────────────────────── */}
     {isRecordingModalOpen && (() => {
-      const recClip = activeClip;
+      const recClip = pendingExportClipRef.current ?? activeClip;
       if (!recClip) return null;
-      const recCfg     = clipConfigs[recClip.id] ?? { template_id: "minimal" };
-      const recThemeId = (recCfg.template_id || "minimal") as ThemeId;
-      const recTheme   = OVERLAY_THEMES[recThemeId] ?? OVERLAY_THEMES.minimal;
-      const recBgUrl   = recCfg.bg_path    ? fileUrl(recCfg.bg_path)    : null;
+      const recCfg      = clipConfigs[recClip.id] ?? { template_id: "minimal" };
+      const recThemeId  = (recCfg.template_id || "minimal") as ThemeId;
+      const recTheme    = OVERLAY_THEMES[recThemeId] ?? OVERLAY_THEMES.minimal;
+      const recBgUrl    = recCfg.bg_path    ? fileUrl(recCfg.bg_path)    : null;
       const recCoverUrl = recCfg.cover_path ? fileUrl(recCfg.cover_path) : null;
+      const isPreviewPhase = !isExportRecording;
       return (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
-          {/* ── OUTSIDE captureTargetRef — never recorded ── */}
-          <div className="h-10 flex items-center justify-between px-4 bg-red-600/20 shrink-0">
-            <span className="text-sm text-white font-medium">● RECORDING — Do not close or switch tabs</span>
-            <div className="w-48 h-1.5 bg-white/20 rounded-full overflow-hidden">
-              <div className="h-full bg-red-500 transition-none" style={{ width: `${exportProgress}%` }} />
-            </div>
+
+          {/* ── TOP BAR — always outside captureTargetRef ── */}
+          <div className="shrink-0 h-12 flex items-center justify-between px-4"
+               style={{ background: isPreviewPhase ? "rgba(0,0,0,0.8)" : "rgba(180,0,0,0.25)" }}>
+            {isPreviewPhase ? (
+              <>
+                <span className="text-sm text-white/80 font-medium">Preview — position your crop then click Start Recording</span>
+                <button
+                  onClick={() => {
+                    setIsRecordingModalOpen(false);
+                    pendingExportClipRef.current = null;
+                    if (audioPreviewRef.current) audioPreviewRef.current.pause();
+                  }}
+                  className="text-white/60 hover:text-white text-xs font-medium px-3 py-1 rounded-lg border border-white/20 hover:border-white/40 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-sm text-white font-medium">● RECORDING — Do not close or switch tabs</span>
+                <div className="w-48 h-1.5 bg-white/20 rounded-full overflow-hidden">
+                  <div className="h-full bg-red-500 transition-none" style={{ width: `${exportProgress}%` }} />
+                </div>
+              </>
+            )}
           </div>
-          {/* ── crop target — ONLY this enters the recording ── */}
-          <div className="flex-1 flex items-center justify-center bg-black">
+
+          {/* ── PREVIEW AREA — captureTargetRef is the crop target ── */}
+          <div className="flex-1 flex items-center justify-center bg-black relative">
+            {/* Crop frame indicator (outside captureTargetRef — never recorded) */}
+            {isPreviewPhase && (
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div style={{
+                  aspectRatio: "9/16",
+                  height: "calc(100vh - 140px)",
+                  maxWidth: "calc((100vh - 140px) * 9 / 16)",
+                  position: "relative",
+                }}>
+                  {/* Animated dashed border */}
+                  <div style={{
+                    position: "absolute", inset: "-3px",
+                    borderRadius: "4px",
+                    border: "2px dashed rgba(255,255,255,0.6)",
+                    animation: "none",
+                  }} />
+                  {/* Corner markers */}
+                  {[
+                    { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
+                    { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
+                    { bottom: -4, left: -4, borderBottom: "3px solid white", borderLeft: "3px solid white", borderRadius: "0 0 0 3px" },
+                    { bottom: -4, right: -4, borderBottom: "3px solid white", borderRight: "3px solid white", borderRadius: "0 0 3px 0" },
+                  ].map((s, i) => (
+                    <div key={i} style={{ position: "absolute", width: 18, height: 18, ...s as React.CSSProperties }} />
+                  ))}
+                  {/* Label */}
+                  <div style={{
+                    position: "absolute", top: -28, left: "50%", transform: "translateX(-50%)",
+                    fontSize: 11, color: "rgba(255,255,255,0.7)", whiteSpace: "nowrap",
+                    background: "rgba(0,0,0,0.6)", padding: "2px 8px", borderRadius: 4,
+                  }}>
+                    Capture area — only this region is recorded
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* The actual capture target */}
             <div
               ref={captureTargetRef}
-              style={{ aspectRatio: "9/16", height: "100%", maxHeight: "calc(100vh - 40px)", overflow: "hidden", position: "relative" }}
+              style={{
+                aspectRatio: "9/16",
+                height: "calc(100vh - 140px)",
+                maxWidth: "calc((100vh - 140px) * 9 / 16)",
+                overflow: "hidden",
+                position: "relative",
+              }}
             >
               <PreviewContent
                 themeId={recThemeId}
@@ -2228,6 +2315,22 @@ export default function AudioToVideoPage() {
               />
             </div>
           </div>
+
+          {/* ── BOTTOM BAR — Start Recording button (preview phase only) ── */}
+          {isPreviewPhase && (
+            <div className="shrink-0 h-20 flex items-center justify-center px-6 gap-4 bg-black/80">
+              <button
+                onClick={() => {
+                  if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
+                }}
+                className="flex items-center gap-2 px-8 py-3 rounded-xl font-semibold text-sm transition-colors"
+                style={{ background: "white", color: "black" }}
+              >
+                <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "red", marginRight: 4 }} />
+                Start Recording
+              </button>
+            </div>
+          )}
         </div>
       );
     })()}
