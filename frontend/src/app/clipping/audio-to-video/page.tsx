@@ -2316,20 +2316,18 @@ export default function AudioToVideoPage() {
             </div>
 
             {/* Crop frame + Start Exporting button — absolutely positioned so they
-                never push the captureTarget around. These are never recorded. */}
+                never push the captureTarget around. These are never recorded.
+                The outer div has NO pointer-events-none so the button is clickable. */}
             {isPreviewPhase && (
-              <div
-                className="absolute inset-0 pointer-events-none flex items-center justify-center"
-              >
-                {/* Crop frame indicator — matches captureTarget exactly */}
+              <div className="absolute inset-0 flex items-center justify-center" style={{ pointerEvents: "none" }}>
+                {/* Sizing wrapper — matches captureTarget exactly */}
                 <div style={{
                   aspectRatio: "9/16",
                   height: "calc(100vh - 48px)",
                   maxWidth: "calc((100vh - 48px) * 9 / 16)",
                   position: "relative",
-                  pointerEvents: "none",
                 }}>
-                  {/* Corner markers */}
+                  {/* Corner markers — decorative only */}
                   {([
                     { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
                     { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
@@ -2343,22 +2341,21 @@ export default function AudioToVideoPage() {
                     position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
                     fontSize: 11, color: "rgba(255,255,255,0.6)", whiteSpace: "nowrap",
                     background: "rgba(0,0,0,0.55)", padding: "2px 8px", borderRadius: 4,
-                    pointerEvents: "none",
                   }}>
                     Only this region is recorded
                   </div>
 
-                  {/* Start Exporting button — at the bottom of the crop frame */}
+                  {/* Start Exporting button — pointer-events re-enabled explicitly */}
                   <div style={{
                     position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)",
-                    pointerEvents: "all",
+                    pointerEvents: "auto",
                   }}>
                     <button
                       onClick={() => {
                         if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
                       }}
                       className="flex items-center gap-2 px-8 py-3 rounded-xl font-semibold text-sm transition-colors"
-                      style={{ background: "white", color: "black", whiteSpace: "nowrap" }}
+                      style={{ background: "white", color: "black", whiteSpace: "nowrap", pointerEvents: "auto", cursor: "pointer" }}
                     >
                       <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "red", flexShrink: 0 }} />
                       Start Exporting
