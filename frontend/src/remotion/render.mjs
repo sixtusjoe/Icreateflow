@@ -117,35 +117,75 @@ async function main() {
   const outDir = path.dirname(outputLocation);
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
-  // ── Render frames to PNGs ─────────────────────────────────────────────────
+  // ── Render frames to JPEGs (with resumption on double-crash) ─────────────
   const framesDir = path.join(os.tmpdir(), `remotion-frames-${Date.now()}`);
   fs.mkdirSync(framesDir, { recursive: true });
 
   console.log(`[render] Rendering ${durationInFrames} frames (${durationSec}s @ ${fps}fps) → ${outputLocation}`);
 
-  let lastPct = -1;
-  await renderFrames({
-    composition,
-    serveUrl: bundleLocation,
-    outputDir: framesDir,
-    inputProps,
-    imageFormat: "jpeg",    // JPEG is faster to write/read than PNG for video encoding
-    jpegQuality: 90,
-    ...(chromiumPath ? { browserExecutable: chromiumPath } : {}),
-    chromiumOptions: {
-      gl: "swangle",
-      disableWebSecurity: true,
-    },
-    concurrency: 1,
-    timeoutInMilliseconds: 60000,
-    onFrameUpdate: (rendered) => {
-      const pct = Math.round((rendered / durationInFrames) * 100);
-      if (pct !== lastPct) {
-        lastPct = pct;
-        process.stdout.write(`[render] Progress: ${pct}% (rendered ${rendered}, encoded 0)\n`);
-      }
-    },
-  });
+  // renderFrames() has MAX_RETRIES_PER_FRAME=1 hardcoded.  A frame that crashes
+  // twice in a row causes a fatal error.  We wrap it in a resume loop: on failure,
+  // detect the last successfully written frame, then restart from the next one.
+  let totalRendered = 0;
+  let startFrame = 0;
+  const MAX_RESUME_ATTEMPTS = durationInFrames; // at most one resume per frame
+  let resumeAttempts = 0;
+
+  while (startFrame < durationInFrames && resumeAttempts < MAX_RESUME_ATTEMPTS) {
+    const frameRange = [startFrame, durationInFrames - 1];
+    try {
+      await renderFrames({
+        composition,
+        serveUrl: bundleLocation,
+        outputDir: framesDir,
+        inputProps,
+        imageFormat: "jpeg",
+        jpegQuality: 90,
+        frameRange,
+        ...(chromiumPath ? { browserExecutable: chromiumPath } : {}),
+        chromiumOptions: { gl: "swangle", disableWebSecurity: true },
+        concurrency: 1,
+        timeoutInMilliseconds: 60000,
+        onFrameUpdate: (rendered) => {
+          // rendered = count rendered THIS invocation; add startFrame for global index
+          const globalRendered = startFrame + rendered;
+          const pct = Math.round((globalRendered / durationInFrames) * 100);
+          process.stdout.write(`[render] Progress: ${pct}% (rendered ${globalRendered}, encoded 0)\n`);
+        },
+      });
+      // Success — all remaining frames rendered
+      break;
+    } catch (err) {
+      const msg = err?.message || String(err);
+      if (!msg.includes("Target closed") && !msg.includes("Session closed")) throw err;
+
+      // Browser double-crashed: find the last successfully written frame file,
+      // then resume from the next frame.
+      const files = fs.readdirSync(framesDir)
+        .filter(f => f.startsWith("element-") && f.endsWith(".jpeg"))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+      if (files.length === 0) throw err; // No frames rendered at all — give up
+
+      // Frame files are named element-NNN.jpeg, 0-indexed from first frame
+      const lastFileName = files[files.length - 1]; // e.g. "element-143.jpeg"
+      const lastFileIdx = parseInt(lastFileName.replace("element-", "").replace(".jpeg", ""), 10);
+      const nextFrame = startFrame + lastFileIdx + 1;
+
+      if (nextFrame >= durationInFrames) break; // All done
+
+      console.log(`[render] Browser double-crash at frame ~${nextFrame}. Resuming from frame ${nextFrame} (attempt ${resumeAttempts + 1})...`);
+      startFrame = nextFrame;
+      resumeAttempts++;
+
+      // Brief pause to let Chromium fully clean up before restarting
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  if (startFrame >= durationInFrames && resumeAttempts >= MAX_RESUME_ATTEMPTS) {
+    throw new Error("Too many resume attempts — render could not complete");
+  }
 
   console.log(`[render] All frames rendered. Encoding with FFmpeg...`);
 
