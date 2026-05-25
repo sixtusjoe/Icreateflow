@@ -15,7 +15,9 @@ import {
   updateAudioClipLyrics,
   assignAudioClip,
   uploadAudioClipAsset,
+  uploadAudioClipVideo,
 } from "@/lib/api";
+import { createCanvasRenderer } from "./canvasRenderer";
 import {
   Upload,
   Music2,
