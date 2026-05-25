@@ -1252,7 +1252,17 @@ export default function AudioToVideoPage() {
       }
 
       // ── Match mode: screen recording ───────────────────────────────────────
-      // 0. AudioContext created synchronously (preserve user-gesture activation)
+      // 0. Guard: getDisplayMedia is desktop-only (not available on iOS / Android)
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        setIsExportRecording(false);
+        setGenerationErrors((e) => ({
+          ...e,
+          [clip.id]: "Export requires a desktop browser (Chrome or Edge). Screen recording is not supported on mobile.",
+        }));
+        return;
+      }
+
+      // 0b. AudioContext created synchronously (preserve user-gesture activation)
       const audioCtx = new AudioContext();
       exportAudioCtxRef.current = audioCtx;
 
