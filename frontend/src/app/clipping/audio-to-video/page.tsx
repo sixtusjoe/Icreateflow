@@ -1248,40 +1248,62 @@ export default function AudioToVideoPage() {
   const activeKaraokeLyricsRef = useRef(activeKaraokeLyrics);
   useEffect(() => { activeKaraokeLyricsRef.current = activeKaraokeLyrics; }, [activeKaraokeLyrics]);
 
-  // Line-anchored time map: each display line gets [startAbs, endAbs] in
-  // absolute track-time, sampled proportionally from Whisper word timestamps.
-  // The RAF uses these as line boundaries and interpolates word position
-  // smoothly within each line — eliminating chunky jumps when display word
-  // count differs from Whisper word count.
-  type LineTiming = { startAbs: number; endAbs: number };
-  const lineTimings = useMemo<LineTiming[]>(() => {
+  // Per-display-word timing: each display word gets {startAbs, endAbs, lineIdx, wordIdx}.
+  // For 1:1 case (display words == Whisper words), timestamps come directly from Whisper.
+  // For mismatched counts (edited text), time is distributed evenly across display words.
+  type WordTiming = { startAbs: number; endAbs: number; lineIdx: number; wordIdx: number };
+  const wordTimings = useMemo<WordTiming[]>(() => {
     const lines = activeKaraokeLyrics;
     const ws    = activeClipWords ?? [];
-    if (!lines.length || !ws.length) return [];
+    if (!lines.length) return [];
 
-    const flat = lines.reduce((s, l) => s + l.length, 0);
-    if (flat === 0) return [];
+    const totalDisplayWords = lines.reduce((s, l) => s + l.length, 0);
+    if (totalDisplayWords === 0) return [];
+    if (ws.length === 0) return []; // handled by time-proportional fallback in RAF
 
-    const lineStartFlat: number[] = [];
-    let acc = 0;
-    for (const l of lines) { lineStartFlat.push(acc); acc += l.length; }
+    const result: WordTiming[] = [];
+    let flatIdx = 0;
 
-    const out: LineTiming[] = [];
-    for (let li = 0; li < lines.length; li++) {
-      const startFlat = lineStartFlat[li];
-      const endFlat   = li + 1 < lines.length ? lineStartFlat[li + 1] : flat;
-      const wStart    = Math.min(ws.length - 1, Math.floor((startFlat / flat) * ws.length));
-      const wEnd      = Math.min(ws.length - 1, Math.max(wStart, Math.floor((endFlat / flat) * ws.length) - 1));
-      out.push({
-        startAbs: ws[wStart].start_s,
-        endAbs:   ws[wEnd].end_s ?? ws[wEnd].start_s + 0.4,
-      });
+    if (totalDisplayWords === ws.length) {
+      // ── 1:1 mapping: each display word = its Whisper word's exact timestamps ──
+      for (let li = 0; li < lines.length; li++) {
+        for (let wi = 0; wi < lines[li].length; wi++) {
+          const w = ws[flatIdx];
+          result.push({
+            startAbs: w.start_s,
+            endAbs:   w.end_s ?? w.start_s + 0.3,
+            lineIdx:  li,
+            wordIdx:  wi,
+          });
+          flatIdx++;
+        }
+      }
+    } else {
+      // ── Mismatched counts: distribute total audio time evenly ──────────────
+      const totalStart = ws[0].start_s;
+      const lastW      = ws[ws.length - 1];
+      const totalEnd   = lastW.end_s ?? lastW.start_s + 0.3;
+      const totalDur   = Math.max(0.1, totalEnd - totalStart);
+      const perWord    = totalDur / totalDisplayWords;
+
+      for (let li = 0; li < lines.length; li++) {
+        for (let wi = 0; wi < lines[li].length; wi++) {
+          result.push({
+            startAbs: totalStart + flatIdx * perWord,
+            endAbs:   totalStart + (flatIdx + 1) * perWord,
+            lineIdx:  li,
+            wordIdx:  wi,
+          });
+          flatIdx++;
+        }
+      }
     }
-    return out;
+
+    return result;
   }, [activeClipId, activeKaraokeLyrics, activeClipWords]);
 
-  const lineTimingsRef = useRef(lineTimings);
-  useEffect(() => { lineTimingsRef.current = lineTimings; }, [lineTimings]);
+  const wordTimingsRef = useRef(wordTimings);
+  useEffect(() => { wordTimingsRef.current = wordTimings; }, [wordTimings]);
 
   // RAF-based karaoke sync — polls at ~60fps, reads fresh refs each frame.
   // Uses line-anchored time windows: lines transition at Whisper-timestamp
@@ -1321,25 +1343,20 @@ export default function AudioToVideoPage() {
 
       const tAbs  = curT + (clip.start_s ?? 0);
       const lines = activeKaraokeLyricsRef.current;
-      const lts   = lineTimingsRef.current;
+      const wts   = wordTimingsRef.current;
       const ws    = clipWordsRef.current[clip.id] ?? [];
       let lineIdx = 0, wordIdx = 0;
 
-      if (lts.length > 0 && lines.length > 0) {
-        // ── Line-anchored sync: smooth in-line interpolation ─────────────
-        // Binary-search the active line by startAbs
-        let lo = 0, hi = lts.length - 1, found = 0;
+      if (wts.length > 0 && lines.length > 0) {
+        // ── Per-word timing sync: binary search for active display word ──
+        let lo = 0, hi = wts.length - 1, found = 0;
         while (lo <= hi) {
           const mid = (lo + hi) >> 1;
-          if (lts[mid].startAbs <= tAbs) { found = mid; lo = mid + 1; }
+          if (wts[mid].startAbs <= tAbs) { found = mid; lo = mid + 1; }
           else hi = mid - 1;
         }
-        lineIdx = found;
-        const lt   = lts[lineIdx];
-        const span = Math.max(0.05, lt.endAbs - lt.startAbs);
-        const frac = Math.max(0, Math.min(0.9999, (tAbs - lt.startAbs) / span));
-        const wc   = lines[lineIdx]?.length ?? 0;
-        wordIdx = wc > 0 ? Math.min(wc - 1, Math.floor(frac * wc)) : 0;
+        lineIdx = wts[found].lineIdx;
+        wordIdx = wts[found].wordIdx;
       } else if (ws.length === 0 && lines.length > 0) {
         // ── Time-proportional fallback (no Whisper words) ────────────────
         const dur  = Math.max(0.1, (clip.end_s ?? 0) - (clip.start_s ?? 0));
