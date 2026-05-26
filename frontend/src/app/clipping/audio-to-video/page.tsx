@@ -64,6 +64,7 @@ interface AudioVideoState {
   video_path?: string;
   error?: string;
   template_id?: string;
+  lyrics_mode?: string;
   background_image_path?: string;
   album_cover_path?: string;
 }
