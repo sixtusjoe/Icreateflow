@@ -497,8 +497,8 @@ function ScrollLyricsView({
           "linear-gradient(to bottom, transparent 0%, black 22%, black 78%, transparent 100%)",
       }}
     >
-      {/* Scrollable inner */}
-      <div ref={scrollRef} className="w-full h-full overflow-hidden">
+      {/* Scrollable inner — must be overflow-y:scroll (not hidden) for scrollTo() to work */}
+      <div ref={scrollRef} className="w-full h-full [&::-webkit-scrollbar]:hidden" style={{ overflowY: "scroll", scrollbarWidth: "none" }}>
         {/* Top spacer so first line can reach the center */}
         <div style={{ height: "50%" }} />
 
@@ -1126,12 +1126,21 @@ export default function AudioToVideoPage() {
               wordsMap[clip.id] = (fresh.words ?? []).filter((w: any) => w.clip_index === clip.clip_index);
             }
             setClipWords(wordsMap);
-            // Also reload lyrics text in case retranscribe updated them
+            // Clear ALL stale textarea overrides for this track so activeKaraokeLyrics
+            // is re-derived from the fresh Whisper words (fixes mismatch after retranscribe).
+            setClipLyricsText((lt) => {
+              const updated = { ...lt };
+              for (const clip of fresh.clips) delete updated[clip.id];
+              return updated;
+            });
+            // Then restore any previously-saved lyrics_text entries from the server
             const savedLyrics: Record<number, string> = {};
             for (const clip of fresh.clips) {
               if (clip.lyrics_text) savedLyrics[clip.id] = clip.lyrics_text;
             }
-            if (Object.keys(savedLyrics).length > 0) setClipLyricsText(savedLyrics);
+            if (Object.keys(savedLyrics).length > 0) {
+              setClipLyricsText((lt) => ({ ...lt, ...savedLyrics }));
+            }
             setTrack(fresh);
           }
         }
@@ -1211,14 +1220,43 @@ export default function AudioToVideoPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClip?.id, clipLyricsText, clipWords]);
 
-  // flat index → { lineIdx, wordIdx } — built once per lyrics change
+  // flat index → { lineIdx, wordIdx }
+  // Keyed on clipWords length so the RAF index always stays in-bounds even when
+  // the textarea word count diverges from the Whisper word count.
   const wordPositionMap = useMemo(() => {
+    const lines       = activeKaraokeLyrics;
+    const clipWordCnt = (clipWords[activeClip?.id ?? -1] ?? []).length;
+    const flatCount   = lines.reduce((s, l) => s + l.length, 0);
+
     const map: Array<{ lineIdx: number; wordIdx: number }> = [];
-    activeKaraokeLyrics.forEach((line, li) =>
-      line.forEach((_, wi) => map.push({ lineIdx: li, wordIdx: wi }))
-    );
+
+    if (flatCount === 0 || clipWordCnt === 0) return map;
+
+    if (flatCount === clipWordCnt) {
+      // Counts match — direct 1-to-1 mapping (normal case)
+      lines.forEach((line, li) =>
+        line.forEach((_, wi) => map.push({ lineIdx: li, wordIdx: wi }))
+      );
+    } else {
+      // Proportional fallback: distribute clipWord indices across display lines
+      for (let i = 0; i < clipWordCnt; i++) {
+        const displayIdx = Math.min(
+          Math.floor((i * flatCount) / clipWordCnt),
+          flatCount - 1,
+        );
+        let rem = displayIdx;
+        let lineIdx = lines.length - 1;
+        let wordIdx = Math.max(0, lines[lineIdx].length - 1);
+        for (let li = 0; li < lines.length; li++) {
+          if (rem < lines[li].length) { lineIdx = li; wordIdx = rem; break; }
+          rem -= lines[li].length;
+        }
+        map.push({ lineIdx, wordIdx });
+      }
+    }
     return map;
-  }, [activeKaraokeLyrics]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClip?.id, activeKaraokeLyrics, clipWords]);
 
   // Ref so handler can read latest map without re-attaching
   const wordPositionMapRef = useRef(wordPositionMap);
@@ -1252,12 +1290,21 @@ export default function AudioToVideoPage() {
           if (idx !== -1) {
             const pos = wordPositionMapRef.current[idx];
             if (pos) {
-              // Only setState when value actually changed — prevents 120 re-renders/sec
-              if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
-                lastLineIdxRef.current = pos.lineIdx;
-                lastWordIdxRef.current = pos.wordIdx;
-                setOverlayLineIndex(pos.lineIdx);
-                setOverlayWordIndex(pos.wordIdx);
+              // Sanity guard: the found word's timestamp should be reasonably close
+              // to the current time. If it's way behind (e.g. all words have
+              // start_s=0 while clip.start_s=30), the timestamps are invalid —
+              // skip the update rather than jumping to the wrong line.
+              const foundStart = ws[idx].start_s;
+              const clipDuration = (clip.end_s ?? (clip.start_s + 30)) - (clip.start_s ?? 0);
+              const maxLookBehind = Math.min(clipDuration * 0.5, 5); // at most 5 s or half clip
+              if (t - foundStart <= maxLookBehind) {
+                // Only setState when value actually changed — prevents 120 re-renders/sec
+                if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
+                  lastLineIdxRef.current = pos.lineIdx;
+                  lastWordIdxRef.current = pos.wordIdx;
+                  setOverlayLineIndex(pos.lineIdx);
+                  setOverlayWordIndex(pos.wordIdx);
+                }
               }
             }
           }
@@ -1309,23 +1356,41 @@ export default function AudioToVideoPage() {
     });
   };
 
-  /** Save lyrics from textarea: split lines→words, update word text (keeps timestamps) */
+  /** Save lyrics from textarea: split lines→words, update word text (keeps timestamps).
+   *  ONLY updates the word array if Whisper already gave us valid timestamps — otherwise
+   *  we just persist the text so zero-timestamp words never pollute the sync. */
   const handleSaveLyricsText = async (clipId: number) => {
-    const text  = getLyricsText(clipId);
+    const text     = getLyricsText(clipId);
     const newWords = text.split(/\s+/).filter(Boolean);
     const existing = clipWords[clipId] ?? [];
-    const merged: AudioWord[] = newWords.map((word, i) => ({
-      ...(existing[i] ?? { start_s: 0, end_s: 0 }),
-      word,
-    }));
-    setClipWords((cw) => ({ ...cw, [clipId]: merged }));
-    setSavingLyrics(true);
-    try {
-      await updateAudioClipLyrics(clipId, merged, text);
-    } catch (err: any) {
-      setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
-    } finally {
-      setSavingLyrics(false);
+
+    // Check if Whisper has provided real timestamps (at least one word with start > 0)
+    const hasRealTimestamps = existing.some((w) => w.start_s > 0 || w.end_s > 0);
+
+    if (hasRealTimestamps) {
+      const merged: AudioWord[] = newWords.map((word, i) => ({
+        ...(existing[i] ?? { start_s: existing[existing.length - 1]?.end_s ?? 0, end_s: 0 }),
+        word,
+      }));
+      setClipWords((cw) => ({ ...cw, [clipId]: merged }));
+      setSavingLyrics(true);
+      try {
+        await updateAudioClipLyrics(clipId, merged, text);
+      } catch (err: any) {
+        setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
+      } finally {
+        setSavingLyrics(false);
+      }
+    } else {
+      // No valid timestamps yet — save text only (don't touch the word array)
+      setSavingLyrics(true);
+      try {
+        await updateAudioClipLyrics(clipId, [], text); // empty → backend preserves existing words
+      } catch (err: any) {
+        setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
+      } finally {
+        setSavingLyrics(false);
+      }
     }
   };
 
@@ -1371,13 +1436,17 @@ export default function AudioToVideoPage() {
     if (tapSyncClipId === null) return;
     const clipId = tapSyncClipId;
     const clip = track?.clips.find((c) => c.id === clipId);
+    // tap timestamps are clip-relative (audio.currentTime, starts at 0).
+    // Whisper timestamps (and what the RAF expects) are absolute (full-track offset).
+    // Add clip.start_s so saved words match the RAF formula: t = currentTime + clip.start_s
+    const clipAbsStart = clip?.start_s ?? 0;
     const clipDuration = clip ? (clip.end_s - clip.start_s) : 30;
 
     // Convert timed lines → words with evenly-distributed timestamps within each line
     const allWords: AudioWord[] = [];
     const timedLines = tapSyncLines.filter((l) => l.start_s !== null);
     for (let li = 0; li < timedLines.length; li++) {
-      const lineStart = timedLines[li].start_s!;
+      const lineStart = timedLines[li].start_s!; // clip-relative seconds
       const lineEnd = li < timedLines.length - 1 ? (timedLines[li + 1].start_s ?? (lineStart + 3)) : clipDuration;
       const lineDuration = Math.max(0.5, lineEnd - lineStart);
       const lineWords = timedLines[li].text.split(/\s+/).filter(Boolean);
@@ -1385,8 +1454,8 @@ export default function AudioToVideoPage() {
       lineWords.forEach((w, wi) => {
         allWords.push({
           word: w,
-          start_s: lineStart + wi * wordDur,
-          end_s: lineStart + (wi + 1) * wordDur - 0.05,
+          start_s: clipAbsStart + lineStart + wi * wordDur,        // absolute
+          end_s:   clipAbsStart + lineStart + (wi + 1) * wordDur - 0.05,
         });
       });
     }

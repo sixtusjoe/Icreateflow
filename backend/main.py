@@ -7490,16 +7490,18 @@ async def update_audio_clip_lyrics(
             raise HTTPException(404, "Clip not found")
         clip = dict(clip)
 
-        # Delete existing words for this clip and replace
-        await database.execute(
-            "DELETE FROM audio_words WHERE audio_track_id = ? AND clip_index = ?",
-            (clip["audio_track_id"], clip["clip_index"]),
-        )
-        for w in data.words:
+        # Only replace words when the caller sends a non-empty list.
+        # An empty list means "save text only, keep existing Whisper timestamps."
+        if data.words:
             await database.execute(
-                "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, ?, ?, ?, ?)",
-                (clip["audio_track_id"], clip["clip_index"], w.word, w.start_s, w.end_s),
+                "DELETE FROM audio_words WHERE audio_track_id = ? AND clip_index = ?",
+                (clip["audio_track_id"], clip["clip_index"]),
             )
+            for w in data.words:
+                await database.execute(
+                    "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, ?, ?, ?, ?)",
+                    (clip["audio_track_id"], clip["clip_index"], w.word, w.start_s, w.end_s),
+                )
 
         # Persist formatted lyrics text (preserves user line breaks across reloads)
         if data.lyrics_text is not None:
