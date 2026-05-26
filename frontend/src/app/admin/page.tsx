@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Users, FileText, Music, Layers, Save, Activity, HardDrive,
   Calendar, Key, Trash2, AlertTriangle, CheckCircle2, XCircle, Link2, Bug,
-  Mic2, Scissors, Video, Mail, Eye, EyeOff,
+  Mic2, Scissors, Video, Mail, Eye, EyeOff, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
@@ -17,6 +17,7 @@ import {
   getOAuthApps, updateOAuthApp,
   getAdminArtists, deleteAdminArtist,
   getAdminErrorLogs, clearAdminErrorLogs,
+  clearAdminAudioToVideo,
   getCacheStats, clearCache,
   getBrandCacheStats, clearBrandCache,
   sendTestEmail,
@@ -104,7 +105,7 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab stats={stats} />}
+      {tab === "overview" && <OverviewTab stats={stats} onReload={reloadAll} />}
       {tab === "users" && <UsersTab users={users} currentUserId={user.id} onReload={reloadAll} />}
       {tab === "brands" && <BrandsTab brands={brands} onReload={reloadAll} />}
       {tab === "artists" && <ArtistsTab artists={artists} onReload={reloadAll} />}
@@ -123,10 +124,11 @@ export default function AdminPage() {
 /* ============================================================
  * OVERVIEW — platform health + stats + 24h activity
  * ============================================================ */
-function OverviewTab({ stats }: { stats: any }) {
+function OverviewTab({ stats, onReload }: { stats: any; onReload: () => void }) {
   if (!stats) return <div className="text-sm text-muted-foreground">Loading…</div>;
   const health = stats.health || {};
   const storage = stats.storage_mb || {};
+  const [clearingA2V, setClearingA2V] = React.useState(false);
   const healthCards = [
     { label: "CPU", value: health.cpu_percent, unit: "%" },
     { label: "Memory", value: health.mem_percent, unit: "%" },
@@ -162,6 +164,23 @@ function OverviewTab({ stats }: { stats: any }) {
           <Card icon={Video} label="Clips" value={stats.total_clips ?? 0} />
           <Card icon={Scissors} label="Clip posts" value={stats.total_clip_posts ?? 0} />
         </div>
+        <button
+          disabled={clearingA2V}
+          onClick={async () => {
+            if (!confirm("Delete ALL audio-to-video clip files and records? This cannot be undone.")) return;
+            setClearingA2V(true);
+            try {
+              const r = await clearAdminAudioToVideo();
+              toast.success(`Cleared — ${r.deleted_files} file(s) deleted`);
+              onReload();
+            } catch { toast.error("Failed to clear"); }
+            finally { setClearingA2V(false); }
+          }}
+          className="mt-3 flex items-center gap-2 rounded-lg border border-destructive/40 px-4 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+        >
+          {clearingA2V ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+          Clear Audio-to-Video files
+        </button>
       </Section>
 
       <Section title="Activity">

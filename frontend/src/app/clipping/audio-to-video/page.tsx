@@ -2518,7 +2518,7 @@ export default function AudioToVideoPage() {
                 setUploadingExport(true);
                 try {
                   // Convert WebM → MP4 on the server before saving
-                  const rawName = `clip_${exportClipIndex + 1}${track?.title ? "_" + track.title.replace(/[^a-z0-9]/gi, "_").toLowerCase() : ""}`;
+                  const rawName = `clip_${exportClipIndex + 1}`;
                   const token = localStorage.getItem("icreate_token");
                   const formData = new FormData();
                   formData.append("file", exportedBlob, `${rawName}.webm`);

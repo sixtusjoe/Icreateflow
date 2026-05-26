@@ -5893,6 +5893,46 @@ async def admin_error_logs(
         await database.close()
 
 
+@app.delete("/api/admin/audio-to-video")
+async def admin_clear_audio_to_video(admin: dict = Depends(admin_required)):
+    """Delete all audio_video_clips DB rows and their files (uploaded WebMs/MP4s and rendered outputs)."""
+    import glob
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT video_path FROM audio_video_clips WHERE video_path IS NOT NULL")
+        rows = await cur.fetchall()
+        paths = [dict(r)["video_path"] for r in rows]
+        await database.execute("DELETE FROM audio_video_clips")
+        await database.commit()
+    finally:
+        await database.close()
+
+    deleted_files, missing_files = [], []
+    base = Path(".")
+    for p in paths:
+        full = base / p
+        if full.exists():
+            full.unlink()
+            deleted_files.append(str(full))
+        else:
+            missing_files.append(str(p))
+
+    # Also sweep any leftover files in the known audio video dirs
+    for pattern in [
+        "uploads/*/audio/video/*.mp4",
+        "uploads/*/audio/video/*.webm",
+        "output/*/audio_clips/*.mp4",
+        "output/*/audio_clips/*.webm",
+    ]:
+        for f in glob.glob(pattern):
+            fp = Path(f)
+            if fp.exists():
+                fp.unlink()
+                deleted_files.append(f)
+
+    return {"ok": True, "deleted_files": len(deleted_files), "missing_files": len(missing_files)}
+
+
 @app.delete("/api/admin/error-logs")
 async def admin_clear_error_logs(admin: dict = Depends(admin_required)):
     database = await db.get_db()

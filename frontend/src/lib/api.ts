@@ -502,6 +502,9 @@ export const getAdminErrorLogs = (params?: { limit?: number; source?: string }) 
 export const clearAdminErrorLogs = () =>
   api.delete("/api/admin/error-logs").then((r) => r.data);
 
+export const clearAdminAudioToVideo = () =>
+  api.delete("/api/admin/audio-to-video").then((r) => r.data);
+
 // --- TikTok Direct Post API per-row settings ---
 
 export type TikTokCreatorInfo = {
