@@ -707,9 +707,14 @@ export default function AudioToVideoPage() {
   // WebGL render mode — "match" = screen recording, "upgraded" = bloom + soft particles
   const [renderMode, setRenderMode] = useState<"match" | "upgraded">("match");
 
-  // Export recording state
+  // Screen-recording state / refs
+  const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const captureTargetRef      = useRef<HTMLDivElement | null>(null);
   const isRecordingActiveRef  = useRef(false);
   const recordingAudioRef     = useRef<HTMLAudioElement | null>(null);
+  const pendingExportClipRef  = useRef<AudioClipData | null>(null); // clip staged in preview phase
+  const rawVideoRef           = useRef<HTMLVideoElement | null>(null);
+  const drawRafRef            = useRef<number>(0);
   // Themed info/error modal for export messages (replaces browser alert())
   const [exportInfoModal, setExportInfoModal] = useState<{ title: string; message: string } | null>(null);
 
@@ -1153,15 +1158,31 @@ export default function AudioToVideoPage() {
 
   // ─── Export ───────────────────────────────────────────────────────────────
 
-  // Export click — both modes use the canvas renderer, no screen-sharing permission needed
+  // Phase 1 — open the preview modal; user will confirm recording in Phase 2
   const handleStartExport = (clip: AudioClipData) => {
     if (!clip.local_path) return;
+    if (renderMode === "upgraded") {
+      // Upgraded mode skips the preview modal and goes straight to WebGL recording
+      handleBeginRecording(clip);
+      return;
+    }
     setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
+    pendingExportClipRef.current = clip;
+    // Pause any playing preview audio — user will hear fresh audio when recording starts
     if (audioPreviewRef.current) audioPreviewRef.current.pause();
-    handleBeginRecording(clip);
+    setIsRecordingModalOpen(true);
   };
 
-  // Canvas-based export — called by Export Video button click
+  // Deterministic wait for a React ref to be attached — replaces unreliable setTimeout
+  async function waitForRef(ref: React.RefObject<HTMLElement | null>, tries = 60): Promise<HTMLElement | null> {
+    for (let i = 0; i < tries; i++) {
+      if (ref.current) return ref.current;
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    return null;
+  }
+
+  // Phase 2 — called by "Start Exporting" button inside the modal (or directly for upgraded mode)
   const handleBeginRecording = async (clip: AudioClipData) => {
     if (!clip.local_path) return;
     // Kill any preview audio that might be playing before we start recording
@@ -1180,73 +1201,264 @@ export default function AudioToVideoPage() {
     setIsExportRecording(true);
     setExportProgress(0);
     exportAbortRef.current = false;
+    setGenerationErrors((e) => ({ ...e, [clip.id]: "" }));
 
     try {
-      // Both match and upgraded modes use the canvas renderer — no getDisplayMedia, no permission dialog
-      const renderer = await createCanvasRenderer({
-        width: 1080, height: 1920,
-        themeId: themeId2, theme: theme2,
-        words: words2, bgImageUrl: bgImageUrl2, coverImageUrl: coverImageUrl2,
-        clipStartS: clip.start_s,
-        clipDuration,
-        renderMode,          // "match" or "upgraded" — same code path, different visuals
-        layerOverrides: undefined,
-      });
+      if (renderMode === "upgraded") {
+        // ── Upgraded mode: WebGL canvas.captureStream ──────────────────────
+        const renderer = await createCanvasRenderer({
+          width: 1080, height: 1920,
+          themeId: themeId2, theme: theme2,
+          words: words2, bgImageUrl: bgImageUrl2, coverImageUrl: coverImageUrl2,
+          clipStartS: clip.start_s,
+          clipDuration,
+          renderMode,
+          layerOverrides: undefined,
+        });
 
+        const recAudio = new Audio();
+        recAudio.crossOrigin = "anonymous";
+        recAudio.src = fileUrl(clip.local_path!);
+        await new Promise<void>((res, rej) => {
+          recAudio.oncanplay = () => res();
+          recAudio.onerror = () => rej(new Error("Audio load failed"));
+          recAudio.load();
+        });
+
+        const audioCtx = new AudioContext();
+        exportAudioCtxRef.current = audioCtx;
+        const audioSrc  = audioCtx.createMediaElementSource(recAudio);
+        const audioDest = audioCtx.createMediaStreamDestination();
+        audioSrc.connect(audioDest);
+        audioSrc.connect(audioCtx.destination);
+
+        const videoStream = renderer.canvas.captureStream(30);
+        const combined = new MediaStream([
+          ...videoStream.getVideoTracks(),
+          ...audioDest.stream.getAudioTracks(),
+        ]);
+        const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+          ? "video/webm;codecs=vp9,opus"
+          : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+          ? "video/webm;codecs=vp8,opus"
+          : "video/webm";
+        const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 8_000_000 });
+        const chunks: BlobPart[] = [];
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+        recAudio.currentTime = 0;
+        await recAudio.play();
+        recorder.start(250);
+
+        let rafId = 0;
+        const tick = () => {
+          if (exportAbortRef.current) { recorder.stop(); recAudio.pause(); return; }
+          const t = recAudio.currentTime;
+          renderer.renderFrame(t);
+          setExportProgress(Math.min(99, Math.round((t / clipDuration) * 100)));
+          if (t < clipDuration && !recAudio.ended) {
+            rafId = requestAnimationFrame(tick);
+          } else {
+            recAudio.pause();
+            recorder.stop();
+          }
+        };
+        rafId = requestAnimationFrame(tick);
+
+        recorder.onstop = () => {
+          cancelAnimationFrame(rafId);
+          renderer.destroy();
+          audioCtx.close();
+          exportAudioCtxRef.current = null;
+          const blob = new Blob(chunks, { type: mimeType });
+          const url  = URL.createObjectURL(blob);
+          setExportedBlobUrl(url);
+          setExportedBlob(blob);
+          setExportedExt("webm");
+          setExportClipIndex(clip.clip_index);
+          exportClipIdRef.current = clip.id;
+          setExportedBlobUrlByClip((prev) => ({ ...prev, [clip.id]: url }));
+          setExportProgress(100);
+          setIsExportRecording(false);
+        };
+        return;
+      }
+
+      // ── Match mode: screen recording ───────────────────────────────────────
+      // 0. Guard: getDisplayMedia is desktop-only (not available on iOS / Android)
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        setIsExportRecording(false);
+        setIsRecordingModalOpen(false);
+        setGenerationErrors((e) => ({
+          ...e,
+          [clip.id]: "Export requires a desktop browser (Chrome or Edge). Screen recording is not supported on mobile.",
+        }));
+        return;
+      }
+
+      // 0b. AudioContext created synchronously (preserve user-gesture activation)
+      const audioCtx = new AudioContext();
+      exportAudioCtxRef.current = audioCtx;
+
+      // 1. getDisplayMedia is the FIRST await — locks in gesture activation
+      //    Modal is already open (opened in Phase 1), captureTargetRef is already attached
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { preferCurrentTab: true } as any,
+        audio: false,
+      });
+      // displayVideoTrack = raw tab capture (kept alive to detect "stop sharing")
+      const displayVideoTrack = displayStream.getVideoTracks()[0];
+
+      // 2. Resume AudioContext (activation is fresh after the Share prompt)
+      await audioCtx.resume();
+
+      // 3. Wait deterministically for captureTargetRef to be in the DOM
+      const el = await waitForRef(captureTargetRef as React.RefObject<HTMLElement | null>);
+      if (!el) {
+        displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Export Cancelled", message: "Preview wasn't ready. Please try again." });
+        return;
+      }
+
+      // 4. Surface must be the tab — viewport coords only map correctly for tab capture
+      const surface = (displayVideoTrack.getSettings() as any).displaySurface;
+      if (surface && surface !== "browser") {
+        displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Wrong surface", message: 'Click Start Exporting again and choose "This Tab".' });
+        return;
+      }
+
+      // 5. Let layout fully settle so getBoundingClientRect is final
+      await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+      // 6. Pipe the captured tab into a hidden <video>
+      const rawVideo = document.createElement("video");
+      rawVideoRef.current = rawVideo;
+      rawVideo.srcObject = displayStream;
+      rawVideo.muted = true;
+      (rawVideo as any).playsInline = true;
+      await new Promise<void>(r => { rawVideo.onloadedmetadata = () => r(); });
+      await rawVideo.play();
+      await new Promise<void>(r => requestAnimationFrame(() => r())); // ensure a frame is decoded
+
+      // 7. Map the element's viewport rect into captured-stream pixels
+      const streamW = rawVideo.videoWidth;
+      const streamH = rawVideo.videoHeight;
+      if (!streamW || !streamH) {
+        rawVideo.srcObject = null; displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Export Cancelled", message: "Capture didn't start. Please try again." });
+        return;
+      }
+      const scaleX = streamW / window.innerWidth;
+      const scaleY = streamH / window.innerHeight;
+      const rect   = el.getBoundingClientRect();
+      let srcX = Math.round(rect.left   * scaleX);
+      let srcY = Math.round(rect.top    * scaleY);
+      let srcW = Math.round(rect.width  * scaleX);
+      let srcH = Math.round(rect.height * scaleY);
+      srcW -= srcW % 2; srcH -= srcH % 2; // even dims for the encoder
+      console.log("[export] canvas crop:", { streamW, streamH, rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }, srcX, srcY, srcW, srcH });
+
+      if (srcW < 10 || srcH < 10) {
+        rawVideo.srcObject = null; displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Export Cancelled", message: "Could not measure the preview region." });
+        return;
+      }
+
+      // 8. Draw ONLY that rect onto an offscreen canvas every frame — this is now the PRIMARY path
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = srcW; cropCanvas.height = srcH;
+      const cropCtx = cropCanvas.getContext("2d", { alpha: false })!;
+      const draw = () => {
+        cropCtx.drawImage(rawVideo, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+        drawRafRef.current = requestAnimationFrame(draw);
+      };
+      drawRafRef.current = requestAnimationFrame(draw);
+
+      // 9. Record the CANVAS stream — guaranteed to contain only the preview rect
+      const recordingVideoTrack = cropCanvas.captureStream(30).getVideoTracks()[0];
+
+      // Load audio fully buffered (same-origin — no crossOrigin needed)
       const recAudio = new Audio();
+      recAudio.preload = "auto";
       recAudio.src = fileUrl(clip.local_path!);
       await new Promise<void>((res, rej) => {
         recAudio.oncanplaythrough = () => res();
-        recAudio.onerror = () => rej(new Error("Audio load failed"));
+        recAudio.onerror = () => rej(recAudio.error);
         recAudio.load();
       });
 
-      const audioCtx = new AudioContext();
-      exportAudioCtxRef.current = audioCtx;
-      await audioCtx.resume();
+      // Wire Web Audio graph
       const audioSrc  = audioCtx.createMediaElementSource(recAudio);
       const audioDest = audioCtx.createMediaStreamDestination();
-      audioSrc.connect(audioDest);
-      audioSrc.connect(audioCtx.destination);
+      audioSrc.connect(audioDest);            // → recording
+      audioSrc.connect(audioCtx.destination); // → speakers
 
-      const videoStream = renderer.canvas.captureStream(30);
-      const combined = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...audioDest.stream.getAudioTracks(),
-      ]);
+      // MediaRecorder — canvas video track + audio
+      const combined = new MediaStream([recordingVideoTrack, audioDest.stream.getAudioTracks()[0]]);
       const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
         ? "video/webm;codecs=vp9,opus"
-        : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-        ? "video/webm;codecs=vp8,opus"
         : "video/webm";
-      const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 12_000_000 });
+      const rec     = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 12_000_000 });
       const chunks: BlobPart[] = [];
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
+      // 9. Guards — listen on displayVideoTrack for "user stops sharing"
+      let aborted = false;
+      const beforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+      window.addEventListener("beforeunload", beforeUnload);
+      const handleHidden = () => {
+        if (document.hidden && rec.state !== "inactive") { aborted = true; rec.stop(); }
+      };
+      document.addEventListener("visibilitychange", handleHidden);
+      displayVideoTrack.addEventListener("ended", () => {
+        aborted = true;
+        if (rec.state !== "inactive") rec.stop();
+      }, { once: true });
+
+      // 10. START RECORDER BEFORE PLAYBACK — no clipped intro
+      recordingAudioRef.current    = recAudio;
+      isRecordingActiveRef.current = true;
+      rec.start();                   // ← capture first
       recAudio.currentTime = 0;
-      await recAudio.play();
-      recorder.start(250);
+      await recAudio.play();         // ← then play; head of song is fully captured
+      recAudio.addEventListener("ended", () => {
+        if (rec.state !== "inactive") rec.stop();
+      }, { once: true });
 
       let rafId = 0;
-      const tick = () => {
-        if (exportAbortRef.current) { recorder.stop(); recAudio.pause(); return; }
-        const t = recAudio.currentTime;
-        renderer.renderFrame(t);
-        setExportProgress(Math.min(99, Math.round((t / clipDuration) * 100)));
-        if (t < clipDuration && !recAudio.ended) {
-          rafId = requestAnimationFrame(tick);
-        } else {
-          recAudio.pause();
-          recorder.stop();
-        }
+      const progressTick = () => {
+        setExportProgress(Math.min(99, Math.round((recAudio.currentTime / clipDuration) * 100)));
+        if (!recAudio.ended) rafId = requestAnimationFrame(progressTick);
       };
-      rafId = requestAnimationFrame(tick);
+      rafId = requestAnimationFrame(progressTick);
 
-      recorder.onstop = () => {
+      // 11. onstop — runs when song ends, tab is hidden, or user stops sharing
+      rec.onstop = () => {
         cancelAnimationFrame(rafId);
-        renderer.destroy();
+        cancelAnimationFrame(drawRafRef.current);
+        window.removeEventListener("beforeunload", beforeUnload);
+        document.removeEventListener("visibilitychange", handleHidden);
+        displayVideoTrack.stop();
+        if (rawVideoRef.current) { rawVideoRef.current.srcObject = null; rawVideoRef.current = null; }
         audioCtx.close();
-        exportAudioCtxRef.current = null;
+        exportAudioCtxRef.current    = null;
+        isRecordingActiveRef.current = false;
+        recordingAudioRef.current    = null;
+        setIsRecordingModalOpen(false);
+        setIsExportRecording(false);
+        setExportProgress(100);
+        if (aborted) {
+          setExportInfoModal({
+            title: "Export Cancelled",
+            message: "Recording stopped because the tab was hidden or sharing ended. Keep this tab in the foreground while recording.",
+          });
+          return;
+        }
         const blob = new Blob(chunks, { type: mimeType });
         const url  = URL.createObjectURL(blob);
         setExportedBlobUrl(url);
@@ -1255,13 +1467,14 @@ export default function AudioToVideoPage() {
         setExportClipIndex(clip.clip_index);
         exportClipIdRef.current = clip.id;
         setExportedBlobUrlByClip((prev) => ({ ...prev, [clip.id]: url }));
-        setExportProgress(100);
-        setIsExportRecording(false);
       };
     } catch (err: any) {
       console.error("Export failed", err);
       setGenerationErrors((e) => ({ ...e, [clip.id]: `Export failed: ${err?.message ?? "unknown"}` }));
       setIsExportRecording(false);
+      setIsRecordingModalOpen(false);
+      isRecordingActiveRef.current = false;
+      recordingAudioRef.current    = null;
     }
   };
 
@@ -2010,6 +2223,135 @@ export default function AudioToVideoPage() {
     </div>
 
     {/* ── Recording Modal ──────────────────────────────────────────────── */}
+    {isRecordingModalOpen && (() => {
+      const recClip = pendingExportClipRef.current ?? activeClip;
+      if (!recClip) return null;
+      const recCfg      = clipConfigs[recClip.id] ?? { template_id: "minimal" };
+      const recThemeId  = (recCfg.template_id || "minimal") as ThemeId;
+      const recTheme    = OVERLAY_THEMES[recThemeId] ?? OVERLAY_THEMES.minimal;
+      const recBgUrl    = recCfg.bg_path    ? fileUrl(recCfg.bg_path)    : null;
+      const recCoverUrl = recCfg.cover_path ? fileUrl(recCfg.cover_path) : null;
+      const isPreviewPhase = !isExportRecording;
+      return (
+        <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+
+          {/* ── TOP BAR — always outside captureTargetRef ── */}
+          <div className="shrink-0 h-12 flex items-center justify-between px-4"
+               style={{ background: isPreviewPhase ? "rgba(0,0,0,0.8)" : "rgba(180,0,0,0.25)" }}>
+            {isPreviewPhase ? (
+              <>
+                <span className="text-sm text-white/80 font-medium">Preview — position your crop then click Start Recording</span>
+                <button
+                  onClick={() => {
+                    setIsRecordingModalOpen(false);
+                    pendingExportClipRef.current = null;
+                    if (audioPreviewRef.current) audioPreviewRef.current.pause();
+                  }}
+                  className="text-white/60 hover:text-white text-xs font-medium px-3 py-1 rounded-lg border border-white/20 hover:border-white/40 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-sm text-white font-medium">● RECORDING — Do not close or switch tabs</span>
+                <div className="w-48 h-1.5 bg-white/20 rounded-full overflow-hidden">
+                  <div className="h-full bg-red-500 transition-none" style={{ width: `${exportProgress}%` }} />
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ── PREVIEW AREA — captureTargetRef is the crop target ──
+               Layout: captureTarget is always sized to (100vh - 48px) so its
+               position never shifts when the bottom bar appears/disappears.
+               The bottom "Start Exporting" bar is absolutely positioned so it
+               doesn't affect the flex layout. ── */}
+          <div className="flex-1 relative bg-black flex items-center justify-center">
+
+            {/* The actual capture target — sized consistently in both phases.
+                outline is drawn on the element itself so the guide can never
+                diverge from the actually-cropped region. */}
+            <div
+              ref={captureTargetRef}
+              style={{
+                aspectRatio: "9/16",
+                height: "calc(100vh - 48px)",   // always: full height minus top bar only
+                maxWidth: "calc((100vh - 48px) * 9 / 16)",
+                overflow: "hidden",
+                position: "relative",
+                outline: isPreviewPhase ? "2px dashed rgba(255,255,255,0.55)" : "none",
+                outlineOffset: "-2px",
+              }}
+            >
+              <PreviewContent
+                themeId={recThemeId}
+                theme={recTheme}
+                bgImageUrl={recBgUrl}
+                coverImageUrl={recCoverUrl}
+                lyricLines={activeKaraokeLyrics}
+                isPlaying={true}
+                overlayLineIndex={overlayLineIndex}
+                overlayWordIndex={overlayWordIndex}
+                coverArtRef={coverArtRef}
+              />
+            </div>
+
+            {/* Crop frame — purely decorative, pointer-events-none, never recorded */}
+            {isPreviewPhase && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div style={{
+                  aspectRatio: "9/16",
+                  height: "calc(100vh - 48px)",
+                  maxWidth: "calc((100vh - 48px) * 9 / 16)",
+                  position: "relative",
+                }}>
+                  {([
+                    { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
+                    { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
+                    { bottom: -4, left: -4, borderBottom: "3px solid white", borderLeft: "3px solid white", borderRadius: "0 0 0 3px" },
+                    { bottom: -4, right: -4, borderBottom: "3px solid white", borderRight: "3px solid white", borderRadius: "0 0 3px 0" },
+                  ] as React.CSSProperties[]).map((s, i) => (
+                    <div key={i} style={{ position: "absolute", width: 18, height: 18, ...s }} />
+                  ))}
+                  <div style={{
+                    position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
+                    fontSize: 11, color: "rgba(255,255,255,0.6)", whiteSpace: "nowrap",
+                    background: "rgba(0,0,0,0.55)", padding: "2px 8px", borderRadius: 4,
+                  }}>
+                    Only this region is recorded
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>{/* end flex-1 preview area */}
+
+          {/* ── Start Exporting panel — right-side fixed, completely outside captureTargetRef ── */}
+          {isPreviewPhase && (
+            <div style={{
+              position: "fixed", right: 24, top: "50%", transform: "translateY(-50%)",
+              zIndex: 200,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+            }}>
+              <button
+                onClick={() => {
+                  if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
+                }}
+                style={{
+                  background: "white", color: "black", border: "none", cursor: "pointer",
+                  padding: "14px 20px", borderRadius: 12, fontWeight: 700, fontSize: 14,
+                  whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 8,
+                  boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+                }}
+              >
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: "red", display: "inline-block", flexShrink: 0 }} />
+                Start Exporting
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    })()}
 
     {/* ── Export Info Modal (themed, replaces browser alert) ──────────── */}
     {exportInfoModal && (
