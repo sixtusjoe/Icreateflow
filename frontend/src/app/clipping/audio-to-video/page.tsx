@@ -42,6 +42,7 @@ import {
   Play,
   RotateCcw,
   Save,
+  ChevronDown,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1565,6 +1566,19 @@ export default function AudioToVideoPage() {
   const [clipTimingOffset, setClipTimingOffset] = useState<Record<number, number>>({});
   const [clipTimingSaved, setClipTimingSaved] = useState<Record<number, boolean>>({});
   const [showPerLineTiming, setShowPerLineTiming] = useState(false);
+
+  // ── Video-editor layout ──────────────────────────────────────────────────
+  // Accordion open/closed state for the left settings panel
+  const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({
+    lyrics: true,
+    timing: true,
+    design: false,
+    media: false,
+  });
+  const toggleSection = (k: string) =>
+    setSectionOpen((s) => ({ ...s, [k]: !s[k] }));
+  // Mobile tab: show settings panel OR preview canvas
+  const [mobileView, setMobileView] = useState<"preview" | "settings">("preview");
   const timingOffsetSaveRef = useRef<NodeJS.Timeout | null>(null);
   const timingSavedClearRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -2126,7 +2140,7 @@ export default function AudioToVideoPage() {
       </div>
 
       {/* ── Content ────────────────────────────────────────────────────────── */}
-      <div className={`mx-auto px-4 py-6 sm:px-6 sm:py-8 ${step === 2 ? "max-w-6xl" : "max-w-4xl"}`}>
+      <div className={step === 2 ? "px-3 sm:px-4 py-3" : "mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8"}>
 
         {/* ── Step 0: Upload ──────────────────────────────────────────────── */}
         {step === 0 && (
@@ -2409,9 +2423,9 @@ export default function AudioToVideoPage() {
           const lyricLines = activeKaraokeLyrics;
 
           return (
-            <div className="space-y-3">
+            <div className="space-y-2">
 
-              {/* Clip tabs */}
+              {/* ── Clip tabs ── */}
               <div className="flex gap-1 overflow-x-auto border-b border-border">
                 {track.clips.map((clip, i) => (
                   <button
@@ -2435,13 +2449,23 @@ export default function AudioToVideoPage() {
                 ))}
               </div>
 
+              {/* ── Mobile: Settings / Preview toggle ── */}
+              <div className="flex lg:hidden gap-1 rounded-xl border border-border bg-muted/30 p-1">
+                <button
+                  onClick={() => setMobileView("preview")}
+                  className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-colors ${mobileView === "preview" ? "bg-foreground text-background" : "text-muted-foreground"}`}
+                >Preview</button>
+                <button
+                  onClick={() => setMobileView("settings")}
+                  className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-colors ${mobileView === "settings" ? "bg-foreground text-background" : "text-muted-foreground"}`}
+                >Settings</button>
+              </div>
+
               {activeClip && (
-                /* ── Main layout: Settings Panel LEFT · 9:16 Canvas RIGHT ── */
-                <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-center">
+                <div className="flex flex-col lg:flex-row lg:items-start gap-4">
 
-                  {/* ══ LEFT: Settings Panel (Overlay Studio) ═══════════════ */}
-                  <div className="w-full xl:max-w-lg shrink-0 rounded-2xl border border-border bg-card p-6 space-y-6 shadow-2xl xl:max-h-[900px] overflow-y-auto">
-
+                  {/* ══ LEFT: Settings Panel ═══════════════════════════════ */}
+                  <div className={`w-full lg:w-[370px] shrink-0 ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
                     {/* Hidden file inputs */}
                     <input ref={bgInputRef} type="file" accept="image/*" className="hidden"
                       onChange={(e) => {
@@ -2455,8 +2479,7 @@ export default function AudioToVideoPage() {
                         if (f && activeClip) handleAssetUpload(activeClip.id, f, "cover");
                         e.target.value = "";
                       }} />
-
-                    {/* Hidden audio element for preview playback */}
+                    {/* Hidden audio element */}
                     {activeClip.local_path && (
                       <audio
                         key={activeClip.id}
@@ -2474,460 +2497,484 @@ export default function AudioToVideoPage() {
                       />
                     )}
 
-                    {/* Header */}
-                    <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <MonitorPlay className="w-6 h-6 text-foreground" />
-                        <h1 className="text-2xl font-bold text-foreground">Overlay Studio</h1>
-                      </div>
-                      <p className="text-muted-foreground text-sm">Configure your cinematic music template.</p>
-                    </div>
+                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-4 flex flex-col">
+                      <div className="overflow-y-auto lg:max-h-[calc(100vh-170px)]">
 
-                    {/* Media Uploads */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Background</label>
-                        <button
-                          onClick={() => bgInputRef.current?.click()}
-                          disabled={uploadingAsset[`${activeClip.id}-bg`]}
-                          className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
-                        >
-                          {uploadingAsset[`${activeClip.id}-bg`]
-                            ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-                            : <ImageIcon className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
-                          <span className="text-xs font-medium text-muted-foreground">
-                            {cfg.bg_path ? "✓ BG set" : "Change BG"}
-                          </span>
-                        </button>
-                      </div>
-                      <div>
-                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Album Cover</label>
-                        <button
-                          onClick={() => coverInputRef.current?.click()}
-                          disabled={uploadingAsset[`${activeClip.id}-cover`]}
-                          className="flex flex-col items-center justify-center gap-2 w-full p-4 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
-                        >
-                          {uploadingAsset[`${activeClip.id}-cover`]
-                            ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-                            : <Disc className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
-                          <span className="text-xs font-medium text-muted-foreground">
-                            {cfg.cover_path ? "✓ Cover set" : "Change Cover"}
-                          </span>
-                        </button>
-                      </div>
-                    </div>
+                        {/* ── PLAYBACK: always visible at top ── */}
+                        <div className="p-4 border-b border-border space-y-2.5">
+                          <div className="grid grid-cols-3 gap-2">
+                            {/* Restart */}
+                            <button
+                              onClick={() => {
+                                const audio = audioPreviewRef.current;
+                                if (!audio) return;
+                                seekAudio(audio, 0);
+                                lastAudioTimeRef.current = 0;
+                                audio.play().catch(() => {});
+                                setIsPreviewPaused(false);
+                              }}
+                              title="Restart from beginning"
+                              className="flex items-center justify-center gap-1.5 py-3 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors text-sm"
+                            >
+                              <RotateCcw className="w-4 h-4 shrink-0" /> Restart
+                            </button>
+                            {/* Play / Pause */}
+                            <button
+                              onClick={() => {
+                                const next = !isPreviewPaused;
+                                setIsPreviewPaused(!isPreviewPaused);
+                                if (audioPreviewRef.current) {
+                                  if (next) audioPreviewRef.current.pause();
+                                  else audioPreviewRef.current.play().catch(() => {});
+                                }
+                              }}
+                              className="flex items-center justify-center gap-1.5 py-3 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors text-sm"
+                            >
+                              {isPreviewPaused
+                                ? <><Play className="w-4 h-4 shrink-0 fill-current" /> Play</>
+                                : <><Pause className="w-4 h-4 shrink-0 fill-current" /> Pause</>}
+                            </button>
+                            {/* Export */}
+                            {isExportRecording ? (
+                              <button disabled className="flex items-center justify-center gap-1.5 py-3 bg-foreground/80 text-background font-semibold rounded-xl text-sm">
+                                <Loader2 className="w-4 h-4 shrink-0 animate-spin" /> {exportProgress}%
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => { if (activeClip) handleStartExport(activeClip); }}
+                                className="flex items-center justify-center gap-1.5 py-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm"
+                              >
+                                <Download className="w-4 h-4 shrink-0" /> Export
+                              </button>
+                            )}
+                          </div>
+                          {/* Render mode toggle */}
+                          <div className="flex gap-2">
+                            {(["match", "upgraded"] as const).map((mode) => (
+                              <button
+                                key={mode}
+                                onClick={() => setRenderMode(mode)}
+                                className={`flex-1 py-1.5 text-[11px] font-semibold rounded-xl border transition-all ${
+                                  renderMode === mode
+                                    ? "border-foreground bg-foreground text-background"
+                                    : "border-border text-muted-foreground hover:border-foreground/40"
+                                }`}
+                              >
+                                {mode === "match" ? "🎯 Match Preview" : "✨ Upgraded (Bloom)"}
+                              </button>
+                            ))}
+                          </div>
+                          {/* View Last Export */}
+                          {exportedBlobUrlByClip[activeClip.id] && !isExportRecording && (
+                            <button
+                              onClick={() => {
+                                setExportedBlobUrl(exportedBlobUrlByClip[activeClip.id]);
+                                setExportClipIndex(activeClip.clip_index);
+                                exportClipIdRef.current = activeClip.id;
+                              }}
+                              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors"
+                            >
+                              <MonitorPlay className="h-3.5 w-3.5" /> View Last Export
+                            </button>
+                          )}
+                        </div>
 
-                    {/* Lyrics Editor */}
-                    <div className="space-y-2">
-                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Lyrics Content
-                      </label>
-                      <div className="space-y-1.5">
-                        <textarea
-                          value={lyricsText}
-                          onChange={(e) => {
-                            setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }));
-                            setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
-                            // Freeze karaoke sync while user types — prevents mid-playback jumps
-                            editingLyricsRef.current = true;
-                            if (editingTimeoutRef.current) clearTimeout(editingTimeoutRef.current);
-                            editingTimeoutRef.current = setTimeout(() => {
-                              editingLyricsRef.current = false;
-                            }, 400);
-                          }}
-                          className="w-full h-32 bg-background border border-border rounded-xl p-3 text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
-                          style={{ scrollbarWidth: "none", fontSize: "16px" }}
-                          placeholder="Paste your lyrics here… (one line per lyric line)"
-                        />
-                        <button
-                          onClick={() => handleStartTapSync(activeClip.id)}
-                          disabled={!lyricsText.trim() || !activeClip.local_path}
-                          className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors disabled:opacity-40"
-                        >
-                          <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
-                        </button>
-                        {(clipWordsBase[activeClip.id]?.length ?? 0) > 0 && (() => {
-                          const offset = clipTimingOffset[activeClip.id] ?? 0;
-                          const saved  = clipTimingSaved[activeClip.id] ?? false;
-                          const applyStep = (delta: number) => {
-                            const next = Math.max(-10, Math.min(10, offset + delta));
-                            handleTimingOffsetChange(activeClip.id, next);
-                          };
-                          return (
-                            <div className="rounded-xl border border-border px-3 pt-2.5 pb-3.5 space-y-3">
-                              {/* Header */}
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Adjust Timing</span>
-                                <div className="flex items-center gap-2">
-                                  {saved && (
-                                    <span className="text-[10px] text-green-500 font-medium">Saved ✓</span>
-                                  )}
-                                  <span className={`text-[12px] font-mono font-semibold ${offset < -0.04 ? "text-blue-400" : offset > 0.04 ? "text-orange-400" : "text-muted-foreground"}`}>
-                                    {offset > 0 ? "+" : ""}{offset.toFixed(2)}s
-                                  </span>
-                                  {Math.abs(offset) > 0.01 && (
-                                    <button
-                                      onClick={() => handleTimingOffsetChange(activeClip.id, 0)}
-                                      className="rounded-md border border-border px-1.5 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors"
-                                    >Reset</button>
-                                  )}
-                                </div>
-                              </div>
-
-                              {/* Status hint */}
-                              <p className="text-[10px] text-muted-foreground leading-relaxed">
-                                {Math.abs(offset) < 0.05
-                                  ? "Lyrics showing late? Press − buttons below. Play to test after each step."
-                                  : offset < 0
-                                  ? `Moved ${Math.abs(offset).toFixed(2)}s earlier — play to test, keep pressing − if still late.`
-                                  : `Moved ${offset.toFixed(2)}s later — play to test, press − if now too early.`}
-                              </p>
-
-                              {/* Quick-step buttons */}
-                              <div className="grid grid-cols-7 gap-1">
-                                {([-2, -1, -0.3, null, 0.3, 1, 2] as (number | null)[]).map((delta, i) =>
-                                  delta === null ? (
-                                    <div key="sep" className="flex items-center justify-center">
-                                      <div className="w-px h-5 bg-border" />
-                                    </div>
-                                  ) : (
-                                    <button
-                                      key={i}
-                                      onClick={() => applyStep(delta)}
-                                      className="rounded-lg border border-border py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 active:scale-95 transition-all"
-                                    >
-                                      {delta > 0 ? `+${delta}` : delta}s
-                                    </button>
-                                  )
-                                )}
-                              </div>
-
-                              {/* Fine-tune slider */}
-                              <div className="space-y-1">
-                                <input
-                                  type="range"
-                                  min={-10}
-                                  max={10}
-                                  step={0.05}
-                                  value={offset}
-                                  onChange={(e) => handleTimingOffsetChange(activeClip.id, parseFloat(e.target.value))}
-                                  className="w-full h-2 rounded-full appearance-none bg-border cursor-pointer accent-foreground"
+                        {/* ── LYRICS SECTION ── */}
+                        <div className="border-b border-border">
+                          <button
+                            onClick={() => toggleSection("lyrics")}
+                            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+                          >
+                            <span className="text-xs font-bold uppercase tracking-wider text-foreground">Lyrics</span>
+                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.lyrics ? "" : "-rotate-90"}`} />
+                          </button>
+                          {sectionOpen.lyrics && (
+                            <div className="px-4 pb-4 space-y-3">
+                              <div className="space-y-1.5">
+                                <textarea
+                                  value={lyricsText}
+                                  placeholder="Paste lyrics here, one line per lyric line…"
+                                  rows={8}
+                                  onFocus={() => { editingLyricsRef.current = true; }}
+                                  onBlur={() => { editingLyricsRef.current = false; }}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: val }));
+                                    setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                                  }}
+                                  className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-foreground/30 placeholder:text-muted-foreground/50"
                                 />
-                                <div className="flex justify-between text-[9px] text-muted-foreground/60">
-                                  <span>−10s (earlier)</span>
-                                  <span>0</span>
-                                  <span>+10s (later)</span>
-                                </div>
+                                <button
+                                  onClick={() => handleStartTapSync(activeClip.id)}
+                                  disabled={!lyricsText.trim() || !activeClip.local_path}
+                                  className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors disabled:opacity-40"
+                                >
+                                  <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
+                                </button>
                               </div>
-
-                              {/* Play / Pause to test */}
-                              <button
-                                onClick={() => {
-                                  if (!audioPreviewRef.current) return;
-                                  if (audioPreviewRef.current.paused) {
-                                    audioPreviewRef.current.play().catch(() => {});
-                                    setIsPreviewPaused(false);
-                                  } else {
-                                    audioPreviewRef.current.pause();
-                                    setIsPreviewPaused(true);
-                                  }
-                                }}
-                                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-                              >
-                                {isPreviewPaused ? "▶  Play to test sync" : "⏸  Pause"}
-                              </button>
                             </div>
-                          );
-                        })()}
+                          )}
+                        </div>
 
-                        {/* ── Per-line timing ── */}
-                        {wordTimings.length > 0 && (() => {
-                          const lines = (clipLyricsText[activeClip.id] ?? "")
-                            .split("\n").map((l) => l.trim()).filter(Boolean);
-                          const words = clipWords[activeClip.id] ?? [];
-                          const wordsPerLine = lines.map((l) => l.split(/\s+/).filter(Boolean).length);
-                          return (
-                            <div className="rounded-xl border border-border overflow-hidden">
-                              {/* Toggle header */}
-                              <button
-                                onClick={() => setShowPerLineTiming((s) => !s)}
-                                className="flex w-full items-center justify-between px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
-                              >
-                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                                  Fine-tune per line
-                                </span>
-                                <span className="text-[10px] text-muted-foreground">{showPerLineTiming ? "▲" : "▼"}</span>
-                              </button>
-
-                              {showPerLineTiming && (
-                                <div className="border-t border-border divide-y divide-border">
-                                  {lines.map((line, lineIdx) => {
-                                    let wordStart = 0;
-                                    for (let i = 0; i < lineIdx; i++) wordStart += wordsPerLine[i];
-                                    const firstWord = words[wordStart];
-                                    const key = `${activeClip.id}-${lineIdx}`;
-                                    const isSaved = lineTimingSaved[key] ?? false;
-                                    return (
-                                      <div key={lineIdx} className="px-3 py-2 space-y-1.5">
-                                        {/* Line preview + timestamp */}
-                                        <div className="flex items-center justify-between gap-2">
-                                          <span className="text-[10px] text-foreground/70 truncate flex-1">
-                                            {line.length > 30 ? line.slice(0, 30) + "…" : line}
-                                          </span>
-                                          <div className="flex items-center gap-1.5 shrink-0">
-                                            {isSaved && <span className="text-[9px] text-green-500 font-medium">✓</span>}
-                                            <span className="text-[10px] font-mono text-muted-foreground/60">
-                                              {firstWord ? formatSyncTime(firstWord.start_s) : "--:--"}
-                                            </span>
-                                          </div>
-                                        </div>
-                                        {/* Nudge buttons */}
-                                        <div className="grid grid-cols-6 gap-1">
-                                          {([-1, -0.3, -0.1, 0.1, 0.3, 1] as number[]).map((delta) => (
-                                            <button
-                                              key={delta}
-                                              onClick={() => handleLineTimingNudge(activeClip.id, lineIdx, delta)}
-                                              className="rounded-md border border-border py-1 text-[9px] font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 active:scale-95 transition-all"
-                                            >
-                                              {delta > 0 ? `+${delta}` : `${delta}`}
-                                            </button>
-                                          ))}
-                                        </div>
+                        {/* ── TIMING SECTION ── */}
+                        <div className="border-b border-border">
+                          <button
+                            onClick={() => toggleSection("timing")}
+                            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+                          >
+                            <span className="text-xs font-bold uppercase tracking-wider text-foreground">Timing</span>
+                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.timing ? "" : "-rotate-90"}`} />
+                          </button>
+                          {sectionOpen.timing && (
+                            <div className="px-4 pb-4 space-y-3">
+                              {/* Global Adjust Timing */}
+                              {(clipWordsBase[activeClip.id]?.length ?? 0) > 0 && (() => {
+                                const offset = clipTimingOffset[activeClip.id] ?? 0;
+                                const saved  = clipTimingSaved[activeClip.id] ?? false;
+                                const applyStep = (delta: number) => {
+                                  const next = Math.max(-10, Math.min(10, offset + delta));
+                                  handleTimingOffsetChange(activeClip.id, next);
+                                };
+                                return (
+                                  <div className="rounded-xl border border-border px-3 pt-2.5 pb-3.5 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Adjust Timing</span>
+                                      <div className="flex items-center gap-2">
+                                        {saved && (
+                                          <span className="text-[10px] text-green-500 font-medium">Saved ✓</span>
+                                        )}
+                                        <span className={`text-[12px] font-mono font-semibold ${offset < -0.04 ? "text-blue-400" : offset > 0.04 ? "text-orange-400" : "text-muted-foreground"}`}>
+                                          {offset > 0 ? "+" : ""}{offset.toFixed(2)}s
+                                        </span>
+                                        {Math.abs(offset) > 0.01 && (
+                                          <button
+                                            onClick={() => handleTimingOffsetChange(activeClip.id, 0)}
+                                            className="rounded-md border border-border px-1.5 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+                                          >Reset</button>
+                                        )}
                                       </div>
-                                    );
-                                  })}
-                                </div>
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                                      {Math.abs(offset) < 0.05
+                                        ? "Lyrics showing late? Press − buttons below. Play to test after each step."
+                                        : offset < 0
+                                        ? `Moved ${Math.abs(offset).toFixed(2)}s earlier — play to test, keep pressing − if still late.`
+                                        : `Moved ${offset.toFixed(2)}s later — play to test, press − if now too early.`}
+                                    </p>
+                                    <div className="grid grid-cols-7 gap-1">
+                                      {([-2, -1, -0.3, null, 0.3, 1, 2] as (number | null)[]).map((delta, i) =>
+                                        delta === null ? (
+                                          <div key="sep" className="flex items-center justify-center">
+                                            <div className="w-px h-5 bg-border" />
+                                          </div>
+                                        ) : (
+                                          <button
+                                            key={i}
+                                            onClick={() => applyStep(delta)}
+                                            className="rounded-lg border border-border py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 active:scale-95 transition-all"
+                                          >
+                                            {delta > 0 ? `+${delta}` : delta}s
+                                          </button>
+                                        )
+                                      )}
+                                    </div>
+                                    <div className="space-y-1">
+                                      <input
+                                        type="range" min={-10} max={10} step={0.05} value={offset}
+                                        onChange={(e) => handleTimingOffsetChange(activeClip.id, parseFloat(e.target.value))}
+                                        className="w-full h-2 rounded-full appearance-none bg-border cursor-pointer accent-foreground"
+                                      />
+                                      <div className="flex justify-between text-[9px] text-muted-foreground/60">
+                                        <span>−10s (earlier)</span>
+                                        <span>0</span>
+                                        <span>+10s (later)</span>
+                                      </div>
+                                    </div>
+                                    <button
+                                      onClick={() => {
+                                        if (!audioPreviewRef.current) return;
+                                        if (audioPreviewRef.current.paused) {
+                                          audioPreviewRef.current.play().catch(() => {});
+                                          setIsPreviewPaused(false);
+                                        } else {
+                                          audioPreviewRef.current.pause();
+                                          setIsPreviewPaused(true);
+                                        }
+                                      }}
+                                      className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+                                    >
+                                      {isPreviewPaused ? "▶  Play to test sync" : "⏸  Pause"}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+
+                              {/* Per-line timing */}
+                              {wordTimings.length > 0 && (() => {
+                                const lines = (clipLyricsText[activeClip.id] ?? "")
+                                  .split("\n").map((l) => l.trim()).filter(Boolean);
+                                const words = clipWords[activeClip.id] ?? [];
+                                const wordsPerLine = lines.map((l) => l.split(/\s+/).filter(Boolean).length);
+                                return (
+                                  <div className="rounded-xl border border-border overflow-hidden">
+                                    <button
+                                      onClick={() => setShowPerLineTiming((s) => !s)}
+                                      className="flex w-full items-center justify-between px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
+                                    >
+                                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Fine-tune per line</span>
+                                      <span className="text-[10px] text-muted-foreground">{showPerLineTiming ? "▲" : "▼"}</span>
+                                    </button>
+                                    {showPerLineTiming && (
+                                      <div className="border-t border-border divide-y divide-border">
+                                        {lines.map((line, lineIdx) => {
+                                          let wordStart = 0;
+                                          for (let i = 0; i < lineIdx; i++) wordStart += wordsPerLine[i];
+                                          const firstWord = words[wordStart];
+                                          const key = `${activeClip.id}-${lineIdx}`;
+                                          const isSaved = lineTimingSaved[key] ?? false;
+                                          return (
+                                            <div key={lineIdx} className="px-3 py-2 space-y-1.5">
+                                              <div className="flex items-center justify-between gap-2">
+                                                <span className="text-[10px] text-foreground/70 truncate flex-1">
+                                                  {line.length > 30 ? line.slice(0, 30) + "…" : line}
+                                                </span>
+                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                  {isSaved && <span className="text-[9px] text-green-500 font-medium">✓</span>}
+                                                  <span className="text-[10px] font-mono text-muted-foreground/60">
+                                                    {firstWord ? formatSyncTime(firstWord.start_s) : "--:--"}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                              <div className="grid grid-cols-6 gap-1">
+                                                {([-1, -0.3, -0.1, 0.1, 0.3, 1] as number[]).map((delta) => (
+                                                  <button
+                                                    key={delta}
+                                                    onClick={() => handleLineTimingNudge(activeClip.id, lineIdx, delta)}
+                                                    className="rounded-md border border-border py-1 text-[9px] font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 active:scale-95 transition-all"
+                                                  >
+                                                    {delta > 0 ? `+${delta}` : `${delta}`}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+
+                              {(clipWordsBase[activeClip.id]?.length ?? 0) === 0 && wordTimings.length === 0 && (
+                                <p className="text-[11px] text-muted-foreground text-center py-2">
+                                  Paste lyrics and tap "Sync Timing" to enable timing controls
+                                </p>
                               )}
                             </div>
-                          );
-                        })()}
-                      </div>
-                    </div>
+                          )}
+                        </div>
 
-                    {/* Variant Selector */}
-                    <div>
-                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 block">Design Variant</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        {Object.values(OVERLAY_THEMES).map((t) => (
+                        {/* ── DESIGN SECTION ── */}
+                        <div className="border-b border-border">
                           <button
-                            key={t.id}
-                            onClick={() => {
-                              setClipConfigs((c) => ({
-                                ...c,
-                                [activeClip.id]: { ...cfg, template_id: t.id },
-                              }));
-                              setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
-                            }}
-                            className={`py-3 px-3 rounded-xl border-2 transition-all flex items-center justify-start gap-3 ${
-                              themeId === t.id
-                                ? "border-foreground bg-muted/40"
-                                : "border-border bg-background hover:border-muted-foreground"
-                            }`}
+                            onClick={() => toggleSection("design")}
+                            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
-                            <span className="text-sm font-semibold truncate">{t.name}</span>
+                            <span className="text-xs font-bold uppercase tracking-wider text-foreground">Design</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] text-muted-foreground capitalize">{themeId} · {lyricsMode}</span>
+                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.design ? "" : "-rotate-90"}`} />
+                            </div>
                           </button>
-                        ))}
-                      </div>
-                    </div>
+                          {sectionOpen.design && (
+                            <div className="px-4 pb-4 space-y-4">
+                              {/* Template */}
+                              <div>
+                                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Template</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {Object.values(OVERLAY_THEMES).map((t) => (
+                                    <button
+                                      key={t.id}
+                                      onClick={() => {
+                                        setClipConfigs((c) => ({ ...c, [activeClip.id]: { ...cfg, template_id: t.id } }));
+                                        setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                                      }}
+                                      className={`py-2.5 px-3 rounded-xl border-2 transition-all flex items-center justify-start gap-2 text-sm font-semibold ${
+                                        themeId === t.id ? "border-foreground bg-muted/40" : "border-border bg-background hover:border-muted-foreground"
+                                      }`}
+                                    >
+                                      {t.name}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              {/* Lyrics Style */}
+                              <div>
+                                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Lyrics Style</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {([
+                                    { id: "karaoke", name: "Karaoke", desc: "One line, word-by-word" },
+                                    { id: "scroll",  name: "Scroll",  desc: "Apple Music style" },
+                                  ] as const).map((mode) => (
+                                    <button
+                                      key={mode.id}
+                                      onClick={() => {
+                                        setClipConfigs((c) => ({ ...c, [activeClip.id]: { ...cfg, lyrics_mode: mode.id } }));
+                                        setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                                      }}
+                                      className={`py-2.5 px-3 rounded-xl border-2 transition-all flex flex-col items-start gap-0.5 ${
+                                        lyricsMode === mode.id ? "border-foreground bg-muted/40" : "border-border bg-background hover:border-muted-foreground"
+                                      }`}
+                                    >
+                                      <span className="text-sm font-semibold">{mode.name}</span>
+                                      <span className="text-[10px] text-muted-foreground">{mode.desc}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
 
-                    {/* Lyrics Mode */}
-                    <div>
-                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 block">Lyrics Style</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        {([
-                          { id: "karaoke", name: "Karaoke", desc: "One line, word-by-word" },
-                          { id: "scroll",  name: "Scroll",  desc: "Apple Music style" },
-                        ] as const).map((mode) => (
+                        {/* ── MEDIA & SAVE SECTION ── */}
+                        <div>
                           <button
-                            key={mode.id}
-                            onClick={() => {
-                              setClipConfigs((c) => ({
-                                ...c,
-                                [activeClip.id]: { ...cfg, lyrics_mode: mode.id },
-                              }));
-                              setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
-                            }}
-                            className={`py-3 px-3 rounded-xl border-2 transition-all flex flex-col items-start gap-0.5 ${
-                              lyricsMode === mode.id
-                                ? "border-foreground bg-muted/40"
-                                : "border-border bg-background hover:border-muted-foreground"
-                            }`}
+                            onClick={() => toggleSection("media")}
+                            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
-                            <span className="text-sm font-semibold">{mode.name}</span>
-                            <span className="text-[10px] text-muted-foreground">{mode.desc}</span>
+                            <span className="text-xs font-bold uppercase tracking-wider text-foreground">Media &amp; Save</span>
+                            <div className="flex items-center gap-2">
+                              {clipConfigDirty[activeClip.id] && (
+                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                              )}
+                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.media ? "" : "-rotate-90"}`} />
+                            </div>
                           </button>
-                        ))}
-                      </div>
-                    </div>
+                          {sectionOpen.media && (
+                            <div className="px-4 pb-4 space-y-4">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Background</label>
+                                  <button
+                                    onClick={() => bgInputRef.current?.click()}
+                                    disabled={uploadingAsset[`${activeClip.id}-bg`]}
+                                    className="flex flex-col items-center justify-center gap-1.5 w-full p-3 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
+                                  >
+                                    {uploadingAsset[`${activeClip.id}-bg`]
+                                      ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                                      : <ImageIcon className="w-4 h-4 text-muted-foreground group-hover:text-foreground" />}
+                                    <span className="text-[10px] font-medium text-muted-foreground">
+                                      {cfg.bg_path ? "✓ BG set" : "Change BG"}
+                                    </span>
+                                  </button>
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Album Cover</label>
+                                  <button
+                                    onClick={() => coverInputRef.current?.click()}
+                                    disabled={uploadingAsset[`${activeClip.id}-cover`]}
+                                    className="flex flex-col items-center justify-center gap-1.5 w-full p-3 border-2 border-dashed border-border hover:border-muted-foreground rounded-xl cursor-pointer transition-colors bg-muted/30 group disabled:opacity-50"
+                                  >
+                                    {uploadingAsset[`${activeClip.id}-cover`]
+                                      ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                                      : <Disc className="w-4 h-4 text-muted-foreground group-hover:text-foreground" />}
+                                    <span className="text-[10px] font-medium text-muted-foreground">
+                                      {cfg.cover_path ? "✓ Cover set" : "Change Cover"}
+                                    </span>
+                                  </button>
+                                </div>
+                              </div>
+                              {generationErrors[activeClip.id] && (
+                                <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                                  {generationErrors[activeClip.id]}
+                                </p>
+                              )}
+                              {clipConfigDirty[activeClip.id] && !savingSettings && (
+                                <p className="text-center text-xs text-amber-500 flex items-center justify-center gap-1">
+                                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                  Unsaved changes
+                                </p>
+                              )}
+                              <button
+                                onClick={() => handleSaveSettings(activeClip.id)}
+                                disabled={savingSettings || savingLyrics}
+                                className={`flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm transition-colors disabled:opacity-40 ${
+                                  clipConfigDirty[activeClip.id]
+                                    ? "border-amber-500/60 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 font-medium"
+                                    : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+                                }`}
+                              >
+                                {savingSettings
+                                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>
+                                  : clipConfigDirty[activeClip.id]
+                                  ? <><Save className="h-3.5 w-3.5" /> Save Settings</>
+                                  : <><CheckCircle2 className="h-3.5 w-3.5" /> Save Settings</>}
+                              </button>
+                            </div>
+                          )}
+                        </div>
 
-                    {generationErrors[activeClip.id] && (
-                      <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                        {generationErrors[activeClip.id]}
-                      </p>
-                    )}
+                      </div>{/* end scrollable */}
+                    </div>{/* end card */}
+                  </div>{/* end left panel */}
 
-                    {/* Action Buttons */}
-                    <div className="pt-4 border-t border-border space-y-3">
-
-                      {/* Render mode toggle */}
-                      <div className="flex gap-2">
-                        {(["match", "upgraded"] as const).map((mode) => (
-                          <button
-                            key={mode}
-                            onClick={() => setRenderMode(mode)}
-                            className={`flex-1 py-2 text-xs font-semibold rounded-xl border transition-all ${
-                              renderMode === mode
-                                ? "border-foreground bg-foreground text-background"
-                                : "border-border text-muted-foreground hover:border-foreground/40"
-                            }`}
-                          >
-                            {mode === "match" ? "🎯 Match Preview" : "✨ Upgraded (Bloom)"}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-3">
-                        {/* Restart — seek to 0 and play */}
-                        <button
-                          onClick={() => {
-                            const audio = audioPreviewRef.current;
-                            if (!audio) return;
-                            seekAudio(audio, 0);
-                            lastAudioTimeRef.current = 0;
-                            audio.play().catch(() => {});
-                            setIsPreviewPaused(false);
-                          }}
-                          title="Restart from beginning"
-                          className="w-full flex items-center justify-center gap-1.5 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
+                  {/* ══ RIGHT: Preview + nav ═══════════════════════════════ */}
+                  <div className={`flex-1 ${mobileView === "settings" ? "hidden lg:flex lg:flex-col" : "flex flex-col"} gap-4`}>
+                    <div className="lg:sticky lg:top-4 space-y-4">
+                      {/* Canvas */}
+                      <div className="flex items-start justify-center">
+                        <div
+                          ref={previewCanvasRef}
+                          className="relative w-full max-w-[280px] sm:max-w-[340px] md:max-w-[380px] aspect-[9/16] bg-black rounded-[2.5rem] overflow-hidden shadow-2xl ring-4 ring-neutral-800 flex-shrink-0 isolate"
                         >
-                          <RotateCcw className="w-4 h-4 shrink-0" /><span className="truncate text-sm">Restart</span>
-                        </button>
-
-                        {/* Play / Pause */}
-                        <button
-                          onClick={() => {
-                            const next = !isPreviewPaused;
-                            setIsPreviewPaused(!isPreviewPaused);
-                            if (audioPreviewRef.current) {
-                              if (next) audioPreviewRef.current.pause();
-                              else audioPreviewRef.current.play().catch(() => {});
-                            }
-                          }}
-                          className="w-full flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
-                        >
-                          {isPreviewPaused
-                            ? <><Play className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Play</span></>
-                            : <><Pause className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Pause</span></>}
-                        </button>
-
-                        {/* Export — screen recording (match) or WebGL (upgraded) */}
-                        {isExportRecording ? (
-                          <button disabled className="w-full flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl">
-                            <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                            <span className="truncate">{exportProgress}%</span>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => { if (activeClip) handleStartExport(activeClip); }}
-                            className="w-full flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
-                          >
-                            <Download className="w-4 h-4 shrink-0" /><span className="truncate">Export</span>
-                          </button>
-                        )}
+                          <PreviewContent
+                            themeId={themeId}
+                            theme={theme}
+                            bgImageUrl={bgUrl || null}
+                            coverImageUrl={coverUrl || null}
+                            lyricLines={lyricLines}
+                            isPlaying={!isPreviewPaused}
+                            overlayLineIndex={overlayLineIndex}
+                            overlayWordIndex={overlayWordIndex}
+                            lyricsMode={lyricsMode}
+                            coverArtRef={coverArtRef}
+                            zigzagLayerRef={zigzagLayerRef}
+                            lyricsLayerRef={lyricsLayerRef}
+                            isGenerating={isGen}
+                          />
+                        </div>
                       </div>
 
-                      {/* View Last Export — reopen modal */}
-                      {exportedBlobUrlByClip[activeClip.id] && !isExportRecording && (
+                      {/* Timing info */}
+                      <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" />
+                          {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
+                        </span>
+                        <span>{(activeClip.end_s - activeClip.start_s).toFixed(1)}s</span>
+                      </div>
+
+                      {/* Nav buttons */}
+                      <div className="flex items-center justify-between">
                         <button
-                          onClick={() => {
-                            setExportedBlobUrl(exportedBlobUrlByClip[activeClip.id]);
-                            setExportClipIndex(activeClip.clip_index);
-                            exportClipIdRef.current = activeClip.id;
-                          }}
-                          className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors"
+                          onClick={() => setStep(1)}
+                          className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
                         >
-                          <MonitorPlay className="h-3.5 w-3.5" /> View Last Export
+                          <ChevronLeft className="h-4 w-4" /> Back
                         </button>
-                      )}
+                        <button
+                          onClick={() => setStep(3)}
+                          className="flex items-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background"
+                        >
+                          Assign <ChevronRight className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
-
-                    {/* Save Settings */}
-                    {clipConfigDirty[activeClip.id] && !savingSettings && (
-                      <p className="text-center text-xs text-amber-500 flex items-center justify-center gap-1">
-                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-                        Unsaved changes — click Save Settings
-                      </p>
-                    )}
-                    <button
-                      onClick={() => handleSaveSettings(activeClip.id)}
-                      disabled={savingSettings || savingLyrics}
-                      className={`flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm transition-colors disabled:opacity-40 ${
-                        clipConfigDirty[activeClip.id]
-                          ? "border-amber-500/60 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 font-medium"
-                          : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
-                      }`}
-                    >
-                      {savingSettings
-                        ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>
-                        : clipConfigDirty[activeClip.id]
-                        ? <><Save className="h-3.5 w-3.5" /> Save Settings</>
-                        : <><CheckCircle2 className="h-3.5 w-3.5" /> Save Settings</>}
-                    </button>
-                  </div>
-
-                  {/* ══ RIGHT: 9:16 Canvas (Figma Design) ═════════════════════ */}
-                  <div className="flex flex-1 items-start justify-center pt-2">
-                    <div ref={previewCanvasRef} className="relative w-full max-w-[360px] md:max-w-[420px] aspect-[9/16] bg-black rounded-[2.5rem] overflow-hidden shadow-2xl ring-4 ring-neutral-800 flex-shrink-0 isolate">
-                      <PreviewContent
-                        themeId={themeId}
-                        theme={theme}
-                        bgImageUrl={bgUrl || null}
-                        coverImageUrl={coverUrl || null}
-                        lyricLines={lyricLines}
-                        isPlaying={!isPreviewPaused}
-                        overlayLineIndex={overlayLineIndex}
-                        overlayWordIndex={overlayWordIndex}
-                        lyricsMode={lyricsMode}
-                        coverArtRef={coverArtRef}
-                        zigzagLayerRef={zigzagLayerRef}
-                        lyricsLayerRef={lyricsLayerRef}
-                        isGenerating={isGen}
-                      />
-                    </div>
-
-                    {/* Below canvas: timing info */}
-                    <div className="hidden" /> {/* spacer for layout */}
-                  </div>
+                  </div>{/* end right panel */}
 
                 </div>
               )}
 
-              {/* Timing info below main layout */}
-              {activeClip && (
-                <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground pt-1">
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-3.5 w-3.5" />
-                    {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
-                  </span>
-                  <span>{(activeClip.end_s - activeClip.start_s).toFixed(1)}s</span>
-                </div>
-              )}
-
-              {/* Nav */}
-              <div className="flex items-center justify-between pt-2">
-                <button
-                  onClick={() => setStep(1)}
-                  className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm"
-                >
-                  <ChevronLeft className="h-4 w-4" /> Back
-                </button>
-                <button
-                  onClick={() => setStep(3)}
-                  className="flex items-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background"
-                >
-                  Assign <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
             </div>
           );
         })()}
