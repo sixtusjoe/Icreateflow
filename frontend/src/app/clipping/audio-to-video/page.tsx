@@ -458,9 +458,6 @@ function ConfirmModal({
 function ScrollLyricsView({
   lyricLines,
   overlayLineIndex,
-  overlayWordIndex,
-  isPlaying,
-  theme,
 }: {
   lyricLines: string[][];
   overlayLineIndex: number;
@@ -468,87 +465,73 @@ function ScrollLyricsView({
   isPlaying: boolean;
   theme: (typeof OVERLAY_THEMES)[ThemeId];
 }) {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const activeRef    = React.useRef<HTMLDivElement>(null);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const activeRef = React.useRef<HTMLDivElement>(null);
 
-  // Smooth-scroll the active line to center whenever it changes
+  // Scroll active line to the vertical center of the container
   React.useEffect(() => {
-    const container = containerRef.current;
+    const container = scrollRef.current;
     const active    = activeRef.current;
     if (!container || !active) return;
-    const containerMid = container.offsetHeight / 2;
-    const targetTop    = active.offsetTop + active.offsetHeight / 2 - containerMid;
-    container.scrollTo({ top: targetTop, behavior: "smooth" });
+    const mid = container.clientHeight / 2;
+    const top = active.offsetTop - mid + active.clientHeight / 2;
+    container.scrollTo({ top, behavior: "smooth" });
   }, [overlayLineIndex]);
 
   return (
+    // Outer wrapper: constrained to bottom zone only, clips everything outside
     <div
-      ref={containerRef}
-      className="absolute inset-0 z-10 overflow-hidden"
-      style={{ scrollBehavior: "smooth" }}
+      className="absolute left-0 right-0 z-10 overflow-hidden pointer-events-none"
+      style={{
+        top: "63%",
+        bottom: "7%",
+        // CSS mask fades lines out near the top and bottom edges
+        WebkitMaskImage:
+          "linear-gradient(to bottom, transparent 0%, black 22%, black 78%, transparent 100%)",
+        maskImage:
+          "linear-gradient(to bottom, transparent 0%, black 22%, black 78%, transparent 100%)",
+      }}
     >
-      {/* Fade masks top & bottom */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 z-20"
-        style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.95), transparent)" }} />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 z-20"
-        style={{ background: "linear-gradient(to top, rgba(0,0,0,0.95), transparent)" }} />
+      {/* Scrollable inner */}
+      <div ref={scrollRef} className="w-full h-full overflow-hidden">
+        {/* Top spacer so first line can reach the center */}
+        <div style={{ height: "50%" }} />
 
-      {/* Spacer so first line starts centered */}
-      <div style={{ height: "45%" }} />
+        {lyricLines.map((line, li) => {
+          const isActive = li === overlayLineIndex;
+          const isPast   = li < overlayLineIndex;
 
-      {lyricLines.map((line, li) => {
-        const isActive  = li === overlayLineIndex;
-        const isPast    = li < overlayLineIndex;
-
-        return (
-          <div
-            key={li}
-            ref={isActive ? activeRef : undefined}
-            className="px-8 py-1 text-center transition-all duration-300"
-          >
-            <p
+          return (
+            <div
+              key={li}
+              ref={isActive ? activeRef : undefined}
+              className="px-7 text-center"
               style={{
-                fontSize:    isActive ? "1.7rem" : "1.25rem",
-                fontWeight:  isActive ? 800 : 600,
-                lineHeight:  1.35,
-                letterSpacing: "-0.01em",
-                transition:  "font-size 0.25s ease, opacity 0.25s ease, color 0.2s ease",
-                color: isActive
-                  ? "#ffffff"
-                  : isPast
-                  ? "rgba(255,255,255,0.35)"
-                  : "rgba(255,255,255,0.25)",
-                textShadow: isActive ? "0 2px 16px rgba(0,0,0,0.7)" : "none",
+                paddingTop:    "0.3rem",
+                paddingBottom: "0.3rem",
+                transition: "all 0.3s ease",
               }}
             >
-              {isActive
-                ? line.map((word, wi) => {
-                    const isHighlighted = isPlaying && wi === overlayWordIndex;
-                    const isWordPast    = isPlaying && wi < overlayWordIndex;
-                    return (
-                      <span
-                        key={wi}
-                        style={{
-                          color: isHighlighted
-                            ? theme.accent
-                            : isWordPast ? "#ffffff" : "rgba(255,255,255,0.55)",
-                          textShadow: isHighlighted ? theme.textGlow : undefined,
-                          transition: "color 0.1s ease",
-                          marginRight: wi < line.length - 1 ? "0.35em" : 0,
-                        }}
-                      >
-                        {word}
-                      </span>
-                    );
-                  })
-                : line.join(" ")}
-            </p>
-          </div>
-        );
-      })}
+              <p
+                style={{
+                  fontSize:      isActive ? "1.55rem" : "1.1rem",
+                  fontWeight:    isActive ? 800 : 500,
+                  lineHeight:    1.3,
+                  letterSpacing: "-0.01em",
+                  color:         isActive ? "#ffffff" : isPast ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.2)",
+                  textShadow:    isActive ? "0 2px 14px rgba(0,0,0,0.6)" : "none",
+                  transition:    "font-size 0.25s ease, color 0.25s ease, font-weight 0.25s ease",
+                }}
+              >
+                {line.join(" ")}
+              </p>
+            </div>
+          );
+        })}
 
-      {/* Spacer so last line can scroll to center */}
-      <div style={{ height: "45%" }} />
+        {/* Bottom spacer so last line can reach the center */}
+        <div style={{ height: "50%" }} />
+      </div>
     </div>
   );
 }
