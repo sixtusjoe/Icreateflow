@@ -637,6 +637,26 @@ function PreviewContent({
   );
 }
 
+// ─── Download helper — works on iOS (opens new tab) and desktop/Android ──────
+
+function triggerDownload(url: string, filename: string) {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIOS) {
+    // iOS Safari blocks programmatic <a download> — open in new tab so user
+    // can long-press → Save to Files / Save Video
+    window.open(url, "_blank");
+  } else {
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function AudioToVideoPage() {
@@ -946,10 +966,7 @@ export default function AudioToVideoPage() {
             // Auto-download if this clip was queued for it
             setAutoDownloadClipId((prev) => {
               if (prev === c.id && c.video?.video_path) {
-                const a = document.createElement("a");
-                a.href = fileUrl(c.video.video_path);
-                a.download = `clip_${c.clip_index + 1}.mp4`;
-                a.click();
+                triggerDownload(fileUrl(c.video.video_path), `clip_${c.clip_index + 1}.mp4`);
                 return null;
               }
               return prev;
@@ -2561,10 +2578,7 @@ export default function AudioToVideoPage() {
 
                 // Server-stored video: already MP4, download directly
                 if (!exportedBlob && exportedBlobUrl) {
-                  const a = document.createElement("a");
-                  a.href = exportedBlobUrl;
-                  a.download = filename;
-                  a.click();
+                  triggerDownload(exportedBlobUrl, filename);
                   return;
                 }
 
@@ -2582,10 +2596,7 @@ export default function AudioToVideoPage() {
                   if (!res.ok) throw new Error(await res.text());
                   const mp4Blob = await res.blob();
                   const url = URL.createObjectURL(mp4Blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = filename;
-                  a.click();
+                  triggerDownload(url, filename);
                   URL.revokeObjectURL(url);
                 } catch (err: any) {
                   setExportInfoModal({ title: "Conversion failed", message: err?.message ?? "Unknown error" });
