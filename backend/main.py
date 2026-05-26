@@ -6815,7 +6815,9 @@ async def convert_webm_to_mp4(
 
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", str(in_path),
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
             str(out_path),
             stdout=asyncio.subprocess.DEVNULL,
