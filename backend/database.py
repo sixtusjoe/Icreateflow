@@ -466,6 +466,9 @@ class AudioTrack(Base):
     title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     local_path: Mapped[str] = mapped_column(Text, nullable=False)
     duration_s: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    # pending → processing → done | failed
+    transcription_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="'done'")
+    transcription_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
 
@@ -489,6 +492,8 @@ class AudioClip(Base):
     start_s: Mapped[float] = mapped_column(Double, nullable=False)
     end_s: Mapped[float] = mapped_column(Double, nullable=False)
     local_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # User-edited lyrics text (preserves line breaks); overrides auto-generated words display
+    lyrics_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
 
@@ -1115,6 +1120,15 @@ async def _migrate_email_features(conn) -> None:
     ))
     await conn.execute(text(
         "ALTER TABLE audio_video_clips ADD COLUMN IF NOT EXISTS lyrics_mode TEXT NOT NULL DEFAULT 'karaoke'"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS transcription_status TEXT NOT NULL DEFAULT 'done'"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS transcription_error TEXT"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_clips ADD COLUMN IF NOT EXISTS lyrics_text TEXT"
     ))
     # email_otps is a new table — handled by create_all via the ORM model.
     # Index for fast OTP lookups:

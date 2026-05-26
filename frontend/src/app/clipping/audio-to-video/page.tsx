@@ -14,6 +14,7 @@ import {
   generateAudioVideoClip,
   saveAudioClipSettings,
   updateAudioClipLyrics,
+  retranscribeAudioTrack,
   assignAudioClip,
   uploadAudioClipAsset,
   uploadAudioClipVideo,
@@ -77,12 +78,14 @@ interface AudioClipData {
   local_path?: string;
   words: AudioWord[];
   video: AudioVideoState | null;
+  lyrics_text?: string | null;
 }
 
 interface AudioTrackData {
   id: number;
   title: string;
   duration_s: number;
+  transcription_status?: string;
   words: AudioWord[];
   clips: AudioClipData[];
 }
@@ -93,6 +96,8 @@ interface TrackSummary {
   duration_s: number;
   created_at?: string;
 }
+
+interface TapLine { text: string; start_s: number | null; }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -849,6 +854,11 @@ export default function AudioToVideoPage() {
     onConfirm: () => void;
   } | null>(null);
 
+  // Tap-to-sync state
+  const [tapSyncMode, setTapSyncMode] = useState(false);
+  const [tapSyncLines, setTapSyncLines] = useState<TapLine[]>([]);
+  const [tapSyncClipId, setTapSyncClipId] = useState<number | null>(null);
+
   const activeClip = track?.clips.find((c) => c.id === editingClipId) ?? track?.clips[0] ?? null;
 
   const showConfirm = (title: string, message: string): Promise<boolean> =>
@@ -860,8 +870,12 @@ export default function AudioToVideoPage() {
       });
     });
 
-  // Poll interval ref
+  // Poll interval refs
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+  // Transcription progress state
+  const [transcriptionStatus, setTranscriptionStatus] = useState<"idle" | "pending" | "processing" | "done" | "failed">("idle");
+  const transcriptionPollRef = useRef<NodeJS.Timeout | null>(null);
+  const [retranscribing, setRetranscribing] = useState(false);
 
   // ── Load artists ──────────────────────────────────────────────────────────
 
@@ -915,6 +929,12 @@ export default function AudioToVideoPage() {
       }
       setClipConfigs(configs);
       setClipWords(words);
+      // Restore saved lyrics text (preserves user line edits across reloads)
+      const savedLyrics: Record<number, string> = {};
+      for (const clip of trackData.clips) {
+        if (clip.lyrics_text) savedLyrics[clip.id] = clip.lyrics_text;
+      }
+      if (Object.keys(savedLyrics).length > 0) setClipLyricsText(savedLyrics);
       // Restore "View Last Export" for clips that already have an uploaded video
       const blobUrlMap: Record<number, string> = {};
       for (const clip of trackData.clips) {
@@ -925,6 +945,12 @@ export default function AudioToVideoPage() {
       if (Object.keys(blobUrlMap).length > 0) setExportedBlobUrlByClip(blobUrlMap);
       if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
       setActiveReviewClip(0);
+      // Restore transcription status; start polling if still in progress
+      const tStatus = (trackData.transcription_status ?? "done") as any;
+      setTranscriptionStatus(tStatus);
+      if (tStatus === "pending" || tStatus === "processing") {
+        startTranscriptionPoll(trackData.id);
+      }
       setStep(1);
     } catch (e: any) {
       setExportInfoModal({ title: "Error", message: e?.response?.data?.detail || "Failed to load track" });
@@ -1012,6 +1038,12 @@ export default function AudioToVideoPage() {
       if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
       // Refresh past tracks list
       if (selectedArtistId) loadPastTracks(selectedArtistId);
+      // Start polling for transcription if it's still in progress
+      if (uploadResult.transcription_status === "pending" || uploadResult.transcription_status === "processing") {
+        startTranscriptionPoll(trackId);
+      } else {
+        setTranscriptionStatus("done");
+      }
       setStep(1);
     } catch (err: any) {
       setUploadError(err?.response?.data?.detail || err?.message || "Upload failed");
@@ -1074,6 +1106,55 @@ export default function AudioToVideoPage() {
   }, [track]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // ── Transcription background polling ─────────────────────────────────────
+
+  const startTranscriptionPoll = useCallback((trackId: number) => {
+    if (transcriptionPollRef.current) clearInterval(transcriptionPollRef.current);
+    setTranscriptionStatus("pending");
+    transcriptionPollRef.current = setInterval(async () => {
+      try {
+        const fresh: AudioTrackData = await getAudioTrack(trackId);
+        const status = fresh.transcription_status ?? "done";
+        setTranscriptionStatus(status as any);
+        if (status === "done" || status === "failed") {
+          if (transcriptionPollRef.current) { clearInterval(transcriptionPollRef.current); transcriptionPollRef.current = null; }
+          if (status === "done") {
+            // Distribute words to clips
+            const wordsMap: Record<number, AudioWord[]> = {};
+            for (const clip of fresh.clips) {
+              wordsMap[clip.id] = (fresh.words ?? []).filter((w: any) => w.clip_index === clip.clip_index);
+            }
+            setClipWords(wordsMap);
+            // Also reload lyrics text in case retranscribe updated them
+            const savedLyrics: Record<number, string> = {};
+            for (const clip of fresh.clips) {
+              if (clip.lyrics_text) savedLyrics[clip.id] = clip.lyrics_text;
+            }
+            if (Object.keys(savedLyrics).length > 0) setClipLyricsText(savedLyrics);
+            setTrack(fresh);
+          }
+        }
+      } catch {
+        // ignore transient errors
+      }
+    }, 3000);
+  }, []);
+
+  useEffect(() => () => { if (transcriptionPollRef.current) clearInterval(transcriptionPollRef.current); }, []);
+
+  const handleRetranscribe = async () => {
+    if (!track) return;
+    setRetranscribing(true);
+    try {
+      await retranscribeAudioTrack(track.id);
+      startTranscriptionPoll(track.id);
+    } catch (err: any) {
+      setExportInfoModal({ title: "Retranscribe failed", message: err?.response?.data?.detail || err?.message || "Unknown error" });
+    } finally {
+      setRetranscribing(false);
+    }
+  };
 
   // ── Overlay karaoke preview — timeupdate-driven sync ─────────────────────
 
@@ -1240,7 +1321,7 @@ export default function AudioToVideoPage() {
     setClipWords((cw) => ({ ...cw, [clipId]: merged }));
     setSavingLyrics(true);
     try {
-      await updateAudioClipLyrics(clipId, merged);
+      await updateAudioClipLyrics(clipId, merged, text);
     } catch (err: any) {
       setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
     } finally {
@@ -1252,12 +1333,89 @@ export default function AudioToVideoPage() {
     const words = clipWords[clipId] ?? [];
     setSavingLyrics(true);
     try {
-      await updateAudioClipLyrics(clipId, words);
+      await updateAudioClipLyrics(clipId, words, getLyricsText(clipId));
     } catch (err: any) {
       setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
     } finally {
       setSavingLyrics(false);
     }
+  };
+
+  // ── Tap-to-sync helpers ───────────────────────────────────────────────────
+
+  const handleStartTapSync = (clipId: number) => {
+    const text = getLyricsText(clipId);
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    setTapSyncLines(lines.map((l) => ({ text: l, start_s: null })));
+    setTapSyncClipId(clipId);
+    setTapSyncMode(true);
+    // Reset & play audio from start
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.currentTime = 0;
+      audioPreviewRef.current.play().catch(() => {});
+      setIsPreviewPaused(false);
+    }
+  };
+
+  const handleTapLine = (idx: number) => {
+    const t = audioPreviewRef.current?.currentTime ?? 0;
+    setTapSyncLines((lines) => {
+      const updated = [...lines];
+      updated[idx] = { ...updated[idx], start_s: t };
+      return updated;
+    });
+  };
+
+  const handleApplyTapSync = async () => {
+    if (tapSyncClipId === null) return;
+    const clipId = tapSyncClipId;
+    const clip = track?.clips.find((c) => c.id === clipId);
+    const clipDuration = clip ? (clip.end_s - clip.start_s) : 30;
+
+    // Convert timed lines → words with evenly-distributed timestamps within each line
+    const allWords: AudioWord[] = [];
+    const timedLines = tapSyncLines.filter((l) => l.start_s !== null);
+    for (let li = 0; li < timedLines.length; li++) {
+      const lineStart = timedLines[li].start_s!;
+      const lineEnd = li < timedLines.length - 1 ? (timedLines[li + 1].start_s ?? (lineStart + 3)) : clipDuration;
+      const lineDuration = Math.max(0.5, lineEnd - lineStart);
+      const lineWords = timedLines[li].text.split(/\s+/).filter(Boolean);
+      const wordDur = lineDuration / lineWords.length;
+      lineWords.forEach((w, wi) => {
+        allWords.push({
+          word: w,
+          start_s: lineStart + wi * wordDur,
+          end_s: lineStart + (wi + 1) * wordDur - 0.05,
+        });
+      });
+    }
+
+    // Build full text from all tap lines (including un-tapped ones at end)
+    const fullText = tapSyncLines.map((l) => l.text).join("\n");
+
+    setClipWords((cw) => ({ ...cw, [clipId]: allWords }));
+    setClipLyricsText((lt) => ({ ...lt, [clipId]: fullText }));
+    setClipConfigDirty((d) => ({ ...d, [clipId]: true }));
+    setTapSyncMode(false);
+    setTapSyncClipId(null);
+    // Pause audio
+    if (audioPreviewRef.current) { audioPreviewRef.current.pause(); setIsPreviewPaused(true); }
+    // Save immediately
+    setSavingLyrics(true);
+    try {
+      await updateAudioClipLyrics(clipId, allWords, fullText);
+    } catch (err: any) {
+      setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save sync" });
+    } finally {
+      setSavingLyrics(false);
+    }
+  };
+
+  const handleCancelTapSync = () => {
+    setTapSyncMode(false);
+    setTapSyncClipId(null);
+    if (audioPreviewRef.current) { audioPreviewRef.current.pause(); setIsPreviewPaused(true); }
   };
 
   /** Save lyrics + template/bg/cover settings to server — no generation triggered */
@@ -1905,7 +2063,7 @@ export default function AudioToVideoPage() {
               {uploading ? (
                 <span className="flex items-center justify-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="text-sm">Uploading & transcribing…</span>
+                  <span className="text-sm">Uploading…</span>
                 </span>
               ) : "Process Audio →"}
             </button>
@@ -1935,6 +2093,33 @@ export default function AudioToVideoPage() {
                 </button>
               </div>
             </div>
+
+            {/* Transcription progress banner */}
+            {(transcriptionStatus === "pending" || transcriptionStatus === "processing") && (
+              <div className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                <div>
+                  <p className="font-medium">Transcribing lyrics in the background…</p>
+                  <p className="text-xs text-amber-500/80 mt-0.5">This may take a minute. The page will update automatically when done.</p>
+                </div>
+              </div>
+            )}
+            {transcriptionStatus === "failed" && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <p>Transcription failed. Words may be missing or incomplete.</p>
+                </div>
+                <button
+                  onClick={handleRetranscribe}
+                  disabled={retranscribing}
+                  className="shrink-0 flex items-center gap-1 rounded-lg border border-destructive/40 px-3 py-1.5 text-xs font-medium hover:bg-destructive/10 disabled:opacity-40"
+                >
+                  {retranscribing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  Retry
+                </button>
+              </div>
+            )}
 
             {track.clips.map((clip) => {
               const cfg = clipConfigs[clip.id] ?? { template_id: "minimal" };
@@ -2119,20 +2304,106 @@ export default function AudioToVideoPage() {
                     </div>
 
                     {/* Lyrics Editor */}
-                    <div>
-                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">
-                        Lyrics Content
-                      </label>
-                      <textarea
-                        value={lyricsText}
-                        onChange={(e) => {
-                          setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }));
-                          setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
-                        }}
-                        className="w-full h-32 bg-background border border-border rounded-xl p-3 text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
-                        style={{ scrollbarWidth: "none", fontSize: "16px" }}
-                        placeholder="Enter lyrics here..."
-                      />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                          Lyrics Content
+                        </label>
+                        <div className="flex items-center gap-2">
+                          {/* Transcription status badge */}
+                          {(transcriptionStatus === "pending" || transcriptionStatus === "processing") && (
+                            <span className="flex items-center gap-1 text-[10px] text-amber-500">
+                              <Loader2 className="h-3 w-3 animate-spin" /> Transcribing…
+                            </span>
+                          )}
+                          {transcriptionStatus === "failed" && (
+                            <span className="text-[10px] text-destructive">Transcription failed</span>
+                          )}
+                          {/* Retranscribe button */}
+                          <button
+                            onClick={handleRetranscribe}
+                            disabled={retranscribing || transcriptionStatus === "pending" || transcriptionStatus === "processing"}
+                            title="Re-run Whisper transcription"
+                            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
+                          >
+                            {retranscribing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                            Retranscribe
+                          </button>
+                        </div>
+                      </div>
+
+                      {tapSyncMode && tapSyncClipId === activeClip.id ? (
+                        /* ── Tap-to-sync panel ── */
+                        <div className="rounded-xl border border-border bg-background overflow-hidden">
+                          <div className="px-3 py-2 bg-muted/50 border-b border-border flex items-center justify-between">
+                            <p className="text-xs font-semibold text-foreground">Tap each line as it plays</p>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  if (audioPreviewRef.current) {
+                                    if (audioPreviewRef.current.paused) { audioPreviewRef.current.play().catch(() => {}); setIsPreviewPaused(false); }
+                                    else { audioPreviewRef.current.pause(); setIsPreviewPaused(true); }
+                                  }
+                                }}
+                                className="flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[10px] font-medium text-foreground"
+                              >
+                                {isPreviewPaused ? <Play className="h-3 w-3 fill-current" /> : <Pause className="h-3 w-3 fill-current" />}
+                                {isPreviewPaused ? "Play" : "Pause"}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                            {tapSyncLines.map((line, idx) => (
+                              <button
+                                key={idx}
+                                onClick={() => handleTapLine(idx)}
+                                className={`w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors ${
+                                  line.start_s !== null ? "bg-green-500/10" : "hover:bg-muted/40"
+                                }`}
+                              >
+                                <span className="text-sm text-foreground leading-snug">{line.text}</span>
+                                <span className={`ml-2 shrink-0 text-[10px] font-mono ${line.start_s !== null ? "text-green-400" : "text-muted-foreground"}`}>
+                                  {line.start_s !== null ? `${line.start_s.toFixed(1)}s` : "tap"}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                          <div className="px-3 py-2 bg-muted/30 border-t border-border flex gap-2">
+                            <button
+                              onClick={handleApplyTapSync}
+                              disabled={savingLyrics || tapSyncLines.every((l) => l.start_s === null)}
+                              className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-foreground text-background text-xs font-semibold py-2 disabled:opacity-40"
+                            >
+                              {savingLyrics ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                              Apply Timing
+                            </button>
+                            <button onClick={handleCancelTapSync} className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* ── Normal textarea ── */
+                        <div className="space-y-1.5">
+                          <textarea
+                            value={lyricsText}
+                            onChange={(e) => {
+                              setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }));
+                              setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                            }}
+                            className="w-full h-32 bg-background border border-border rounded-xl p-3 text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
+                            style={{ scrollbarWidth: "none", fontSize: "16px" }}
+                            placeholder="Enter lyrics here… (one line per lyric line)"
+                          />
+                          <button
+                            onClick={() => handleStartTapSync(activeClip.id)}
+                            disabled={!lyricsText.trim() || !activeClip.local_path}
+                            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors disabled:opacity-40"
+                          >
+                            <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Variant Selector */}

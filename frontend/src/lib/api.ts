@@ -617,11 +617,15 @@ export const generateAudioVideoClip = (
     })
     .then((r) => r.data);
 
+export const retranscribeAudioTrack = (trackId: number) =>
+  api.post(`/api/audio-to-video/${trackId}/retranscribe`).then((r) => r.data);
+
 export const updateAudioClipLyrics = (
   clipId: number,
   words: { word: string; start_s: number; end_s: number }[],
+  lyricsText?: string,
 ) =>
-  api.put(`/api/audio-to-video/clips/${clipId}/lyrics`, { words }).then((r) => r.data);
+  api.put(`/api/audio-to-video/clips/${clipId}/lyrics`, { words, lyrics_text: lyricsText ?? null }).then((r) => r.data);
 
 export const assignAudioClip = (clipId: number, artistAccountId: number) =>
   api

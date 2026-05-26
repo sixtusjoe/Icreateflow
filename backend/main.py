@@ -6418,6 +6418,7 @@ class AudioLyricsWord(BaseModel):
 
 class AudioLyricsRequest(BaseModel):
     words: list[AudioLyricsWord]
+    lyrics_text: Optional[str] = None  # formatted text with line breaks — saved for reload
 
 
 class AudioAssignRequest(BaseModel):
@@ -6442,6 +6443,123 @@ async def list_audio_tracks(
         await database.close()
 
 
+async def _run_whisper_transcription(track_id: int, audio_path: Path, openai_key: str):
+    """Background task: transcribe audio with Whisper and store words in DB."""
+    database = await db.get_db()
+    try:
+        await database.execute(
+            "UPDATE audio_tracks SET transcription_status = 'processing' WHERE id = ?",
+            (track_id,),
+        )
+        await database.commit()
+    finally:
+        await database.close()
+
+    words = []
+    _whisper_tmp = None
+    try:
+        import httpx as _httpx
+        _whisper_tmp = str(audio_path) + "_whisper.mp3"
+        _conv_cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(audio_path),
+            "-ac", "1", "-ar", "16000",
+            "-c:a", "libmp3lame", "-q:a", "7",  # ~96 kbps — enough for Whisper
+            _whisper_tmp,
+        ]
+        _conv_proc = await asyncio.create_subprocess_exec(
+            *_conv_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, _conv_err = await asyncio.wait_for(_conv_proc.communicate(), timeout=120)
+        if _conv_proc.returncode != 0:
+            raise RuntimeError(f"FFmpeg convert failed: {_conv_err.decode()[:200]}")
+
+        audio_bytes = Path(_whisper_tmp).read_bytes()
+        whisper_filename = Path(_whisper_tmp).name
+
+        def _whisper_request():
+            with _httpx.Client(timeout=300) as client:
+                resp = client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    data=[
+                        ("model", "whisper-1"),
+                        ("response_format", "verbose_json"),
+                        ("timestamp_granularities[]", "word"),
+                        ("timestamp_granularities[]", "segment"),
+                        ("prompt", "Song lyrics with timestamps."),
+                    ],
+                    files={"file": (whisper_filename, audio_bytes, "audio/mpeg")},
+                )
+                if not resp.is_success:
+                    raise RuntimeError(f"Whisper API error {resp.status_code}: {resp.text[:200]}")
+                return resp.json()
+
+        whisper_result = await asyncio.to_thread(_whisper_request)
+        raw_words = whisper_result.get("words") or []
+        if not raw_words:
+            for seg in whisper_result.get("segments", []):
+                raw_words.extend(seg.get("words", []))
+        root_starts = {float(w["start"]) for w in raw_words}
+        for seg in whisper_result.get("segments", []):
+            for sw in seg.get("words", []):
+                if float(sw["start"]) not in root_starts:
+                    raw_words.append(sw)
+                    root_starts.add(float(sw["start"]))
+        raw_words.sort(key=lambda w: float(w["start"]))
+        words = [
+            {"word": w["word"].strip(), "start_s": float(w["start"]), "end_s": float(w["end"])}
+            for w in raw_words if w.get("word", "").strip()
+        ]
+        print(f"[whisper] track {track_id}: {len(words)} words")
+    except Exception as e:
+        print(f"[whisper] track {track_id} failed: {e}")
+        database = await db.get_db()
+        try:
+            await database.execute(
+                "UPDATE audio_tracks SET transcription_status = 'failed', transcription_error = ? WHERE id = ?",
+                (str(e)[:500], track_id),
+            )
+            await database.commit()
+        finally:
+            await database.close()
+        return
+    finally:
+        if _whisper_tmp:
+            try: os.unlink(_whisper_tmp)
+            except Exception: pass
+
+    database = await db.get_db()
+    try:
+        await database.execute(
+            "DELETE FROM audio_words WHERE audio_track_id = ?", (track_id,)
+        )
+        for w in words:
+            await database.execute(
+                "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, 0, ?, ?, ?)",
+                (track_id, w["word"], w["start_s"], w["end_s"]),
+            )
+        # Re-assign words to clips (clips may have been created before transcription finished)
+        cur = await database.execute(
+            "SELECT clip_index, start_s, end_s FROM audio_clips WHERE audio_track_id = ? ORDER BY clip_index",
+            (track_id,),
+        )
+        clips_rows = await cur.fetchall()
+        for cr in clips_rows:
+            cr = dict(cr)
+            await database.execute(
+                "UPDATE audio_words SET clip_index = ? WHERE audio_track_id = ? AND start_s >= ? AND start_s < ?",
+                (cr["clip_index"], track_id, cr["start_s"], cr["end_s"]),
+            )
+        await database.execute(
+            "UPDATE audio_tracks SET transcription_status = 'done', transcription_error = NULL WHERE id = ?",
+            (track_id,),
+        )
+        await database.commit()
+    finally:
+        await database.close()
+
+
 @app.post("/api/audio-to-video/upload")
 async def upload_audio_track(
     artist_id: int = Form(...),
@@ -6449,7 +6567,7 @@ async def upload_audio_track(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    """Upload an audio file, transcribe with Whisper, and return word timestamps."""
+    """Upload audio file, save immediately, transcribe with Whisper in background."""
     allowed = {
         "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
         "audio/mp4", "audio/m4a", "audio/aac", "audio/x-aac",
@@ -6461,17 +6579,14 @@ async def upload_audio_track(
     ):
         raise HTTPException(400, "Unsupported audio format")
 
-    # Single DB connection for whole request
     database = await db.get_db()
     try:
-        # Get artist slug
         cur = await database.execute("SELECT slug FROM artists WHERE id = ?", (artist_id,))
         artist_row = await cur.fetchone()
         if not artist_row:
             raise HTTPException(404, "Artist not found")
         artist_slug = artist_row["slug"]
 
-        # Look up OpenAI key — same pattern as other endpoints
         _u_settings = await db.get_user_settings(database, user["id"])
         openai_key = (
             _u_settings.get("openai_api_key")
@@ -6481,10 +6596,9 @@ async def upload_audio_track(
         if not openai_key:
             raise HTTPException(500, "OpenAI API key not configured — add one in Settings")
 
-        # Save uploaded file to disk
+        # Save file to disk
         audio_dir = Path("uploads") / artist_slug / "audio_to_video"
         audio_dir.mkdir(parents=True, exist_ok=True)
-
         import uuid as _uuid
         safe_name = f"{_uuid.uuid4().hex}_{Path(file.filename).name}"
         audio_path = audio_dir / safe_name
@@ -6507,118 +6621,60 @@ async def upload_audio_track(
         except Exception as e:
             print(f"[audio-to-video] ffprobe failed: {e}")
 
-        # Whisper word-level transcription
-        # Whisper API hard-limit is 25 MB.  Convert to mono MP3 @ 128 kbps /
-        # 16 kHz first — this shrinks a 28 MB WAV to ~2 MB and works for every
-        # input format (WAV, FLAC, OGG, etc.).
-        words = []
-        _whisper_tmp = None
-        try:
-            import httpx as _httpx
-            _whisper_tmp = str(audio_path) + "_whisper.mp3"
-            _conv_cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-i", str(audio_path),
-                "-ac", "1",           # mono
-                "-ar", "16000",       # 16 kHz — sufficient for Whisper
-                "-c:a", "libmp3lame", "-q:a", "5",  # ~128 kbps
-                _whisper_tmp,
-            ]
-            _conv_proc = await asyncio.create_subprocess_exec(
-                *_conv_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, _conv_err = await asyncio.wait_for(_conv_proc.communicate(), timeout=120)
-            if _conv_proc.returncode != 0:
-                raise RuntimeError(f"FFmpeg convert for Whisper failed: {_conv_err.decode()[:200]}")
-
-            audio_bytes = Path(_whisper_tmp).read_bytes()
-            whisper_filename = Path(_whisper_tmp).name
-
-            def _whisper_request():
-                with _httpx.Client(timeout=300) as client:
-                    resp = client.post(
-                        "https://api.openai.com/v1/audio/transcriptions",
-                        headers={"Authorization": f"Bearer {openai_key}"},
-                        # Use list-of-tuples so both granularities are sent
-                        # (Python dict silently drops duplicate keys)
-                        data=[
-                            ("model", "whisper-1"),
-                            ("response_format", "verbose_json"),
-                            ("timestamp_granularities[]", "word"),
-                            ("timestamp_granularities[]", "segment"),
-                            # Hint that this is song/music content — improves recall
-                            ("prompt", "Song lyrics with timestamps."),
-                        ],
-                        files={"file": (whisper_filename, audio_bytes, "audio/mpeg")},
-                    )
-                    if not resp.is_success:
-                        raise RuntimeError(f"Whisper API error {resp.status_code}: {resp.text[:200]}")
-                    return resp.json()
-
-            whisper_result = await asyncio.to_thread(_whisper_request)
-
-            # Primary: root-level words array (populated when word granularity requested)
-            raw_words = whisper_result.get("words") or []
-
-            # Fallback: collect from segments[].words (populated when segment granularity requested)
-            if not raw_words:
-                for seg in whisper_result.get("segments", []):
-                    raw_words.extend(seg.get("words", []))
-
-            # Also merge any segment-level words that are missing from root (dedup by start time)
-            root_starts = {float(w["start"]) for w in raw_words}
-            for seg in whisper_result.get("segments", []):
-                for sw in seg.get("words", []):
-                    if float(sw["start"]) not in root_starts:
-                        raw_words.append(sw)
-                        root_starts.add(float(sw["start"]))
-
-            # Sort by start time after merging
-            raw_words.sort(key=lambda w: float(w["start"]))
-
-            words = [
-                {"word": w["word"].strip(), "start_s": float(w["start"]), "end_s": float(w["end"])}
-                for w in raw_words
-                if w.get("word", "").strip()
-            ]
-            print(f"[audio-to-video] Whisper returned {len(words)} words "
-                  f"(root={len(whisper_result.get('words') or [])}, "
-                  f"segments={len(whisper_result.get('segments', []))})")
-        except Exception as e:
-            print(f"[audio-to-video] Whisper transcription failed: {e}")
-            # Continue without words — user can edit manually
-        finally:
-            if _whisper_tmp:
-                try:
-                    os.unlink(_whisper_tmp)
-                except Exception:
-                    pass
-
-        # Save track + words to DB
+        # Save track to DB immediately — transcription runs in background
         cur = await database.execute(
-            "INSERT INTO audio_tracks (artist_id, title, local_path, duration_s) VALUES (?, ?, ?, ?)",
+            "INSERT INTO audio_tracks (artist_id, title, local_path, duration_s, transcription_status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
             (artist_id, title or Path(file.filename).stem, str(audio_path), duration_s),
         )
         await database.commit()
         track_id = cur.lastrowid
 
-        for w in words:
-            await database.execute(
-                "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, 0, ?, ?, ?)",
-                (track_id, w["word"], w["start_s"], w["end_s"]),
-            )
-        await database.commit()
+        # Fire-and-forget background transcription
+        asyncio.create_task(_run_whisper_transcription(track_id, audio_path, openai_key))
 
         return {
             "track_id": track_id,
             "duration_s": duration_s,
-            "words": words,
-            "word_count": len(words),
+            "transcription_status": "pending",
+            "words": [],
+            "word_count": 0,
         }
     finally:
         await database.close()
+
+
+@app.post("/api/audio-to-video/{track_id}/retranscribe")
+async def retranscribe_audio_track(
+    track_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Re-run Whisper transcription on an already-uploaded track."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,))
+        track = await cur.fetchone()
+        if not track:
+            raise HTTPException(404, "Track not found")
+        track = dict(track)
+        _u_settings = await db.get_user_settings(database, user["id"])
+        openai_key = (
+            _u_settings.get("openai_api_key")
+            or await db.get_setting(database, "openai_api_key")
+            or os.environ.get("OPENAI_API_KEY")
+        )
+        if not openai_key:
+            raise HTTPException(500, "OpenAI API key not configured")
+        await database.execute(
+            "UPDATE audio_tracks SET transcription_status = 'pending', transcription_error = NULL WHERE id = ?",
+            (track_id,),
+        )
+        await database.commit()
+    finally:
+        await database.close()
+
+    asyncio.create_task(_run_whisper_transcription(track_id, Path(track["local_path"]), openai_key))
+    return {"ok": True, "transcription_status": "pending"}
 
 
 @app.get("/api/audio-to-video/{track_id}")
@@ -7443,6 +7499,13 @@ async def update_audio_clip_lyrics(
             await database.execute(
                 "INSERT INTO audio_words (audio_track_id, clip_index, word, start_s, end_s) VALUES (?, ?, ?, ?, ?)",
                 (clip["audio_track_id"], clip["clip_index"], w.word, w.start_s, w.end_s),
+            )
+
+        # Persist formatted lyrics text (preserves user line breaks across reloads)
+        if data.lyrics_text is not None:
+            await database.execute(
+                "UPDATE audio_clips SET lyrics_text = ? WHERE id = ?",
+                (data.lyrics_text, clip_id),
             )
         await database.commit()
 
