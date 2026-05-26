@@ -2235,32 +2235,23 @@ export default function AudioToVideoPage() {
       return (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
 
-          {/* ── TOP BAR — always outside captureTargetRef ── */}
-          <div className="shrink-0 h-12 flex items-center justify-between px-4"
-               style={{ background: isPreviewPhase ? "rgba(0,0,0,0.8)" : "rgba(180,0,0,0.25)" }}>
-            {isPreviewPhase ? (
-              <>
-                <span className="text-sm text-white/80 font-medium">Preview — position your crop then click Start Recording</span>
-                <button
-                  onClick={() => {
-                    setIsRecordingModalOpen(false);
-                    pendingExportClipRef.current = null;
-                    if (audioPreviewRef.current) audioPreviewRef.current.pause();
-                  }}
-                  className="text-white/60 hover:text-white text-xs font-medium px-3 py-1 rounded-lg border border-white/20 hover:border-white/40 transition-colors"
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="text-sm text-white font-medium">● RECORDING — Do not close or switch tabs</span>
-                <div className="w-48 h-1.5 bg-white/20 rounded-full overflow-hidden">
-                  <div className="h-full bg-red-500 transition-none" style={{ width: `${exportProgress}%` }} />
-                </div>
-              </>
-            )}
-          </div>
+          {/* ── TOP BAR — preview phase only; hidden during recording so captureTargetRef fills 100vh ── */}
+          {isPreviewPhase && (
+            <div className="shrink-0 h-12 flex items-center justify-between px-4"
+                 style={{ background: "rgba(0,0,0,0.8)" }}>
+              <span className="text-sm text-white/80 font-medium">Preview — position your crop then click Start Exporting</span>
+              <button
+                onClick={() => {
+                  setIsRecordingModalOpen(false);
+                  pendingExportClipRef.current = null;
+                  if (audioPreviewRef.current) audioPreviewRef.current.pause();
+                }}
+                className="text-white/60 hover:text-white text-xs font-medium px-3 py-1 rounded-lg border border-white/20 hover:border-white/40 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {/* ── PREVIEW AREA — captureTargetRef is the crop target ──
                Layout: captureTarget is always sized to (100vh - 48px) so its
@@ -2276,8 +2267,10 @@ export default function AudioToVideoPage() {
               ref={captureTargetRef}
               style={{
                 aspectRatio: "9/16",
-                height: "calc(100vh - 48px)",   // always: full height minus top bar only
-                maxWidth: "calc((100vh - 48px) * 9 / 16)",
+                // During recording the top bar is hidden, so fill the full viewport height.
+                // This makes srcY ≈ 0 in the canvas-crop calculation — no offset error.
+                height: isExportRecording ? "100vh" : "calc(100vh - 48px)",
+                maxWidth: isExportRecording ? "calc(100vh * 9 / 16)" : "calc((100vh - 48px) * 9 / 16)",
                 overflow: "hidden",
                 position: "relative",
                 outline: isPreviewPhase ? "2px dashed rgba(255,255,255,0.55)" : "none",
@@ -2305,7 +2298,8 @@ export default function AudioToVideoPage() {
                   height: "calc(100vh - 48px)",
                   maxWidth: "calc((100vh - 48px) * 9 / 16)",
                   position: "relative",
-                }}>
+                }} /* preview phase only — isExportRecording is false here */>
+
                   {([
                     { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
                     { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
@@ -2326,7 +2320,7 @@ export default function AudioToVideoPage() {
             )}
           </div>{/* end flex-1 preview area */}
 
-          {/* ── Start Exporting panel — right-side fixed, completely outside captureTargetRef ── */}
+          {/* ── Start Exporting panel — preview phase only, right-side fixed ── */}
           {isPreviewPhase && (
             <div style={{
               position: "fixed", right: 24, top: "50%", transform: "translateY(-50%)",
@@ -2347,6 +2341,24 @@ export default function AudioToVideoPage() {
                 <span style={{ width: 10, height: 10, borderRadius: "50%", background: "red", display: "inline-block", flexShrink: 0 }} />
                 Start Exporting
               </button>
+            </div>
+          )}
+
+          {/* ── Recording indicator — shown during export, fixed top-left, OUTSIDE captureTargetRef ──
+               captureTargetRef is centered in the viewport, so this corner badge is NOT in the crop rect
+               (it overlaps the black letterbox area on a widescreen display). ── */}
+          {isExportRecording && (
+            <div style={{
+              position: "fixed", top: 12, left: 16, zIndex: 300,
+              display: "flex", alignItems: "center", gap: 8,
+              background: "rgba(0,0,0,0.75)", borderRadius: 8, padding: "6px 12px",
+              pointerEvents: "none",
+            }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "red", flexShrink: 0, animation: "pulse 1s infinite" }} />
+              <span style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Recording… keep this tab in front</span>
+              <div style={{ width: 80, height: 4, background: "rgba(255,255,255,0.2)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${exportProgress}%`, background: "red", transition: "width 0.2s linear" }} />
+              </div>
             </div>
           )}
         </div>
