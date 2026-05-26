@@ -128,7 +128,7 @@ function OverviewTab({ stats, onReload }: { stats: any; onReload: () => void }) 
   if (!stats) return <div className="text-sm text-muted-foreground">Loading…</div>;
   const health = stats.health || {};
   const storage = stats.storage_mb || {};
-  const [clearingA2V, setClearingA2V] = React.useState(false);
+  const [clearingA2V, setClearingA2V] = useState(false);
   const healthCards = [
     { label: "CPU", value: health.cpu_percent, unit: "%" },
     { label: "Memory", value: health.mem_percent, unit: "%" },
