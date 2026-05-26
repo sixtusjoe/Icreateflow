@@ -2517,14 +2517,13 @@ export default function AudioToVideoPage() {
           {/* Video preview */}
           <div className="bg-black aspect-[9/16] max-h-[60vh] flex items-center justify-center">
             <video
+              key={exportedBlobUrl}
+              src={exportedBlobUrl}
               controls
               autoPlay
               playsInline
               className="w-full h-full object-contain"
-            >
-              <source src={exportedBlobUrl} type="video/mp4" />
-              <source src={exportedBlobUrl} type="video/webm" />
-            </video>
+            />
           </div>
 
           {/* Actions */}
