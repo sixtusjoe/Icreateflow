@@ -40,6 +40,7 @@ import {
   Disc,
   Pause,
   Play,
+  RotateCcw,
   Save,
 } from "lucide-react";
 
@@ -968,8 +969,23 @@ export default function AudioToVideoPage() {
         }
       }
       if (Object.keys(blobUrlMap).length > 0) setExportedBlobUrlByClip(blobUrlMap);
-      if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
-      setActiveReviewClip(0);
+      if (trackData.clips.length > 0) {
+        // Restore last-open clip from localStorage so the user lands on the same
+        // slide they were editing before the page reload.
+        const savedClipId = parseInt(localStorage.getItem(`a2v-active-clip-${trackId}`) ?? "", 10);
+        const restoredClip = trackData.clips.find((c: any) => c.id === savedClipId);
+        const startClip = restoredClip ?? trackData.clips[0];
+        setEditingClipId(startClip.id);
+        setActiveReviewClip(trackData.clips.indexOf(startClip));
+        // Restore displayed timing offsets from localStorage (values are display-only;
+        // actual word timestamps are already saved in the DB)
+        const restoredOffsets: Record<number, number> = {};
+        for (const clip of trackData.clips) {
+          const stored = parseFloat(localStorage.getItem(`a2v-offset-${clip.id}`) ?? "");
+          if (!isNaN(stored) && stored !== 0) restoredOffsets[clip.id] = stored;
+        }
+        if (Object.keys(restoredOffsets).length > 0) setClipTimingOffset(restoredOffsets);
+      }
       setStep(1);
     } catch (e: any) {
       setExportInfoModal({ title: "Error", message: e?.response?.data?.detail || "Failed to load track" });
@@ -1510,6 +1526,7 @@ export default function AudioToVideoPage() {
     setClipWords((cw) => ({ ...cw, [clipId]: allWords }));
     setClipWordsBase((cw) => ({ ...cw, [clipId]: allWords }));
     setClipTimingOffset((o) => ({ ...o, [clipId]: 0 }));
+    localStorage.removeItem(`a2v-offset-${clipId}`); // fresh tap-sync resets offset
     setClipLyricsText((lt) => ({ ...lt, [clipId]: fullText }));
     setClipConfigDirty((d) => ({ ...d, [clipId]: true }));
     exitTapSync();
@@ -1561,6 +1578,7 @@ export default function AudioToVideoPage() {
     }));
     setClipWords((cw) => ({ ...cw, [clipId]: shifted }));
     setClipTimingOffset((o) => ({ ...o, [clipId]: offset }));
+    localStorage.setItem(`a2v-offset-${clipId}`, String(offset));
     // Clear any stale "Saved" badge while user is still adjusting
     setClipTimingSaved((s) => ({ ...s, [clipId]: false }));
     if (timingSavedClearRef.current) clearTimeout(timingSavedClearRef.current);
@@ -2398,7 +2416,11 @@ export default function AudioToVideoPage() {
                 {track.clips.map((clip, i) => (
                   <button
                     key={clip.id}
-                    onClick={() => { setActiveReviewClip(i); setEditingClipId(clip.id); }}
+                    onClick={() => {
+                      setActiveReviewClip(i);
+                      setEditingClipId(clip.id);
+                      if (track?.id) localStorage.setItem(`a2v-active-clip-${track.id}`, String(clip.id));
+                    }}
                     className={`shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
                       activeReviewClip === i
                         ? "border-foreground text-foreground"
@@ -2764,7 +2786,24 @@ export default function AudioToVideoPage() {
                         ))}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-3 gap-3">
+                        {/* Restart — seek to 0 and play */}
+                        <button
+                          onClick={() => {
+                            const audio = audioPreviewRef.current;
+                            if (!audio) return;
+                            seekAudio(audio, 0);
+                            lastAudioTimeRef.current = 0;
+                            audio.play().catch(() => {});
+                            setIsPreviewPaused(false);
+                          }}
+                          title="Restart from beginning"
+                          className="w-full flex items-center justify-center gap-1.5 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
+                        >
+                          <RotateCcw className="w-4 h-4 shrink-0" /><span className="truncate text-sm">Restart</span>
+                        </button>
+
+                        {/* Play / Pause */}
                         <button
                           onClick={() => {
                             const next = !isPreviewPaused;
