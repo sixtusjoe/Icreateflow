@@ -1997,12 +1997,10 @@ export default function AudioToVideoPage() {
                         value={lyricsText}
                         onChange={(e) => {
                           setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }));
-                          if (activeClip.video?.status === "done") {
-                            setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
-                          }
+                          setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
                         }}
-                        className="w-full h-32 bg-background border border-border rounded-xl p-3 text-sm text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
-                        style={{ scrollbarWidth: "none" }}
+                        className="w-full h-32 bg-background border border-border rounded-xl p-3 text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
+                        style={{ scrollbarWidth: "none", fontSize: "16px" }}
                         placeholder="Enter lyrics here..."
                       />
                     </div>
@@ -2019,9 +2017,7 @@ export default function AudioToVideoPage() {
                                 ...c,
                                 [activeClip.id]: { ...cfg, template_id: t.id },
                               }));
-                              if (activeClip.video?.status === "done") {
-                                setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
-                              }
+                              setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
                             }}
                             className={`py-3 px-3 rounded-xl border-2 transition-all flex items-center justify-start gap-3 ${
                               themeId === t.id
