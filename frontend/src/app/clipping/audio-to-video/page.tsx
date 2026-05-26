@@ -1546,7 +1546,9 @@ export default function AudioToVideoPage() {
   // the original, not from accumulated deltas (prevents drift).
   const [clipWordsBase, setClipWordsBase] = useState<Record<number, AudioWord[]>>({});
   const [clipTimingOffset, setClipTimingOffset] = useState<Record<number, number>>({});
+  const [clipTimingSaved, setClipTimingSaved] = useState<Record<number, boolean>>({});
   const timingOffsetSaveRef = useRef<NodeJS.Timeout | null>(null);
+  const timingSavedClearRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleTimingOffsetChange = useCallback((clipId: number, offset: number) => {
     const base = clipWordsBase[clipId] ?? [];
@@ -1558,11 +1560,19 @@ export default function AudioToVideoPage() {
     }));
     setClipWords((cw) => ({ ...cw, [clipId]: shifted }));
     setClipTimingOffset((o) => ({ ...o, [clipId]: offset }));
+    // Clear any stale "Saved" badge while user is still adjusting
+    setClipTimingSaved((s) => ({ ...s, [clipId]: false }));
+    if (timingSavedClearRef.current) clearTimeout(timingSavedClearRef.current);
     // Debounced save — fires 600ms after the user stops dragging
     if (timingOffsetSaveRef.current) clearTimeout(timingOffsetSaveRef.current);
     timingOffsetSaveRef.current = setTimeout(async () => {
       try {
         await updateAudioClipLyrics(clipId, shifted, clipLyricsText[clipId] ?? "");
+        setClipTimingSaved((s) => ({ ...s, [clipId]: true }));
+        // Auto-clear the "Saved" badge after 3s
+        timingSavedClearRef.current = setTimeout(() => {
+          setClipTimingSaved((s) => ({ ...s, [clipId]: false }));
+        }, 3000);
       } catch { /* silent */ }
     }, 600);
   }, [clipWordsBase, clipLyricsText]);
@@ -2466,6 +2476,7 @@ export default function AudioToVideoPage() {
                         </button>
                         {(clipWordsBase[activeClip.id]?.length ?? 0) > 0 && (() => {
                           const offset = clipTimingOffset[activeClip.id] ?? 0;
+                          const saved  = clipTimingSaved[activeClip.id] ?? false;
                           const applyStep = (delta: number) => {
                             const next = Math.max(-10, Math.min(10, offset + delta));
                             handleTimingOffsetChange(activeClip.id, next);
@@ -2476,6 +2487,9 @@ export default function AudioToVideoPage() {
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Adjust Timing</span>
                                 <div className="flex items-center gap-2">
+                                  {saved && (
+                                    <span className="text-[10px] text-green-500 font-medium">Saved ✓</span>
+                                  )}
                                   <span className={`text-[12px] font-mono font-semibold ${offset < -0.04 ? "text-blue-400" : offset > 0.04 ? "text-orange-400" : "text-muted-foreground"}`}>
                                     {offset > 0 ? "+" : ""}{offset.toFixed(2)}s
                                   </span>
