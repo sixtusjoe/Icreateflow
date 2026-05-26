@@ -2078,14 +2078,14 @@ export default function AudioToVideoPage() {
                         {isExportRecording ? (
                           <button disabled className="w-full flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl">
                             <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
-                            <span className="truncate">Recording… {exportProgress}%</span>
+                            <span className="truncate">{exportProgress}%</span>
                           </button>
                         ) : (
                           <button
                             onClick={() => { if (activeClip) handleStartExport(activeClip); }}
                             className="w-full flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
                           >
-                            <Download className="w-4 h-4 shrink-0" /><span className="truncate">Export Video</span>
+                            <Download className="w-4 h-4 shrink-0" /><span className="truncate">Export</span>
                           </button>
                         )}
                       </div>
