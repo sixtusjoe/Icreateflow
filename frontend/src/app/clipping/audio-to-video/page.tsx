@@ -1343,7 +1343,8 @@ export default function AudioToVideoPage() {
       await rawVideo.play();
       await new Promise<void>(r => requestAnimationFrame(() => r())); // ensure a frame is decoded
 
-      // 7. Map the element's viewport rect into captured-stream pixels
+      // 7. Map the element's viewport rect into captured-stream pixels,
+      //    auto-detecting whether the stream includes browser chrome.
       const streamW = rawVideo.videoWidth;
       const streamH = rawVideo.videoHeight;
       if (!streamW || !streamH) {
@@ -1352,15 +1353,47 @@ export default function AudioToVideoPage() {
         setExportInfoModal({ title: "Export Cancelled", message: "Capture didn't start. Please try again." });
         return;
       }
-      const scaleX = streamW / window.innerWidth;
-      const scaleY = streamH / window.innerHeight;
-      const rect   = el.getBoundingClientRect();
-      let srcX = Math.round(rect.left   * scaleX);
-      let srcY = Math.round(rect.top    * scaleY);
+
+      const dpr       = window.devicePixelRatio || 1;
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+      const outerW    = window.outerWidth;
+      const outerH    = window.outerHeight;
+
+      // Decide which reference dimensions the stream was captured at.
+      // Tab capture  → stream ≈ viewport × DPR  (no browser chrome)
+      // Window/screen → stream ≈ outer × DPR    (includes chrome: tabs, address bar)
+      const errViewport = Math.abs(streamW - viewportW * dpr) + Math.abs(streamH - viewportH * dpr);
+      const errOuter    = Math.abs(streamW - outerW    * dpr) + Math.abs(streamH - outerH    * dpr);
+      const includesChrome = errOuter < errViewport;
+
+      let scaleX: number, scaleY: number, offsetX: number, offsetY: number;
+      if (includesChrome) {
+        // Stream origin is top-left of the browser window (includes chrome).
+        scaleX  = streamW / outerW;
+        scaleY  = streamH / outerH;
+        offsetX = (outerW - viewportW) / 2; // usually 0 or scrollbar width
+        offsetY = outerH - viewportH;       // address bar + tab strip height
+      } else {
+        // Tab-only capture: stream origin matches top-left of viewport.
+        scaleX  = streamW / viewportW;
+        scaleY  = streamH / viewportH;
+        offsetX = 0;
+        offsetY = 0;
+      }
+
+      const rect = el.getBoundingClientRect();
+      let srcX = Math.round((offsetX + rect.left)  * scaleX);
+      let srcY = Math.round((offsetY + rect.top)   * scaleY);
       let srcW = Math.round(rect.width  * scaleX);
       let srcH = Math.round(rect.height * scaleY);
       srcW -= srcW % 2; srcH -= srcH % 2; // even dims for the encoder
-      console.log("[export] canvas crop:", { streamW, streamH, rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }, srcX, srcY, srcW, srcH });
+      console.log("[export] canvas crop:", {
+        streamW, streamH, dpr, viewportW, viewportH, outerW, outerH,
+        includesChrome, offsetX, offsetY, scaleX, scaleY,
+        rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+        srcX, srcY, srcW, srcH,
+      });
 
       if (srcW < 10 || srcH < 10) {
         rawVideo.srcObject = null; displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
