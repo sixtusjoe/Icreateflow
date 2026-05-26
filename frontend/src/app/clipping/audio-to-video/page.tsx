@@ -1277,7 +1277,7 @@ export default function AudioToVideoPage() {
         audioSrc.connect(audioDest);
         audioSrc.connect(audioCtx.destination);
 
-        const videoStream = renderer.canvas.captureStream(30);
+        const videoStream = renderer.canvas.captureStream(60);
         const combined = new MediaStream([
           ...videoStream.getVideoTracks(),
           ...audioDest.stream.getAudioTracks(),
@@ -1287,7 +1287,7 @@ export default function AudioToVideoPage() {
           : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
           ? "video/webm;codecs=vp8,opus"
           : "video/webm";
-        const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 8_000_000 });
+        const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 40_000_000 });
         const chunks: BlobPart[] = [];
         recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
@@ -1348,7 +1348,12 @@ export default function AudioToVideoPage() {
       // 1. getDisplayMedia is the FIRST await — locks in gesture activation
       //    Modal is already open (opened in Phase 1), captureTargetRef is already attached
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { preferCurrentTab: true } as any,
+        video: {
+          preferCurrentTab: true,
+          width:     { ideal: 3840 },
+          height:    { ideal: 2160 },
+          frameRate: { ideal: 60 },
+        } as any,
         audio: false,
       });
       // displayVideoTrack = raw tab capture (kept alive to detect "stop sharing")
@@ -1462,7 +1467,7 @@ export default function AudioToVideoPage() {
       drawRafRef.current = requestAnimationFrame(draw);
 
       // 9. Record the CANVAS stream — guaranteed to contain only the preview rect
-      const recordingVideoTrack = cropCanvas.captureStream(30).getVideoTracks()[0];
+      const recordingVideoTrack = cropCanvas.captureStream(60).getVideoTracks()[0];
 
       // Load audio fully buffered (same-origin — no crossOrigin needed)
       const recAudio = new Audio();
@@ -1485,7 +1490,7 @@ export default function AudioToVideoPage() {
       const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
         ? "video/webm;codecs=vp9,opus"
         : "video/webm";
-      const rec     = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 12_000_000 });
+      const rec     = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 40_000_000 });
       const chunks: BlobPart[] = [];
       rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
