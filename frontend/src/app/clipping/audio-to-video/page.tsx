@@ -1387,6 +1387,10 @@ export default function AudioToVideoPage() {
       let srcY = Math.round((offsetY + rect.top)   * scaleY);
       let srcW = Math.round(rect.width  * scaleX);
       let srcH = Math.round(rect.height * scaleY);
+      // Add a small top buffer to absorb any sub-pixel rounding in the chrome-height
+      // measurement — this trims the white border artifact without losing meaningful content.
+      const topTrim = includesChrome ? 6 : 2; // physical px
+      srcY = Math.min(srcY + topTrim, streamH - srcH);
       srcW -= srcW % 2; srcH -= srcH % 2; // even dims for the encoder
       console.log("[export] canvas crop:", {
         streamW, streamH, dpr, viewportW, viewportH, outerW, outerH,
