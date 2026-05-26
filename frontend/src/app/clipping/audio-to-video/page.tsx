@@ -1210,8 +1210,10 @@ export default function AudioToVideoPage() {
   // Derive lyric lines for the active clip (mirrors what the canvas renders)
   const activeKaraokeLyrics = useMemo((): string[][] => {
     if (!activeClip) return [];
-    const text = clipLyricsText[activeClip.id] !== undefined
-      ? clipLyricsText[activeClip.id]
+    // Only use saved text if it's non-empty; otherwise fall back to auto-generated
+    const savedText = clipLyricsText[activeClip.id];
+    const text = (savedText !== undefined && savedText.trim() !== "")
+      ? savedText
       : wordsToTextEarly(clipWords[activeClip.id] ?? []);
     return text
       .split("\n")
@@ -1262,10 +1264,13 @@ export default function AudioToVideoPage() {
   const wordPositionMapRef = useRef(wordPositionMap);
   useEffect(() => { wordPositionMapRef.current = wordPositionMap; }, [wordPositionMap]);
 
+  // Ref for lyric lines — used by the RAF time-based fallback
+  const activeKaraokeLyricsRef = useRef(activeKaraokeLyrics);
+  useEffect(() => { activeKaraokeLyricsRef.current = activeKaraokeLyrics; }, [activeKaraokeLyrics]);
+
   // RAF-based karaoke sync — polls at ~60fps, reads fresh refs each frame
   useEffect(() => {
     let rafId: number;
-    let lastLogTime = 0; // throttle debug logs to 1/sec
 
     const tick = () => {
       const audio = isRecordingActiveRef.current
@@ -1279,21 +1284,8 @@ export default function AudioToVideoPage() {
         const t  = audio.currentTime + (clip.start_s ?? 0);
         const ws = clipWordsRef.current[clip.id] ?? [];
 
-        // ── DEBUG (throttled 1/sec) ──────────────────────────────────────────
-        const now = performance.now();
-        if (now - lastLogTime > 1000) {
-          lastLogTime = now;
-          console.log("[karaoke-sync]", {
-            clipId: clip.id, clipStart: clip.start_s, audioTime: audio.currentTime,
-            t, wsLen: ws.length, mapLen: wordPositionMapRef.current.length,
-            paused: audio.paused,
-            firstWord: ws[0]?.start_s, lastWord: ws[ws.length-1]?.start_s,
-          });
-        }
-        // ─────────────────────────────────────────────────────────────────────
-
         if (ws.length > 0) {
-          // Binary search — O(log n) instead of O(n) every frame
+          // ── Whisper-timestamp path: binary search O(log n) ───────────────
           let lo = 0, hi = ws.length - 1, idx = -1;
           while (lo <= hi) {
             const mid = (lo + hi) >> 1;
@@ -1304,27 +1296,39 @@ export default function AudioToVideoPage() {
           if (idx !== -1) {
             const pos = wordPositionMapRef.current[idx];
             if (pos) {
-              // Guard: only skip if timestamps are clearly invalid — ALL words
-              // sitting at ≈0 while the clip starts well past 0 (bad data, e.g.
-              // saved before Whisper finished on a non-first clip).
-              // For normal playback with valid Whisper timestamps this is always false.
-              const lastWordStart = ws[ws.length - 1]?.start_s ?? 0;
-              const clipStart     = clip.start_s ?? 0;
-              const likelyInvalid = lastWordStart < 0.1 && clipStart > 1;
-              if (!likelyInvalid) {
-                // Only setState when value actually changed — prevents 120 re-renders/sec
-                if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
-                  lastLineIdxRef.current = pos.lineIdx;
-                  lastWordIdxRef.current = pos.wordIdx;
-                  setOverlayLineIndex(pos.lineIdx);
-                  setOverlayWordIndex(pos.wordIdx);
-                }
+              // Only setState when value actually changed — prevents 60+ re-renders/sec
+              if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
+                lastLineIdxRef.current = pos.lineIdx;
+                lastWordIdxRef.current = pos.wordIdx;
+                setOverlayLineIndex(pos.lineIdx);
+                setOverlayWordIndex(pos.wordIdx);
               }
+            }
+          }
+        } else {
+          // ── Time-proportional fallback: no Whisper timestamps ────────────
+          // Distributes lyric lines evenly across the clip duration so the
+          // display still advances even without word-level timing data.
+          const clipDuration = Math.max(0.1, (clip.end_s ?? 0) - (clip.start_s ?? 0));
+          const progress = Math.min(0.999, audio.currentTime / clipDuration);
+          const lines = activeKaraokeLyricsRef.current;
+          if (lines.length > 0) {
+            const lineIdx = Math.min(Math.floor(progress * lines.length), lines.length - 1);
+            const line = lines[lineIdx];
+            const wordInLineFraction = (progress * lines.length) - lineIdx;
+            const wordIdx = line && line.length > 0
+              ? Math.min(Math.floor(wordInLineFraction * line.length), line.length - 1)
+              : 0;
+            if (lineIdx !== lastLineIdxRef.current || wordIdx !== lastWordIdxRef.current) {
+              lastLineIdxRef.current = lineIdx;
+              lastWordIdxRef.current = wordIdx;
+              setOverlayLineIndex(lineIdx);
+              setOverlayWordIndex(wordIdx);
             }
           }
         }
 
-        // Update progress from this same loop (no separate RAF needed)
+        // Update export progress from this same loop (no separate RAF needed)
         if (isRecordingActiveRef.current) {
           const clipDur = clip.end_s != null && clip.start_s != null
             ? clip.end_s - clip.start_s
@@ -1354,9 +1358,10 @@ export default function AudioToVideoPage() {
     return lines.join("\n");
   };
 
-  /** Get lyrics text for a clip, deriving from clipWords if not yet set */
+  /** Get lyrics text for a clip, deriving from clipWords if not yet set or if saved text is empty */
   const getLyricsText = (clipId: number): string => {
-    if (clipLyricsText[clipId] !== undefined) return clipLyricsText[clipId];
+    const saved = clipLyricsText[clipId];
+    if (saved !== undefined && saved.trim() !== "") return saved;
     return wordsToText(clipWords[clipId] ?? []);
   };
 
@@ -1370,41 +1375,22 @@ export default function AudioToVideoPage() {
     });
   };
 
-  /** Save lyrics from textarea: split lines→words, update word text (keeps timestamps).
-   *  ONLY updates the word array if Whisper already gave us valid timestamps — otherwise
-   *  we just persist the text so zero-timestamp words never pollute the sync. */
+  /** Save the lyrics text only — never touches Whisper word timestamps.
+   *  The RAF sync reads clipWords[] for timing and clipLyricsText[] for display;
+   *  they are intentionally decoupled so editing text can't corrupt timestamps. */
   const handleSaveLyricsText = async (clipId: number) => {
-    const text     = getLyricsText(clipId);
-    const newWords = text.split(/\s+/).filter(Boolean);
-    const existing = clipWords[clipId] ?? [];
-
-    // Check if Whisper has provided real timestamps (at least one word with start > 0)
-    const hasRealTimestamps = existing.some((w) => w.start_s > 0 || w.end_s > 0);
-
-    if (hasRealTimestamps) {
-      const merged: AudioWord[] = newWords.map((word, i) => ({
-        ...(existing[i] ?? { start_s: existing[existing.length - 1]?.end_s ?? 0, end_s: 0 }),
-        word,
-      }));
-      setClipWords((cw) => ({ ...cw, [clipId]: merged }));
-      setSavingLyrics(true);
-      try {
-        await updateAudioClipLyrics(clipId, merged, text);
-      } catch (err: any) {
-        setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
-      } finally {
-        setSavingLyrics(false);
-      }
-    } else {
-      // No valid timestamps yet — save text only (don't touch the word array)
-      setSavingLyrics(true);
-      try {
-        await updateAudioClipLyrics(clipId, [], text); // empty → backend preserves existing words
-      } catch (err: any) {
-        setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
-      } finally {
-        setSavingLyrics(false);
-      }
+    const text = getLyricsText(clipId);
+    setSavingLyrics(true);
+    try {
+      // Always save text only — never overwrite Whisper word timestamps.
+      // The RAF sync reads clipWords[] for timing and clipLyricsText[] for display;
+      // they are intentionally decoupled. Passing [] tells the backend to
+      // leave existing words (and their timestamps) untouched.
+      await updateAudioClipLyrics(clipId, [], text);
+    } catch (err: any) {
+      setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
+    } finally {
+      setSavingLyrics(false);
     }
   };
 
