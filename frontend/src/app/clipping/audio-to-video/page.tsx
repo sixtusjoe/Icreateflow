@@ -2315,19 +2315,15 @@ export default function AudioToVideoPage() {
               />
             </div>
 
-            {/* Crop frame + Start Exporting button — absolutely positioned so they
-                never push the captureTarget around. These are never recorded.
-                The outer div has NO pointer-events-none so the button is clickable. */}
+            {/* Crop frame — purely decorative, pointer-events-none, never recorded */}
             {isPreviewPhase && (
-              <div className="absolute inset-0 flex items-center justify-center" style={{ pointerEvents: "none" }}>
-                {/* Sizing wrapper — matches captureTarget exactly */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div style={{
                   aspectRatio: "9/16",
                   height: "calc(100vh - 48px)",
                   maxWidth: "calc((100vh - 48px) * 9 / 16)",
                   position: "relative",
                 }}>
-                  {/* Corner markers — decorative only */}
                   {([
                     { top: -4, left: -4, borderTop: "3px solid white", borderLeft: "3px solid white", borderRadius: "3px 0 0 0" },
                     { top: -4, right: -4, borderTop: "3px solid white", borderRight: "3px solid white", borderRadius: "0 3px 0 0" },
@@ -2336,7 +2332,6 @@ export default function AudioToVideoPage() {
                   ] as React.CSSProperties[]).map((s, i) => (
                     <div key={i} style={{ position: "absolute", width: 18, height: 18, ...s }} />
                   ))}
-                  {/* Capture area label */}
                   <div style={{
                     position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
                     fontSize: 11, color: "rgba(255,255,255,0.6)", whiteSpace: "nowrap",
@@ -2344,27 +2339,47 @@ export default function AudioToVideoPage() {
                   }}>
                     Only this region is recorded
                   </div>
-
-                  {/* Start Exporting button — pointer-events re-enabled explicitly */}
-                  <div style={{
-                    position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)",
-                    pointerEvents: "auto",
-                  }}>
-                    <button
-                      onClick={() => {
-                        if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
-                      }}
-                      className="flex items-center gap-2 px-8 py-3 rounded-xl font-semibold text-sm transition-colors"
-                      style={{ background: "white", color: "black", whiteSpace: "nowrap", pointerEvents: "auto", cursor: "pointer" }}
-                    >
-                      <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "red", flexShrink: 0 }} />
-                      Start Exporting
-                    </button>
-                  </div>
                 </div>
               </div>
             )}
           </div>{/* end flex-1 preview area */}
+
+          {/* ── Start Exporting panel — right-side fixed, completely outside captureTargetRef ── */}
+          {isPreviewPhase && (
+            <div style={{
+              position: "fixed", right: 24, top: "50%", transform: "translateY(-50%)",
+              zIndex: 200,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+            }}>
+              <button
+                onClick={() => {
+                  if (pendingExportClipRef.current) handleBeginRecording(pendingExportClipRef.current);
+                }}
+                style={{
+                  background: "white", color: "black", border: "none", cursor: "pointer",
+                  padding: "14px 20px", borderRadius: 12, fontWeight: 700, fontSize: 14,
+                  whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 8,
+                  boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+                }}
+              >
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: "red", display: "inline-block", flexShrink: 0 }} />
+                Start Exporting
+              </button>
+              <button
+                onClick={() => {
+                  setIsRecordingModalOpen(false);
+                  pendingExportClipRef.current = null;
+                  if (audioPreviewRef.current) audioPreviewRef.current.pause();
+                }}
+                style={{
+                  background: "transparent", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.2)",
+                  cursor: "pointer", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 500,
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       );
     })()}
