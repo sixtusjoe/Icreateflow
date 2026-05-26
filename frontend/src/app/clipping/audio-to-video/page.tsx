@@ -1218,24 +1218,9 @@ export default function AudioToVideoPage() {
         }
       }
     } else {
-      // ── Mismatched counts: distribute total audio time evenly ──────────────
-      const totalStart = ws[0].start_s;
-      const lastW      = ws[ws.length - 1];
-      const totalEnd   = lastW.end_s ?? lastW.start_s + 0.3;
-      const totalDur   = Math.max(0.1, totalEnd - totalStart);
-      const perWord    = totalDur / totalDisplayWords;
-
-      for (let li = 0; li < lines.length; li++) {
-        for (let wi = 0; wi < lines[li].length; wi++) {
-          result.push({
-            startAbs: totalStart + flatIdx * perWord,
-            endAbs:   totalStart + (flatIdx + 1) * perWord,
-            lineIdx:  li,
-            wordIdx:  wi,
-          });
-          flatIdx++;
-        }
-      }
+      // Word count mismatch (user edited lyrics) — return empty so RAF uses
+      // time-proportional fallback instead of a misleading even distribution.
+      return [];
     }
 
     return result;
@@ -1296,8 +1281,8 @@ export default function AudioToVideoPage() {
         }
         lineIdx = wts[found].lineIdx;
         wordIdx = wts[found].wordIdx;
-      } else if (ws.length === 0 && lines.length > 0) {
-        // ── Time-proportional fallback (no Whisper words) ────────────────
+      } else if (lines.length > 0) {
+        // ── Time-proportional fallback (no words or word count mismatch) ──
         const dur  = Math.max(0.1, (clip.end_s ?? 0) - (clip.start_s ?? 0));
         const prog = Math.min(0.999, curT / dur);
         lineIdx = Math.min(Math.floor(prog * lines.length), lines.length - 1);
@@ -1549,6 +1534,24 @@ export default function AudioToVideoPage() {
       seekAudio(audioPreviewRef.current, 0);
       lastAudioTimeRef.current = 0;
       setIsPreviewPaused(true);
+    }
+  };
+
+  const [shiftingTiming, setShiftingTiming] = useState(false);
+  const handleShiftTiming = async (clipId: number, delta: number) => {
+    const current = clipWords[clipId] ?? [];
+    if (!current.length) return;
+    const shifted = current.map((w) => ({
+      ...w,
+      start_s: Math.max(0, w.start_s + delta),
+      end_s:   Math.max(0, w.end_s + delta),
+    }));
+    setClipWords((cw) => ({ ...cw, [clipId]: shifted }));
+    setShiftingTiming(true);
+    try {
+      await updateAudioClipLyrics(clipId, shifted, clipLyricsText[clipId] ?? "");
+    } catch { /* silent */ } finally {
+      setShiftingTiming(false);
     }
   };
 
@@ -2449,6 +2452,25 @@ export default function AudioToVideoPage() {
                         >
                           <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
                         </button>
+                        {(clipWords[activeClip.id]?.length ?? 0) > 0 && (
+                          <div className="flex items-center justify-between rounded-xl border border-border px-3 py-2">
+                            <span className="text-[10px] text-muted-foreground">Adjust timing</span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => handleShiftTiming(activeClip.id, -0.1)}
+                                disabled={shiftingTiming}
+                                className="rounded-lg border border-border px-2 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
+                                title="Shift all lyrics 100ms earlier"
+                              >← Earlier</button>
+                              <button
+                                onClick={() => handleShiftTiming(activeClip.id, 0.1)}
+                                disabled={shiftingTiming}
+                                className="rounded-lg border border-border px-2 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
+                                title="Shift all lyrics 100ms later"
+                              >Later →</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 
