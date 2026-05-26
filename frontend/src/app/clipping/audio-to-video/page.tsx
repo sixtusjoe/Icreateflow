@@ -885,6 +885,7 @@ export default function AudioToVideoPage() {
   const [tapSyncDisplayTime, setTapSyncDisplayTime] = useState(0);
   const tapSyncKeyHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const tapSyncLinesRef = useRef<TapLine[]>([]);
+  const tapSyncLineEls = useRef<(HTMLDivElement | null)[]>([]);
 
   const activeClip = track?.clips.find((c) => c.id === editingClipId) ?? track?.clips[0] ?? null;
 
@@ -1410,9 +1411,15 @@ export default function AudioToVideoPage() {
     setTapSyncDone(false);
   }, []);
 
+  // Auto-scroll current line into view as user taps through lines
+  useEffect(() => {
+    if (!tapSyncMode || tapSyncDone) return;
+    tapSyncLineEls.current[tapSyncCurrentIdx]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [tapSyncCurrentIdx, tapSyncMode, tapSyncDone]);
+
   const handleTapNext = useCallback(() => {
     const idx = tapSyncCurrentIdxRef.current;
-    const t = Math.max(0, (audioPreviewRef.current?.currentTime ?? 0) - 0.08);
+    const t = Math.max(0, (audioPreviewRef.current?.currentTime ?? 0) - 0.2);
     setTapSyncLines((lines) => {
       const updated = [...lines];
       if (idx < updated.length) {
@@ -1517,7 +1524,13 @@ export default function AudioToVideoPage() {
     setClipLyricsText((lt) => ({ ...lt, [clipId]: fullText }));
     setClipConfigDirty((d) => ({ ...d, [clipId]: true }));
     exitTapSync();
-    if (audioPreviewRef.current) { audioPreviewRef.current.pause(); setIsPreviewPaused(true); }
+    // Seek back to 0 so preview plays from start; reset the backward-seek guard ref
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      seekAudio(audioPreviewRef.current, 0);
+      lastAudioTimeRef.current = 0;
+      setIsPreviewPaused(true);
+    }
     // Save immediately
     setSavingLyrics(true);
     try {
@@ -1531,7 +1544,12 @@ export default function AudioToVideoPage() {
 
   const handleCancelTapSync = () => {
     exitTapSync();
-    if (audioPreviewRef.current) { audioPreviewRef.current.pause(); setIsPreviewPaused(true); }
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      seekAudio(audioPreviewRef.current, 0);
+      lastAudioTimeRef.current = 0;
+      setIsPreviewPaused(true);
+    }
   };
 
   /** Save lyrics + template/bg/cover settings to server — no generation triggered */
@@ -3103,37 +3121,38 @@ export default function AudioToVideoPage() {
     {tapSyncMode && tapSyncClipId !== null && (
       <div className="fixed inset-0 z-50 bg-black/95 flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0">
-          <span className="font-mono text-xs text-white/40">{formatSyncTime(tapSyncDisplayTime)}</span>
-          <span className="text-sm font-semibold text-white">Sync Timing</span>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
+          <span className="font-mono text-[11px] text-white/40">{formatSyncTime(tapSyncDisplayTime)}</span>
+          <span className="text-xs font-semibold text-white">Sync Timing</span>
           <button
             onClick={handleCancelTapSync}
-            className="text-xs text-white/40 hover:text-white transition-colors"
+            className="text-[11px] text-white/40 hover:text-white transition-colors"
           >
             Cancel
           </button>
         </div>
 
         {/* Lines list */}
-        <div className="flex-1 overflow-y-auto py-8 px-6 space-y-2">
+        <div className="flex-1 overflow-y-auto py-3 px-4 space-y-1">
           {tapSyncLines.map((line, idx) => {
             const isCurrent = idx === tapSyncCurrentIdx && !tapSyncDone;
             const isDone = line.start_s !== null;
             return (
               <div
                 key={idx}
+                ref={el => { tapSyncLineEls.current[idx] = el; }}
                 onClick={() => isCurrent && handleTapNext()}
                 className={[
-                  "rounded-xl px-5 py-3 flex items-center justify-between transition-all select-none",
-                  isCurrent ? "bg-white text-black font-bold text-lg cursor-pointer scale-[1.02]" : "",
-                  isDone && !isCurrent ? "text-green-400 opacity-50" : "",
-                  !isCurrent && !isDone ? "text-white/25" : "",
+                  "rounded-lg px-4 py-2 flex items-center justify-between transition-all select-none",
+                  isCurrent ? "bg-white text-black font-semibold text-sm cursor-pointer" : "",
+                  isDone && !isCurrent ? "text-green-400 opacity-50 text-sm" : "",
+                  !isCurrent && !isDone ? "text-white/25 text-sm" : "",
                 ].filter(Boolean).join(" ")}
               >
                 <span className="leading-snug">{line.text}</span>
-                <span className="ml-3 shrink-0">
+                <span className="ml-3 shrink-0 text-xs">
                   {isDone && <span className="text-green-400">✓</span>}
-                  {isCurrent && <span className="text-black/40 text-sm hidden sm:block">SPACE / TAP</span>}
+                  {isCurrent && <span className="text-black/40 hidden sm:block">SPACE</span>}
                 </span>
               </div>
             );
@@ -3141,19 +3160,19 @@ export default function AudioToVideoPage() {
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-white/10 shrink-0">
+        <div className="px-4 py-3 border-t border-white/10 shrink-0">
           {tapSyncDone ? (
-            <div className="flex gap-3">
+            <div className="flex gap-2">
               <button
                 onClick={handleApplyTapSync}
                 disabled={savingLyrics}
-                className="flex-1 rounded-xl bg-white py-3 text-black font-semibold text-sm disabled:opacity-50"
+                className="flex-1 rounded-xl bg-white py-2.5 text-black font-semibold text-sm disabled:opacity-50"
               >
                 {savingLyrics ? "Saving…" : "Confirm Timing"}
               </button>
               <button
                 onClick={handleRedoTapSync}
-                className="rounded-xl border border-white/20 px-5 py-3 text-white/60 hover:text-white text-sm transition-colors"
+                className="rounded-xl border border-white/20 px-4 py-2.5 text-white/60 hover:text-white text-sm transition-colors"
               >
                 Redo
               </button>
@@ -3171,12 +3190,12 @@ export default function AudioToVideoPage() {
                     setIsPreviewPaused(true);
                   }
                 }}
-                className="shrink-0 rounded-xl bg-white/10 px-4 py-2.5 text-white text-sm hover:bg-white/20 transition-colors"
+                className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-white text-xs hover:bg-white/20 transition-colors"
               >
                 {isPreviewPaused ? "▶ Play" : "⏸ Pause"}
               </button>
-              <p className="text-white/30 text-xs">
-                Press <kbd className="rounded bg-white/10 px-1.5 py-0.5 font-mono">SPACE</kbd> or tap the highlighted line to stamp each beat
+              <p className="text-white/30 text-[11px]">
+                Press <kbd className="rounded bg-white/10 px-1 py-0.5 font-mono">SPACE</kbd> or tap highlighted line to stamp
               </p>
             </div>
           )}
