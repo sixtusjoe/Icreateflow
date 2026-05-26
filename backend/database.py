@@ -502,6 +502,7 @@ class AudioVideoClip(Base):
         ForeignKey("artist_accounts.id", ondelete="SET NULL"), nullable=True
     )
     template_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="'minimal'")
+    lyrics_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="'karaoke'")
     background_image_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     album_cover_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     video_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -1111,6 +1112,9 @@ async def _migrate_email_features(conn) -> None:
     ))
     await conn.execute(text(
         "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_video_clips ADD COLUMN IF NOT EXISTS lyrics_mode TEXT NOT NULL DEFAULT 'karaoke'"
     ))
     # email_otps is a new table — handled by create_all via the ORM model.
     # Index for fast OTP lookups:

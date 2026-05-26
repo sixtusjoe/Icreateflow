@@ -588,12 +588,14 @@ export const getAudioClip = (clipId: number) =>
 export const saveAudioClipSettings = (
   clipId: number,
   templateId: string,
+  lyricsMode: string,
   backgroundImagePath?: string,
   albumCoverPath?: string,
 ) =>
   api
     .post(`/api/audio-to-video/clips/${clipId}/settings`, {
       template_id: templateId,
+      lyrics_mode: lyricsMode,
       background_image_path: backgroundImagePath ?? null,
       album_cover_path: albumCoverPath ?? null,
     })
@@ -602,12 +604,14 @@ export const saveAudioClipSettings = (
 export const generateAudioVideoClip = (
   clipId: number,
   templateId: string,
+  lyricsMode: string,
   backgroundImagePath?: string,
   albumCoverPath?: string,
 ) =>
   api
     .post(`/api/audio-to-video/clips/${clipId}/generate`, {
       template_id: templateId,
+      lyrics_mode: lyricsMode,
       background_image_path: backgroundImagePath ?? null,
       album_cover_path: albumCoverPath ?? null,
     })

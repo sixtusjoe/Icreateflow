@@ -453,6 +453,105 @@ function ConfirmModal({
 
 // ─── PreviewContent ───────────────────────────────────────────────────────────
 
+// ─── Apple Music–style scroll lyrics ─────────────────────────────────────────
+function ScrollLyricsView({
+  lyricLines,
+  overlayLineIndex,
+  overlayWordIndex,
+  isPlaying,
+  theme,
+}: {
+  lyricLines: string[][];
+  overlayLineIndex: number;
+  overlayWordIndex: number;
+  isPlaying: boolean;
+  theme: (typeof OVERLAY_THEMES)[ThemeId];
+}) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const activeRef    = React.useRef<HTMLDivElement>(null);
+
+  // Smooth-scroll the active line to center whenever it changes
+  React.useEffect(() => {
+    const container = containerRef.current;
+    const active    = activeRef.current;
+    if (!container || !active) return;
+    const containerMid = container.offsetHeight / 2;
+    const targetTop    = active.offsetTop + active.offsetHeight / 2 - containerMid;
+    container.scrollTo({ top: targetTop, behavior: "smooth" });
+  }, [overlayLineIndex]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute inset-0 z-10 overflow-hidden"
+      style={{ scrollBehavior: "smooth" }}
+    >
+      {/* Fade masks top & bottom */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 z-20"
+        style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.95), transparent)" }} />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 z-20"
+        style={{ background: "linear-gradient(to top, rgba(0,0,0,0.95), transparent)" }} />
+
+      {/* Spacer so first line starts centered */}
+      <div style={{ height: "45%" }} />
+
+      {lyricLines.map((line, li) => {
+        const isActive  = li === overlayLineIndex;
+        const isPast    = li < overlayLineIndex;
+
+        return (
+          <div
+            key={li}
+            ref={isActive ? activeRef : undefined}
+            className="px-8 py-1 text-center transition-all duration-300"
+          >
+            <p
+              style={{
+                fontSize:    isActive ? "1.7rem" : "1.25rem",
+                fontWeight:  isActive ? 800 : 600,
+                lineHeight:  1.35,
+                letterSpacing: "-0.01em",
+                transition:  "font-size 0.25s ease, opacity 0.25s ease, color 0.2s ease",
+                color: isActive
+                  ? "#ffffff"
+                  : isPast
+                  ? "rgba(255,255,255,0.35)"
+                  : "rgba(255,255,255,0.25)",
+                textShadow: isActive ? "0 2px 16px rgba(0,0,0,0.7)" : "none",
+              }}
+            >
+              {isActive
+                ? line.map((word, wi) => {
+                    const isHighlighted = isPlaying && wi === overlayWordIndex;
+                    const isWordPast    = isPlaying && wi < overlayWordIndex;
+                    return (
+                      <span
+                        key={wi}
+                        style={{
+                          color: isHighlighted
+                            ? theme.accent
+                            : isWordPast ? "#ffffff" : "rgba(255,255,255,0.55)",
+                          textShadow: isHighlighted ? theme.textGlow : undefined,
+                          transition: "color 0.1s ease",
+                          marginRight: wi < line.length - 1 ? "0.35em" : 0,
+                        }}
+                      >
+                        {word}
+                      </span>
+                    );
+                  })
+                : line.join(" ")}
+            </p>
+          </div>
+        );
+      })}
+
+      {/* Spacer so last line can scroll to center */}
+      <div style={{ height: "45%" }} />
+    </div>
+  );
+}
+
 interface PreviewContentProps {
   themeId: ThemeId;
   theme: (typeof OVERLAY_THEMES)[ThemeId];
@@ -462,6 +561,7 @@ interface PreviewContentProps {
   isPlaying: boolean;
   overlayLineIndex: number;
   overlayWordIndex: number;
+  lyricsMode?: string;
   coverArtRef?: React.RefObject<HTMLDivElement | null>;
   zigzagLayerRef?: React.RefObject<HTMLDivElement | null>;
   lyricsLayerRef?: React.RefObject<HTMLDivElement | null>;
@@ -477,6 +577,7 @@ function PreviewContent({
   isPlaying,
   overlayLineIndex,
   overlayWordIndex,
+  lyricsMode = "karaoke",
   coverArtRef,
   zigzagLayerRef,
   lyricsLayerRef,
@@ -484,6 +585,7 @@ function PreviewContent({
 }: PreviewContentProps) {
   const zigzagClipId = React.useId();
   const albumCover = coverImageUrl ?? "";
+  const isScrollMode = lyricsMode === "scroll";
 
   return (
     <>
@@ -581,43 +683,52 @@ function PreviewContent({
         </svg>
       </div>
 
-      {/* 3. KARAOKE LYRICS — bottom third at top-[70.3%] */}
-      <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
-        <AnimatePresence mode="sync">
-          {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
-            <motion.div
-              key={overlayLineIndex % lyricLines.length}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.1, ease: "easeOut" }}
-              className="text-center w-full"
-            >
-              <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
-                {lyricLines[overlayLineIndex % lyricLines.length].map((word: string, wIdx: number) => {
-                  const isHighlighted = isPlaying && wIdx === overlayWordIndex;
-                  const isPassed = isPlaying && wIdx < overlayWordIndex;
-
-                  return (
-                    <span
-                      key={wIdx}
-                      style={{
-                        display: "inline-block",
-                        color: isHighlighted ? theme.accent : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
-                        textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
-                        transform: isHighlighted ? "scale(1.05)" : "scale(1)",
-                        transition: "color 0.12s ease, text-shadow 0.12s ease, transform 0.12s ease",
-                      }}
-                    >
-                      {word}
-                    </span>
-                  );
-                })}
-              </p>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      {/* 3. LYRICS — karaoke (bottom strip) or Apple Music scroll (full overlay) */}
+      {isScrollMode ? (
+        <ScrollLyricsView
+          lyricLines={lyricLines}
+          overlayLineIndex={overlayLineIndex}
+          overlayWordIndex={overlayWordIndex}
+          isPlaying={isPlaying}
+          theme={theme}
+        />
+      ) : (
+        <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
+          <AnimatePresence mode="sync">
+            {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
+              <motion.div
+                key={overlayLineIndex % lyricLines.length}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.1, ease: "easeOut" }}
+                className="text-center w-full"
+              >
+                <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
+                  {lyricLines[overlayLineIndex % lyricLines.length].map((word: string, wIdx: number) => {
+                    const isHighlighted = isPlaying && wIdx === overlayWordIndex;
+                    const isPassed = isPlaying && wIdx < overlayWordIndex;
+                    return (
+                      <span
+                        key={wIdx}
+                        style={{
+                          display: "inline-block",
+                          color: isHighlighted ? theme.accent : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
+                          textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
+                          transform: isHighlighted ? "scale(1.05)" : "scale(1)",
+                          transition: "color 0.12s ease, text-shadow 0.12s ease, transform 0.12s ease",
+                        }}
+                      >
+                        {word}
+                      </span>
+                    );
+                  })}
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
 
       {/* Generating overlay */}
       {isGenerating && (
@@ -677,6 +788,7 @@ export default function AudioToVideoPage() {
   // Configure / generate state
   const [clipConfigs, setClipConfigs] = useState<Record<number, {
     template_id: string;
+    lyrics_mode: string;
     bg_path?: string;
     cover_path?: string;
   }>>({});
@@ -801,13 +913,14 @@ export default function AudioToVideoPage() {
     try {
       const trackData: AudioTrackData = await getAudioTrack(trackId);
       setTrack(trackData);
-      const configs: Record<number, { template_id: string; bg_path?: string; cover_path?: string }> = {};
+      const configs: Record<number, { template_id: string; lyrics_mode: string; bg_path?: string; cover_path?: string }> = {};
       const words: Record<number, AudioWord[]> = {};
       // trackData.clips don't carry per-clip words; distribute from the flat
       // trackData.words array (each word has a clip_index field from the DB).
       for (const clip of trackData.clips) {
         configs[clip.id] = {
           template_id: clip.video?.template_id ?? "minimal",
+          lyrics_mode: clip.video?.lyrics_mode ?? "karaoke",
           // Restore saved image paths so regeneration carries them forward
           bg_path: clip.video?.background_image_path ?? undefined,
           cover_path: clip.video?.album_cover_path ?? undefined,
@@ -889,12 +1002,13 @@ export default function AudioToVideoPage() {
       await splitAudioTrack(trackId, clipCount);
       const trackData = await getAudioTrack(trackId);
       setTrack(trackData);
-      const configs: Record<number, { template_id: string; bg_path?: string; cover_path?: string }> = {};
+      const configs: Record<number, { template_id: string; lyrics_mode: string; bg_path?: string; cover_path?: string }> = {};
       const words: Record<number, AudioWord[]> = {};
       // Distribute flat trackData.words to each clip by clip_index
       for (const clip of trackData.clips) {
         configs[clip.id] = {
           template_id: clip.video?.template_id ?? "minimal",
+          lyrics_mode: clip.video?.lyrics_mode ?? "karaoke",
           bg_path: clip.video?.background_image_path ?? undefined,
           cover_path: clip.video?.album_cover_path ?? undefined,
         };
@@ -929,7 +1043,7 @@ export default function AudioToVideoPage() {
     setGenerating((g) => ({ ...g, [clipId]: true }));
     setGenerationErrors((e) => ({ ...e, [clipId]: "" }));
     try {
-      await generateAudioVideoClip(clipId, cfg.template_id, cfg.bg_path, cfg.cover_path);
+      await generateAudioVideoClip(clipId, cfg.template_id, cfg.lyrics_mode ?? "karaoke", cfg.bg_path, cfg.cover_path);
       startPolling();
     } catch (err: any) {
       setGenerationErrors((e) => ({ ...e, [clipId]: err?.response?.data?.detail || err?.message || "Generation failed" }));
@@ -1169,7 +1283,7 @@ export default function AudioToVideoPage() {
     try {
       await handleSaveLyricsText(clipId);
       const cfg = clipConfigs[clipId] ?? { template_id: "minimal" };
-      await saveAudioClipSettings(clipId, cfg.template_id, cfg.bg_path, cfg.cover_path);
+      await saveAudioClipSettings(clipId, cfg.template_id, cfg.lyrics_mode ?? "karaoke", cfg.bg_path, cfg.cover_path);
       setClipConfigDirty((d) => ({ ...d, [clipId]: false }));
     } catch (err: any) {
       setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || err?.message || "Failed to save settings" });
@@ -1910,11 +2024,12 @@ export default function AudioToVideoPage() {
 
         {/* ── Step 2: Overlay Studio (Figma Design) ──────────────────────── */}
         {step === 2 && track && (() => {
-          const cfg        = clipConfigs[activeClip?.id ?? -1] ?? { template_id: "minimal" };
+          const cfg        = clipConfigs[activeClip?.id ?? -1] ?? { template_id: "minimal", lyrics_mode: "karaoke" };
           const lyricsText = activeClip ? getLyricsText(activeClip.id) : "";
           const isGen      = !!(activeClip && (generating[activeClip.id] || activeClip.video?.status === "generating"));
           const themeId    = (cfg.template_id || "minimal") as ThemeId;
           const theme      = OVERLAY_THEMES[themeId] ?? OVERLAY_THEMES.minimal;
+          const lyricsMode = cfg.lyrics_mode ?? "karaoke";
           const coverUrl   = cfg.cover_path ? fileUrl(cfg.cover_path) : "";
           const bgUrl      = cfg.bg_path ? fileUrl(cfg.bg_path) : "";
 
@@ -2062,6 +2177,36 @@ export default function AudioToVideoPage() {
                       </div>
                     </div>
 
+                    {/* Lyrics Mode */}
+                    <div>
+                      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 block">Lyrics Style</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {([
+                          { id: "karaoke", name: "Karaoke", desc: "One line, word-by-word" },
+                          { id: "scroll",  name: "Scroll",  desc: "Apple Music style" },
+                        ] as const).map((mode) => (
+                          <button
+                            key={mode.id}
+                            onClick={() => {
+                              setClipConfigs((c) => ({
+                                ...c,
+                                [activeClip.id]: { ...cfg, lyrics_mode: mode.id },
+                              }));
+                              setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                            }}
+                            className={`py-3 px-3 rounded-xl border-2 transition-all flex flex-col items-start gap-0.5 ${
+                              lyricsMode === mode.id
+                                ? "border-foreground bg-muted/40"
+                                : "border-border bg-background hover:border-muted-foreground"
+                            }`}
+                          >
+                            <span className="text-sm font-semibold">{mode.name}</span>
+                            <span className="text-[10px] text-muted-foreground">{mode.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     {generationErrors[activeClip.id] && (
                       <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                         {generationErrors[activeClip.id]}
@@ -2172,6 +2317,7 @@ export default function AudioToVideoPage() {
                         isPlaying={!isPreviewPaused}
                         overlayLineIndex={overlayLineIndex}
                         overlayWordIndex={overlayWordIndex}
+                        lyricsMode={lyricsMode}
                         coverArtRef={coverArtRef}
                         zigzagLayerRef={zigzagLayerRef}
                         lyricsLayerRef={lyricsLayerRef}
@@ -2370,11 +2516,12 @@ export default function AudioToVideoPage() {
     {isRecordingModalOpen && (() => {
       const recClip = pendingExportClipRef.current ?? activeClip;
       if (!recClip) return null;
-      const recCfg      = clipConfigs[recClip.id] ?? { template_id: "minimal" };
+      const recCfg      = clipConfigs[recClip.id] ?? { template_id: "minimal", lyrics_mode: "karaoke" };
       const recThemeId  = (recCfg.template_id || "minimal") as ThemeId;
       const recTheme    = OVERLAY_THEMES[recThemeId] ?? OVERLAY_THEMES.minimal;
       const recBgUrl    = recCfg.bg_path    ? fileUrl(recCfg.bg_path)    : null;
       const recCoverUrl = recCfg.cover_path ? fileUrl(recCfg.cover_path) : null;
+      const recLyricsMode = recCfg.lyrics_mode ?? "karaoke";
       const isPreviewPhase = !isExportRecording;
       return (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
@@ -2430,6 +2577,7 @@ export default function AudioToVideoPage() {
                 isPlaying={true}
                 overlayLineIndex={overlayLineIndex}
                 overlayWordIndex={overlayWordIndex}
+                lyricsMode={recLyricsMode}
                 coverArtRef={coverArtRef}
               />
             </div>
