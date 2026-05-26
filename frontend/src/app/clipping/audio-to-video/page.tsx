@@ -2347,19 +2347,6 @@ export default function AudioToVideoPage() {
                 <span style={{ width: 10, height: 10, borderRadius: "50%", background: "red", display: "inline-block", flexShrink: 0 }} />
                 Start Exporting
               </button>
-              <button
-                onClick={() => {
-                  setIsRecordingModalOpen(false);
-                  pendingExportClipRef.current = null;
-                  if (audioPreviewRef.current) audioPreviewRef.current.pause();
-                }}
-                style={{
-                  background: "transparent", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.2)",
-                  cursor: "pointer", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 500,
-                }}
-              >
-                Cancel
-              </button>
             </div>
           )}
         </div>
