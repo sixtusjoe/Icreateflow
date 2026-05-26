@@ -40,6 +40,7 @@ import {
   Disc,
   Pause,
   Play,
+  Save,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1817,7 +1818,7 @@ export default function AudioToVideoPage() {
                     <div>
                       <p className="font-semibold">Clip {clip.clip_index + 1}</p>
                       <p className="text-xs text-muted-foreground">
-                        {formatTime(clip.start_s)} – {formatTime(clip.end_s)} · {clip.words?.length ?? 0} words
+                        {formatTime(clip.start_s)} – {formatTime(clip.end_s)} · {clipWords[clip.id]?.length ?? clip.words?.length ?? 0} words
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2109,13 +2110,25 @@ export default function AudioToVideoPage() {
                     </div>
 
                     {/* Save Settings */}
+                    {clipConfigDirty[activeClip.id] && !savingSettings && (
+                      <p className="text-center text-xs text-amber-500 flex items-center justify-center gap-1">
+                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                        Unsaved changes — click Save Settings
+                      </p>
+                    )}
                     <button
                       onClick={() => handleSaveSettings(activeClip.id)}
                       disabled={savingSettings || savingLyrics}
-                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-40 transition-colors"
+                      className={`flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm transition-colors disabled:opacity-40 ${
+                        clipConfigDirty[activeClip.id]
+                          ? "border-amber-500/60 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 font-medium"
+                          : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+                      }`}
                     >
                       {savingSettings
                         ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>
+                        : clipConfigDirty[activeClip.id]
+                        ? <><Save className="h-3.5 w-3.5" /> Save Settings</>
                         : <><CheckCircle2 className="h-3.5 w-3.5" /> Save Settings</>}
                     </button>
                   </div>
