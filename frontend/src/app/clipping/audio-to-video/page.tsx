@@ -583,14 +583,14 @@ function PreviewContent({
 
       {/* 3. KARAOKE LYRICS — bottom third at top-[70.3%] */}
       <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="sync">
           {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
             <motion.div
               key={overlayLineIndex % lyricLines.length}
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.12, ease: "easeOut" }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.1, ease: "easeOut" }}
               className="text-center w-full"
             >
               <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
@@ -599,25 +599,18 @@ function PreviewContent({
                   const isPassed = isPlaying && wIdx < overlayWordIndex;
 
                   return (
-                    <motion.span
+                    <span
                       key={wIdx}
-                      initial={{
-                        color: isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
-                        textShadow: "0 4px 10px rgba(0,0,0,0.8)",
-                        scale: 1,
-                      }}
-                      animate={{
-                        color: isHighlighted
-                          ? theme.accent
-                          : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
+                      style={{
+                        display: "inline-block",
+                        color: isHighlighted ? theme.accent : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
                         textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
-                        scale: isHighlighted ? 1.05 : 1,
+                        transform: isHighlighted ? "scale(1.05)" : "scale(1)",
+                        transition: "color 0.12s ease, text-shadow 0.12s ease, transform 0.12s ease",
                       }}
-                      transition={{ duration: 0.15 }}
-                      className="inline-block transition-colors"
                     >
                       {word}
-                    </motion.span>
+                    </span>
                   );
                 })}
               </p>
@@ -744,6 +737,9 @@ export default function AudioToVideoPage() {
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
   const [overlayWordIndex, setOverlayWordIndex] = useState(-1);
+  // Refs to avoid setState when nothing changed (prevents 120 re-renders/sec)
+  const lastLineIdxRef = useRef(-1);
+  const lastWordIdxRef = useRef(-2);
 
   // Assign state — a clip can be assigned to multiple variations
   const [assignedClips, setAssignedClips] = useState<Record<number, Array<{ variationId: number; variationName: string }>>>({});
@@ -985,6 +981,8 @@ export default function AudioToVideoPage() {
 
   // Reset karaoke on clip change; pause audio
   useEffect(() => {
+    lastLineIdxRef.current = -1;
+    lastWordIdxRef.current = -2;
     setOverlayLineIndex(0);
     setOverlayWordIndex(-1);
     setIsPreviewPaused(true);
@@ -1064,22 +1062,35 @@ export default function AudioToVideoPage() {
         const ws = clipWordsRef.current[clip.id] ?? [];
 
         if (ws.length > 0) {
-          // "Last started word" approach — far more reliable than Whisper's end_s
-          // (many words have end_s = start_s = 0ms duration, making range checks impossible).
-          // Simply find the last word whose start_s has been reached.
-          let idx = -1;
-          for (let i = 0; i < ws.length; i++) {
-            if (ws[i].start_s <= t) idx = i;
-            else break; // words are sorted by start_s — stop early
+          // Binary search — O(log n) instead of O(n) every frame
+          let lo = 0, hi = ws.length - 1, idx = -1;
+          while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (ws[mid].start_s <= t) { idx = mid; lo = mid + 1; }
+            else hi = mid - 1;
           }
 
           if (idx !== -1) {
             const pos = wordPositionMapRef.current[idx];
             if (pos) {
-              setOverlayLineIndex(pos.lineIdx);
-              setOverlayWordIndex(pos.wordIdx);
+              // Only setState when value actually changed — prevents 120 re-renders/sec
+              if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
+                lastLineIdxRef.current = pos.lineIdx;
+                lastWordIdxRef.current = pos.wordIdx;
+                setOverlayLineIndex(pos.lineIdx);
+                setOverlayWordIndex(pos.wordIdx);
+              }
             }
           }
+        }
+
+        // Update progress from this same loop (no separate RAF needed)
+        if (isRecordingActiveRef.current) {
+          const clipDur = clip.end_s != null && clip.start_s != null
+            ? clip.end_s - clip.start_s
+            : audio.duration || 1;
+          const pct = Math.min(99, Math.round((audio.currentTime / clipDur) * 100));
+          setExportProgress(pct);
         }
       }
 
@@ -1495,6 +1506,10 @@ export default function AudioToVideoPage() {
         recAudio.onerror = () => rej(recAudio.error);
         recAudio.load();
       });
+      // Force a decode pass to warm the audio buffer — prevents first-frame stutter
+      recAudio.currentTime = 0.001;
+      await new Promise<void>(r => setTimeout(r, 50));
+      recAudio.currentTime = 0;
 
       // Wire Web Audio graph
       const audioSrc  = audioCtx.createMediaElementSource(recAudio);
@@ -1534,16 +1549,10 @@ export default function AudioToVideoPage() {
         if (rec.state !== "inactive") rec.stop();
       }, { once: true });
 
-      let rafId = 0;
-      const progressTick = () => {
-        setExportProgress(Math.min(99, Math.round((recAudio.currentTime / clipDuration) * 100)));
-        if (!recAudio.ended) rafId = requestAnimationFrame(progressTick);
-      };
-      rafId = requestAnimationFrame(progressTick);
+      // Progress is now driven by the shared sync RAF loop (isRecordingActiveRef = true)
 
       // 11. onstop — runs when song ends, tab is hidden, or user stops sharing
       rec.onstop = () => {
-        cancelAnimationFrame(rafId);
         cancelAnimationFrame(drawRafRef.current);
         window.removeEventListener("beforeunload", beforeUnload);
         document.removeEventListener("visibilitychange", handleHidden);
