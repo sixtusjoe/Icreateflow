@@ -713,6 +713,8 @@ export default function AudioToVideoPage() {
   const isRecordingActiveRef  = useRef(false);
   const recordingAudioRef     = useRef<HTMLAudioElement | null>(null);
   const pendingExportClipRef  = useRef<AudioClipData | null>(null); // clip staged in preview phase
+  const rawVideoRef           = useRef<HTMLVideoElement | null>(null);
+  const drawRafRef            = useRef<number>(0);
   // Themed info/error modal for export messages (replaces browser alert())
   const [exportInfoModal, setExportInfoModal] = useState<{ title: string; message: string } | null>(null);
 
@@ -1304,10 +1306,8 @@ export default function AudioToVideoPage() {
         video: { preferCurrentTab: true } as any,
         audio: false,
       });
-      // displayVideoTrack = raw tab capture; recordingVideoTrack = what MediaRecorder
-      // actually records (may be swapped for a canvas-cropped track on non-Chrome).
+      // displayVideoTrack = raw tab capture (kept alive to detect "stop sharing")
       const displayVideoTrack = displayStream.getVideoTracks()[0];
-      let   recordingVideoTrack = displayVideoTrack;
 
       // 2. Resume AudioContext (activation is fresh after the Share prompt)
       await audioCtx.resume();
@@ -1315,92 +1315,74 @@ export default function AudioToVideoPage() {
       // 3. Wait deterministically for captureTargetRef to be in the DOM
       const el = await waitForRef(captureTargetRef as React.RefObject<HTMLElement | null>);
       if (!el) {
-        displayVideoTrack.stop();
-        audioCtx.close(); exportAudioCtxRef.current = null;
+        displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
         setIsRecordingModalOpen(false); setIsExportRecording(false);
-        setExportInfoModal({ title: "Export Cancelled", message: "Preview element was not ready. Please try again." });
+        setExportInfoModal({ title: "Export Cancelled", message: "Preview wasn't ready. Please try again." });
         return;
       }
 
-      // 4. Verify surface is the current tab — crop is a no-op on monitor/window surfaces
+      // 4. Surface must be the tab — viewport coords only map correctly for tab capture
       const surface = (displayVideoTrack.getSettings() as any).displaySurface;
       if (surface && surface !== "browser") {
-        displayVideoTrack.stop();
-        audioCtx.close(); exportAudioCtxRef.current = null;
+        displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
         setIsRecordingModalOpen(false); setIsExportRecording(false);
-        setExportInfoModal({
-          title: "Wrong surface selected",
-          message: 'Please click "Start Exporting" again and choose "This Tab" (not a window or entire screen).',
-        });
+        setExportInfoModal({ title: "Wrong surface", message: 'Click Start Exporting again and choose "This Tab".' });
         return;
       }
 
-      // 5. Apply crop — ABORT HARD on any failure (never record uncropped)
-      let canvasDrawRafId = 0;
-      let rawVideoEl: HTMLVideoElement | null = null;
-      try {
-        if ("RestrictionTarget" in window && "restrictTo" in displayVideoTrack) {
-          // Chrome 122+ — Element Capture (excludes overlapping overlays entirely)
-          await (displayVideoTrack as any).restrictTo(
-            await (window as any).RestrictionTarget.fromElement(el),
-          );
-        } else if ("CropTarget" in window && "cropTo" in displayVideoTrack) {
-          // Chrome 104–121 — Region Capture (crops to element bounding rect)
-          await (displayVideoTrack as any).cropTo(
-            await (window as any).CropTarget.fromElement(el),
-          );
-        } else {
-          throw new Error("unsupported");
-        }
-      } catch {
-        // Canvas-crop fallback — works in Firefox / older Chrome / any browser
-        const rawVideo = document.createElement("video");
-        rawVideoEl = rawVideo;
-        rawVideo.srcObject = displayStream;
-        rawVideo.muted = true;
-        await new Promise<void>((r) => { rawVideo.onloadedmetadata = () => r(); });
-        await rawVideo.play();
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      // 5. Let layout fully settle so getBoundingClientRect is final
+      await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
-        const streamW = rawVideo.videoWidth  || window.innerWidth;
-        const streamH = rawVideo.videoHeight || window.innerHeight;
-        const elRect  = el.getBoundingClientRect();
-        const scaleX  = streamW / window.innerWidth;
-        const scaleY  = streamH / window.innerHeight;
-        const srcX    = Math.round(elRect.left   * scaleX);
-        const srcY    = Math.round(elRect.top    * scaleY);
-        const srcW    = Math.round(elRect.width  * scaleX);
-        const srcH    = Math.round(elRect.height * scaleY);
+      // 6. Pipe the captured tab into a hidden <video>
+      const rawVideo = document.createElement("video");
+      rawVideoRef.current = rawVideo;
+      rawVideo.srcObject = displayStream;
+      rawVideo.muted = true;
+      (rawVideo as any).playsInline = true;
+      await new Promise<void>(r => { rawVideo.onloadedmetadata = () => r(); });
+      await rawVideo.play();
+      await new Promise<void>(r => requestAnimationFrame(() => r())); // ensure a frame is decoded
 
-        if (srcW < 10 || srcH < 10) {
-          rawVideo.srcObject = null;
-          displayVideoTrack.stop();
-          audioCtx.close(); exportAudioCtxRef.current = null;
-          setIsRecordingModalOpen(false); setIsExportRecording(false);
-          setExportInfoModal({
-            title: "Export Cancelled",
-            message: "Could not lock recording to the preview. Use Chrome or Edge and share 'This Tab'.",
-          });
-          return;
-        }
+      // 7. Map the element's viewport rect into captured-stream pixels
+      const streamW = rawVideo.videoWidth;
+      const streamH = rawVideo.videoHeight;
+      if (!streamW || !streamH) {
+        rawVideo.srcObject = null; displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Export Cancelled", message: "Capture didn't start. Please try again." });
+        return;
+      }
+      const scaleX = streamW / window.innerWidth;
+      const scaleY = streamH / window.innerHeight;
+      const rect   = el.getBoundingClientRect();
+      let srcX = Math.round(rect.left   * scaleX);
+      let srcY = Math.round(rect.top    * scaleY);
+      let srcW = Math.round(rect.width  * scaleX);
+      let srcH = Math.round(rect.height * scaleY);
+      srcW -= srcW % 2; srcH -= srcH % 2; // even dims for the encoder
+      console.log("[export] canvas crop:", { streamW, streamH, rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }, srcX, srcY, srcW, srcH });
 
-        const cropCanvas = document.createElement("canvas");
-        cropCanvas.width  = srcW;
-        cropCanvas.height = srcH;
-        const cropCtx = cropCanvas.getContext("2d")!;
-        const drawLoop = () => {
-          cropCtx.drawImage(rawVideo, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
-          canvasDrawRafId = requestAnimationFrame(drawLoop);
-        };
-        canvasDrawRafId = requestAnimationFrame(drawLoop);
-        recordingVideoTrack = cropCanvas.captureStream(30).getVideoTracks()[0];
+      if (srcW < 10 || srcH < 10) {
+        rawVideo.srcObject = null; displayVideoTrack.stop(); audioCtx.close(); exportAudioCtxRef.current = null;
+        setIsRecordingModalOpen(false); setIsExportRecording(false);
+        setExportInfoModal({ title: "Export Cancelled", message: "Could not measure the preview region." });
+        return;
       }
 
-      // 5. Resolution warning
-      const effH = (el.offsetHeight ?? 0) * devicePixelRatio;
-      if (effH < 1280) console.warn("Low-res export — effective height:", effH, "px");
+      // 8. Draw ONLY that rect onto an offscreen canvas every frame — this is now the PRIMARY path
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = srcW; cropCanvas.height = srcH;
+      const cropCtx = cropCanvas.getContext("2d", { alpha: false })!;
+      const draw = () => {
+        cropCtx.drawImage(rawVideo, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+        drawRafRef.current = requestAnimationFrame(draw);
+      };
+      drawRafRef.current = requestAnimationFrame(draw);
 
-      // 6. Load audio fully buffered (same-origin — no crossOrigin needed)
+      // 9. Record the CANVAS stream — guaranteed to contain only the preview rect
+      const recordingVideoTrack = cropCanvas.captureStream(30).getVideoTracks()[0];
+
+      // Load audio fully buffered (same-origin — no crossOrigin needed)
       const recAudio = new Audio();
       recAudio.preload = "auto";
       recAudio.src = fileUrl(clip.local_path!);
@@ -1410,13 +1392,13 @@ export default function AudioToVideoPage() {
         recAudio.load();
       });
 
-      // 7. Wire Web Audio graph
+      // Wire Web Audio graph
       const audioSrc  = audioCtx.createMediaElementSource(recAudio);
       const audioDest = audioCtx.createMediaStreamDestination();
       audioSrc.connect(audioDest);            // → recording
       audioSrc.connect(audioCtx.destination); // → speakers
 
-      // 8. MediaRecorder — uses recordingVideoTrack (cropped stream or canvas track)
+      // MediaRecorder — canvas video track + audio
       const combined = new MediaStream([recordingVideoTrack, audioDest.stream.getAudioTracks()[0]]);
       const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
         ? "video/webm;codecs=vp9,opus"
@@ -1458,11 +1440,11 @@ export default function AudioToVideoPage() {
       // 11. onstop — runs when song ends, tab is hidden, or user stops sharing
       rec.onstop = () => {
         cancelAnimationFrame(rafId);
-        cancelAnimationFrame(canvasDrawRafId);
+        cancelAnimationFrame(drawRafRef.current);
         window.removeEventListener("beforeunload", beforeUnload);
         document.removeEventListener("visibilitychange", handleHidden);
         displayVideoTrack.stop();
-        if (rawVideoEl) { rawVideoEl.srcObject = null; rawVideoEl = null; }
+        if (rawVideoRef.current) { rawVideoRef.current.srcObject = null; rawVideoRef.current = null; }
         audioCtx.close();
         exportAudioCtxRef.current    = null;
         isRecordingActiveRef.current = false;
