@@ -1265,6 +1265,7 @@ export default function AudioToVideoPage() {
   // RAF-based karaoke sync — polls at ~60fps, reads fresh refs each frame
   useEffect(() => {
     let rafId: number;
+    let lastLogTime = 0; // throttle debug logs to 1/sec
 
     const tick = () => {
       const audio = isRecordingActiveRef.current
@@ -1277,6 +1278,19 @@ export default function AudioToVideoPage() {
         // audio.currentTime is relative to the clip segment (starts at 0).
         const t  = audio.currentTime + (clip.start_s ?? 0);
         const ws = clipWordsRef.current[clip.id] ?? [];
+
+        // ── DEBUG (throttled 1/sec) ──────────────────────────────────────────
+        const now = performance.now();
+        if (now - lastLogTime > 1000) {
+          lastLogTime = now;
+          console.log("[karaoke-sync]", {
+            clipId: clip.id, clipStart: clip.start_s, audioTime: audio.currentTime,
+            t, wsLen: ws.length, mapLen: wordPositionMapRef.current.length,
+            paused: audio.paused,
+            firstWord: ws[0]?.start_s, lastWord: ws[ws.length-1]?.start_s,
+          });
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         if (ws.length > 0) {
           // Binary search — O(log n) instead of O(n) every frame
