@@ -6824,9 +6824,10 @@ async def upload_audio_clip_video(
         await database.close()
 
     ext = Path(file.filename or "preview.webm").suffix.lower() or ".webm"
+    stem = Path(file.filename or f"clip_{clip_id}").stem or f"clip_{clip_id}"
     save_dir = Path("uploads") / slug / "audio" / "video"
     save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / f"clip_{clip_id}_preview{ext}"
+    save_path = save_dir / f"{stem}{ext}"
     content = await file.read()
     save_path.write_bytes(content)
     video_path = str(save_path)

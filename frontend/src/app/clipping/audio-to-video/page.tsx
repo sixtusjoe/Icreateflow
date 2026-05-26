@@ -2528,7 +2528,7 @@ export default function AudioToVideoPage() {
           </div>
 
           {/* Actions */}
-          <div className="flex gap-3 p-4">
+          <div className="grid grid-cols-2 gap-3 p-4">
             <button
               disabled={convertingMp4}
               onClick={async () => {
@@ -2557,11 +2557,11 @@ export default function AudioToVideoPage() {
                   setConvertingMp4(false);
                 }
               }}
-              className="flex-1 flex items-center justify-center gap-2 py-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm disabled:opacity-60"
+              className="w-full flex items-center justify-center gap-2 py-3 px-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm disabled:opacity-60"
             >
               {convertingMp4
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> Converting…</>
-                : <><Download className="w-4 h-4" /> Download MP4</>}
+                ? <><Loader2 className="w-4 h-4 shrink-0 animate-spin" /><span className="truncate">Converting…</span></>
+                : <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download MP4</span></>}
             </button>
             <button
               onClick={async () => {
@@ -2595,11 +2595,11 @@ export default function AudioToVideoPage() {
                 setStep(3);
               }}
               disabled={uploadingExport || convertingMp4}
-              className="flex-1 flex items-center justify-center gap-2 py-3 border border-border text-foreground font-semibold rounded-xl hover:bg-muted transition-colors text-sm disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-2 py-3 px-3 border border-border text-foreground font-semibold rounded-xl hover:bg-muted transition-colors text-sm disabled:opacity-50"
             >
               {uploadingExport
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> Converting & Uploading…</>
-                : <><MonitorPlay className="w-4 h-4" /> Assign to Variation</>}
+                ? <><Loader2 className="w-4 h-4 shrink-0 animate-spin" /><span className="truncate">Uploading…</span></>
+                : <><MonitorPlay className="w-4 h-4 shrink-0" /><span className="truncate">Assign to Variation</span></>}
             </button>
           </div>
 
