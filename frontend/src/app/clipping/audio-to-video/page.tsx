@@ -2552,6 +2552,17 @@ export default function AudioToVideoPage() {
             <button
               disabled={convertingMp4}
               onClick={async () => {
+                const filename = `clip_${exportClipIndex + 1}.mp4`;
+
+                // Server-stored video: already MP4, download directly
+                if (!exportedBlob && exportedBlobUrl) {
+                  const a = document.createElement("a");
+                  a.href = exportedBlobUrl;
+                  a.download = filename;
+                  a.click();
+                  return;
+                }
+
                 if (!exportedBlob) return;
                 setConvertingMp4(true);
                 try {
@@ -2568,7 +2579,7 @@ export default function AudioToVideoPage() {
                   const url = URL.createObjectURL(mp4Blob);
                   const a = document.createElement("a");
                   a.href = url;
-                  a.download = `clip_${exportClipIndex + 1}.mp4`;
+                  a.download = filename;
                   a.click();
                   URL.revokeObjectURL(url);
                 } catch (err: any) {
