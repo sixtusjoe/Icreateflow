@@ -6792,6 +6792,48 @@ async def upload_audio_clip_video(
     return {"video_path": video_path, "status": "done"}
 
 
+@app.post("/api/audio-to-video/convert-to-mp4")
+async def convert_webm_to_mp4(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Remux a browser-recorded WebM blob into an MP4 container using FFmpeg.
+    No re-encoding — just container swap, so it completes in well under a second.
+    Returns the raw MP4 bytes with Content-Disposition: attachment.
+    """
+    import tempfile, asyncio
+    from fastapi.responses import Response
+
+    webm_data = await file.read()
+    stem = Path(file.filename or "clip").stem
+
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path  = Path(tmp) / "input.webm"
+        out_path = Path(tmp) / "output.mp4"
+        in_path.write_bytes(webm_data)
+
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", str(in_path),
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(out_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 or not out_path.exists():
+            raise HTTPException(500, f"FFmpeg conversion failed: {stderr.decode()[-300:]}")
+
+        mp4_bytes = out_path.read_bytes()
+
+    return Response(
+        content=mp4_bytes,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.mp4"'},
+    )
+
+
 @app.post("/api/audio-to-video/clips/{clip_id}/render-preview")
 async def render_audio_clip_preview(
     clip_id: int,

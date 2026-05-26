@@ -700,6 +700,7 @@ export default function AudioToVideoPage() {
   const [exportedExt, setExportedExt] = useState("webm");
   const [exportClipIndex, setExportClipIndex] = useState(0);
   const [uploadingExport, setUploadingExport] = useState(false);
+  const [convertingMp4, setConvertingMp4] = useState(false);
   const exportClipIdRef = useRef<number | null>(null);
   const exportAudioCtxRef = useRef<AudioContext | null>(null);
   // Persists blob URLs per clip so "View Export" button can reopen the modal
@@ -2462,13 +2463,39 @@ export default function AudioToVideoPage() {
 
           {/* Actions */}
           <div className="flex gap-3 p-4">
-            <a
-              href={exportedBlobUrl}
-              download={`clip_${exportClipIndex + 1}.${exportedExt}`}
-              className="flex-1 flex items-center justify-center gap-2 py-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm"
+            <button
+              disabled={convertingMp4}
+              onClick={async () => {
+                if (!exportedBlob) return;
+                setConvertingMp4(true);
+                try {
+                  const formData = new FormData();
+                  formData.append("file", exportedBlob, `clip_${exportClipIndex + 1}.webm`);
+                  const res = await fetch("/api/audio-to-video/convert-to-mp4", {
+                    method: "POST",
+                    body: formData,
+                    credentials: "include",
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  const mp4Blob = await res.blob();
+                  const url = URL.createObjectURL(mp4Blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `clip_${exportClipIndex + 1}.mp4`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch (err: any) {
+                  alert("MP4 conversion failed: " + (err?.message ?? "unknown"));
+                } finally {
+                  setConvertingMp4(false);
+                }
+              }}
+              className="flex-1 flex items-center justify-center gap-2 py-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm disabled:opacity-60"
             >
-              <Download className="w-4 h-4" /> Download
-            </a>
+              {convertingMp4
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Converting…</>
+                : <><Download className="w-4 h-4" /> Download MP4</>}
+            </button>
             <button
               onClick={async () => {
                 if (exportedBlob && exportClipIdRef.current != null) {
