@@ -6776,7 +6776,12 @@ async def upload_audio_clip_asset(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    """Upload a cover image or background image for an audio clip."""
+    """Upload a cover image or background image for an audio clip.
+    Always converts to JPEG and resizes to keep files small and browser-compatible.
+    """
+    from PIL import Image as PILImage
+    import io
+
     database = await db.get_db()
     try:
         cur = await database.execute(
@@ -6796,13 +6801,60 @@ async def upload_audio_clip_asset(
     finally:
         await database.close()
 
-    ext = Path(file.filename or "asset.jpg").suffix.lower() or ".jpg"
+    content = await file.read()
+
+    # Convert & compress with Pillow — always output JPEG regardless of input format
+    # (handles DNG, HEIC, PNG, TIFF, WebP, etc.)
+    max_px = 1920 if asset_type == "bg" else 1080
+    quality = 85
+    try:
+        img = PILImage.open(io.BytesIO(content))
+        img = img.convert("RGB")  # strip alpha / raw colour spaces
+        img.thumbnail((max_px, max_px), PILImage.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        content = buf.getvalue()
+    except Exception:
+        # If Pillow can't open it (truly unsupported), just pass bytes through
+        pass
+
     save_dir = Path("uploads") / slug / "audio" / asset_type
     save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / f"clip_{clip_id}_{asset_type}{ext}"
-    content = await file.read()
+
+    # Delete any previous files for this clip+type before saving
+    for old in save_dir.glob(f"clip_{clip_id}_{asset_type}.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+    save_path = save_dir / f"clip_{clip_id}_{asset_type}.jpg"
     save_path.write_bytes(content)
-    return {"path": str(save_path), "asset_type": asset_type}
+    rel_path = str(save_path)
+
+    # Persist path to audio_video_clips so it survives page reloads
+    col = "background_image_path" if asset_type == "bg" else "album_cover_path"
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT id FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,)
+        )
+        existing = await cur.fetchone()
+        if existing:
+            await database.execute(
+                f"UPDATE audio_video_clips SET {col} = ? WHERE audio_clip_id = ?",
+                (rel_path, clip_id),
+            )
+        else:
+            await database.execute(
+                f"INSERT INTO audio_video_clips (audio_clip_id, {col}, status) VALUES (?, ?, 'pending')",
+                (clip_id, rel_path),
+            )
+        await database.commit()
+    finally:
+        await database.close()
+
+    return {"path": rel_path, "asset_type": asset_type}
 
 
 @app.post("/api/audio-to-video/clips/{clip_id}/upload-video")
