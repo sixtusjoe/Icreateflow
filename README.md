@@ -4,6 +4,7 @@ A multi-user SaaS platform for content creators. The platform has **two distinct
 
 - **Brands** — TikTok slideshow scaling. Import or upload slides, OCR the text, generate per-account variations (keep / replace / Flux face-swap), assemble 9:16 videos, and schedule across TikTok, YouTube Shorts, Instagram Reels, and Facebook.
 - **Clipping** — Music artist auto-poster. Sync short clips from Google Drive, plan posting slots in the artist's local timezone, optionally per-account video-diversify, and auto-post across the same four platforms with view tracking and auto-pause on view-target / directory-exhausted.
+- **Audio-to-Video** — Karaoke-style music video creator. Upload a music track, Whisper transcribes it, split into 1/3/5 clips, edit lyrics in the Overlay Studio (4 templates, karaoke/scroll modes), export as 9:16 MP4 with synced lyrics, assign to a variation for posting.
 
 Production: **icreateflow.com** (`187.124.231.108`) — Postgres + FastAPI + Next.js 16 on a single VPS, fronted by Apache.
 
@@ -38,6 +39,18 @@ Frontend: `frontend/src/app/{brands,posts,posts/new,music,schedule}/`.
 Tables: `artists`, `campaigns`, `artist_accounts`, `clips`, `clip_posts`, `clip_caption_variants`.
 Frontend: `frontend/src/app/clipping/`.
 Operational deep dive: [`memory.md`](memory.md).
+
+## Audio-to-Video — How it works
+
+1. **Upload track** — drag in MP3/WAV/M4A. Backend stores it and kicks off an async Whisper (OpenAI) transcription that returns word-level timestamps (`audio_words` table).
+2. **Split** — choose 1, 3, or 5 equal segments. Each segment becomes an `audio_clips` row with its own audio file.
+3. **Overlay Studio** — for each clip, pick a template (`minimal` / `vibrant` / `cinematic` / `neon`), edit the lyrics textarea, preview karaoke/scroll sync live with the audio, tweak background image and album cover.
+4. **Export** — screen-capture the preview panel via `getDisplayMedia`, crop to 9:16 canvas, record with `MediaRecorder`, server remuxes WebM→MP4. Download or assign directly to a variation in the Clipping pipeline.
+
+Tables: `audio_tracks`, `audio_words`, `audio_clips`, `audio_video_clips`.
+Frontend: `frontend/src/app/clipping/audio-to-video/page.tsx` (single file, ~2900 lines).
+
+Key technical detail: **Whisper timestamps are absolute** (from track start, not clip start). The karaoke RAF tick converts: `tAbs = audio.currentTime + clip.start_s`. Sync uses a per-display-word `wordTimings` array — 1:1 Whisper timestamps for auto-generated text, even time distribution for user-edited text.
 
 ---
 
@@ -77,6 +90,7 @@ Operational deep dive: [`memory.md`](memory.md).
 │       │   ├── schedule/       Calendar view of scheduled posts
 │       │   ├── music/          Music library
 │       │   ├── clipping/[slug] Per-artist campaign dashboard
+│       │   ├── clipping/audio-to-video/  ★ Audio-to-Video karaoke creator
 │       │   ├── settings/       Per-user settings + clipping toggles
 │       │   ├── admin/          Admin panel (global config, audit-deleted, errors)
 │       │   ├── account/        User profile + email preferences
@@ -107,7 +121,7 @@ Operational deep dive: [`memory.md`](memory.md).
 | Backend | FastAPI 0.135, SQLAlchemy 2.0 (async), asyncpg |
 | Database | PostgreSQL 16 |
 | Auth | JWT (python-jose) + bcrypt |
-| AI | Anthropic Claude (OCR, captions), Replicate Flux (image gen) |
+| AI | Anthropic Claude (OCR, captions), OpenAI gpt-image-2 (image gen), OpenAI Whisper (A2V transcription) |
 | Media | ffmpeg (video), Pillow (overlays), yt-dlp (TikTok import fallback) |
 | Email | Python smtplib (SMTP, configured in admin `site_config`) |
 | Server | gunicorn + uvicorn worker (`-w 1`), Apache reverse proxy, systemd |
@@ -259,6 +273,21 @@ All endpoints except auth require `Authorization: Bearer <token>`.
 | `POST` | `/api/artists/{id}/promotion/toggle-pause` | Pause / resume |
 | `GET`  | `/api/artists/{id}/dashboard` | Live campaign dashboard |
 
+### Audio-to-Video
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET`  | `/api/audio-to-video/tracks` | List tracks for current artist |
+| `POST` | `/api/audio-to-video/upload` | Upload track → async Whisper transcription |
+| `POST` | `/api/audio-to-video/{id}/retranscribe` | Re-run Whisper on a track |
+| `POST` | `/api/audio-to-video/{id}/split` | Split track into N clips |
+| `GET`  | `/api/audio-to-video/clips/{id}` | Get clip + words |
+| `PUT`  | `/api/audio-to-video/clips/{id}/lyrics` | Save lyrics text (pass `words=[]` to preserve Whisper data) |
+| `POST` | `/api/audio-to-video/clips/{id}/upload-asset` | Upload background image / album cover |
+| `POST` | `/api/audio-to-video/clips/{id}/settings` | Save template/lyrics_mode settings |
+| `POST` | `/api/audio-to-video/clips/{id}/assign` | Assign exported MP4 to a variation clip |
+| `POST` | `/api/audio-to-video/convert-to-mp4` | Server-side WebM→MP4 remux |
+| `DELETE` | `/api/audio-to-video/{id}` | Delete track + all files |
+
 ### Admin
 | Method | Endpoint | Description |
 |---|---|---|
@@ -266,6 +295,7 @@ All endpoints except auth require `Authorization: Bearer <token>`.
 | `GET`  | `/api/admin/stats` | Platform-wide stats |
 | `GET`  | `/api/admin/variation-health` | Per-variation stale-slot diagnostics |
 | `POST` | `/api/admin/clip-posts/audit-deleted` | Force view-poll all posted rows |
+| `DELETE` | `/api/admin/audio-to-video` | Clean A2V storage by scope |
 
 ---
 

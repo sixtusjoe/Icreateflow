@@ -2,7 +2,7 @@
 
 > Session memory for Claude and any dev picking this up cold.
 > Heavy on exact file paths and symbol names so neither audience has to grep.
-> Last updated: 2026-05-09.
+> Last updated: 2026-05-26.
 
 ---
 
@@ -10,18 +10,18 @@
 
 Multi-account social-media auto-poster. Two completely separate pipelines:
 
-| | Brands | Clipping |
-|---|---|---|
-| Source content | TikTok slideshow URL or uploaded slides | Short video clips (Google Drive sync or upload) |
-| Pipeline | OCR → text edits → per-account variation (keep/replace/Flux) → text overlay → 9:16 video → schedule → post-now | Plan slots → diversify (or passthrough) → upload → poll views → auto-pause |
-| Dispatch trigger | Manual (`POST /api/posts/{id}/post-now`) | 4 async background loops in `clip_scheduler.py` |
-| Emails | ⏰ Reminder 1h before `scheduled_time` + 🎉 HURRAY after dispatch | ⏰ Reminder 1h before `scheduled_for` + 🎉 HURRAY after each post batch |
-| Tables | `brands`, `accounts`, `posts`, `slides`, `variations`, `outputs`, `music_tracks` | `artists`, `campaigns`, `artist_accounts`, `clips`, `clip_posts`, `clip_caption_variants` |
-| Services | `ocr, overlay, generator, video, flux, tiktok_scraper` | `clip_scheduler, variation_processor, gdrive, caption_variants` |
-| Frontend | `app/{brands,posts,posts/new,music,schedule}/` | `app/clipping/[slug]/` |
+| | Brands | Clipping | Audio-to-Video |
+|---|---|---|---|
+| Source content | TikTok slideshow URL or uploaded slides | Short video clips (Google Drive sync or upload) | Uploaded music track (MP3/WAV/M4A) |
+| Pipeline | OCR → text edits → per-account variation (keep/replace/Flux) → text overlay → 9:16 video → schedule → post-now | Plan slots → diversify (or passthrough) → upload → poll views → auto-pause | Upload → Whisper transcribe → split clips → edit lyrics → Overlay Studio → export MP4 → assign to variation |
+| Dispatch trigger | Manual (`POST /api/posts/{id}/post-now`) | 4 async background loops in `clip_scheduler.py` | Manual assign to variation |
+| Emails | ⏰ Reminder 1h before `scheduled_time` + 🎉 HURRAY after dispatch | ⏰ Reminder 1h before `scheduled_for` + 🎉 HURRAY after each post batch | None |
+| Tables | `brands`, `accounts`, `posts`, `slides`, `variations`, `outputs`, `music_tracks` | `artists`, `campaigns`, `artist_accounts`, `clips`, `clip_posts`, `clip_caption_variants` | `audio_tracks`, `audio_words`, `audio_clips`, `audio_video_clips` |
+| Services | `ocr, overlay, generator, video, flux, tiktok_scraper` | `clip_scheduler, variation_processor, gdrive, caption_variants` | Whisper (OpenAI), ffmpeg split, client-side canvas/MediaRecorder export |
+| Frontend | `app/{brands,posts,posts/new,music,schedule}/` | `app/clipping/[slug]/` | `app/clipping/audio-to-video/page.tsx` |
 | Shared | `users`, `settings`, `user_settings`, `site_config`, `meta_pending_assignments`, `error_logs`, `services/{auth,oauth,email,posting/*}.py` |
 
-**Do NOT conflate the two** — they share auth and posting adapters, nothing else.
+**Do NOT conflate the three pipelines** — they share auth and the artist/variation model but otherwise nothing.
 
 Stack: FastAPI 0.135 + Postgres 16 + asyncpg backend, Next.js 16 (Turbopack) frontend,
 gunicorn **`-w 1`** + uvicorn worker, Apache reverse proxy, all on one VPS at `icreateflow.com` (`187.124.231.108`).
@@ -79,18 +79,89 @@ GDrive sync / upload
 
 ---
 
-## 4. Critical files
+## 4. Audio-to-Video (A2V) pipeline
+
+### Overview
+
+A2V is a 3-step wizard under `/clipping/audio-to-video`. An artist uploads a music track; it gets split into clips with Whisper word timestamps; each clip gets an Overlay Studio where the user picks a template, edits lyrics, and exports a karaoke-style 9:16 MP4 that can be assigned to a variation (clip) in the Clipping pipeline.
+
+### Data model
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `audio_tracks` | `artist_id`, `local_path`, `duration_s`, `transcription_status` (pending/processing/done/failed), `transcription_error` | One per uploaded track. `local_path` is relative to `/srv/icreateflow/data/`. |
+| `audio_words` | `audio_track_id`, `clip_index`, `word`, `start_s`, `end_s` | **Absolute** timestamps from full track start (not clip-relative). `clip_index` matches `audio_clips.clip_index` for the same track. |
+| `audio_clips` | `audio_track_id`, `clip_index`, `start_s`, `end_s`, `local_path`, `lyrics_text` | 1, 3, or 5 equal segments created by `POST /api/audio-to-video/{id}/split`. `lyrics_text` = user-edited multi-line text (newline = line break). If NULL/empty → auto-generated from words (5 per line). |
+| `audio_video_clips` | `audio_clip_id`, `artist_account_id` (NULL=shared), `template_id`, `lyrics_mode`, `background_image_path`, `album_cover_path`, `video_path`, `status`, `render_progress` | One settings row per clip per variation. `lyrics_mode` ∈ `karaoke\|scroll`. |
+
+### Timing critical detail
+
+`audio_words.start_s` / `end_s` are **absolute seconds from the start of the full track** — NOT clip-relative. The RAF tick converts: `tAbs = audio.currentTime + clip.start_s` before binary-searching the word array.
+
+### Karaoke sync algorithm (as of 2026-05-26)
+
+**File:** `frontend/src/app/clipping/audio-to-video/page.tsx`
+
+1. **`activeKaraokeLyrics`** (`useMemo`) — converts `clipLyricsText[clipId]` (or Whisper auto-text) to `string[][]` (lines of words).
+2. **`wordTimings`** (`useMemo`) — builds a flat `WordTiming[]` array: `{startAbs, endAbs, lineIdx, wordIdx}` per display word.
+   - **1:1 case** (display word count == Whisper word count — the auto-generated default): each display word maps directly to its Whisper word's exact timestamps.
+   - **Mismatched case** (user edited lyrics, word count changed): total audio time distributed evenly across display words — smooth, no jumps.
+3. **RAF tick** — binary searches `wordTimings` by `tAbs` → `setOverlayLineIndex` / `setOverlayWordIndex`.
+4. **Monotonic guard** — `wordIdx` never steps backward within the same line during forward play.
+
+### Key refs and state
+
+```typescript
+// Audio
+const audioPreviewRef    // hidden <audio> element
+const lastAudioTimeRef   // backward-seek detection
+const userSeekingRef     // suppresses backward-seek guard during programmatic seeks
+const seekAudio = (a, t) => { userSeekingRef.current=true; a.currentTime=t; setTimeout(()=>{userSeekingRef.current=false},150); }
+
+// Editing debounce
+const editingLyricsRef   // true while user is typing; freezes RAF setState
+const editingTimeoutRef  // clears editingLyricsRef 400ms after last keystroke
+
+// Karaoke
+const wordTimingsRef     // ref copy of wordTimings memo
+const activeKaraokeLyricsRef  // ref copy of lyrics lines
+const lastLineIdxRef, lastWordIdxRef  // gate setState — only fire when changed
+```
+
+### Export flow
+
+- **Overlay Studio** renders a live HTML preview in the browser (canvas + CSS).
+- **Export** uses `getDisplayMedia` to screen-capture the preview `<div>`, crops to 9:16 via canvas, and records with `MediaRecorder` → WebM → server converts to MP4 via ffmpeg.
+- Export progress tracked via `exportProgress` state (0–100), driven from the same RAF loop.
+
+### Lyrics persistence
+
+`PUT /api/audio-to-video/clips/{clip_id}/lyrics` — saves `lyrics_text` (string) and optionally a `words` array. The backend **only replaces words if `data.words` is non-empty** — passing `words=[]` keeps the existing Whisper timestamps intact. The frontend always sends `words=[]` so Whisper data is never overwritten.
+
+### Templates
+
+`template_id` ∈ `minimal | vibrant | cinematic | neon`. Each template drives CSS variables for colors, fonts, and animation style in `<PreviewContent>`.
+
+### Lyrics modes
+
+- `karaoke` — active word highlighted in current line (word-by-word karaoke).
+- `scroll` — Apple Music-style: all lines visible, active line centered and full-brightness, others dimmed.
+
+---
+
+## 6. Critical files
 
 | Path | What's there |
 |------|--------------|
-| `backend/main.py` | All endpoints (~5700 lines). Lifespan starts 4 scheduler loops. |
-| `backend/database.py` | ORM models, `init_db()`, all `_migrate_*` functions (idempotent `ALTER TABLE IF NOT EXISTS`). `Connection.execute()` auto-appends `RETURNING id` to INSERTs. |
+| `backend/main.py` | All endpoints (~7500 lines). Lifespan starts 4 scheduler loops. A2V endpoints at `/api/audio-to-video/*`. |
+| `backend/database.py` | ORM models, `init_db()`, all `_migrate_*` functions (idempotent `ALTER TABLE IF NOT EXISTS`). `Connection.execute()` auto-appends `RETURNING id` to INSERTs. A2V models: `AudioTrack`, `AudioWord`, `AudioClip`, `AudioVideoClip`. |
 | `backend/services/clip_scheduler.py` | `plan_slots_once`, `dispatch_due_once`, `poll_views_once`, `sweep_clip_caches_once`, `_send_pre_post_reminders`, `_send_brand_pre_post_reminders`, `_pick_next_clip`, `_has_unposted_clip_for_variation`, `evaluate_pause`, `start_background_tasks`. |
 | `backend/services/email.py` | `send_post_reminder_email`, `send_post_result_email`, `send_welcome_pending_email`, `send_password_reset_email`. SMTP config from `site_config`. No-op if `smtp_host` unset. |
 | `backend/services/variation_processor.py` | `diversify()` (ffmpeg crop+eq+hue, atomic .partial write), `passthrough_download()`, `_transcode_to_h264()`. |
 | `backend/services/posting/tiktok.py` | `upload_video` — unaudited client fallback to `INBOX` (draft) post mode if `unaudited_client_can_only_post_to_private_accounts`. |
 | `backend/services/posting/{youtube,instagram,facebook}.py` | Upload + `get_view_count` + deletion detection. |
 | `backend/services/oauth.py` | OAuth scopes + token refresh per platform. |
+| `frontend/src/app/clipping/audio-to-video/page.tsx` | **A2V single-file app** (~2900 lines). 3-step wizard: upload/transcribe → split clips → Overlay Studio. Contains all karaoke sync logic (`wordTimings` memo, RAF tick, `seekAudio`, `editingLyricsRef`), all 4 templates, and both lyrics modes. |
 | `frontend/src/app/clipping/[slug]/page.tsx` | Campaign dashboard. ConfirmModal for all destructive actions (stop, reset, delete variation, delete clip, clear failed posts). Variation cards: collapsible clip directory, paused_reason chips, TikTok settings accordion. |
 | `frontend/src/components/ConfirmModal.tsx` | Reusable confirm dialog (replaces all `window.confirm` calls). |
 | `deploy/ship.sh` | Local deploy script: git push + SSH server-sync + deploy.sh. Always use this. |
@@ -98,7 +169,7 @@ GDrive sync / upload
 
 ---
 
-## 5. Data model
+## 7. Data model
 
 ### `artists`
 - `timezone` — IANA (e.g. `Africa/Lagos`); falls back to `US/Eastern`.
@@ -140,7 +211,7 @@ Multi-asset OAuth handoff stored in DB (not memory — breaks under multi-worker
 
 ---
 
-## 6. Background loops
+## 8. Background loops
 
 | Loop | Cadence | Key behaviour |
 |------|---------|---------------|
@@ -154,7 +225,7 @@ All loops started from `clip_scheduler.start_background_tasks()` called in `main
 
 ---
 
-## 7. Per-variation fan-out
+## 9. Per-variation fan-out
 
 For each slot, for each non-paused variation:
 1. `_pick_next_clip(artist_id, variation_id)` — least-posted for this variation; scope: `clips.artist_account_id = variation_id` OR shared pool (`IS NULL`).
@@ -164,7 +235,7 @@ For each slot, for each non-paused variation:
 
 ---
 
-## 8. Diversifier vs passthrough
+## 10. Diversifier vs passthrough
 
 **Diversification ON** (default):
 - ffmpeg: crop 0.97–0.99 + tiny color jitter (≤±0.01 brightness, ≤±0.01 sat, ≤±0.5° hue). No noise filter. Audio passthrough (`af="anull"`).
@@ -180,7 +251,7 @@ Both use `public_url_for()` → `{oauth_redirect_base}/api/files/{encoded-path}`
 
 ---
 
-## 9. Deletion detection & view counts
+## 11. Deletion detection & view counts
 
 - **Monotonic counts**: every write is `max(new, prev)`. Prevents spurious 0 wipes.
 - **Deletion**: only `PostDeletedError` sets `deleted_at`. Dashboard filters it out.
@@ -194,7 +265,7 @@ Both use `public_url_for()` → `{oauth_redirect_base}/api/files/{encoded-path}`
 
 ---
 
-## 10. Platform constraints
+## 12. Platform constraints
 
 ### TikTok
 - **Unaudited client**: posting only works to private TT accounts. Default `SELF_ONLY`. Fallback to `INBOX` (draft) when `unaudited_client_can_only_post_to_private_accounts` error returned.
@@ -214,7 +285,7 @@ Both use `public_url_for()` → `{oauth_redirect_base}/api/files/{encoded-path}`
 
 ---
 
-## 11. Deploy runbook
+## 13. Deploy runbook
 
 ### Every code change — from your Mac:
 
@@ -286,7 +357,7 @@ If the UI looks unchanged after a deploy — **hard refresh**:
 
 ---
 
-## 12. Open follow-ups
+## 14. Open follow-ups
 
 1. **Persist OAuth granted scopes** on the variation row so missing-scope tokens surface up-front.
 2. **TLS fingerprint hardening (curl-cffi)** — speculative; only if TikTok escalates beyond IP-based blocking.
@@ -299,7 +370,7 @@ If the UI looks unchanged after a deploy — **hard refresh**:
 
 ---
 
-## 13. Common operational recipes
+## 15. Common operational recipes
 
 ### Artist stuck in `directory_exhausted`
 - UI: click the pause chip on the dashboard (clickable for ALL pause reasons).
@@ -339,7 +410,7 @@ UPDATE artists SET paused_reason=NULL WHERE id={artist_id};
 
 ---
 
-## 14. Lessons / pitfalls (do not relearn the hard way)
+## 16. Lessons / pitfalls (do not relearn the hard way)
 
 - **`-w 1` gunicorn is mandatory for the scheduler.** With `-w 2`, both workers each run the full scheduler loop — duplicate emails, double-posts, HURRAY emails sent twice. The scheduler is stateful (process-level flags for YT quota, async task handles); it must run in exactly one process.
 
@@ -396,3 +467,17 @@ UPDATE artists SET paused_reason=NULL WHERE id={artist_id};
 - **IG container ERROR needs `status,error` fields.** `fields=status_code` alone gives nothing useful. Add `status,error` to surface `error_user_msg` / `error.message` — otherwise every IG publish failure looks identical.
 
 - **`window.confirm()` is blocked by some browsers and inconsistent on mobile.** Use `ConfirmModal` (`frontend/src/components/ConfirmModal.tsx`) for all destructive actions. All `window.confirm` calls in the clipping dashboard have been replaced.
+
+- **Whisper `audio_words` timestamps are absolute, not clip-relative.** `start_s` / `end_s` are seconds from the start of the full uploaded track. Clip 2 words may start at ~30s. The RAF tick must do `tAbs = audio.currentTime + clip.start_s` before searching word timestamps. Forgetting this puts the highlight ~30s behind.
+
+- **A2V lyrics save must pass `words=[]`, never the current display words.** The old code merged display text words onto Whisper word objects (replacing 50 timed words with ~10 with bad timestamps). Always pass `words=[]` to `PUT /api/audio-to-video/clips/{id}/lyrics` — the backend only overwrites words when the array is non-empty.
+
+- **Karaoke sync: proportional word-index mapping is wrong.** Mapping `displayPosition / totalDisplayWords * whisperWordCount` to find a Whisper word assumes even distribution, which is false — Whisper words are distributed by when they are spoken. The correct approach: 1:1 mapping when counts match (auto-generated text), even time distribution when mismatched (edited text).
+
+- **A2V `wordTimings` must include `lineIdx`/`wordIdx` per entry.** If you binary-search a flat word timing array and return only a flat index, you still need to map back to `(lineIdx, wordIdx)` for the React state. Build these into each entry at memo time.
+
+- **`loop` attribute on `<audio>` snaps karaoke to word 0 on every repeat.** Remove `loop`; use `onEnded` to pause cleanly and reset time. Add `key={clip.id}` so React unmounts/remounts the element when switching clips — prevents stale audio playing under new lyrics.
+
+- **OpenAI image generation replaced Replicate/Flux.** A2V background images use `gpt-image-2` via OpenAI API. Per-user OpenAI API key stored in `user_settings`. Medium quality is the default (faster).
+
+- **A2V export: `getDisplayMedia` is the correct path.** Previous attempts using Remotion server-side render, WebGL compositor, and html-to-image all had issues. The working export captures the preview `<div>` via screen recording, crops to 9:16 canvas, records with `MediaRecorder`, then remuxes WebM→MP4 on the server via ffmpeg.
