@@ -1290,14 +1290,14 @@ export default function AudioToVideoPage() {
           if (idx !== -1) {
             const pos = wordPositionMapRef.current[idx];
             if (pos) {
-              // Sanity guard: the found word's timestamp should be reasonably close
-              // to the current time. If it's way behind (e.g. all words have
-              // start_s=0 while clip.start_s=30), the timestamps are invalid —
-              // skip the update rather than jumping to the wrong line.
-              const foundStart = ws[idx].start_s;
-              const clipDuration = (clip.end_s ?? (clip.start_s + 30)) - (clip.start_s ?? 0);
-              const maxLookBehind = Math.min(clipDuration * 0.5, 5); // at most 5 s or half clip
-              if (t - foundStart <= maxLookBehind) {
+              // Guard: only skip if timestamps are clearly invalid — ALL words
+              // sitting at ≈0 while the clip starts well past 0 (bad data, e.g.
+              // saved before Whisper finished on a non-first clip).
+              // For normal playback with valid Whisper timestamps this is always false.
+              const lastWordStart = ws[ws.length - 1]?.start_s ?? 0;
+              const clipStart     = clip.start_s ?? 0;
+              const likelyInvalid = lastWordStart < 0.1 && clipStart > 1;
+              if (!likelyInvalid) {
                 // Only setState when value actually changed — prevents 120 re-renders/sec
                 if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
                   lastLineIdxRef.current = pos.lineIdx;
