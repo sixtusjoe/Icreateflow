@@ -6541,11 +6541,16 @@ async def upload_audio_track(
                     resp = client.post(
                         "https://api.openai.com/v1/audio/transcriptions",
                         headers={"Authorization": f"Bearer {openai_key}"},
-                        data={
-                            "model": "whisper-1",
-                            "response_format": "verbose_json",
-                            "timestamp_granularities[]": "word",
-                        },
+                        # Use list-of-tuples so both granularities are sent
+                        # (Python dict silently drops duplicate keys)
+                        data=[
+                            ("model", "whisper-1"),
+                            ("response_format", "verbose_json"),
+                            ("timestamp_granularities[]", "word"),
+                            ("timestamp_granularities[]", "segment"),
+                            # Hint that this is song/music content — improves recall
+                            ("prompt", "Song lyrics with timestamps."),
+                        ],
                         files={"file": (whisper_filename, audio_bytes, "audio/mpeg")},
                     )
                     if not resp.is_success:
@@ -6553,13 +6558,34 @@ async def upload_audio_track(
                     return resp.json()
 
             whisper_result = await asyncio.to_thread(_whisper_request)
+
+            # Primary: root-level words array (populated when word granularity requested)
             raw_words = whisper_result.get("words") or []
+
+            # Fallback: collect from segments[].words (populated when segment granularity requested)
+            if not raw_words:
+                for seg in whisper_result.get("segments", []):
+                    raw_words.extend(seg.get("words", []))
+
+            # Also merge any segment-level words that are missing from root (dedup by start time)
+            root_starts = {float(w["start"]) for w in raw_words}
+            for seg in whisper_result.get("segments", []):
+                for sw in seg.get("words", []):
+                    if float(sw["start"]) not in root_starts:
+                        raw_words.append(sw)
+                        root_starts.add(float(sw["start"]))
+
+            # Sort by start time after merging
+            raw_words.sort(key=lambda w: float(w["start"]))
+
             words = [
                 {"word": w["word"].strip(), "start_s": float(w["start"]), "end_s": float(w["end"])}
                 for w in raw_words
                 if w.get("word", "").strip()
             ]
-            print(f"[audio-to-video] Whisper returned {len(words)} words")
+            print(f"[audio-to-video] Whisper returned {len(words)} words "
+                  f"(root={len(whisper_result.get('words') or [])}, "
+                  f"segments={len(whisper_result.get('segments', []))})")
         except Exception as e:
             print(f"[audio-to-video] Whisper transcription failed: {e}")
             # Continue without words — user can edit manually
