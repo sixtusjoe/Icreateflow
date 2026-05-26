@@ -727,6 +727,7 @@ export default function AudioToVideoPage() {
   // Assign state — a clip can be assigned to multiple variations
   const [assignedClips, setAssignedClips] = useState<Record<number, Array<{ variationId: number; variationName: string }>>>({});
   const [assigning, setAssigning] = useState<Record<number, boolean>>({});
+  const [selectedVariations, setSelectedVariations] = useState<Record<number, number[]>>({});
 
   // Confirm modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -812,7 +813,7 @@ export default function AudioToVideoPage() {
       setActiveReviewClip(0);
       setStep(1);
     } catch (e: any) {
-      alert(e?.response?.data?.detail || "Failed to load track");
+      setExportInfoModal({ title: "Error", message: e?.response?.data?.detail || "Failed to load track" });
     } finally {
       setOpeningTrackId(null);
     }
@@ -833,7 +834,7 @@ export default function AudioToVideoPage() {
         setStep(0);
       }
     } catch (e: any) {
-      alert(e?.response?.data?.detail || "Failed to delete track");
+      setExportInfoModal({ title: "Error", message: e?.response?.data?.detail || "Failed to delete track" });
     } finally {
       setDeletingTrackId(null);
     }
@@ -1114,7 +1115,7 @@ export default function AudioToVideoPage() {
     try {
       await updateAudioClipLyrics(clipId, merged);
     } catch (err: any) {
-      alert(err?.response?.data?.detail || "Failed to save lyrics");
+      setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
     } finally {
       setSavingLyrics(false);
     }
@@ -1126,7 +1127,7 @@ export default function AudioToVideoPage() {
     try {
       await updateAudioClipLyrics(clipId, words);
     } catch (err: any) {
-      alert(err?.response?.data?.detail || "Failed to save lyrics");
+      setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || "Failed to save lyrics" });
     } finally {
       setSavingLyrics(false);
     }
@@ -1142,7 +1143,7 @@ export default function AudioToVideoPage() {
       await saveAudioClipSettings(clipId, cfg.template_id, cfg.bg_path, cfg.cover_path);
       setClipConfigDirty((d) => ({ ...d, [clipId]: false }));
     } catch (err: any) {
-      alert(err?.response?.data?.detail || err?.message || "Failed to save settings");
+      setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || err?.message || "Failed to save settings" });
     } finally {
       setSavingSettings(false);
     }
@@ -1167,7 +1168,7 @@ export default function AudioToVideoPage() {
       // Mark dirty so Export Frame knows a re-generate is needed
       setClipConfigDirty((d) => ({ ...d, [clipId]: true }));
     } catch (err: any) {
-      alert("Upload failed: " + (err?.response?.data?.detail || err.message));
+      setExportInfoModal({ title: "Upload failed", message: err?.response?.data?.detail || err.message || "Unknown error" });
     } finally {
       setUploadingAsset((u) => ({ ...u, [assetKey]: false }));
     }
@@ -1175,21 +1176,28 @@ export default function AudioToVideoPage() {
 
   // ── Assign to variation ───────────────────────────────────────────────────
 
-  const handleAssign = async (clipId: number, variationId: number, variationName: string) => {
+  const handleAssign = async (clipId: number, variations: Array<{ id: number; name: string }>) => {
     const already = assignedClips[clipId] ?? [];
-    if (already.some((a) => a.variationId === variationId)) return;
+    const toAssign = variations.filter((v) => !already.some((a) => a.variationId === v.id));
+    if (!toAssign.length) return;
     setAssigning((a) => ({ ...a, [clipId]: true }));
-    try {
-      await assignAudioClip(clipId, variationId);
-      setAssignedClips((ac) => ({
-        ...ac,
-        [clipId]: [...(ac[clipId] ?? []), { variationId, variationName }],
-      }));
-    } catch (err: any) {
-      alert(err?.response?.data?.detail || "Failed to assign clip");
-    } finally {
-      setAssigning((a) => ({ ...a, [clipId]: false }));
+    const errors: string[] = [];
+    for (const v of toAssign) {
+      try {
+        await assignAudioClip(clipId, v.id);
+        setAssignedClips((ac) => ({
+          ...ac,
+          [clipId]: [...(ac[clipId] ?? []), { variationId: v.id, variationName: v.name }],
+        }));
+      } catch (err: any) {
+        errors.push(`${v.name}: ${err?.response?.data?.detail || "failed"}`);
+      }
     }
+    setSelectedVariations((s) => ({ ...s, [clipId]: [] }));
+    if (errors.length) {
+      setExportInfoModal({ title: "Assignment error", message: errors.join("\n") });
+    }
+    setAssigning((a) => ({ ...a, [clipId]: false }));
   };
 
   // ─── Export ───────────────────────────────────────────────────────────────
@@ -2173,16 +2181,33 @@ export default function AudioToVideoPage() {
           <div className="space-y-5">
             <div>
               <h2 className="text-base font-bold sm:text-lg">Assign Clips to Variations</h2>
-              <p className="text-sm text-muted-foreground">Assign each generated clip to an artist variation for scheduling</p>
+              <p className="text-sm text-muted-foreground">Select one or more variations per clip, then confirm the assignment</p>
             </div>
 
             {track.clips.map((clip) => {
               const videoStatus = clip.video?.status;
               const assignedList = assignedClips[clip.id] ?? [];
               const hasVideo = videoStatus === "done" || !!exportedBlobUrlByClip[clip.id];
+              const pending = selectedVariations[clip.id] ?? [];
+              const unassignedVariations = (artistDetail?.variations ?? []).filter(
+                (v: any) => !assignedList.some((a) => a.variationId === v.id)
+              );
+
+              const toggleVariation = (variationId: number) => {
+                setSelectedVariations((s) => {
+                  const cur = s[clip.id] ?? [];
+                  return {
+                    ...s,
+                    [clip.id]: cur.includes(variationId)
+                      ? cur.filter((id) => id !== variationId)
+                      : [...cur, variationId],
+                  };
+                });
+              };
 
               return (
                 <div key={clip.id} className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+                  {/* Header row */}
                   <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="font-semibold">Clip {clip.clip_index + 1}</p>
@@ -2203,44 +2228,73 @@ export default function AudioToVideoPage() {
                           {videoStatus === "generating" ? "Generating…" : "No video yet"}
                         </span>
                       )}
+                    </div>
+                  </div>
+
+                  {/* Already-assigned badges */}
+                  {assignedList.length > 0 && (
+                    <div className="mb-3 flex flex-wrap gap-1.5">
                       {assignedList.map((a) => (
-                        <span key={a.variationId} className="flex items-center gap-1 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-xs text-green-500">
+                        <span key={a.variationId} className="flex items-center gap-1 rounded-full border border-green-500/30 bg-green-500/10 px-2.5 py-1 text-xs text-green-600">
                           <CheckCircle2 className="h-3 w-3" /> {a.variationName}
                         </span>
                       ))}
                     </div>
-                  </div>
+                  )}
 
                   {hasVideo && (
                     <div>
-                      <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Choose Variation</p>
-                      <div className="flex flex-wrap gap-2">
-                        {artistDetail?.variations?.map((v: any) => {
-                          const isAlreadyAssigned = assignedList.some((a) => a.variationId === v.id);
-                          return (
+                      {unassignedVariations.length > 0 ? (
+                        <>
+                          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                            {assignedList.length > 0 ? "Assign to more variations" : "Choose variations"}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {unassignedVariations.map((v: any) => {
+                              const isSelected = pending.includes(v.id);
+                              return (
+                                <button
+                                  key={v.id}
+                                  onClick={() => toggleVariation(v.id)}
+                                  disabled={assigning[clip.id]}
+                                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors disabled:opacity-50 ${
+                                    isSelected
+                                      ? "border-foreground bg-foreground text-background"
+                                      : "border-border bg-background hover:border-foreground/40 hover:bg-foreground/5"
+                                  }`}
+                                >
+                                  {isSelected
+                                    ? <CheckCircle2 className="h-3.5 w-3.5" />
+                                    : <User className="h-3.5 w-3.5 text-muted-foreground" />}
+                                  {v.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {pending.length > 0 && (
                             <button
-                              key={v.id}
-                              onClick={() => handleAssign(clip.id, v.id, v.name)}
-                              disabled={assigning[clip.id] || isAlreadyAssigned}
-                              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors disabled:opacity-50 ${
-                                isAlreadyAssigned
-                                  ? "border-green-500/40 bg-green-500/10 text-green-500 cursor-default"
-                                  : "border-border bg-background hover:border-foreground/40 hover:bg-foreground/5"
-                              }`}
+                              onClick={() => {
+                                const variations = pending.map((id: number) => {
+                                  const v = artistDetail.variations.find((x: any) => x.id === id);
+                                  return { id, name: v?.name ?? String(id) };
+                                });
+                                handleAssign(clip.id, variations);
+                              }}
+                              disabled={assigning[clip.id]}
+                              className="mt-3 flex items-center gap-2 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background hover:bg-foreground/90 transition-colors disabled:opacity-50"
                             >
-                              {assigning[clip.id] && !isAlreadyAssigned
-                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                : isAlreadyAssigned
-                                ? <CheckCircle2 className="h-3.5 w-3.5" />
-                                : <User className="h-3.5 w-3.5 text-muted-foreground" />}
-                              {v.name}
+                              {assigning[clip.id]
+                                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Assigning…</>
+                                : <><CheckCircle2 className="h-3.5 w-3.5" /> Assign to {pending.length} variation{pending.length > 1 ? "s" : ""}</>}
                             </button>
-                          );
-                        })}
-                        {!artistDetail?.variations?.length && (
-                          <p className="text-sm text-muted-foreground">No variations found</p>
-                        )}
-                      </div>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">Assigned to all variations</p>
+                      )}
+                      {!artistDetail?.variations?.length && (
+                        <p className="text-sm text-muted-foreground">No variations found</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2498,7 +2552,7 @@ export default function AudioToVideoPage() {
                   a.click();
                   URL.revokeObjectURL(url);
                 } catch (err: any) {
-                  alert("MP4 conversion failed: " + (err?.message ?? "unknown"));
+                  setExportInfoModal({ title: "Conversion failed", message: err?.message ?? "Unknown error" });
                 } finally {
                   setConvertingMp4(false);
                 }
@@ -2531,7 +2585,7 @@ export default function AudioToVideoPage() {
                   const mp4Blob = await res.blob();
                   await uploadAudioClipVideo(exportClipIdRef.current, mp4Blob, "mp4", `${rawName}.mp4`);
                 } catch (err: any) {
-                  alert("Upload failed: " + (err?.response?.data?.detail || err?.message || "unknown"));
+                  setExportInfoModal({ title: "Upload failed", message: err?.response?.data?.detail || err?.message || "Unknown error" });
                   setUploadingExport(false);
                   return;
                 }
