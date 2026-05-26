@@ -6847,7 +6847,7 @@ async def upload_audio_clip_asset(
             )
         else:
             await database.execute(
-                f"INSERT INTO audio_video_clips (audio_clip_id, {col}, status) VALUES (?, ?, 'pending')",
+                f"INSERT INTO audio_video_clips (audio_clip_id, {col}, template_id, status) VALUES (?, ?, 'minimal', 'pending')",
                 (clip_id, rel_path),
             )
         await database.commit()
@@ -6906,8 +6906,8 @@ async def upload_audio_clip_video(
             )
         else:
             await database.execute(
-                "INSERT INTO audio_video_clips (audio_clip_id, status, video_path) "
-                "VALUES (?, 'done', ?)",
+                "INSERT INTO audio_video_clips (audio_clip_id, template_id, status, video_path) "
+                "VALUES (?, 'minimal', 'done', ?)",
                 (clip_id, video_path),
             )
         await database.commit()
