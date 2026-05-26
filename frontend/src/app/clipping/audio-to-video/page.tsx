@@ -2462,7 +2462,7 @@ export default function AudioToVideoPage() {
               </div>
 
               {activeClip && (
-                <div className="flex flex-col lg:flex-row lg:items-start gap-4">
+                <div className="flex flex-col lg:flex-row lg:items-start gap-5 mt-2 lg:mt-4">
 
                   {/* ══ LEFT: Settings Panel ═══════════════════════════════ */}
                   <div className={`w-full lg:w-[370px] shrink-0 ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
@@ -2497,8 +2497,8 @@ export default function AudioToVideoPage() {
                       />
                     )}
 
-                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-4 flex flex-col">
-                      <div className="overflow-y-auto lg:max-h-[calc(100vh-170px)]">
+                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-8 flex flex-col">
+                      <div className="overflow-y-auto lg:max-h-[calc(100vh-160px)]">
 
                         {/* ── PLAYBACK: always visible at top ── */}
                         <div className="p-4 border-b border-border space-y-2.5">
@@ -2920,9 +2920,9 @@ export default function AudioToVideoPage() {
 
                   {/* ══ RIGHT: Preview + nav ═══════════════════════════════ */}
                   <div className={`flex-1 ${mobileView === "settings" ? "hidden lg:flex lg:flex-col" : "flex flex-col"} gap-4`}>
-                    <div className="lg:sticky lg:top-4 space-y-4">
+                    <div className="lg:sticky lg:top-8 space-y-4">
                       {/* Canvas */}
-                      <div className="flex items-start justify-center">
+                      <div className="flex items-start justify-center lg:justify-center lg:pt-0">
                         <div
                           ref={previewCanvasRef}
                           className="relative w-full max-w-[280px] sm:max-w-[340px] md:max-w-[380px] aspect-[9/16] bg-black rounded-[2.5rem] overflow-hidden shadow-2xl ring-4 ring-neutral-800 flex-shrink-0 isolate"
