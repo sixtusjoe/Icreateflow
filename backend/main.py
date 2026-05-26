@@ -6892,15 +6892,28 @@ async def upload_audio_clip_video(
     save_dir.mkdir(parents=True, exist_ok=True)
     save_path = save_dir / f"{stem}{ext}"
     content = await file.read()
+
+    # Delete the old video file if it exists at a different path
+    database = await db.get_db()
+    try:
+        cur = await database.execute(
+            "SELECT id, video_path FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,)
+        )
+        existing = await cur.fetchone()
+        existing = dict(existing) if existing else None
+        old_path = existing["video_path"] if existing else None
+        if old_path and old_path != str(save_path):
+            old_file = Path(old_path)
+            if old_file.exists():
+                old_file.unlink()
+    finally:
+        await database.close()
+
     save_path.write_bytes(content)
     video_path = str(save_path)
 
     database = await db.get_db()
     try:
-        cur = await database.execute(
-            "SELECT id FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,)
-        )
-        existing = await cur.fetchone()
         if existing:
             await database.execute(
                 "UPDATE audio_video_clips SET status='done', video_path=?, error=NULL "
