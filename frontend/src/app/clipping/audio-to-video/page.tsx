@@ -705,7 +705,7 @@ function PreviewContent({
                           color: isHighlighted ? theme.accent : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
                           textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
                           transform: isHighlighted ? "scale(1.05)" : "scale(1)",
-                          transition: "color 0.12s ease, text-shadow 0.12s ease, transform 0.12s ease",
+                          transition: "color 0.18s ease-out, text-shadow 0.18s ease-out, transform 0.18s ease-out",
                         }}
                       >
                         {word}
@@ -841,6 +841,21 @@ export default function AudioToVideoPage() {
   // Refs to avoid setState when nothing changed (prevents 120 re-renders/sec)
   const lastLineIdxRef = useRef(-1);
   const lastWordIdxRef = useRef(-2);
+  // Tracks last audio.currentTime — detects loop/seek-back so highlight doesn't snap to 0
+  const lastAudioTimeRef = useRef(0);
+  // Suppresses the backward-seek guard during programmatic seeks (clip change, tap-sync, export)
+  const userSeekingRef   = useRef(false);
+  // Freeze sync setState while user types in lyrics textarea (avoids mid-playback rebuilds)
+  const editingLyricsRef  = useRef(false);
+  const editingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Helper: seek audio without tripping the backward-seek guard
+  const seekAudio = (a: HTMLAudioElement | null, t: number) => {
+    if (!a) return;
+    userSeekingRef.current = true;
+    a.currentTime = t;
+    setTimeout(() => { userSeekingRef.current = false; }, 150);
+  };
 
   // Assign state — a clip can be assigned to multiple variations
   const [assignedClips, setAssignedClips] = useState<Record<number, Array<{ variationId: number; variationName: string }>>>({});
@@ -1171,13 +1186,16 @@ export default function AudioToVideoPage() {
   useEffect(() => {
     lastLineIdxRef.current = -1;
     lastWordIdxRef.current = -2;
+    lastAudioTimeRef.current = 0;
     setOverlayLineIndex(0);
     setOverlayWordIndex(-1);
     setIsPreviewPaused(true);
     if (audioPreviewRef.current) {
       audioPreviewRef.current.pause();
-      audioPreviewRef.current.currentTime = 0;
+      // Use seekAudio so the backward-seek guard doesn't auto-pause on next play
+      seekAudio(audioPreviewRef.current, 0);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClip?.id]);
 
   // Pause audio when leaving step 2
@@ -1207,68 +1225,67 @@ export default function AudioToVideoPage() {
   useEffect(() => { clipWordsRef.current = clipWords; }, [clipWords]);
   useEffect(() => { activeClipRef.current = activeClip; }, [activeClip]);
 
+  // Per-clip extracts — memos depend on these strings/arrays so unrelated clips
+  // never trigger a rebuild during edits to other clips.
+  const activeClipId     = activeClip?.id;
+  const activeLyricsText = activeClipId != null ? clipLyricsText[activeClipId] : undefined;
+  const activeClipWords  = activeClipId != null ? clipWords[activeClipId] : undefined;
+
   // Derive lyric lines for the active clip (mirrors what the canvas renders)
   const activeKaraokeLyrics = useMemo((): string[][] => {
-    if (!activeClip) return [];
+    if (activeClipId == null) return [];
     // Only use saved text if it's non-empty; otherwise fall back to auto-generated
-    const savedText = clipLyricsText[activeClip.id];
-    const text = (savedText !== undefined && savedText.trim() !== "")
-      ? savedText
-      : wordsToTextEarly(clipWords[activeClip.id] ?? []);
+    const text = (activeLyricsText !== undefined && activeLyricsText.trim() !== "")
+      ? activeLyricsText
+      : wordsToTextEarly(activeClipWords ?? []);
     return text
       .split("\n")
       .map((line) => line.trim().split(/\s+/).filter(Boolean))
       .filter((line) => line.length > 0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeClip?.id, clipLyricsText, clipWords]);
+  }, [activeClipId, activeLyricsText, activeClipWords]);
 
-  // flat index → { lineIdx, wordIdx }
-  // Keyed on clipWords length so the RAF index always stays in-bounds even when
-  // the textarea word count diverges from the Whisper word count.
-  const wordPositionMap = useMemo(() => {
-    const lines       = activeKaraokeLyrics;
-    const clipWordCnt = (clipWords[activeClip?.id ?? -1] ?? []).length;
-    const flatCount   = lines.reduce((s, l) => s + l.length, 0);
-
-    const map: Array<{ lineIdx: number; wordIdx: number }> = [];
-
-    if (flatCount === 0 || clipWordCnt === 0) return map;
-
-    if (flatCount === clipWordCnt) {
-      // Counts match — direct 1-to-1 mapping (normal case)
-      lines.forEach((line, li) =>
-        line.forEach((_, wi) => map.push({ lineIdx: li, wordIdx: wi }))
-      );
-    } else {
-      // Proportional fallback: distribute clipWord indices across display lines
-      for (let i = 0; i < clipWordCnt; i++) {
-        const displayIdx = Math.min(
-          Math.floor((i * flatCount) / clipWordCnt),
-          flatCount - 1,
-        );
-        let rem = displayIdx;
-        let lineIdx = lines.length - 1;
-        let wordIdx = Math.max(0, lines[lineIdx].length - 1);
-        for (let li = 0; li < lines.length; li++) {
-          if (rem < lines[li].length) { lineIdx = li; wordIdx = rem; break; }
-          rem -= lines[li].length;
-        }
-        map.push({ lineIdx, wordIdx });
-      }
-    }
-    return map;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeClip?.id, activeKaraokeLyrics, clipWords]);
-
-  // Ref so handler can read latest map without re-attaching
-  const wordPositionMapRef = useRef(wordPositionMap);
-  useEffect(() => { wordPositionMapRef.current = wordPositionMap; }, [wordPositionMap]);
-
-  // Ref for lyric lines — used by the RAF time-based fallback
+  // Ref for lyric lines — used by the RAF
   const activeKaraokeLyricsRef = useRef(activeKaraokeLyrics);
   useEffect(() => { activeKaraokeLyricsRef.current = activeKaraokeLyrics; }, [activeKaraokeLyrics]);
 
-  // RAF-based karaoke sync — polls at ~60fps, reads fresh refs each frame
+  // Line-anchored time map: each display line gets [startAbs, endAbs] in
+  // absolute track-time, sampled proportionally from Whisper word timestamps.
+  // The RAF uses these as line boundaries and interpolates word position
+  // smoothly within each line — eliminating chunky jumps when display word
+  // count differs from Whisper word count.
+  type LineTiming = { startAbs: number; endAbs: number };
+  const lineTimings = useMemo<LineTiming[]>(() => {
+    const lines = activeKaraokeLyrics;
+    const ws    = activeClipWords ?? [];
+    if (!lines.length || !ws.length) return [];
+
+    const flat = lines.reduce((s, l) => s + l.length, 0);
+    if (flat === 0) return [];
+
+    const lineStartFlat: number[] = [];
+    let acc = 0;
+    for (const l of lines) { lineStartFlat.push(acc); acc += l.length; }
+
+    const out: LineTiming[] = [];
+    for (let li = 0; li < lines.length; li++) {
+      const startFlat = lineStartFlat[li];
+      const endFlat   = li + 1 < lines.length ? lineStartFlat[li + 1] : flat;
+      const wStart    = Math.min(ws.length - 1, Math.floor((startFlat / flat) * ws.length));
+      const wEnd      = Math.min(ws.length - 1, Math.max(wStart, Math.floor((endFlat / flat) * ws.length) - 1));
+      out.push({
+        startAbs: ws[wStart].start_s,
+        endAbs:   ws[wEnd].end_s ?? ws[wEnd].start_s + 0.4,
+      });
+    }
+    return out;
+  }, [activeClipId, activeKaraokeLyrics, activeClipWords]);
+
+  const lineTimingsRef = useRef(lineTimings);
+  useEffect(() => { lineTimingsRef.current = lineTimings; }, [lineTimings]);
+
+  // RAF-based karaoke sync — polls at ~60fps, reads fresh refs each frame.
+  // Uses line-anchored time windows: lines transition at Whisper-timestamp
+  // boundaries, but words within a line advance smoothly with audio time.
   useEffect(() => {
     let rafId: number;
 
@@ -1278,64 +1295,80 @@ export default function AudioToVideoPage() {
         : audioPreviewRef.current;
       const clip  = activeClipRef.current;
 
-      if (audio && clip && !audio.paused) {
-        // Whisper timestamps are absolute from full track start.
-        // audio.currentTime is relative to the clip segment (starts at 0).
-        const t  = audio.currentTime + (clip.start_s ?? 0);
-        const ws = clipWordsRef.current[clip.id] ?? [];
+      if (!audio || !clip || audio.paused) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
 
-        if (ws.length > 0) {
-          // ── Whisper-timestamp path: binary search O(log n) ───────────────
-          let lo = 0, hi = ws.length - 1, idx = -1;
-          while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (ws[mid].start_s <= t) { idx = mid; lo = mid + 1; }
-            else hi = mid - 1;
-          }
+      const curT = audio.currentTime;
 
-          if (idx !== -1) {
-            const pos = wordPositionMapRef.current[idx];
-            if (pos) {
-              // Only setState when value actually changed — prevents 60+ re-renders/sec
-              if (pos.lineIdx !== lastLineIdxRef.current || pos.wordIdx !== lastWordIdxRef.current) {
-                lastLineIdxRef.current = pos.lineIdx;
-                lastWordIdxRef.current = pos.wordIdx;
-                setOverlayLineIndex(pos.lineIdx);
-                setOverlayWordIndex(pos.wordIdx);
-              }
-            }
-          }
-        } else {
-          // ── Time-proportional fallback: no Whisper timestamps ────────────
-          // Distributes lyric lines evenly across the clip duration so the
-          // display still advances even without word-level timing data.
-          const clipDuration = Math.max(0.1, (clip.end_s ?? 0) - (clip.start_s ?? 0));
-          const progress = Math.min(0.999, audio.currentTime / clipDuration);
-          const lines = activeKaraokeLyricsRef.current;
-          if (lines.length > 0) {
-            const lineIdx = Math.min(Math.floor(progress * lines.length), lines.length - 1);
-            const line = lines[lineIdx];
-            const wordInLineFraction = (progress * lines.length) - lineIdx;
-            const wordIdx = line && line.length > 0
-              ? Math.min(Math.floor(wordInLineFraction * line.length), line.length - 1)
-              : 0;
-            if (lineIdx !== lastLineIdxRef.current || wordIdx !== lastWordIdxRef.current) {
-              lastLineIdxRef.current = lineIdx;
-              lastWordIdxRef.current = wordIdx;
-              setOverlayLineIndex(lineIdx);
-              setOverlayWordIndex(wordIdx);
-            }
-          }
+      // Guard: backward seek > 1s while playing means a loop/restart slipped
+      // through. Pause cleanly instead of snapping lyrics to word 0.
+      if (curT + 1.0 < lastAudioTimeRef.current && !userSeekingRef.current) {
+        audio.pause();
+        setIsPreviewPaused(true);
+        lastAudioTimeRef.current = curT;
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+      lastAudioTimeRef.current = curT;
+
+      // Freeze highlight while user is typing (export recording unaffected)
+      if (editingLyricsRef.current && !isRecordingActiveRef.current) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      const tAbs  = curT + (clip.start_s ?? 0);
+      const lines = activeKaraokeLyricsRef.current;
+      const lts   = lineTimingsRef.current;
+      const ws    = clipWordsRef.current[clip.id] ?? [];
+      let lineIdx = 0, wordIdx = 0;
+
+      if (lts.length > 0 && lines.length > 0) {
+        // ── Line-anchored sync: smooth in-line interpolation ─────────────
+        // Binary-search the active line by startAbs
+        let lo = 0, hi = lts.length - 1, found = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (lts[mid].startAbs <= tAbs) { found = mid; lo = mid + 1; }
+          else hi = mid - 1;
         }
+        lineIdx = found;
+        const lt   = lts[lineIdx];
+        const span = Math.max(0.05, lt.endAbs - lt.startAbs);
+        const frac = Math.max(0, Math.min(0.9999, (tAbs - lt.startAbs) / span));
+        const wc   = lines[lineIdx]?.length ?? 0;
+        wordIdx = wc > 0 ? Math.min(wc - 1, Math.floor(frac * wc)) : 0;
+      } else if (ws.length === 0 && lines.length > 0) {
+        // ── Time-proportional fallback (no Whisper words) ────────────────
+        const dur  = Math.max(0.1, (clip.end_s ?? 0) - (clip.start_s ?? 0));
+        const prog = Math.min(0.999, curT / dur);
+        lineIdx = Math.min(Math.floor(prog * lines.length), lines.length - 1);
+        const inLine = prog * lines.length - lineIdx;
+        const wc = lines[lineIdx]?.length ?? 0;
+        wordIdx = wc > 0 ? Math.min(wc - 1, Math.floor(inLine * wc)) : 0;
+      }
 
-        // Update export progress from this same loop (no separate RAF needed)
-        if (isRecordingActiveRef.current) {
-          const clipDur = clip.end_s != null && clip.start_s != null
-            ? clip.end_s - clip.start_s
-            : audio.duration || 1;
-          const pct = Math.min(99, Math.round((audio.currentTime / clipDur) * 100));
-          setExportProgress(pct);
-        }
+      // Monotonic within a line: never step backward during forward play
+      if (lineIdx === lastLineIdxRef.current && wordIdx < lastWordIdxRef.current) {
+        wordIdx = lastWordIdxRef.current;
+      }
+
+      if (lineIdx !== lastLineIdxRef.current || wordIdx !== lastWordIdxRef.current) {
+        lastLineIdxRef.current = lineIdx;
+        lastWordIdxRef.current = wordIdx;
+        setOverlayLineIndex(lineIdx);
+        setOverlayWordIndex(wordIdx);
+      }
+
+      // Update export progress from this same loop (no separate RAF needed)
+      if (isRecordingActiveRef.current) {
+        const clipDur = clip.end_s != null && clip.start_s != null
+          ? clip.end_s - clip.start_s
+          : audio.duration || 1;
+        const pct = Math.min(99, Math.round((curT / clipDur) * 100));
+        setExportProgress(pct);
       }
 
       rafId = requestAnimationFrame(tick);
@@ -1417,7 +1450,8 @@ export default function AudioToVideoPage() {
     setTapSyncMode(true);
     // Reset & play audio from start
     if (audioPreviewRef.current) {
-      audioPreviewRef.current.currentTime = 0;
+      seekAudio(audioPreviewRef.current, 0);
+      lastAudioTimeRef.current = 0;
       audioPreviewRef.current.play().catch(() => {});
       setIsPreviewPaused(false);
     }
@@ -1586,7 +1620,7 @@ export default function AudioToVideoPage() {
     // Kill any preview audio that might be playing before we start recording
     if (audioPreviewRef.current) {
       audioPreviewRef.current.pause();
-      audioPreviewRef.current.currentTime = 0;
+      seekAudio(audioPreviewRef.current, 0);
     }
     const clipCfg       = clipConfigs[clip.id] ?? { template_id: "minimal" };
     const themeId2      = (clipCfg.template_id ?? "minimal") as ThemeId;
@@ -1644,7 +1678,8 @@ export default function AudioToVideoPage() {
         const chunks: BlobPart[] = [];
         recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
-        recAudio.currentTime = 0;
+        seekAudio(recAudio, 0);
+        lastAudioTimeRef.current = 0;
         await recAudio.play();
         recorder.start(250);
 
@@ -1832,9 +1867,10 @@ export default function AudioToVideoPage() {
         recAudio.load();
       });
       // Force a decode pass to warm the audio buffer — prevents first-frame stutter
-      recAudio.currentTime = 0.001;
+      seekAudio(recAudio, 0.001);
       await new Promise<void>(r => setTimeout(r, 50));
-      recAudio.currentTime = 0;
+      seekAudio(recAudio, 0);
+      lastAudioTimeRef.current = 0;
 
       // Wire Web Audio graph
       const audioSrc  = audioCtx.createMediaElementSource(recAudio);
@@ -1868,7 +1904,8 @@ export default function AudioToVideoPage() {
       recordingAudioRef.current    = recAudio;
       isRecordingActiveRef.current = true;
       rec.start();                   // ← capture first
-      recAudio.currentTime = 0;
+      seekAudio(recAudio, 0);
+      lastAudioTimeRef.current = 0;
       await recAudio.play();         // ← then play; head of song is fully captured
       recAudio.addEventListener("ended", () => {
         if (rec.state !== "inactive") rec.stop();
@@ -2321,10 +2358,17 @@ export default function AudioToVideoPage() {
                     {/* Hidden audio element for preview playback */}
                     {activeClip.local_path && (
                       <audio
+                        key={activeClip.id}
                         ref={audioPreviewRef}
                         src={fileUrl(activeClip.local_path)}
-                        loop
                         preload="auto"
+                        onEnded={() => {
+                          setIsPreviewPaused(true);
+                          if (audioPreviewRef.current) {
+                            seekAudio(audioPreviewRef.current, 0);
+                            lastAudioTimeRef.current = 0;
+                          }
+                        }}
                         className="hidden"
                       />
                     )}
@@ -2459,6 +2503,12 @@ export default function AudioToVideoPage() {
                             onChange={(e) => {
                               setClipLyricsText((lt) => ({ ...lt, [activeClip.id]: e.target.value }));
                               setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                              // Freeze karaoke sync while user types — prevents mid-playback jumps
+                              editingLyricsRef.current = true;
+                              if (editingTimeoutRef.current) clearTimeout(editingTimeoutRef.current);
+                              editingTimeoutRef.current = setTimeout(() => {
+                                editingLyricsRef.current = false;
+                              }, 400);
                             }}
                             className="w-full h-32 bg-background border border-border rounded-xl p-3 text-foreground focus:outline-none focus:border-foreground/60/50 resize-none font-medium [&::-webkit-scrollbar]:hidden"
                             style={{ scrollbarWidth: "none", fontSize: "16px" }}
