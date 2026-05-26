@@ -105,7 +105,7 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab stats={stats} onReload={reloadAll} />}
+      {tab === "overview" && <OverviewTab stats={stats} />}
       {tab === "users" && <UsersTab users={users} currentUserId={user.id} onReload={reloadAll} />}
       {tab === "brands" && <BrandsTab brands={brands} onReload={reloadAll} />}
       {tab === "artists" && <ArtistsTab artists={artists} onReload={reloadAll} />}
@@ -124,11 +124,10 @@ export default function AdminPage() {
 /* ============================================================
  * OVERVIEW — platform health + stats + 24h activity
  * ============================================================ */
-function OverviewTab({ stats, onReload }: { stats: any; onReload: () => void }) {
+function OverviewTab({ stats }: { stats: any }) {
   if (!stats) return <div className="text-sm text-muted-foreground">Loading…</div>;
   const health = stats.health || {};
   const storage = stats.storage_mb || {};
-  const [clearingA2V, setClearingA2V] = useState(false);
   const healthCards = [
     { label: "CPU", value: health.cpu_percent, unit: "%" },
     { label: "Memory", value: health.mem_percent, unit: "%" },
@@ -164,23 +163,6 @@ function OverviewTab({ stats, onReload }: { stats: any; onReload: () => void }) 
           <Card icon={Video} label="Clips" value={stats.total_clips ?? 0} />
           <Card icon={Scissors} label="Clip posts" value={stats.total_clip_posts ?? 0} />
         </div>
-        <button
-          disabled={clearingA2V}
-          onClick={async () => {
-            if (!confirm("Delete ALL audio-to-video clip files and records? This cannot be undone.")) return;
-            setClearingA2V(true);
-            try {
-              const r = await clearAdminAudioToVideo();
-              toast.success(`Cleared — ${r.deleted_files} file(s) deleted`);
-              onReload();
-            } catch { toast.error("Failed to clear"); }
-            finally { setClearingA2V(false); }
-          }}
-          className="mt-3 flex items-center gap-2 rounded-lg border border-destructive/40 px-4 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-        >
-          {clearingA2V ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-          Clear Audio-to-Video files
-        </button>
       </Section>
 
       <Section title="Activity">
@@ -862,6 +844,135 @@ function BrandingTab({ siteConfig, setSiteConfig }: any) {
       <PollIntervalCard siteConfig={siteConfig} setSiteConfig={setSiteConfig} />
       <CacheCleanupCard />
       <BrandCacheCleanupCard />
+      <AudioToVideoStorageCard />
+    </div>
+  );
+}
+
+function AudioToVideoStorageCard() {
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+
+  const run = (scope: "videos" | "backgrounds" | "covers" | "all", title: string, description: string) => {
+    setConfirm({
+      title,
+      description,
+      onConfirm: async () => {
+        setBusy((b) => ({ ...b, [scope]: true }));
+        try {
+          const r = await clearAdminAudioToVideo(scope);
+          toast.success(`Cleared — ${r.deleted_files} file(s) deleted`);
+        } catch {
+          toast.error("Failed to clear");
+        } finally {
+          setBusy((b) => ({ ...b, [scope]: false }));
+        }
+      },
+    });
+  };
+
+  const rows: { scope: "videos" | "backgrounds" | "covers"; icon: any; label: string; sub: string; desc: string }[] = [
+    {
+      scope: "videos",
+      icon: Video,
+      label: "Clip videos",
+      sub: "uploads/*/audio/video/ · output/*/audio_clips/",
+      desc: "Deletes all uploaded and exported clip MP4/WebM files and clears the audio_video_clips database records. Artists will need to re-record and re-assign their clips.",
+    },
+    {
+      scope: "backgrounds",
+      icon: Layers,
+      label: "Background images",
+      sub: "uploads/*/audio/bg/",
+      desc: "Deletes all uploaded background images used on clip overlays. Artists will need to re-upload backgrounds. Does not affect clips or DB records.",
+    },
+    {
+      scope: "covers",
+      icon: Music,
+      label: "Cover art",
+      sub: "uploads/*/audio/cover/",
+      desc: "Deletes all uploaded album cover art images. Artists will need to re-upload covers. Does not affect clips or DB records.",
+    },
+  ];
+
+  return (
+    <div className="rounded-2xl bg-card p-4 md:p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <Scissors className="h-4 w-4" />
+        <h2 className="text-base font-semibold">Audio-to-Video — Storage cleanup</h2>
+      </div>
+      <p className="mb-5 text-xs text-muted-foreground">
+        Free up disk space by removing uploaded clip files, background images, or cover art. Each action is irreversible — artists will need to re-upload deleted assets.
+      </p>
+
+      <div className="space-y-3">
+        {rows.map(({ scope, icon: Icon, label, sub, desc }) => (
+          <div key={scope} className="rounded-xl border border-border p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+                  <Icon className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{label}</p>
+                  <p className="text-[11px] font-mono text-muted-foreground/70 truncate">{sub}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{desc}</p>
+                </div>
+              </div>
+              <button
+                disabled={!!busy[scope]}
+                onClick={() =>
+                  run(
+                    scope,
+                    `Clear ${label.toLowerCase()}?`,
+                    `${desc}\n\nThis cannot be undone.`
+                  )
+                }
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+              >
+                {busy[scope] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Clear
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-destructive">Clear everything</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Removes all clip videos, background images, and cover art in one action. Also clears all audio_video_clips DB records. This wipes the slate clean for all artists on the platform.
+            </p>
+          </div>
+          <button
+            disabled={!!busy["all"]}
+            onClick={() =>
+              run(
+                "all",
+                "Clear ALL audio-to-video storage?",
+                "This will delete ALL clip videos, background images, and cover art across every artist, and clear all DB records.\n\nThis cannot be undone."
+              )
+            }
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:opacity-90 transition-colors disabled:opacity-50"
+          >
+            {busy["all"] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            Wipe all
+          </button>
+        </div>
+      </div>
+
+      {confirm && (
+        <ConfirmModal
+          open
+          onOpenChange={(o) => !o && setConfirm(null)}
+          variant="danger"
+          title={confirm.title}
+          description={confirm.description}
+          onConfirm={confirm.onConfirm}
+        />
+      )}
     </div>
   );
 }

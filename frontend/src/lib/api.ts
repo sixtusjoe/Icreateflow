@@ -502,8 +502,8 @@ export const getAdminErrorLogs = (params?: { limit?: number; source?: string }) 
 export const clearAdminErrorLogs = () =>
   api.delete("/api/admin/error-logs").then((r) => r.data);
 
-export const clearAdminAudioToVideo = () =>
-  api.delete("/api/admin/audio-to-video").then((r) => r.data);
+export const clearAdminAudioToVideo = (scope: "videos" | "backgrounds" | "covers" | "all" = "videos") =>
+  api.delete("/api/admin/audio-to-video", { params: { scope } }).then((r) => r.data);
 
 // --- TikTok Direct Post API per-row settings ---
 
