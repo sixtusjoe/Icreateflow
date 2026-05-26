@@ -799,6 +799,14 @@ export default function AudioToVideoPage() {
       }
       setClipConfigs(configs);
       setClipWords(words);
+      // Restore "View Last Export" for clips that already have an uploaded video
+      const blobUrlMap: Record<number, string> = {};
+      for (const clip of trackData.clips) {
+        if (clip.video?.status === "done" && clip.video?.video_path) {
+          blobUrlMap[clip.id] = fileUrl(clip.video.video_path);
+        }
+      }
+      if (Object.keys(blobUrlMap).length > 0) setExportedBlobUrlByClip(blobUrlMap);
       if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
       setActiveReviewClip(0);
       setStep(1);
@@ -877,6 +885,13 @@ export default function AudioToVideoPage() {
       }
       setClipConfigs(configs);
       setClipWords(words);
+      const blobUrlMap2: Record<number, string> = {};
+      for (const clip of trackData.clips) {
+        if (clip.video?.status === "done" && clip.video?.video_path) {
+          blobUrlMap2[clip.id] = fileUrl(clip.video.video_path);
+        }
+      }
+      if (Object.keys(blobUrlMap2).length > 0) setExportedBlobUrlByClip(blobUrlMap2);
       if (trackData.clips.length > 0) setEditingClipId(trackData.clips[0].id);
       // Refresh past tracks list
       if (selectedArtistId) loadPastTracks(selectedArtistId);
@@ -919,9 +934,12 @@ export default function AudioToVideoPage() {
         if (status === "generating" || status === "pending") allDone = false;
         if (status !== "generating") {
           setGenerating((g) => ({ ...g, [c.id]: false }));
-          // When generation finishes successfully, clear dirty flag
+          // When generation finishes successfully, clear dirty flag and persist export URL
           if (status === "done") {
             setClipConfigDirty((d) => ({ ...d, [c.id]: false }));
+            if (c.video?.video_path) {
+              setExportedBlobUrlByClip((prev) => ({ ...prev, [c.id]: fileUrl(c.video!.video_path!) }));
+            }
             // Auto-download if this clip was queued for it
             setAutoDownloadClipId((prev) => {
               if (prev === c.id && c.video?.video_path) {
