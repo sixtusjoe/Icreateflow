@@ -6619,7 +6619,15 @@ async def get_audio_track(
                 (c_dict["id"],),
             )
             avc = await cur2.fetchone()
-            c_dict["video"] = dict(avc) if avc else None
+            if avc:
+                avc_dict = dict(avc)
+                # If video_path no longer exists on disk, treat as if no video
+                if avc_dict.get("video_path") and not Path(avc_dict["video_path"]).exists():
+                    avc_dict["video_path"] = None
+                    avc_dict["status"] = "pending"
+                c_dict["video"] = avc_dict
+            else:
+                c_dict["video"] = None
             clips.append(c_dict)
 
         cur = await database.execute(

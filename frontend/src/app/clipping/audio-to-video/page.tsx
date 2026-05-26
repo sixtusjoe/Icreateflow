@@ -2515,14 +2515,26 @@ export default function AudioToVideoPage() {
           </div>
 
           {/* Video preview */}
-          <div className="bg-black aspect-[9/16] max-h-[60vh] flex items-center justify-center">
+          <div className="bg-black aspect-[9/16] max-h-[60vh] flex items-center justify-center relative">
             <video
               key={exportedBlobUrl}
-              src={exportedBlobUrl}
+              src={exportedBlobUrl ?? undefined}
               controls
               autoPlay
               playsInline
               className="w-full h-full object-contain"
+              onError={(e) => {
+                const el = e.currentTarget;
+                el.style.display = "none";
+                const parent = el.parentElement;
+                if (parent && !parent.querySelector(".video-error-msg")) {
+                  const msg = document.createElement("div");
+                  msg.className = "video-error-msg";
+                  msg.style.cssText = "color:#fff;text-align:center;padding:24px;font-size:13px;line-height:1.6";
+                  msg.innerHTML = "<div style='font-size:32px;margin-bottom:8px'>⚠️</div><strong>Video not available</strong><br><span style='opacity:0.7'>The file may have been deleted.<br>Re-record and assign to restore it.</span>";
+                  parent.appendChild(msg);
+                }
+              }}
             />
           </div>
 
