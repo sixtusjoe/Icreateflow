@@ -12,6 +12,7 @@ import {
   splitAudioTrack,
   getAudioClip,
   generateAudioVideoClip,
+  saveAudioClipSettings,
   updateAudioClipLyrics,
   assignAudioClip,
   uploadAudioClipAsset,
@@ -1131,6 +1132,22 @@ export default function AudioToVideoPage() {
     }
   };
 
+  /** Save lyrics + template/bg/cover settings to server — no generation triggered */
+  const [savingSettings, setSavingSettings] = useState(false);
+  const handleSaveSettings = async (clipId: number) => {
+    setSavingSettings(true);
+    try {
+      await handleSaveLyricsText(clipId);
+      const cfg = clipConfigs[clipId] ?? { template_id: "minimal" };
+      await saveAudioClipSettings(clipId, cfg.template_id, cfg.bg_path, cfg.cover_path);
+      setClipConfigDirty((d) => ({ ...d, [clipId]: false }));
+    } catch (err: any) {
+      alert(err?.response?.data?.detail || err?.message || "Failed to save settings");
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   // ── Asset upload (BG / cover image) ──────────────────────────────────────
 
   const handleAssetUpload = async (
@@ -1778,13 +1795,6 @@ export default function AudioToVideoPage() {
                   {deletingTrackId === track.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                   <span className="hidden sm:inline">Delete</span>
                 </button>
-                <button
-                  onClick={handleGenerateAll}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background sm:w-auto"
-                >
-                  <Wand2 className="h-4 w-4" />
-                  Generate All
-                </button>
               </div>
             </div>
 
@@ -1814,15 +1824,6 @@ export default function AudioToVideoPage() {
                       )}
                       {videoStatus === "done" && <span className="flex items-center gap-1 text-xs text-green-500"><CheckCircle2 className="h-3.5 w-3.5" /> Done</span>}
                       {videoStatus === "failed" && <span className="flex items-center gap-1 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" /> Failed</span>}
-                      <button
-                        onClick={() => handleGenerateClip(clip.id)}
-                        disabled={isGenerating}
-                        className="flex items-center gap-1.5 rounded-lg border border-foreground/30 bg-foreground/10 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground/20 disabled:opacity-50"
-                      >
-                        {isGenerating
-                          ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</>
-                          : <><Wand2 className="h-3.5 w-3.5" /> {videoStatus === "done" ? "Regenerate" : "Generate"}</>}
-                      </button>
                     </div>
                   </div>
 
@@ -2099,22 +2100,15 @@ export default function AudioToVideoPage() {
                       )}
                     </div>
 
-                    {/* Generate / Regenerate — always visible */}
+                    {/* Save Settings */}
                     <button
-                      onClick={() => handleSaveLyricsText(activeClip.id).then(() => handleGenerateClip(activeClip.id))}
-                      disabled={isGen || savingLyrics}
+                      onClick={() => handleSaveSettings(activeClip.id)}
+                      disabled={savingSettings || savingLyrics}
                       className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-40 transition-colors"
                     >
-                      {isGen
-                        ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</>
-                        : activeClip.video?.status === "done"
-                          ? <>
-                              <RefreshCw className="h-3.5 w-3.5" />
-                              {clipConfigDirty[activeClip.id]
-                                ? <><span>Regenerate with new settings</span><span className="ml-1 rounded-full bg-amber-500/20 text-amber-500 text-[10px] px-1.5 py-0.5">Updated</span></>
-                                : "Save lyrics & Regenerate"}
-                            </>
-                          : <><Wand2 className="h-3.5 w-3.5" /> Generate Video</>}
+                      {savingSettings
+                        ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>
+                        : <><CheckCircle2 className="h-3.5 w-3.5" /> Save Settings</>}
                     </button>
                   </div>
 
@@ -2517,26 +2511,40 @@ export default function AudioToVideoPage() {
             </button>
             <button
               onClick={async () => {
-                if (exportedBlob && exportClipIdRef.current != null) {
-                  setUploadingExport(true);
-                  try {
-                    await uploadAudioClipVideo(exportClipIdRef.current, exportedBlob, "webm");
-                  } catch (err: any) {
-                    alert("Upload failed: " + (err?.response?.data?.detail || err?.message || "unknown"));
-                    setUploadingExport(false);
-                    return;
-                  }
-                  setUploadingExport(false);
+                if (!exportedBlob || exportClipIdRef.current == null) {
+                  setStep(3);
+                  return;
                 }
+                setUploadingExport(true);
+                try {
+                  // Convert WebM → MP4 on the server before saving
+                  const rawName = `clip_${exportClipIndex + 1}${track?.title ? "_" + track.title.replace(/[^a-z0-9]/gi, "_").toLowerCase() : ""}`;
+                  const token = localStorage.getItem("icreate_token");
+                  const formData = new FormData();
+                  formData.append("file", exportedBlob, `${rawName}.webm`);
+                  const res = await fetch("/api/audio-to-video/convert-to-mp4", {
+                    method: "POST",
+                    body: formData,
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  const mp4Blob = await res.blob();
+                  await uploadAudioClipVideo(exportClipIdRef.current, mp4Blob, "mp4", `${rawName}.mp4`);
+                } catch (err: any) {
+                  alert("Upload failed: " + (err?.response?.data?.detail || err?.message || "unknown"));
+                  setUploadingExport(false);
+                  return;
+                }
+                setUploadingExport(false);
                 setExportedBlobUrl(null);
                 setExportedBlob(null);
                 setStep(3);
               }}
-              disabled={uploadingExport}
+              disabled={uploadingExport || convertingMp4}
               className="flex-1 flex items-center justify-center gap-2 py-3 border border-border text-foreground font-semibold rounded-xl hover:bg-muted transition-colors text-sm disabled:opacity-50"
             >
               {uploadingExport
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading…</>
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Converting & Uploading…</>
                 : <><MonitorPlay className="w-4 h-4" /> Assign to Variation</>}
             </button>
           </div>

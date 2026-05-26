@@ -7116,6 +7116,35 @@ async def render_audio_clip_preview(
     return {"status": "generating", "clip_id": clip_id}
 
 
+@app.post("/api/audio-to-video/clips/{clip_id}/settings")
+async def save_audio_clip_settings(
+    clip_id: int,
+    data: AudioGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Save template/background/cover settings for a clip without triggering generation."""
+    database = await db.get_db()
+    try:
+        cur = await database.execute("SELECT id FROM audio_video_clips WHERE audio_clip_id = ?", (clip_id,))
+        existing = await cur.fetchone()
+        if existing:
+            await database.execute(
+                "UPDATE audio_video_clips SET template_id = ?, background_image_path = ?, album_cover_path = ? "
+                "WHERE audio_clip_id = ?",
+                (data.template_id, data.background_image_path, data.album_cover_path, clip_id),
+            )
+        else:
+            await database.execute(
+                "INSERT INTO audio_video_clips (audio_clip_id, template_id, background_image_path, album_cover_path, status) "
+                "VALUES (?, ?, ?, ?, 'pending')",
+                (clip_id, data.template_id, data.background_image_path, data.album_cover_path),
+            )
+        await database.commit()
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
 @app.post("/api/audio-to-video/clips/{clip_id}/generate")
 async def generate_audio_video_clip(
     clip_id: int,

@@ -582,6 +582,20 @@ export const splitAudioTrack = (trackId: number, clips: 1 | 3 | 5) =>
 export const getAudioClip = (clipId: number) =>
   api.get(`/api/audio-to-video/clips/${clipId}`).then((r) => r.data);
 
+export const saveAudioClipSettings = (
+  clipId: number,
+  templateId: string,
+  backgroundImagePath?: string,
+  albumCoverPath?: string,
+) =>
+  api
+    .post(`/api/audio-to-video/clips/${clipId}/settings`, {
+      template_id: templateId,
+      background_image_path: backgroundImagePath ?? null,
+      album_cover_path: albumCoverPath ?? null,
+    })
+    .then((r) => r.data);
+
 export const generateAudioVideoClip = (
   clipId: number,
   templateId: string,
@@ -613,9 +627,10 @@ export const uploadAudioClipVideo = (
   clipId: number,
   blob: Blob,
   ext: string,
+  filename?: string,
 ): Promise<{ video_path: string; status: string }> => {
   const formData = new FormData();
-  formData.append("file", blob, `preview.${ext}`);
+  formData.append("file", blob, filename ?? `preview.${ext}`);
   return api
     .post(`/api/audio-to-video/clips/${clipId}/upload-video`, formData)
     .then((r) => r.data);
