@@ -953,6 +953,7 @@ export default function AudioToVideoPage() {
       }
       setClipConfigs(configs);
       setClipWords(words);
+      setClipWordsBase(words);
       // Restore saved lyrics text (preserves user line edits across reloads)
       const savedLyrics: Record<number, string> = {};
       for (const clip of trackData.clips) {
@@ -1046,6 +1047,7 @@ export default function AudioToVideoPage() {
       }
       setClipConfigs(configs);
       setClipWords(words);
+      setClipWordsBase(words);
       const blobUrlMap2: Record<number, string> = {};
       for (const clip of trackData.clips) {
         if (clip.video?.status === "done" && clip.video?.video_path) {
@@ -1506,6 +1508,8 @@ export default function AudioToVideoPage() {
     const fullText = tapSyncLines.map((l) => l.text).join("\n");
 
     setClipWords((cw) => ({ ...cw, [clipId]: allWords }));
+    setClipWordsBase((cw) => ({ ...cw, [clipId]: allWords }));
+    setClipTimingOffset((o) => ({ ...o, [clipId]: 0 }));
     setClipLyricsText((lt) => ({ ...lt, [clipId]: fullText }));
     setClipConfigDirty((d) => ({ ...d, [clipId]: true }));
     exitTapSync();
@@ -1537,23 +1541,31 @@ export default function AudioToVideoPage() {
     }
   };
 
-  const [shiftingTiming, setShiftingTiming] = useState(false);
-  const handleShiftTiming = async (clipId: number, delta: number) => {
-    const current = clipWords[clipId] ?? [];
-    if (!current.length) return;
-    const shifted = current.map((w) => ({
+  // ── Timing offset slider ────────────────────────────────────────────────
+  // Stores the untouched tap-synced words so the slider always adjusts from
+  // the original, not from accumulated deltas (prevents drift).
+  const [clipWordsBase, setClipWordsBase] = useState<Record<number, AudioWord[]>>({});
+  const [clipTimingOffset, setClipTimingOffset] = useState<Record<number, number>>({});
+  const timingOffsetSaveRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleTimingOffsetChange = useCallback((clipId: number, offset: number) => {
+    const base = clipWordsBase[clipId] ?? [];
+    if (!base.length) return;
+    const shifted = base.map((w) => ({
       ...w,
-      start_s: Math.max(0, w.start_s + delta),
-      end_s:   Math.max(0, w.end_s + delta),
+      start_s: Math.max(0, w.start_s + offset),
+      end_s:   Math.max(0, w.end_s + offset),
     }));
     setClipWords((cw) => ({ ...cw, [clipId]: shifted }));
-    setShiftingTiming(true);
-    try {
-      await updateAudioClipLyrics(clipId, shifted, clipLyricsText[clipId] ?? "");
-    } catch { /* silent */ } finally {
-      setShiftingTiming(false);
-    }
-  };
+    setClipTimingOffset((o) => ({ ...o, [clipId]: offset }));
+    // Debounced save — fires 600ms after the user stops dragging
+    if (timingOffsetSaveRef.current) clearTimeout(timingOffsetSaveRef.current);
+    timingOffsetSaveRef.current = setTimeout(async () => {
+      try {
+        await updateAudioClipLyrics(clipId, shifted, clipLyricsText[clipId] ?? "");
+      } catch { /* silent */ }
+    }, 600);
+  }, [clipWordsBase, clipLyricsText]);
 
   /** Save lyrics + template/bg/cover settings to server — no generation triggered */
   const [savingSettings, setSavingSettings] = useState(false);
@@ -2452,25 +2464,95 @@ export default function AudioToVideoPage() {
                         >
                           <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
                         </button>
-                        {(clipWords[activeClip.id]?.length ?? 0) > 0 && (
-                          <div className="flex items-center justify-between rounded-xl border border-border px-3 py-2">
-                            <span className="text-[10px] text-muted-foreground">Adjust timing</span>
-                            <div className="flex items-center gap-1">
+                        {(clipWordsBase[activeClip.id]?.length ?? 0) > 0 && (() => {
+                          const offset = clipTimingOffset[activeClip.id] ?? 0;
+                          const applyStep = (delta: number) => {
+                            const next = Math.max(-10, Math.min(10, offset + delta));
+                            handleTimingOffsetChange(activeClip.id, next);
+                          };
+                          return (
+                            <div className="rounded-xl border border-border px-3 pt-2.5 pb-3.5 space-y-3">
+                              {/* Header */}
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Adjust Timing</span>
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-[12px] font-mono font-semibold ${offset < -0.04 ? "text-blue-400" : offset > 0.04 ? "text-orange-400" : "text-muted-foreground"}`}>
+                                    {offset > 0 ? "+" : ""}{offset.toFixed(2)}s
+                                  </span>
+                                  {Math.abs(offset) > 0.01 && (
+                                    <button
+                                      onClick={() => handleTimingOffsetChange(activeClip.id, 0)}
+                                      className="rounded-md border border-border px-1.5 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+                                    >Reset</button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Status hint */}
+                              <p className="text-[10px] text-muted-foreground leading-relaxed">
+                                {Math.abs(offset) < 0.05
+                                  ? "Lyrics showing late? Press − buttons below. Play to test after each step."
+                                  : offset < 0
+                                  ? `Moved ${Math.abs(offset).toFixed(2)}s earlier — play to test, keep pressing − if still late.`
+                                  : `Moved ${offset.toFixed(2)}s later — play to test, press − if now too early.`}
+                              </p>
+
+                              {/* Quick-step buttons */}
+                              <div className="grid grid-cols-7 gap-1">
+                                {([-2, -1, -0.3, null, 0.3, 1, 2] as (number | null)[]).map((delta, i) =>
+                                  delta === null ? (
+                                    <div key="sep" className="flex items-center justify-center">
+                                      <div className="w-px h-5 bg-border" />
+                                    </div>
+                                  ) : (
+                                    <button
+                                      key={i}
+                                      onClick={() => applyStep(delta)}
+                                      className="rounded-lg border border-border py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 active:scale-95 transition-all"
+                                    >
+                                      {delta > 0 ? `+${delta}` : delta}s
+                                    </button>
+                                  )
+                                )}
+                              </div>
+
+                              {/* Fine-tune slider */}
+                              <div className="space-y-1">
+                                <input
+                                  type="range"
+                                  min={-10}
+                                  max={10}
+                                  step={0.05}
+                                  value={offset}
+                                  onChange={(e) => handleTimingOffsetChange(activeClip.id, parseFloat(e.target.value))}
+                                  className="w-full h-2 rounded-full appearance-none bg-border cursor-pointer accent-foreground"
+                                />
+                                <div className="flex justify-between text-[9px] text-muted-foreground/60">
+                                  <span>−10s (earlier)</span>
+                                  <span>0</span>
+                                  <span>+10s (later)</span>
+                                </div>
+                              </div>
+
+                              {/* Play / Pause to test */}
                               <button
-                                onClick={() => handleShiftTiming(activeClip.id, -0.1)}
-                                disabled={shiftingTiming}
-                                className="rounded-lg border border-border px-2 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
-                                title="Shift all lyrics 100ms earlier"
-                              >← Earlier</button>
-                              <button
-                                onClick={() => handleShiftTiming(activeClip.id, 0.1)}
-                                disabled={shiftingTiming}
-                                className="rounded-lg border border-border px-2 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
-                                title="Shift all lyrics 100ms later"
-                              >Later →</button>
+                                onClick={() => {
+                                  if (!audioPreviewRef.current) return;
+                                  if (audioPreviewRef.current.paused) {
+                                    audioPreviewRef.current.play().catch(() => {});
+                                    setIsPreviewPaused(false);
+                                  } else {
+                                    audioPreviewRef.current.pause();
+                                    setIsPreviewPaused(true);
+                                  }
+                                }}
+                                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+                              >
+                                {isPreviewPaused ? "▶  Play to test sync" : "⏸  Pause"}
+                              </button>
                             </div>
-                          </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     </div>
 
