@@ -2471,10 +2471,11 @@ export default function AudioToVideoPage() {
                 try {
                   const formData = new FormData();
                   formData.append("file", exportedBlob, `clip_${exportClipIndex + 1}.webm`);
+                  const token = localStorage.getItem("icreate_token");
                   const res = await fetch("/api/audio-to-video/convert-to-mp4", {
                     method: "POST",
                     body: formData,
-                    credentials: "include",
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
                   });
                   if (!res.ok) throw new Error(await res.text());
                   const mp4Blob = await res.blob();
