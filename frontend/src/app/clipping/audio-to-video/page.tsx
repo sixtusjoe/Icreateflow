@@ -2070,8 +2070,8 @@ export default function AudioToVideoPage() {
                           className="w-full flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
                         >
                           {isPreviewPaused
-                            ? <><Play className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Play Preview</span></>
-                            : <><Pause className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Pause Preview</span></>}
+                            ? <><Play className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Play</span></>
+                            : <><Pause className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Pause</span></>}
                         </button>
 
                         {/* Export — screen recording (match) or WebGL (upgraded) */}
