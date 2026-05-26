@@ -2061,7 +2061,7 @@ export default function AudioToVideoPage() {
                         ))}
                       </div>
 
-                      <div className="flex gap-3">
+                      <div className="grid grid-cols-2 gap-3">
                         <button
                           onClick={() => {
                             const next = !isPreviewPaused;
@@ -2071,25 +2071,25 @@ export default function AudioToVideoPage() {
                               else audioPreviewRef.current.play().catch(() => {});
                             }
                           }}
-                          className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
+                          className="w-full flex items-center justify-center gap-2 py-3.5 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors"
                         >
                           {isPreviewPaused
-                            ? <><Play className="w-4 h-4 fill-current" /> Play Preview</>
-                            : <><Pause className="w-4 h-4 fill-current" /> Pause Preview</>}
+                            ? <><Play className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Play Preview</span></>
+                            : <><Pause className="w-4 h-4 shrink-0 fill-current" /><span className="truncate">Pause Preview</span></>}
                         </button>
 
                         {/* Export — screen recording (match) or WebGL (upgraded) */}
                         {isExportRecording ? (
-                          <button disabled className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl">
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Recording… {exportProgress}%
+                          <button disabled className="w-full flex items-center justify-center gap-2 py-3.5 bg-foreground/80 text-background font-semibold rounded-xl">
+                            <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                            <span className="truncate">Recording… {exportProgress}%</span>
                           </button>
                         ) : (
                           <button
                             onClick={() => { if (activeClip) handleStartExport(activeClip); }}
-                            className="flex-1 flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
+                            className="w-full flex items-center justify-center gap-2 py-3.5 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors"
                           >
-                            <Download className="w-4 h-4" /> Export Video
+                            <Download className="w-4 h-4 shrink-0" /><span className="truncate">Export Video</span>
                           </button>
                         )}
                       </div>
