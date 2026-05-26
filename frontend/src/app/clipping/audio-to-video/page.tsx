@@ -1547,6 +1547,7 @@ export default function AudioToVideoPage() {
   const [clipWordsBase, setClipWordsBase] = useState<Record<number, AudioWord[]>>({});
   const [clipTimingOffset, setClipTimingOffset] = useState<Record<number, number>>({});
   const [clipTimingSaved, setClipTimingSaved] = useState<Record<number, boolean>>({});
+  const [showPerLineTiming, setShowPerLineTiming] = useState(false);
   const timingOffsetSaveRef = useRef<NodeJS.Timeout | null>(null);
   const timingSavedClearRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -1576,6 +1577,55 @@ export default function AudioToVideoPage() {
       } catch { /* silent */ }
     }, 600);
   }, [clipWordsBase, clipLyricsText]);
+
+  // Per-line timing nudge — shifts only the words that belong to a specific line.
+  // Also resets the global offset to 0 and updates clipWordsBase so the global
+  // slider continues to work correctly from the new adjusted baseline.
+  const lineTimingNudgeSaveRef = useRef<NodeJS.Timeout | null>(null);
+  const [lineTimingSaved, setLineTimingSaved] = useState<Record<string, boolean>>({});
+  const lineTimingSavedClearRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleLineTimingNudge = useCallback((clipId: number, lineIdx: number, delta: number) => {
+    const words = clipWords[clipId] ?? [];
+    if (!words.length) return;
+    const lines = (clipLyricsText[clipId] ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lineIdx >= lines.length) return;
+
+    // Count words per line to find the word-index range for lineIdx
+    const wordsPerLine = lines.map((l) => l.split(/\s+/).filter(Boolean).length);
+    let wordStart = 0;
+    for (let i = 0; i < lineIdx; i++) wordStart += wordsPerLine[i];
+    const wordEnd = wordStart + wordsPerLine[lineIdx];
+
+    // Only valid when 1:1 mapping holds (total display words = stored word count)
+    const totalDisplayWords = wordsPerLine.reduce((a, b) => a + b, 0);
+    if (totalDisplayWords !== words.length) return;
+
+    const shifted = words.map((w, i) =>
+      i >= wordStart && i < wordEnd
+        ? { ...w, start_s: Math.max(0, w.start_s + delta), end_s: Math.max(0, w.end_s + delta) }
+        : w
+    );
+
+    setClipWords((cw) => ({ ...cw, [clipId]: shifted }));
+    // Reset base to new adjusted state so global slider works from here
+    setClipWordsBase((cw) => ({ ...cw, [clipId]: shifted }));
+    setClipTimingOffset((o) => ({ ...o, [clipId]: 0 }));
+
+    const key = `${clipId}-${lineIdx}`;
+    setLineTimingSaved((s) => ({ ...s, [key]: false }));
+    if (lineTimingSavedClearRef.current) clearTimeout(lineTimingSavedClearRef.current);
+    if (lineTimingNudgeSaveRef.current) clearTimeout(lineTimingNudgeSaveRef.current);
+    lineTimingNudgeSaveRef.current = setTimeout(async () => {
+      try {
+        await updateAudioClipLyrics(clipId, shifted, clipLyricsText[clipId] ?? "");
+        setLineTimingSaved((s) => ({ ...s, [key]: true }));
+        lineTimingSavedClearRef.current = setTimeout(() => {
+          setLineTimingSaved((s) => ({ ...s, [key]: false }));
+        }, 2500);
+      } catch { /* silent */ }
+    }, 600);
+  }, [clipWords, clipLyricsText]);
 
   /** Save lyrics + template/bg/cover settings to server — no generation triggered */
   const [savingSettings, setSavingSettings] = useState(false);
@@ -2564,6 +2614,68 @@ export default function AudioToVideoPage() {
                               >
                                 {isPreviewPaused ? "▶  Play to test sync" : "⏸  Pause"}
                               </button>
+                            </div>
+                          );
+                        })()}
+
+                        {/* ── Per-line timing ── */}
+                        {wordTimings.length > 0 && (() => {
+                          const lines = (clipLyricsText[activeClip.id] ?? "")
+                            .split("\n").map((l) => l.trim()).filter(Boolean);
+                          const words = clipWords[activeClip.id] ?? [];
+                          const wordsPerLine = lines.map((l) => l.split(/\s+/).filter(Boolean).length);
+                          return (
+                            <div className="rounded-xl border border-border overflow-hidden">
+                              {/* Toggle header */}
+                              <button
+                                onClick={() => setShowPerLineTiming((s) => !s)}
+                                className="flex w-full items-center justify-between px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
+                              >
+                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                                  Fine-tune per line
+                                </span>
+                                <span className="text-[10px] text-muted-foreground">{showPerLineTiming ? "▲" : "▼"}</span>
+                              </button>
+
+                              {showPerLineTiming && (
+                                <div className="border-t border-border divide-y divide-border">
+                                  {lines.map((line, lineIdx) => {
+                                    let wordStart = 0;
+                                    for (let i = 0; i < lineIdx; i++) wordStart += wordsPerLine[i];
+                                    const firstWord = words[wordStart];
+                                    const key = `${activeClip.id}-${lineIdx}`;
+                                    const isSaved = lineTimingSaved[key] ?? false;
+                                    return (
+                                      <div key={lineIdx} className="px-3 py-2 space-y-1.5">
+                                        {/* Line preview + timestamp */}
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="text-[10px] text-foreground/70 truncate flex-1">
+                                            {line.length > 30 ? line.slice(0, 30) + "…" : line}
+                                          </span>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            {isSaved && <span className="text-[9px] text-green-500 font-medium">✓</span>}
+                                            <span className="text-[10px] font-mono text-muted-foreground/60">
+                                              {firstWord ? formatSyncTime(firstWord.start_s) : "--:--"}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        {/* Nudge buttons */}
+                                        <div className="grid grid-cols-6 gap-1">
+                                          {([-1, -0.3, -0.1, 0.1, 0.3, 1] as number[]).map((delta) => (
+                                            <button
+                                              key={delta}
+                                              onClick={() => handleLineTimingNudge(activeClip.id, lineIdx, delta)}
+                                              className="rounded-md border border-border py-1 text-[9px] font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 active:scale-95 transition-all"
+                                            >
+                                              {delta > 0 ? `+${delta}` : `${delta}`}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           );
                         })()}
