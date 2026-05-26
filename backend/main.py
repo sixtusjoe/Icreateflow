@@ -5914,7 +5914,10 @@ async def admin_clear_audio_to_video(
             cur = await database.execute("SELECT video_path FROM audio_video_clips WHERE video_path IS NOT NULL")
             rows = await cur.fetchall()
             paths = [dict(r)["video_path"] for r in rows]
-            await database.execute("DELETE FROM audio_video_clips")
+            # Only reset video fields — preserve template_id, background_image_path, album_cover_path
+            await database.execute(
+                "UPDATE audio_video_clips SET video_path = NULL, status = 'pending'"
+            )
             await database.commit()
         finally:
             await database.close()

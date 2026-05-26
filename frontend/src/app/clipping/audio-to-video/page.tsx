@@ -2614,7 +2614,12 @@ export default function AudioToVideoPage() {
                   });
                   if (!res.ok) throw new Error(await res.text());
                   const mp4Blob = await res.blob();
-                  await uploadAudioClipVideo(exportClipIdRef.current, mp4Blob, "mp4", `${rawName}.mp4`);
+                  const saved = await uploadAudioClipVideo(exportClipIdRef.current, mp4Blob, "mp4", `${rawName}.mp4`);
+                  // Keep View Last Export alive using the now-persisted server URL
+                  if (saved?.video_path) {
+                    const serverUrl = `/api/files/${saved.video_path}`;
+                    setExportedBlobUrlByClip((prev) => ({ ...prev, [exportClipIdRef.current!]: serverUrl }));
+                  }
                 } catch (err: any) {
                   setExportInfoModal({ title: "Upload failed", message: err?.response?.data?.detail || err?.message || "Unknown error" });
                   setUploadingExport(false);
