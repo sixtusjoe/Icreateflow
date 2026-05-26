@@ -617,9 +617,6 @@ export const generateAudioVideoClip = (
     })
     .then((r) => r.data);
 
-export const retranscribeAudioTrack = (trackId: number) =>
-  api.post(`/api/audio-to-video/${trackId}/retranscribe`).then((r) => r.data);
-
 export const updateAudioClipLyrics = (
   clipId: number,
   words: { word: string; start_s: number; end_s: number }[],
