@@ -28,9 +28,11 @@ USER=icreateflow
 echo "==> Extracting code from git archive (commit: $(cd $SRC && git rev-parse --short HEAD))"
 cd "$SRC"
 
-# Preserve generated/persistent dirs before wiping
-# (node_modules, .next, __pycache__ live outside these trees anyway)
-rm -rf "$BACKEND"   && mkdir -p "$BACKEND"
+# Wipe src trees so deleted files don't linger — preserve .env across wipe
+[ -f "$BACKEND/.env" ] && cp "$BACKEND/.env" /tmp/_icreateflow_env_bak
+rm -rf "$BACKEND" && mkdir -p "$BACKEND"
+[ -f /tmp/_icreateflow_env_bak ] && mv /tmp/_icreateflow_env_bak "$BACKEND/.env"
+
 rm -rf "$FRONTEND/src" "$FRONTEND/public" \
        "$FRONTEND/next.config"* "$FRONTEND/package"* \
        "$FRONTEND/tsconfig"* "$FRONTEND/tailwind"* \
