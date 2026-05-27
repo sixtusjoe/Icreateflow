@@ -3352,21 +3352,44 @@ export default function AudioToVideoPage() {
           {/* Actions */}
           <div className="grid grid-cols-2 gap-3 p-4">
             <button
-              onClick={() => {
+              disabled={convertingMp4 || uploadingExport}
+              onClick={async () => {
+                const name = `clip_${exportClipIndex + 1}.mp4`;
                 // Server-stored video: already MP4
                 if (!exportedBlob && exportedBlobUrl) {
-                  triggerDownload(exportedBlobUrl, `clip_${exportClipIndex + 1}.mp4`);
+                  triggerDownload(exportedBlobUrl, name);
                   return;
                 }
-                // Fresh recording blob — download directly (no server round-trip needed)
                 if (!exportedBlob) return;
-                const url = URL.createObjectURL(exportedBlob);
-                triggerDownload(url, `clip_${exportClipIndex + 1}.webm`);
-                URL.revokeObjectURL(url);
+                // Fresh recording blob — convert WebM → MP4 then download
+                setConvertingMp4(true);
+                try {
+                  const rawName = `clip_${exportClipIndex + 1}`;
+                  const token = localStorage.getItem("icreate_token");
+                  const formData = new FormData();
+                  formData.append("file", exportedBlob, `${rawName}.webm`);
+                  const res = await fetch("/api/audio-to-video/convert-to-mp4", {
+                    method: "POST",
+                    body: formData,
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  const mp4Blob = await res.blob();
+                  const url = URL.createObjectURL(mp4Blob);
+                  triggerDownload(url, name);
+                  URL.revokeObjectURL(url);
+                } catch (err: any) {
+                  setExportInfoModal({ title: "Download failed", message: err?.message || "Could not convert to MP4" });
+                } finally {
+                  setConvertingMp4(false);
+                }
               }}
               className="w-full flex items-center justify-center gap-2 py-3 px-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm disabled:opacity-60"
             >
-              <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download</span></>
+              {convertingMp4
+                ? <><span className="w-4 h-4 shrink-0 animate-spin rounded-full border-2 border-background/30 border-t-background" /><span className="truncate">Converting…</span></>
+                : <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download</span></>
+              }
             </button>
             <button
               onClick={async () => {
