@@ -527,14 +527,15 @@ function ScrollLyricsView({
                 style={{
                   fontSize:        "1.25rem",
                   fontWeight:      isActive ? 800 : 500,
-                  lineHeight:      1.3,
+                  lineHeight:      1.4,
                   letterSpacing:   "-0.01em",
                   color:           isActive ? "#ffffff" : isPast ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.2)",
                   textShadow:      isActive ? "0 2px 14px rgba(0,0,0,0.6)" : "none",
-                  // Use transform instead of font-size change — no layout reflow
-                  transform:       isActive ? "scale(1.22)" : "scale(1)",
+                  // Scale active line slightly — keep small enough that long lines don't overflow
+                  transform:       isActive ? "scale(1.08)" : "scale(1)",
                   transformOrigin: "center center",
                   display:         "block",
+                  wordBreak:       "break-word",
                   transition:      "transform 0.25s ease, color 0.25s ease, font-weight 0.2s ease, text-shadow 0.25s ease",
                 }}
               >

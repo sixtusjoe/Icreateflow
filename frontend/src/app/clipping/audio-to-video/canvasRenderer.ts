@@ -1065,8 +1065,10 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
     tctx.textBaseline = "middle";
     const parts = grp.map((w, i) => w.word + (i < grp.length-1 ? " " : ""));
     let tw = parts.reduce((s, p) => s + tctx.measureText(p).width, 0);
-    if (tw > CW * 0.87) {
-      fs = Math.floor(fs * (CW * 0.87) / tw);
+    // Shrink to 82% of canvas width (tighter than before so long groups never clip)
+    const MAX_TW = CW * 0.82;
+    if (tw > MAX_TW) {
+      fs = Math.floor(fs * MAX_TW / tw);
       tctx.font = `bold ${fs}px -apple-system,'Segoe UI',sans-serif`;
       tw = parts.reduce((s, p) => s + tctx.measureText(p).width, 0);
     }
