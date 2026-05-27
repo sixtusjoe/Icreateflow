@@ -23,10 +23,20 @@ USER=icreateflow
 
 # ---------------------------------------------------------------------------
 # Extract code from git — no fetch, no reset. ship.sh already updated SRC.
+# Wipe src/ sub-trees first so deleted files don't linger across deploys.
 # ---------------------------------------------------------------------------
 echo "==> Extracting code from git archive (commit: $(cd $SRC && git rev-parse --short HEAD))"
 cd "$SRC"
-git archive HEAD backend/ | tar -x -C "$APP_DIR/" --overwrite
+
+# Preserve generated/persistent dirs before wiping
+# (node_modules, .next, __pycache__ live outside these trees anyway)
+rm -rf "$BACKEND"   && mkdir -p "$BACKEND"
+rm -rf "$FRONTEND/src" "$FRONTEND/public" \
+       "$FRONTEND/next.config"* "$FRONTEND/package"* \
+       "$FRONTEND/tsconfig"* "$FRONTEND/tailwind"* \
+       "$FRONTEND/postcss"* "$FRONTEND/.eslint"* 2>/dev/null || true
+
+git archive HEAD backend/  | tar -x -C "$APP_DIR/" --overwrite
 git archive HEAD frontend/ | tar -x -C "$APP_DIR/" --overwrite
 git archive HEAD fonts/    | tar -x -C "$APP_DIR/" --overwrite 2>/dev/null || true
 chown -R $USER:$USER "$BACKEND" "$FRONTEND" "$APP_DIR/fonts" 2>/dev/null || true
