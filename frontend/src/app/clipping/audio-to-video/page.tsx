@@ -519,20 +519,23 @@ function ScrollLyricsView({
               ref={isActive ? activeRef : undefined}
               className="px-7 text-center"
               style={{
-                paddingTop:    "0.3rem",
-                paddingBottom: "0.3rem",
-                transition: "all 0.3s ease",
+                paddingTop:    "0.4rem",
+                paddingBottom: "0.4rem",
               }}
             >
               <p
                 style={{
-                  fontSize:      isActive ? "1.55rem" : "1.1rem",
-                  fontWeight:    isActive ? 800 : 500,
-                  lineHeight:    1.3,
-                  letterSpacing: "-0.01em",
-                  color:         isActive ? "#ffffff" : isPast ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.2)",
-                  textShadow:    isActive ? "0 2px 14px rgba(0,0,0,0.6)" : "none",
-                  transition:    "font-size 0.25s ease, color 0.25s ease, font-weight 0.25s ease",
+                  fontSize:        "1.25rem",
+                  fontWeight:      isActive ? 800 : 500,
+                  lineHeight:      1.3,
+                  letterSpacing:   "-0.01em",
+                  color:           isActive ? "#ffffff" : isPast ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.2)",
+                  textShadow:      isActive ? "0 2px 14px rgba(0,0,0,0.6)" : "none",
+                  // Use transform instead of font-size change — no layout reflow
+                  transform:       isActive ? "scale(1.22)" : "scale(1)",
+                  transformOrigin: "center center",
+                  display:         "block",
+                  transition:      "transform 0.25s ease, color 0.25s ease, font-weight 0.2s ease, text-shadow 0.25s ease",
                 }}
               >
                 {line.join(" ")}
@@ -3346,43 +3349,21 @@ export default function AudioToVideoPage() {
           {/* Actions */}
           <div className="grid grid-cols-2 gap-3 p-4">
             <button
-              disabled={convertingMp4}
-              onClick={async () => {
-                const filename = `clip_${exportClipIndex + 1}.mp4`;
-
-                // Server-stored video: already MP4, download directly
+              onClick={() => {
+                // Server-stored video: already MP4
                 if (!exportedBlob && exportedBlobUrl) {
-                  triggerDownload(exportedBlobUrl, filename);
+                  triggerDownload(exportedBlobUrl, `clip_${exportClipIndex + 1}.mp4`);
                   return;
                 }
-
+                // Fresh recording blob — download directly (no server round-trip needed)
                 if (!exportedBlob) return;
-                setConvertingMp4(true);
-                try {
-                  const formData = new FormData();
-                  formData.append("file", exportedBlob, `clip_${exportClipIndex + 1}.webm`);
-                  const token = localStorage.getItem("icreate_token");
-                  const res = await fetch("/api/audio-to-video/convert-to-mp4", {
-                    method: "POST",
-                    body: formData,
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
-                  });
-                  if (!res.ok) throw new Error(await res.text());
-                  const mp4Blob = await res.blob();
-                  const url = URL.createObjectURL(mp4Blob);
-                  triggerDownload(url, filename);
-                  URL.revokeObjectURL(url);
-                } catch (err: any) {
-                  setExportInfoModal({ title: "Conversion failed", message: err?.message ?? "Unknown error" });
-                } finally {
-                  setConvertingMp4(false);
-                }
+                const url = URL.createObjectURL(exportedBlob);
+                triggerDownload(url, `clip_${exportClipIndex + 1}.webm`);
+                URL.revokeObjectURL(url);
               }}
               className="w-full flex items-center justify-center gap-2 py-3 px-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm disabled:opacity-60"
             >
-              {convertingMp4
-                ? <><Loader2 className="w-4 h-4 shrink-0 animate-spin" /><span className="truncate">Converting…</span></>
-                : <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download MP4</span></>}
+              <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download</span></>}
             </button>
             <button
               onClick={async () => {
