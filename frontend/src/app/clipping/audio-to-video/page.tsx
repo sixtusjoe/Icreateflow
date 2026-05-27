@@ -2466,6 +2466,7 @@ export default function AudioToVideoPage() {
               </div>
 
               {activeClip && (
+                <>
                 <div className="flex flex-col lg:flex-row lg:items-start gap-5 mt-2 lg:mt-4">
 
                   {/* ══ LEFT: Settings Panel ═══════════════════════════════ */}
@@ -2977,6 +2978,7 @@ export default function AudioToVideoPage() {
                     Assign <ChevronRight className="h-4 w-4" />
                   </button>
                 </div>
+                </>
               )}
 
             </div>
