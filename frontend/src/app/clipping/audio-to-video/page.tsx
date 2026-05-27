@@ -3363,7 +3363,7 @@ export default function AudioToVideoPage() {
               }}
               className="w-full flex items-center justify-center gap-2 py-3 px-3 bg-foreground text-background font-semibold rounded-xl hover:bg-foreground/90 transition-colors text-sm disabled:opacity-60"
             >
-              <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download</span></>}
+              <><Download className="w-4 h-4 shrink-0" /><span className="truncate">Download</span></>
             </button>
             <button
               onClick={async () => {
