@@ -1,0 +1,10 @@
+[Unit]
+Description=ICREATEFLOW auto-deploy (triggered by timer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/srv/icreateflow/src/deploy/auto-deploy.sh
+StandardOutput=append:/var/log/icreateflow-autodeploy.log
+StandardError=append:/var/log/icreateflow-autodeploy.log

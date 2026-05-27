@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll GitHub every 2 minutes and auto-deploy ICREATEFLOW if behind
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=2min
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target
