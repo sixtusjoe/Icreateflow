@@ -2467,10 +2467,10 @@ export default function AudioToVideoPage() {
 
               {activeClip && (
                 <>
-                <div className="flex flex-col lg:flex-row lg:items-start gap-5 mt-2 lg:mt-4">
+                <div className="flex flex-col lg:flex-row lg:items-stretch gap-5 mt-2 lg:mt-4">
 
                   {/* ══ LEFT: Settings Panel ═══════════════════════════════ */}
-                  <div className={`w-full lg:w-[370px] shrink-0 ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
+                  <div className={`w-full lg:w-[370px] shrink-0 lg:h-full ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
                     {/* Hidden file inputs */}
                     <input ref={bgInputRef} type="file" accept="image/*" className="hidden"
                       onChange={(e) => {
@@ -2502,8 +2502,8 @@ export default function AudioToVideoPage() {
                       />
                     )}
 
-                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-8 flex flex-col">
-                      <div className="overflow-y-auto lg:max-h-[calc(100vh-160px)]">
+                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-8 flex flex-col h-full">
+                      <div className="overflow-y-auto lg:max-h-[calc(100vh-8rem)]">
 
                         {/* ── PLAYBACK: always visible at top ── */}
                         <div className="p-4 border-b border-border space-y-2.5">
