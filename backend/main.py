@@ -6856,8 +6856,8 @@ async def upload_audio_clip_video(
 
 @app.post("/api/audio-to-video/convert-to-mp4")
 async def convert_webm_to_mp4(
-    file: UploadFile = File(...),
     background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
     """
