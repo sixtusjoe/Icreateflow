@@ -2398,7 +2398,7 @@ export default function AudioToVideoPage() {
               );
             })}
 
-            <div className="flex items-center justify-between mt-5 pt-4 border-t border-border">
+            <div className="-mx-4 sm:-mx-6 px-4 sm:px-6 flex items-center justify-between mt-5 pt-4 border-t border-border">
               <button onClick={() => setStep(0)} className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
@@ -3110,7 +3110,7 @@ export default function AudioToVideoPage() {
               );
             })}
 
-            <div className="flex items-center justify-between mt-5 pt-4 border-t border-border">
+            <div className="-mx-4 sm:-mx-6 px-4 sm:px-6 flex items-center justify-between mt-5 pt-4 border-t border-border">
               <button onClick={() => setStep(2)} className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
