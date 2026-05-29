@@ -6857,46 +6857,73 @@ async def upload_audio_clip_video(
 @app.post("/api/audio-to-video/convert-to-mp4")
 async def convert_webm_to_mp4(
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
     """
-    Remux a browser-recorded WebM blob into an MP4 container using FFmpeg.
-    No re-encoding — just container swap, so it completes in well under a second.
-    Returns the raw MP4 bytes with Content-Disposition: attachment.
+    Convert a browser-recorded video blob to MP4.
+    If the browser already sent H.264/MP4, just remux (copy-instant).
+    Otherwise transcode from WebM/VP9 with ultrafast preset.
+    Streams the response from disk — never loads the full MP4 into RAM.
     """
-    import tempfile, asyncio
-    from fastapi.responses import Response
+    import tempfile
+    from fastapi.responses import FileResponse
 
-    webm_data = await file.read()
+    content_type = file.content_type or ""
     stem = Path(file.filename or "clip").stem
+    tmp_dir = Path(tempfile.mkdtemp())
+    ext = "mp4" if "mp4" in content_type else "webm"
+    in_path  = tmp_dir / f"input.{ext}"
+    out_path = tmp_dir / "output.mp4"
 
-    with tempfile.TemporaryDirectory() as tmp:
-        in_path  = Path(tmp) / "input.webm"
-        out_path = Path(tmp) / "output.mp4"
-        in_path.write_bytes(webm_data)
+    try:
+        # Stream upload to disk in 1 MB chunks — avoid one giant synchronous read
+        with open(in_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+
+        # Fast path: already H.264/MP4 → copy-remux (sub-second).
+        # Slow path: WebM/VP9 → transcode with ultrafast preset.
+        is_mp4 = "mp4" in content_type
+        video_args = (
+            ["-c:v", "copy", "-c:a", "copy"]
+            if is_mp4 else
+            ["-c:v", "libx264", "-crf", "20", "-preset", "ultrafast",
+             "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-b:a", "192k"]
+        )
 
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", str(in_path),
-            "-c:v", "libx264", "-crf", "20", "-preset", "ultrafast",
-            "-profile:v", "high", "-level", "4.2",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
+            *video_args,
             "-movflags", "+faststart",
             str(out_path),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(504, "Conversion timed out — clip may be too long")
+
         if proc.returncode != 0 or not out_path.exists():
-            raise HTTPException(500, f"FFmpeg conversion failed: {stderr.decode()[-300:]}")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(500, f"FFmpeg failed: {stderr.decode()[-300:]}")
 
-        mp4_bytes = out_path.read_bytes()
+        # Stream MP4 from disk; temp dir cleaned up after response finishes
+        background_tasks.add_task(shutil.rmtree, str(tmp_dir), True)
+        return FileResponse(path=str(out_path), media_type="video/mp4", filename=f"{stem}.mp4")
 
-    return Response(
-        content=mp4_bytes,
-        media_type="video/mp4",
-        headers={"Content-Disposition": f'attachment; filename="{stem}.mp4"'},
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(500, str(e))
 
 
 @app.post("/api/audio-to-video/clips/{clip_id}/render-preview")

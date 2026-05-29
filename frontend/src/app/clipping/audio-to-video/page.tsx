@@ -1811,10 +1811,13 @@ export default function AudioToVideoPage() {
           ...videoStream.getVideoTracks(),
           ...audioDest.stream.getAudioTracks(),
         ]);
-        const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-          ? "video/webm;codecs=vp9,opus"
+        const mimeType =
+          MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E,mp4a.40.2")
+            ? "video/mp4;codecs=avc1.42E01E,mp4a.40.2"
+          : MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+            ? "video/webm;codecs=vp9,opus"
           : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-          ? "video/webm;codecs=vp8,opus"
+            ? "video/webm;codecs=vp8,opus"
           : "video/webm";
         const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 40_000_000 });
         const chunks: BlobPart[] = [];
@@ -2022,8 +2025,11 @@ export default function AudioToVideoPage() {
 
       // MediaRecorder — canvas video track + audio
       const combined = new MediaStream([recordingVideoTrack, audioDest.stream.getAudioTracks()[0]]);
-      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-        ? "video/webm;codecs=vp9,opus"
+      const mimeType =
+        MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E,mp4a.40.2")
+          ? "video/mp4;codecs=avc1.42E01E,mp4a.40.2"
+        : MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+          ? "video/webm;codecs=vp9,opus"
         : "video/webm";
       const rec     = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 40_000_000 });
       const chunks: BlobPart[] = [];
@@ -3355,14 +3361,15 @@ export default function AudioToVideoPage() {
                 try {
                   const rawName = `clip_${exportClipIndex + 1}`;
                   const token = localStorage.getItem("icreate_token");
+                  const blobExt = exportedBlob.type.includes("mp4") ? "mp4" : "webm";
                   const formData = new FormData();
-                  formData.append("file", exportedBlob, `${rawName}.webm`);
+                  formData.append("file", exportedBlob, `${rawName}.${blobExt}`);
                   const res = await fetch("/api/audio-to-video/convert-to-mp4", {
                     method: "POST",
                     body: formData,
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
                   });
-                  if (!res.ok) throw new Error(await res.text());
+                  if (!res.ok) { const b = await res.text(); throw new Error(b.startsWith("<") ? "Conversion failed — please try again" : b); }
                   const mp4Blob = await res.blob();
                   const url = URL.createObjectURL(mp4Blob);
                   triggerDownload(url, name);
@@ -3388,17 +3395,18 @@ export default function AudioToVideoPage() {
                 }
                 setUploadingExport(true);
                 try {
-                  // Convert WebM → MP4 on the server before saving
+                  // Convert to MP4 on the server before saving
                   const rawName = `clip_${exportClipIndex + 1}`;
                   const token = localStorage.getItem("icreate_token");
+                  const blobExt = exportedBlob.type.includes("mp4") ? "mp4" : "webm";
                   const formData = new FormData();
-                  formData.append("file", exportedBlob, `${rawName}.webm`);
+                  formData.append("file", exportedBlob, `${rawName}.${blobExt}`);
                   const res = await fetch("/api/audio-to-video/convert-to-mp4", {
                     method: "POST",
                     body: formData,
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
                   });
-                  if (!res.ok) throw new Error(await res.text());
+                  if (!res.ok) { const b = await res.text(); throw new Error(b.startsWith("<") ? "Conversion failed — please try again" : b); }
                   const mp4Blob = await res.blob();
                   const saved = await uploadAudioClipVideo(exportClipIdRef.current, mp4Blob, "mp4", `${rawName}.mp4`);
                   // Keep View Last Export alive using the now-persisted server URL
