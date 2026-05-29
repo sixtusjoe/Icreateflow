@@ -2398,13 +2398,13 @@ export default function AudioToVideoPage() {
               );
             })}
 
-            <div className="flex items-center justify-between pt-1">
-              <button onClick={() => setStep(0)} className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm">
+            <div className="flex items-center justify-between mt-5 pt-4 border-t border-border">
+              <button onClick={() => setStep(0)} className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
               <button
                 onClick={() => { setActiveReviewClip(0); setEditingClipId(track.clips[0]?.id ?? null); setStep(2); }}
-                className="flex items-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background"
+                className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
               >
                 Review & Edit <ChevronRight className="h-4 w-4" />
               </button>
@@ -3110,8 +3110,8 @@ export default function AudioToVideoPage() {
               );
             })}
 
-            <div className="flex items-center justify-between pt-1">
-              <button onClick={() => setStep(2)} className="flex items-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm">
+            <div className="flex items-center justify-between mt-5 pt-4 border-t border-border">
+              <button onClick={() => setStep(2)} className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors">
                 <ChevronLeft className="h-4 w-4" /> Back
               </button>
               <button
@@ -3125,9 +3125,9 @@ export default function AudioToVideoPage() {
                   setAssignedClips({});
                   setStep(0);
                 }}
-                className="rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background"
+                className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
               >
-                New Track
+                New Track <ChevronRight className="h-4 w-4" />
               </button>
             </div>
           </div>
