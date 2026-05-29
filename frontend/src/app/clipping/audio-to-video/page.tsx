@@ -2951,8 +2951,6 @@ export default function AudioToVideoPage() {
                   </div>{/* end right panel */}
 
                 </div>
-
-                </div>
                 </>
               )}
 
