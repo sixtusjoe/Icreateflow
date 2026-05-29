@@ -2144,7 +2144,7 @@ export default function AudioToVideoPage() {
       </div>
 
       {/* ── Content ────────────────────────────────────────────────────────── */}
-      <div className={step === 2 ? "px-3 sm:px-4 py-3" : "mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8"}>
+      <div className={step === 2 ? "px-3 sm:px-4 py-3 pb-20" : "mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8 pb-20"}>
 
         {/* ── Step 0: Upload ──────────────────────────────────────────────── */}
         {step === 0 && (
@@ -2398,17 +2398,6 @@ export default function AudioToVideoPage() {
               );
             })}
 
-            <div className="-mx-4 sm:-mx-6 px-4 sm:px-6 flex items-center justify-between mt-5 pt-4 border-t border-border">
-              <button onClick={() => setStep(0)} className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors">
-                <ChevronLeft className="h-4 w-4" /> Back
-              </button>
-              <button
-                onClick={() => { setActiveReviewClip(0); setEditingClipId(track.clips[0]?.id ?? null); setStep(2); }}
-                className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
-              >
-                Review & Edit <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
           </div>
         )}
 
@@ -2963,20 +2952,6 @@ export default function AudioToVideoPage() {
 
                 </div>
 
-                {/* ── Step nav: full-width row below both panels ─────────── */}
-                <div className="flex items-center justify-between mt-5 pt-4 border-t border-border">
-                  <button
-                    onClick={() => setStep(1)}
-                    className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors"
-                  >
-                    <ChevronLeft className="h-4 w-4" /> Back
-                  </button>
-                  <button
-                    onClick={() => setStep(3)}
-                    className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
-                  >
-                    Assign <ChevronRight className="h-4 w-4" />
-                  </button>
                 </div>
                 </>
               )}
@@ -3110,29 +3085,52 @@ export default function AudioToVideoPage() {
               );
             })}
 
-            <div className="-mx-4 sm:-mx-6 px-4 sm:px-6 flex items-center justify-between mt-5 pt-4 border-t border-border">
-              <button onClick={() => setStep(2)} className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors">
-                <ChevronLeft className="h-4 w-4" /> Back
+          </div>
+        )}
+      </div>
+
+      {/* ── Fixed bottom nav bar ────────────────────────────────────────────── */}
+      {step > 0 && track && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-background border-t border-border">
+          <div className="flex items-center justify-between px-4 sm:px-6 py-3">
+            <button
+              onClick={() => setStep(step - 1)}
+              className="flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm hover:bg-muted transition-colors"
+            >
+              <ChevronLeft className="h-4 w-4" /> Back
+            </button>
+            {step === 1 && (
+              <button
+                onClick={() => { setActiveReviewClip(0); setEditingClipId(track.clips[0]?.id ?? null); setStep(2); }}
+                className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
+              >
+                Review & Edit <ChevronRight className="h-4 w-4" />
               </button>
+            )}
+            {step === 2 && (
+              <button
+                onClick={() => setStep(3)}
+                className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
+              >
+                Assign <ChevronRight className="h-4 w-4" />
+              </button>
+            )}
+            {step === 3 && (
               <button
                 onClick={() => {
-                  setTrack(null);
-                  setAudioFile(null);
-                  setAudioTitle("");
-                  setClipCount(1);
-                  setClipConfigs({});
-                  setClipWords({});
-                  setAssignedClips({});
-                  setStep(0);
+                  setTrack(null); setAudioFile(null); setAudioTitle("");
+                  setClipCount(1); setClipConfigs({}); setClipWords({});
+                  setAssignedClips({}); setStep(0);
                 }}
                 className="flex items-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 transition-colors"
               >
                 New Track <ChevronRight className="h-4 w-4" />
               </button>
-            </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
     </div>
 
     {/* ── Recording Modal ──────────────────────────────────────────────── */}
