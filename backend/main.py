@@ -6885,11 +6885,15 @@ async def convert_webm_to_mp4(
                     break
                 f.write(chunk)
 
-        # Fast path: already H.264/MP4 → copy-remux (sub-second).
-        # Slow path: WebM/VP9 → transcode with ultrafast preset.
+        # Both paths force -r 30 so TikTok gets a constant frame rate.
+        # Canvas captureStream() produces variable fps which TikTok rejects.
+        # Fast path: already H.264/MP4 → re-encode at 30fps (still fast).
+        # Slow path: WebM/VP9 → full transcode to H.264 at 30fps.
         is_mp4 = "mp4" in content_type
         video_args = (
-            ["-c:v", "copy", "-c:a", "copy"]
+            ["-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
+             "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p",
+             "-c:a", "copy"]
             if is_mp4 else
             ["-c:v", "libx264", "-crf", "20", "-preset", "ultrafast",
              "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p",
@@ -6899,6 +6903,7 @@ async def convert_webm_to_mp4(
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", str(in_path),
             *video_args,
+            "-r", "30",
             "-movflags", "+faststart",
             str(out_path),
             stdout=asyncio.subprocess.DEVNULL,
