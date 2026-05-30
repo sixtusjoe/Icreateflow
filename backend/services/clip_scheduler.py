@@ -304,8 +304,7 @@ async def _pick_next_clip(database, artist_id: int, artist_account_id: int) -> d
                MAX(cp.posted_at)  FILTER (WHERE cp.status = 'posted') AS _last_in_var,
                (SELECT COUNT(*) FROM clip_posts cp_g
                 WHERE cp_g.clip_id = c.id
-                  AND cp_g.status = 'posted'
-                  AND cp_g.deleted_at IS NULL) AS _posts_global
+                  AND cp_g.status = 'posted') AS _posts_global
         FROM clips c
         LEFT JOIN clip_posts cp
           ON cp.clip_id = c.id AND cp.artist_account_id = ?
@@ -357,7 +356,6 @@ async def _has_unposted_clip_for_variation(
             SELECT 1 FROM clip_posts cp
             WHERE cp.clip_id = c.id
               AND cp.status = 'posted'
-              AND cp.deleted_at IS NULL
           )
         LIMIT 1
         """,
@@ -584,7 +582,6 @@ async def plan_slots_once() -> None:
                       SELECT 1 FROM clip_posts cp2
                       WHERE cp2.clip_id = cp.clip_id
                         AND cp2.status = 'posted'
-                        AND cp2.deleted_at IS NULL
                   )
                   AND EXISTS (
                       SELECT 1 FROM clips c
@@ -594,7 +591,6 @@ async def plan_slots_once() -> None:
                             SELECT 1 FROM clip_posts cp3
                             WHERE cp3.clip_id = c.id
                               AND cp3.status = 'posted'
-                              AND cp3.deleted_at IS NULL
                         )
                   )
                 """
