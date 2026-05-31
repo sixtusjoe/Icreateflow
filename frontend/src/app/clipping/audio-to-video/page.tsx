@@ -809,7 +809,7 @@ export default function AudioToVideoPage() {
   const [editingClipId, setEditingClipId] = useState<number | null>(null);
   const [savingLyrics, setSavingLyrics] = useState(false);
   const [activeReviewClip, setActiveReviewClip] = useState(0);
-  const [isPreviewPaused, setIsPreviewPaused] = useState(false);
+  const [isPreviewPaused, setIsPreviewPaused] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
   const bgInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
@@ -2482,10 +2482,6 @@ export default function AudioToVideoPage() {
                     ref={audioPreviewRef}
                     src={fileUrl(activeClip.local_path)}
                     preload="auto"
-                    onError={(e) => {
-                      const el = e.currentTarget;
-                      alert(`Audio load error! src=${el.src} error=${el.error?.code} ${el.error?.message}`);
-                    }}
                     onEnded={() => {
                       setIsPreviewPaused(true);
                       if (audioPreviewRef.current) {
@@ -2538,20 +2534,11 @@ export default function AudioToVideoPage() {
                             {/* Play / Pause */}
                             <button
                               onClick={() => {
-                                const audio = audioPreviewRef.current;
-                                if (!audio) {
-                                  alert("Audio element not found — please reload the page.");
-                                  return;
-                                }
                                 const next = !isPreviewPaused;
                                 setIsPreviewPaused(next);
-                                if (next) {
-                                  audio.pause();
-                                } else {
-                                  audio.play().catch((err: Error) => {
-                                    alert(`Playback failed: ${err.name} — ${err.message}\nSrc: ${audio.src}\nReadyState: ${audio.readyState}`);
-                                    setIsPreviewPaused(true);
-                                  });
+                                if (audioPreviewRef.current) {
+                                  if (next) audioPreviewRef.current.pause();
+                                  else audioPreviewRef.current.play().catch(() => {});
                                 }
                               }}
                               className="flex items-center justify-center gap-1.5 py-3 bg-muted text-foreground font-semibold rounded-xl hover:bg-muted/80 transition-colors text-sm"
