@@ -2475,6 +2475,23 @@ export default function AudioToVideoPage() {
 
               {activeClip && (
                 <>
+                {/* Audio element — lives outside panels so it's never inside a display:none ancestor */}
+                {activeClip.local_path && (
+                  <audio
+                    key={activeClip.id}
+                    ref={audioPreviewRef}
+                    src={fileUrl(activeClip.local_path)}
+                    preload="auto"
+                    onEnded={() => {
+                      setIsPreviewPaused(true);
+                      if (audioPreviewRef.current) {
+                        seekAudio(audioPreviewRef.current, 0);
+                        lastAudioTimeRef.current = 0;
+                      }
+                    }}
+                    className="hidden"
+                  />
+                )}
                 <div className="flex flex-col lg:flex-row lg:items-stretch gap-5 mt-2 lg:mt-4">
 
                   {/* ══ LEFT: Settings Panel ═══════════════════════════════ */}
@@ -2492,23 +2509,6 @@ export default function AudioToVideoPage() {
                         if (f && activeClip) handleAssetUpload(activeClip.id, f, "cover");
                         e.target.value = "";
                       }} />
-                    {/* Hidden audio element */}
-                    {activeClip.local_path && (
-                      <audio
-                        key={activeClip.id}
-                        ref={audioPreviewRef}
-                        src={fileUrl(activeClip.local_path)}
-                        preload="auto"
-                        onEnded={() => {
-                          setIsPreviewPaused(true);
-                          if (audioPreviewRef.current) {
-                            seekAudio(audioPreviewRef.current, 0);
-                            lastAudioTimeRef.current = 0;
-                          }
-                        }}
-                        className="hidden"
-                      />
-                    )}
 
                     <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-8 flex flex-col h-full">
                       <div className="overflow-y-auto lg:max-h-[calc(100vh-8rem)]">
@@ -2965,6 +2965,38 @@ export default function AudioToVideoPage() {
                           {formatTime(activeClip.start_s)} – {formatTime(activeClip.end_s)}
                         </span>
                         <span>{(activeClip.end_s - activeClip.start_s).toFixed(1)}s</span>
+                      </div>
+
+                      {/* Mobile playback controls — hidden on desktop (lg) where the left panel is visible */}
+                      <div className="flex gap-2 lg:hidden">
+                        <button
+                          onClick={() => {
+                            const audio = audioPreviewRef.current;
+                            if (!audio) return;
+                            seekAudio(audio, 0);
+                            lastAudioTimeRef.current = 0;
+                            audio.play().catch(() => {});
+                            setIsPreviewPaused(false);
+                          }}
+                          className="flex items-center justify-center gap-1.5 py-2.5 px-4 bg-muted text-foreground font-semibold rounded-xl text-sm"
+                        >
+                          <RotateCcw className="w-4 h-4 shrink-0" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            const next = !isPreviewPaused;
+                            setIsPreviewPaused(!isPreviewPaused);
+                            if (audioPreviewRef.current) {
+                              if (next) audioPreviewRef.current.pause();
+                              else audioPreviewRef.current.play().catch(() => {});
+                            }
+                          }}
+                          className="flex flex-1 items-center justify-center gap-1.5 py-2.5 bg-foreground text-background font-semibold rounded-xl text-sm"
+                        >
+                          {isPreviewPaused
+                            ? <><Play className="w-4 h-4 shrink-0 fill-current" /> Play</>
+                            : <><Pause className="w-4 h-4 shrink-0 fill-current" /> Pause</>}
+                        </button>
                       </div>
                     </div>
                   </div>{/* end right panel */}
