@@ -358,7 +358,10 @@ export default function ArtistPage({
     facebook_handle: "",
   });
   const [variationsOpen, setVariationsOpen] = useState(true);
-  const [hideNumbers, setHideNumbers] = useState(false);
+  const [hideNumbers, setHideNumbers] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("dashboard-hide-numbers") === "true";
+  });
 
   const [editingVarId, setEditingVarId] = useState<number | null>(null);
   const [editVar, setEditVar] = useState({
@@ -685,7 +688,11 @@ export default function ArtistPage({
         </span>
         {/* Privacy toggle — hides post counts */}
         <button
-          onClick={() => setHideNumbers((h) => !h)}
+          onClick={() => setHideNumbers((h) => {
+            const next = !h;
+            localStorage.setItem("dashboard-hide-numbers", String(next));
+            return next;
+          })}
           title={hideNumbers ? "Show stats" : "Hide stats"}
           className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
             hideNumbers ? "bg-muted-foreground/50" : "bg-foreground/20"
@@ -701,7 +708,7 @@ export default function ArtistPage({
 
       {/* Top summary */}
       {dashboard && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className={`grid gap-3 ${hideNumbers ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-4"}`}>
           {!hideNumbers && <StatCard icon={<BarChart3 className="h-4 w-4" />} label="Posts today" value={dashboard.posts_today} />}
           {!hideNumbers && <StatCard icon={<BarChart3 className="h-4 w-4" />} label="Posts total" value={dashboard.posts_total} />}
           <StatCard icon={<Eye className="h-4 w-4" />} label="Total views" value={dashboard.views_total.toLocaleString()} />
