@@ -437,11 +437,20 @@ export const uploadClip = (artistId: number, file: File, caption = "") => {
 };
 export const syncGdriveClips = (artistId: number, folder_url: string) =>
   api.post(`/api/artists/${artistId}/clips/gdrive`, { folder_url }).then((r) => r.data);
-export const uploadVariationClip = (variationId: number, file: File, caption = "") => {
+export const uploadVariationClip = (
+  variationId: number,
+  file: File,
+  caption = "",
+  onProgress?: (pct: number) => void,
+) => {
   const form = new FormData();
   form.append("file", file);
   form.append("caption", caption);
-  return api.post(`/api/variations/${variationId}/clips/upload`, form).then((r) => r.data);
+  return api.post(`/api/variations/${variationId}/clips/upload`, form, {
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+    },
+  }).then((r) => r.data);
 };
 export const syncVariationGdriveClips = (variationId: number, folder_url: string) =>
   api.post(`/api/variations/${variationId}/clips/gdrive`, { folder_url }).then((r) => r.data);

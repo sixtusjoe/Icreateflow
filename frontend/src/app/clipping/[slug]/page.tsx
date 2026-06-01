@@ -358,6 +358,7 @@ export default function ArtistPage({
     facebook_handle: "",
   });
   const [variationsOpen, setVariationsOpen] = useState(true);
+  const [hideNumbers, setHideNumbers] = useState(false);
 
   const [editingVarId, setEditingVarId] = useState<number | null>(null);
   const [editVar, setEditVar] = useState({
@@ -682,13 +683,27 @@ export default function ArtistPage({
         <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
           {String(artist.slug)}
         </span>
+        {/* Privacy toggle — hides post counts */}
+        <button
+          onClick={() => setHideNumbers((h) => !h)}
+          title={hideNumbers ? "Show stats" : "Hide stats"}
+          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+            hideNumbers ? "bg-muted-foreground/50" : "bg-foreground/20"
+          }`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-background shadow ring-0 transition-transform ${
+              hideNumbers ? "translate-x-4" : "translate-x-0"
+            }`}
+          />
+        </button>
       </div>
 
       {/* Top summary */}
       {dashboard && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatCard icon={<BarChart3 className="h-4 w-4" />} label="Posts today" value={dashboard.posts_today} />
-          <StatCard icon={<BarChart3 className="h-4 w-4" />} label="Posts total" value={dashboard.posts_total} />
+          {!hideNumbers && <StatCard icon={<BarChart3 className="h-4 w-4" />} label="Posts today" value={dashboard.posts_today} />}
+          {!hideNumbers && <StatCard icon={<BarChart3 className="h-4 w-4" />} label="Posts total" value={dashboard.posts_total} />}
           <StatCard icon={<Eye className="h-4 w-4" />} label="Total views" value={dashboard.views_total.toLocaleString()} />
           <StatCard
             icon={<RefreshCw className="h-4 w-4" />}
@@ -711,9 +726,11 @@ export default function ArtistPage({
           {PLATFORMS.map((p) => (
             <div key={p} className="rounded-xl bg-card p-3">
               <div className="text-xs font-semibold capitalize">{p}</div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                {dashboard.by_platform[p]?.posted ?? 0} posted · {(dashboard.by_platform[p]?.views ?? 0).toLocaleString()} views
-              </div>
+              {!hideNumbers && (
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {dashboard.by_platform[p]?.posted ?? 0} posted · {(dashboard.by_platform[p]?.views ?? 0).toLocaleString()} views
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1375,14 +1392,24 @@ function VariationExtras({
     }
   };
 
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+
   const onUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const arr = Array.from(files);
+    setUploadProgress(0);
     try {
-      for (const f of Array.from(files)) await uploadVariationClip(v.id, f, "");
-      toast.success(`Uploaded ${files.length} to ${v.name}`);
+      for (let i = 0; i < arr.length; i++) {
+        await uploadVariationClip(v.id, arr[i], "", (pct) => {
+          setUploadProgress(Math.round(((i / arr.length) + pct / 100 / arr.length) * 100));
+        });
+      }
+      toast.success(`Uploaded ${arr.length} clip${arr.length > 1 ? "s" : ""} to ${v.name}`);
       onChange();
     } catch {
       toast.error("Upload failed");
+    } finally {
+      setUploadProgress(null);
     }
   };
 
@@ -1460,16 +1487,28 @@ function VariationExtras({
             >
               {syncing ? "Syncing…" : "Sync"}
             </button>
-            <label className="flex flex-1 items-center justify-center rounded-lg border border-border px-3 py-2 text-base sm:flex-none sm:text-xs font-medium hover:bg-muted cursor-pointer">
-              Upload
-              <input
-                type="file"
-                multiple
-                accept="video/mp4,video/*"
-                onChange={(e) => onUpload(e.target.files)}
-                className="hidden"
-              />
-            </label>
+            {uploadProgress !== null ? (
+              <div className="flex flex-1 sm:flex-none items-center gap-2 rounded-lg border border-border px-3 py-2 min-w-[100px]">
+                <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-foreground rounded-full transition-all duration-200"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <span className="text-xs text-muted-foreground tabular-nums w-8 text-right">{uploadProgress}%</span>
+              </div>
+            ) : (
+              <label className="flex flex-1 items-center justify-center rounded-lg border border-border px-3 py-2 text-base sm:flex-none sm:text-xs font-medium hover:bg-muted cursor-pointer">
+                Upload
+                <input
+                  type="file"
+                  multiple
+                  accept="video/mp4,video/*"
+                  onChange={(e) => onUpload(e.target.files)}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
         </div>
       </div>
