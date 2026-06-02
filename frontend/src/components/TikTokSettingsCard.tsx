@@ -385,14 +385,14 @@ export function TikTokSettingsCard({
                     label="Duet"
                     checked={allowDuet}
                     disabled={!!info.duet_disabled || mediaType !== "video"}
-                    disabledReason={mediaType !== "video" ? "video posts only" : undefined}
+                    disabledReason={mediaType !== "video" ? "Not available for photo posts" : undefined}
                     onChange={setAllowDuet}
                   />
                   <Toggle
                     label="Stitch"
                     checked={allowStitch}
                     disabled={!!info.stitch_disabled || mediaType !== "video"}
-                    disabledReason={mediaType !== "video" ? "video posts only" : undefined}
+                    disabledReason={mediaType !== "video" ? "Not available for photo posts" : undefined}
                     onChange={setAllowStitch}
                   />
                 </div>
