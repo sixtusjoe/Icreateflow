@@ -83,6 +83,7 @@ export function TikTokSettingsCard({
   onValidityChange,
   defaultOpen = false,
   mediaType = "video",
+  title,
 }: {
   /** Stable id for the card; used as key in onValidityChange. */
   entityId: number;
@@ -100,6 +101,9 @@ export function TikTokSettingsCard({
    *  callsite.
    */
   mediaType?: "video" | "photo";
+  /** The post caption / TikTok title — shown at the top of the panel per
+   *  TikTok's required UX guideline Point 2a (title must be visible). */
+  title?: string;
   /** Initial state from the row (null for unset). */
   initialValues: TikTokSettingsValues;
   /** Save handler — parent decides which endpoint to call. */
@@ -321,6 +325,16 @@ export function TikTokSettingsCard({
             </p>
           )}
 
+          {/* Title — TikTok UX guideline Point 2a: title must be visible in the UI */}
+          {title && (
+            <div>
+              <label className="mb-1 block text-xs font-medium">Title</label>
+              <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-foreground line-clamp-3">
+                {title}
+              </p>
+            </div>
+          )}
+
           <label className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
@@ -361,13 +375,23 @@ export function TikTokSettingsCard({
                 <label className="mb-1 block text-xs font-medium">Allow users to</label>
                 <div className="flex flex-wrap gap-3">
                   <Toggle label="Comment" checked={allowComment} disabled={!!info.comment_disabled} onChange={setAllowComment} />
-                  {/* Duet/Stitch don't apply to photo posts per TikTok's UX rules. */}
-                  {mediaType === "video" && (
-                    <>
-                      <Toggle label="Duet"    checked={allowDuet}    disabled={!!info.duet_disabled}    onChange={setAllowDuet} />
-                      <Toggle label="Stitch"  checked={allowStitch}  disabled={!!info.stitch_disabled}  onChange={setAllowStitch} />
-                    </>
-                  )}
+                  {/* Duet/Stitch: shown for all post types but disabled for photo posts.
+                      TikTok's UX guideline requires all three to be visible; photo posts
+                      cannot use Duet/Stitch so they render grayed out. */}
+                  <Toggle
+                    label="Duet"
+                    checked={allowDuet}
+                    disabled={!!info.duet_disabled || mediaType !== "video"}
+                    disabledReason={mediaType !== "video" ? "photo posts only" : undefined}
+                    onChange={setAllowDuet}
+                  />
+                  <Toggle
+                    label="Stitch"
+                    checked={allowStitch}
+                    disabled={!!info.stitch_disabled || mediaType !== "video"}
+                    disabledReason={mediaType !== "video" ? "photo posts only" : undefined}
+                    onChange={setAllowStitch}
+                  />
                 </div>
               </div>
 
@@ -479,12 +503,19 @@ export function TikTokSettingsCard({
 }
 
 function Toggle({
-  label, checked, disabled, onChange,
+  label, checked, disabled, onChange, disabledReason,
 }: {
-  label: string; checked: boolean; disabled?: boolean; onChange: (b: boolean) => void;
+  label: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (b: boolean) => void;
+  disabledReason?: string;
 }) {
   return (
-    <label className={`flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-muted/40"}`}>
+    <label
+      title={disabled && disabledReason ? disabledReason : undefined}
+      className={`flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-muted/40"}`}
+    >
       <input
         type="checkbox"
         checked={checked && !disabled}
@@ -493,7 +524,11 @@ function Toggle({
         className="h-3.5 w-3.5 accent-foreground"
       />
       {label}
-      {disabled && <span className="ml-1 text-[10px] text-muted-foreground">(off in TikTok)</span>}
+      {disabled && (
+        <span className="ml-1 text-[10px] text-muted-foreground">
+          ({disabledReason ?? "off in TikTok"})
+        </span>
+      )}
     </label>
   );
 }
