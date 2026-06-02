@@ -71,6 +71,7 @@ export type TikTokSettingsValues = {
   tiktok_allow_duet?: boolean | null;
   tiktok_allow_stitch?: boolean | null;
   tiktok_consent_at?: string | null;
+  tiktok_title?: string | null;
 };
 
 export function TikTokSettingsCard({
@@ -101,9 +102,6 @@ export function TikTokSettingsCard({
    *  callsite.
    */
   mediaType?: "video" | "photo";
-  /** The post caption / TikTok title — shown at the top of the panel per
-   *  TikTok's required UX guideline Point 2a (title must be visible). */
-  title?: string;
   /** Initial state from the row (null for unset). */
   initialValues: TikTokSettingsValues;
   /** Save handler — parent decides which endpoint to call. */
@@ -128,6 +126,7 @@ export function TikTokSettingsCard({
   const [allowComment, setAllowComment] = useState(!!initialValues.tiktok_allow_comment);
   const [allowDuet, setAllowDuet] = useState(!!initialValues.tiktok_allow_duet);
   const [allowStitch, setAllowStitch] = useState(!!initialValues.tiktok_allow_stitch);
+  const [tiktokTitle, setTiktokTitle] = useState<string>(initialValues.tiktok_title || "");
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(initialValues.tiktok_consent_at || null);
 
   // Snapshot of values at the last successful Save (or initial mount).
@@ -261,6 +260,7 @@ export function TikTokSettingsCard({
         // that implies the user opted into them.
         tiktok_allow_duet:   mediaType === "video" ? allowDuet   : false,
         tiktok_allow_stitch: mediaType === "video" ? allowStitch : false,
+        tiktok_title: tiktokTitle.trim() || undefined,
       };
       await onSave(payload);
       const stampIso = new Date().toISOString();
@@ -325,15 +325,19 @@ export function TikTokSettingsCard({
             </p>
           )}
 
-          {/* Title — TikTok UX guideline Point 2a: title must be visible in the UI */}
-          {title && (
-            <div>
-              <label className="mb-1 block text-xs font-medium">Title</label>
-              <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-foreground line-clamp-3">
-                {title}
-              </p>
-            </div>
-          )}
+          {/* Title — TikTok UX guideline Point 2a: editable title field.
+              font-size ≥ 16px prevents iOS Safari from auto-zooming on focus. */}
+          <div>
+            <label className="mb-1 block text-xs font-medium">Title</label>
+            <textarea
+              value={tiktokTitle}
+              onChange={(e) => setTiktokTitle(e.target.value)}
+              placeholder="Add a title for this TikTok post…"
+              rows={2}
+              style={{ fontSize: "16px" }}
+              className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/30"
+            />
+          </div>
 
           <label className="flex items-start gap-2 text-sm">
             <input

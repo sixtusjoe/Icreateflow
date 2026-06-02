@@ -1109,7 +1109,6 @@ function NewPostPageInner() {
                     creatorInfoAccountId={acc.id}
                     creatorInfoKind="brand_account"
                     mediaType="photo"
-                    title={post.caption || ""}
                     initialValues={out}
                     onSave={(payload) => updateOutputTiktokSettings(out.id, payload).then(() => {})}
                     onValidityChange={onTiktokValidity}

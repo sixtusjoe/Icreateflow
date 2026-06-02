@@ -417,6 +417,7 @@ class TikTokSettingsPayload(BaseModel):
     tiktok_allow_comment: Optional[bool] = None
     tiktok_allow_duet: Optional[bool] = None
     tiktok_allow_stitch: Optional[bool] = None
+    tiktok_title: Optional[str] = None
 
 # Back-compat alias for the Brand outputs endpoint.
 OutputTikTokSettings = TikTokSettingsPayload

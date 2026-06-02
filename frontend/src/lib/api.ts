@@ -553,6 +553,7 @@ export type TikTokSettingsPatch = {
   tiktok_allow_comment?: boolean;
   tiktok_allow_duet?: boolean;
   tiktok_allow_stitch?: boolean;
+  tiktok_title?: string;
 };
 
 export const updateOutputTiktokSettings = (

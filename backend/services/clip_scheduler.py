@@ -1766,11 +1766,14 @@ async def dispatch_brand_posts_once() -> None:
                                         "brand_content_toggle": bool(out.get("tiktok_disclose_branded_content")),
                                         "brand_organic_toggle": bool(out.get("tiktok_disclose_your_brand")),
                                     }
+                                # Use per-output tiktok_title if set; fall back to
+                                # shared scraped caption so other platforms are unaffected.
+                                tt_caption = out.get("tiktok_title") or caption
                                 if slide_urls:
                                     slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
                                                        if k not in ("disable_duet", "disable_stitch")}
                                     res = await _tt.upload_photo_slideshow(
-                                        token, slide_urls, caption,
+                                        token, slide_urls, tt_caption,
                                         proxy_url=account_proxy, **slideshow_kwargs,
                                     )
                                 else:
@@ -1779,7 +1782,7 @@ async def dispatch_brand_posts_once() -> None:
                                         per_platform[name] = {"status": "skipped", "reason": "no video rendered"}
                                         continue
                                     res = await adapter.upload_video(
-                                        token, plat_url, caption,
+                                        token, plat_url, tt_caption,
                                         proxy_url=account_proxy, **tt_kwargs,
                                     )
                             else:
