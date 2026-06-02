@@ -84,7 +84,6 @@ export function TikTokSettingsCard({
   onValidityChange,
   defaultOpen = false,
   mediaType = "video",
-  title,
 }: {
   /** Stable id for the card; used as key in onValidityChange. */
   entityId: number;
