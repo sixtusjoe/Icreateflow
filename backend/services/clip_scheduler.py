@@ -929,6 +929,7 @@ async def dispatch_due_once() -> None:
                     "SELECT id FROM clip_posts "
                     "WHERE artist_account_id = ? AND platform = ? "
                     "  AND status = 'posted' "
+                    "  AND clip_id IS NOT NULL "
                     "  AND posted_at > NOW() - INTERVAL '30 minutes' "
                     "LIMIT 1",
                     (cp["artist_account_id"], platform),
