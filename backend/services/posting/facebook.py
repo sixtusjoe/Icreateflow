@@ -86,3 +86,38 @@ async def get_view_count(
                 if values:
                     return int(values[0].get("value") or 0)
         return node_views
+
+
+async def list_videos(
+    access_token: str,
+    page_id: str | None = None,
+    proxy_url: str | None = None,
+) -> list[dict]:
+    """Return the authed page's recent uploaded videos.
+
+    Used by external-post discovery to find videos posted from a phone or
+    Creator Studio. Returns an empty list (never raises) on any error.
+
+    Each item: {"id": str, "create_time": str (ISO-8601)}
+    """
+    if not page_id:
+        return []
+    url = f"{GRAPH}/{page_id}/videos"
+    params = {
+        "fields": "id,created_time",
+        "type": "uploaded",
+        "limit": "20",
+        "access_token": access_token,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+            r = await client.get(url, params=params)
+        if r.status_code >= 400:
+            return []
+        return [
+            {"id": v["id"], "create_time": v["created_time"]}
+            for v in (r.json().get("data") or [])
+            if v.get("id")
+        ]
+    except Exception:
+        return []

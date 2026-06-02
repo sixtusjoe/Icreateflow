@@ -132,3 +132,62 @@ async def get_view_count(
             f"(deleted, private, or stored id is stale)"
         )
     return counts[platform_post_id]
+
+
+async def list_videos(
+    access_token: str,
+    proxy_url: str | None = None,
+) -> list[dict]:
+    """Return the authed user's recent YouTube uploads.
+
+    Used by external-post discovery to find videos posted from Creator Studio
+    or the mobile app. Returns an empty list (never raises) on any error.
+
+    Each item: {"id": str (video ID), "create_time": str (ISO-8601)}
+    """
+    YT_API = "https://www.googleapis.com/youtube/v3"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+            # Step 1: get the channel's uploads playlist ID
+            ch = await client.get(
+                f"{YT_API}/channels",
+                params={"part": "contentDetails", "mine": "true"},
+                headers=headers,
+            )
+            if ch.status_code >= 400:
+                return []
+            ch_items = ch.json().get("items") or []
+            if not ch_items:
+                return []
+            playlist_id = (
+                ch_items[0]
+                .get("contentDetails", {})
+                .get("relatedPlaylists", {})
+                .get("uploads")
+            )
+            if not playlist_id:
+                return []
+
+            # Step 2: list recent items from the uploads playlist
+            pl = await client.get(
+                f"{YT_API}/playlistItems",
+                params={
+                    "part": "snippet",
+                    "playlistId": playlist_id,
+                    "maxResults": "20",
+                },
+                headers=headers,
+            )
+            if pl.status_code >= 400:
+                return []
+            return [
+                {
+                    "id": i["snippet"]["resourceId"]["videoId"],
+                    "create_time": i["snippet"]["publishedAt"],
+                }
+                for i in (pl.json().get("items") or [])
+                if i.get("snippet", {}).get("resourceId", {}).get("videoId")
+            ]
+    except Exception:
+        return []

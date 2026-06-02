@@ -1992,6 +1992,20 @@ async def poll_views_once() -> None:
     except Exception:
         traceback.print_exc()
 
+    # Discover external posts on other platforms (same pattern as TikTok)
+    try:
+        await _discover_external_platform_posts("instagram", "instagram_token", "instagram_user_id")
+    except Exception:
+        traceback.print_exc()
+    try:
+        await _discover_external_platform_posts("youtube", "youtube_token")
+    except Exception:
+        traceback.print_exc()
+    try:
+        await _discover_external_platform_posts("facebook", "facebook_token", "facebook_user_id")
+    except Exception:
+        traceback.print_exc()
+
     # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
     try:
         await _send_pre_post_reminders()
@@ -2455,6 +2469,130 @@ async def sweep_clip_caches_once() -> None:
                 await database.close()
         except Exception:
             pass
+
+
+async def _discover_external_platform_posts(
+    platform: str,
+    token_col: str,
+    extra_col: str | None = None,
+) -> None:
+    """Generic external-post discovery for Instagram, YouTube, and Facebook.
+
+    Fetches each variation's recent posts via the platform adapter's
+    list_videos() and inserts any unknown IDs as status='posted' rows so
+    the view poller picks them up automatically. Fully idempotent.
+    """
+    database = await db.get_db()
+    try:
+        cols = f"aa.id, aa.artist_id, aa.{token_col}"
+        if extra_col:
+            cols += f", aa.{extra_col}"
+        proxy_col = "aa.proxy_url"
+        cur = await database.execute(
+            f"""
+            SELECT {cols}, {proxy_col}
+            FROM artist_accounts aa
+            WHERE aa.{token_col} IS NOT NULL
+            """
+        )
+        variations = [dict(r) for r in await cur.fetchall()]
+        if not variations:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        adapter = ADAPTERS[platform]
+
+        for var in variations:
+            var_id = var["id"]
+            artist_id = var["artist_id"]
+            access_token = var[token_col]
+            proxy = var.get("proxy_url") or None
+            extra_val = var.get(extra_col) if extra_col else None
+
+            try:
+                if platform == "instagram":
+                    videos = await adapter.list_videos(
+                        access_token, ig_user_id=extra_val, proxy_url=proxy
+                    )
+                elif platform == "youtube":
+                    videos = await adapter.list_videos(access_token, proxy_url=proxy)
+                else:  # facebook
+                    videos = await adapter.list_videos(
+                        access_token, page_id=extra_val, proxy_url=proxy
+                    )
+
+                if not videos:
+                    continue
+
+                existing_cur = await database.execute(
+                    f"""
+                    SELECT platform_post_id FROM clip_posts
+                    WHERE artist_account_id = ? AND platform = ?
+                      AND platform_post_id IS NOT NULL
+                    """,
+                    (var_id, platform),
+                )
+                known_ids = {
+                    str(r["platform_post_id"]).strip()
+                    for r in await existing_cur.fetchall()
+                }
+
+                inserted = 0
+                for video in videos:
+                    vid_id = str(video.get("id") or "").strip()
+                    if not vid_id or vid_id in known_ids:
+                        continue
+
+                    # Parse ISO-8601 create_time (Instagram/Facebook/YouTube all use ISO)
+                    create_time_str = video.get("create_time") or ""
+                    try:
+                        from datetime import datetime as _dt
+                        posted_at = _dt.fromisoformat(
+                            create_time_str.replace("Z", "+00:00")
+                        ).astimezone(timezone.utc).replace(tzinfo=None)
+                    except Exception:
+                        posted_at = now_utc.replace(tzinfo=None)
+
+                    await database.execute(
+                        f"""
+                        INSERT INTO clip_posts
+                            (clip_id, artist_id, artist_account_id, platform,
+                             status, platform_post_id, posted_at,
+                             view_count, view_count_updated_at)
+                        SELECT NULL, ?, ?, ?,
+                               'posted', ?, ?,
+                               0, ?
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM clip_posts
+                            WHERE artist_account_id = ?
+                              AND platform = ?
+                              AND platform_post_id = ?
+                        )
+                        """,
+                        (
+                            artist_id, var_id, platform,
+                            vid_id, posted_at,
+                            now_utc.replace(tzinfo=None),
+                            var_id, platform, vid_id,
+                        ),
+                    )
+                    known_ids.add(vid_id)
+                    inserted += 1
+
+                await database.commit()
+                if inserted:
+                    print(
+                        f"[{platform}_discovery] var={var_id} inserted {inserted} new post(s)",
+                        flush=True,
+                    )
+            except Exception:
+                import traceback as _tb
+                print(
+                    f"[{platform}_discovery] var={var_id} ERROR: {_tb.format_exc()}",
+                    flush=True,
+                )
+    finally:
+        await database.close()
 
 
 async def discover_external_tiktok_posts() -> None:

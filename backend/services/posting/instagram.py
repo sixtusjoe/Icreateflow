@@ -150,3 +150,37 @@ async def get_view_count(
                 platform_post_id, last_status, last_body,
             )
         return 0
+
+
+async def list_videos(
+    access_token: str,
+    ig_user_id: str | None = None,
+    proxy_url: str | None = None,
+) -> list[dict]:
+    """Return the authed user's recent Instagram video/reel posts.
+
+    Used by external-post discovery to find videos posted from a phone.
+    Returns an empty list (never raises) when the scope is missing or the
+    call fails — callers treat an empty result as "nothing to discover."
+
+    Each item: {"id": str, "create_time": str (ISO-8601)}
+    """
+    uid = ig_user_id or "me"
+    url = f"{GRAPH}/{uid}/media"
+    params = {
+        "fields": "id,timestamp,media_type",
+        "limit": "20",
+        "access_token": access_token,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+            r = await client.get(url, params=params)
+        if r.status_code >= 400:
+            return []
+        return [
+            {"id": m["id"], "create_time": m["timestamp"]}
+            for m in (r.json().get("data") or [])
+            if m.get("media_type") in ("VIDEO", "REEL")
+        ]
+    except Exception:
+        return []
