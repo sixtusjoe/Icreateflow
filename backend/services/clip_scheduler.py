@@ -127,7 +127,7 @@ async def _fresh_variation_token(database, variation: dict, platform: str) -> st
         return token
     try:
         refreshed = await oauth_svc.refresh_access_token(
-            provider, refresh, cid, csec, proxy_url=v.get("proxy_url"),
+            provider, refresh, cid, csec, proxy_url=v.get("proxy_url") or None,
         )
     except Exception:
         return token
@@ -1591,7 +1591,7 @@ async def _fresh_brand_account_token(database, account: dict, platform: str) -> 
         return token
     try:
         refreshed = await oauth_svc.refresh_access_token(
-            provider, refresh, cid, csec, proxy_url=a.get("proxy_url"),
+            provider, refresh, cid, csec, proxy_url=a.get("proxy_url") or None,
         )
     except Exception:
         return token
