@@ -220,7 +220,9 @@ export default function SettingsPage() {
             const lastRun = item?.last_run_at;
             const radius = 28;
             const circ = 2 * Math.PI * radius;
-            const fill = Math.min(count / 20, 1); // ring fills at 20 posts
+            // Ring is full once a discovery run has completed; the count in
+            // the centre is what that run found. Empty grey ring if never run.
+            const fill = lastRun ? 1 : 0;
             return (
               <div key={key} className="flex flex-col items-center gap-2">
                 <div className="relative h-20 w-20">
@@ -228,7 +230,8 @@ export default function SettingsPage() {
                     <circle cx="36" cy="36" r={radius} fill="none"
                       stroke="currentColor" strokeWidth="5" className="text-muted-foreground/20" />
                     <circle cx="36" cy="36" r={radius} fill="none"
-                      stroke={color} strokeWidth="5"
+                      stroke={count > 0 ? color : "currentColor"} strokeWidth="5"
+                      className={count > 0 ? "" : "text-muted-foreground/30"}
                       strokeDasharray={circ}
                       strokeDashoffset={circ * (1 - fill)}
                       strokeLinecap="round"
