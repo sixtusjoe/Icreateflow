@@ -2632,9 +2632,10 @@ async def discover_external_tiktok_posts() -> None:
     database = await db.get_db()
     try:
         # Fetch all variations across all artists that have a TikTok token.
+        # SELECT * so _fresh_variation_token can read the refresh token / expiry.
         cur = await database.execute(
             """
-            SELECT aa.id, aa.artist_id, aa.tiktok_token, aa.tiktok_user_id
+            SELECT aa.*
             FROM artist_accounts aa
             WHERE aa.tiktok_token IS NOT NULL
             """
@@ -2656,7 +2657,10 @@ async def discover_external_tiktok_posts() -> None:
             for var in variations:
                 var_id = var["id"]
                 artist_id = var["artist_id"]
-                access_token = var["tiktok_token"]
+                # Refresh the token if expired (raw DB token may be stale).
+                access_token = await _fresh_variation_token(database, var, "tiktok")
+                if not access_token:
+                    continue
                 try:
                     # Fetch up to 20 most recent videos from TikTok.
                     # The /video/list/ API caps max_count at 20.
@@ -2758,7 +2762,7 @@ async def discover_external_tiktok_posts() -> None:
 
 
 async def _discovery_loop() -> None:
-    """Run external post discovery (TikTok + IG/YT/FB) every hour.
+    """Run external post discovery (TikTok + IG/YT/FB) every 5 minutes.
 
     Runs completely independently of the view-poll loop so a hung API call
     never blocks view counting.
@@ -2783,7 +2787,7 @@ async def _discovery_loop() -> None:
                 print(f"[{_plat}_discovery] timed out — skipping", flush=True)
             except Exception:
                 traceback.print_exc()
-        await asyncio.sleep(3600)  # run once per hour
+        await asyncio.sleep(300)  # run every 5 minutes
 
 
 async def start_background_tasks() -> list[asyncio.Task]:

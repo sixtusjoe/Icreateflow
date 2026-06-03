@@ -211,7 +211,7 @@ export default function SettingsPage() {
         <h2 className="mb-1 text-base font-semibold">Post Discovery</h2>
         <p className="mb-5 text-xs text-muted-foreground">
           Finds videos posted from your phone and adds them for view tracking.
-          TikTok runs every 15 min · Instagram, YouTube &amp; Facebook run every hour.
+          All platforms run every 5 minutes.
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {DISCOVERY_PLATFORMS.map(({ key, label, color }) => {
