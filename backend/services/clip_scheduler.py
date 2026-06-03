@@ -1984,28 +1984,10 @@ async def dispatch_brand_posts_once() -> None:
 
 
 async def poll_views_once() -> None:
-    """Discover external posts, refresh view counts, re-check pause."""
-    try:
-        await discover_external_tiktok_posts()
-    except Exception:
-        traceback.print_exc()
-
-    # Discover external posts on other platforms.
-    # Each capped at 30s so a slow API never blocks the view-count pass.
-    for _plat, _tok, _extra in [
-        ("instagram", "instagram_token", "instagram_user_id"),
-        ("youtube",   "youtube_token",   None),
-        ("facebook",  "facebook_token",  "facebook_user_id"),
-    ]:
-        try:
-            await asyncio.wait_for(
-                _discover_external_platform_posts(_plat, _tok, _extra),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            print(f"[{_plat}_discovery] timed out after 30s — skipping", flush=True)
-        except Exception:
-            traceback.print_exc()
+    """Refresh view counts for all posted rows, then re-check pause."""
+    # NOTE: External post discovery (TikTok + other platforms) runs in its
+    # own separate background loop (_discovery_loop) so it never blocks
+    # the view-count pass here.
 
     # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
     try:
@@ -2723,12 +2705,42 @@ async def discover_external_tiktok_posts() -> None:
         await database.close()
 
 
+async def _discovery_loop() -> None:
+    """Run external post discovery (TikTok + IG/YT/FB) every hour.
+
+    Runs completely independently of the view-poll loop so a hung API call
+    never blocks view counting.
+    """
+    await asyncio.sleep(30)  # brief startup delay
+    while True:
+        try:
+            await discover_external_tiktok_posts()
+        except Exception:
+            traceback.print_exc()
+        for _plat, _tok, _extra in [
+            ("instagram", "instagram_token", "instagram_user_id"),
+            ("youtube",   "youtube_token",   None),
+            ("facebook",  "facebook_token",  "facebook_user_id"),
+        ]:
+            try:
+                await asyncio.wait_for(
+                    _discover_external_platform_posts(_plat, _tok, _extra),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                print(f"[{_plat}_discovery] timed out — skipping", flush=True)
+            except Exception:
+                traceback.print_exc()
+        await asyncio.sleep(3600)  # run once per hour
+
+
 async def start_background_tasks() -> list[asyncio.Task]:
     """Kick off the background loops. Call from FastAPI lifespan startup."""
     return [
         asyncio.create_task(_loop(plan_slots_once, 300, "plan_slots")),
         asyncio.create_task(_loop(dispatch_due_once, 60, "dispatch")),
         asyncio.create_task(_poll_views_loop()),
+        asyncio.create_task(_discovery_loop()),
         # Daily cache sweep — runs once on boot, then every 24h.
         asyncio.create_task(_loop(sweep_clip_caches_once, 86400, "cache_sweep")),
         # Brand post auto-dispatcher — checks every 60 s for scheduled posts
