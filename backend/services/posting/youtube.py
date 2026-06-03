@@ -148,7 +148,7 @@ async def list_videos(
     YT_API = "https://www.googleapis.com/youtube/v3"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
-        async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+        async with httpx.AsyncClient(timeout=8, proxy=proxy_url) as client:
             # Step 1: get the channel's uploads playlist ID
             ch = await client.get(
                 f"{YT_API}/channels",

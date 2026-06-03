@@ -110,7 +110,7 @@ async def list_videos(
         "access_token": access_token,
     }
     try:
-        async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+        async with httpx.AsyncClient(timeout=8, proxy=proxy_url) as client:
             r = await client.get(url, params=params)
         if r.status_code >= 400:
             return []

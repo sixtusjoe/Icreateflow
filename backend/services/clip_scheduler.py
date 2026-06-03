@@ -1996,19 +1996,23 @@ async def poll_views_once() -> None:
     except Exception:
         traceback.print_exc()
 
-    # Discover external posts on other platforms (same pattern as TikTok)
-    try:
-        await _discover_external_platform_posts("instagram", "instagram_token", "instagram_user_id")
-    except Exception:
-        traceback.print_exc()
-    try:
-        await _discover_external_platform_posts("youtube", "youtube_token")
-    except Exception:
-        traceback.print_exc()
-    try:
-        await _discover_external_platform_posts("facebook", "facebook_token", "facebook_user_id")
-    except Exception:
-        traceback.print_exc()
+    # Discover external posts on other platforms (same pattern as TikTok).
+    # Hard-capped at 30s each so a slow/hung API call can never block the
+    # view-count pass that follows — view counting is the more critical path.
+    for _plat, _tok, _extra in [
+        ("instagram", "instagram_token", "instagram_user_id"),
+        ("youtube",   "youtube_token",   None),
+        ("facebook",  "facebook_token",  "facebook_user_id"),
+    ]:
+        try:
+            await asyncio.wait_for(
+                _discover_external_platform_posts(_plat, _tok, _extra),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            print(f"[{_plat}_discovery] timed out after 30s — skipping", flush=True)
+        except Exception:
+            traceback.print_exc()
 
     # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
     try:
