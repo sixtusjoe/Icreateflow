@@ -1983,41 +1983,16 @@ async def dispatch_brand_posts_once() -> None:
         await database.close()
 
 
-async def _run_all_discovery() -> None:
-    """Run all external-post discovery (TikTok + other platforms).
-
-    Runs as a fire-and-forget background task so it never blocks the
-    view-count pass. Each platform is capped at 30s individually.
-    """
+async def poll_views_once() -> None:
+    """Discover external TikTok posts, refresh view counts, re-check pause."""
+    # TikTok external discovery — proven stable.
+    # Instagram/YouTube/Facebook discovery removed: their list-media API calls
+    # were hanging the poll loop (expired/insufficient-scope tokens returning
+    # slow errors). Re-enable per-platform once tokens are confirmed valid.
     try:
         await discover_external_tiktok_posts()
     except Exception:
         traceback.print_exc()
-
-    for _plat, _tok, _extra in [
-        ("instagram", "instagram_token", "instagram_user_id"),
-        ("youtube",   "youtube_token",   None),
-        ("facebook",  "facebook_token",  "facebook_user_id"),
-    ]:
-        try:
-            await asyncio.wait_for(
-                _discover_external_platform_posts(_plat, _tok, _extra),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            print(f"[{_plat}_discovery] timed out after 30s — skipping", flush=True)
-        except Exception:
-            traceback.print_exc()
-
-
-async def poll_views_once() -> None:
-    """Refresh view counts for all posted rows, then re-check pause.
-
-    External-post discovery is fired as a non-blocking background task
-    so slow/hung platform APIs can never delay the view-count pass.
-    """
-    # Fire discovery in the background — don't await it.
-    asyncio.create_task(_run_all_discovery())
 
     # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
     try:
