@@ -2038,7 +2038,7 @@ async def poll_views_once() -> None:
               AND (view_count_updated_at IS NULL
                    OR view_count_updated_at < NOW() - INTERVAL '30 seconds')
             ORDER BY view_count_updated_at ASC NULLS FIRST
-            LIMIT 100
+            LIMIT 30
             """
         )
         rows = [dict(r) for r in await cur.fetchall()]
