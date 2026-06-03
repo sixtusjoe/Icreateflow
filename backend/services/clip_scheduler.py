@@ -2496,7 +2496,10 @@ async def _discover_external_platform_posts(
         for var in variations:
             var_id = var["id"]
             artist_id = var["artist_id"]
-            access_token = var[token_col]
+            # Use _fresh_variation_token so expired tokens are refreshed first
+            access_token = await _fresh_variation_token(database, var, platform)
+            if not access_token:
+                continue
             proxy = var.get("proxy_url") or None
             extra_val = var.get(extra_col) if extra_col else None
 
