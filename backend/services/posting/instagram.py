@@ -98,7 +98,7 @@ async def upload_video(
 async def get_view_count(
     access_token: str, platform_post_id: str, proxy_url: str | None = None,
 ) -> int:
-    async with httpx.AsyncClient(timeout=8, proxy=proxy_url) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
         # Step 1: existence probe. GET /{media-id}?fields=id is the cheapest
         # call we can make and it doesn't need insights permission. If the
         # media is gone Meta returns 4xx with 'does not exist' or

@@ -84,7 +84,7 @@ async def get_view_counts_batch(
         return {}
     headers = {"Authorization": f"Bearer {access_token}"}
     out: dict[str, int] = {}
-    async with httpx.AsyncClient(timeout=8, proxy=proxy_url) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
         for i in range(0, len(video_ids), 50):
             chunk = video_ids[i : i + 50]
             r = await client.get(
