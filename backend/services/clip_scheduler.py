@@ -1983,22 +1983,17 @@ async def dispatch_brand_posts_once() -> None:
         await database.close()
 
 
-async def poll_views_once() -> None:
-    """Discover external TikTok posts, then refresh view counts for all
-    posted rows, then re-check pause."""
-    # Run discovery first so any newly found phone-posted videos are
-    # immediately included in the view-count pass below.
-    # Wrapped in its own try/except so a TikTok API or DB blip during
-    # discovery can never abort the view-poll cycle — view counting is
-    # more critical and must always run.
+async def _run_all_discovery() -> None:
+    """Run all external-post discovery (TikTok + other platforms).
+
+    Runs as a fire-and-forget background task so it never blocks the
+    view-count pass. Each platform is capped at 30s individually.
+    """
     try:
         await discover_external_tiktok_posts()
     except Exception:
         traceback.print_exc()
 
-    # Discover external posts on other platforms (same pattern as TikTok).
-    # Hard-capped at 30s each so a slow/hung API call can never block the
-    # view-count pass that follows — view counting is the more critical path.
     for _plat, _tok, _extra in [
         ("instagram", "instagram_token", "instagram_user_id"),
         ("youtube",   "youtube_token",   None),
@@ -2013,6 +2008,16 @@ async def poll_views_once() -> None:
             print(f"[{_plat}_discovery] timed out after 30s — skipping", flush=True)
         except Exception:
             traceback.print_exc()
+
+
+async def poll_views_once() -> None:
+    """Refresh view counts for all posted rows, then re-check pause.
+
+    External-post discovery is fired as a non-blocking background task
+    so slow/hung platform APIs can never delay the view-count pass.
+    """
+    # Fire discovery in the background — don't await it.
+    asyncio.create_task(_run_all_discovery())
 
     # Send pre-post reminders (1 hour ahead) — silently no-op if SMTP not configured.
     try:
