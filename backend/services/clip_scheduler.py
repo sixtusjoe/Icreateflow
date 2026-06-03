@@ -2482,8 +2482,16 @@ async def _discover_external_platform_posts(
         if not variations:
             return
 
+        # Reset count so the UI ring clears while this run is in progress
+        try:
+            await db.set_site_config(database, f"{platform}_discovery_count", "0")
+            await database.commit()
+        except Exception:
+            pass
+
         now_utc = datetime.now(timezone.utc)
         adapter = ADAPTERS[platform]
+        total_run_inserted = 0
 
         for var in variations:
             var_id = var["id"]
@@ -2563,6 +2571,7 @@ async def _discover_external_platform_posts(
                     inserted += 1
 
                 await database.commit()
+                total_run_inserted += inserted
                 if inserted:
                     print(
                         f"[{platform}_discovery] var={var_id} inserted {inserted} new post(s)",
@@ -2574,6 +2583,15 @@ async def _discover_external_platform_posts(
                     f"[{platform}_discovery] var={var_id} ERROR: {_tb.format_exc()}",
                     flush=True,
                 )
+
+        # Stamp final count + timestamp for UI status card
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.set_site_config(database, f"{platform}_discovery_count", str(total_run_inserted))
+            await db.set_site_config(database, f"last_{platform}_discovery_at", now_iso)
+            await database.commit()
+        except Exception:
+            pass
     finally:
         await database.close()
 
@@ -2609,7 +2627,15 @@ async def discover_external_tiktok_posts() -> None:
         if not variations:
             return
 
+        # Reset count so UI ring clears while this run is in progress
+        try:
+            await db.set_site_config(database, "tiktok_discovery_count", "0")
+            await database.commit()
+        except Exception:
+            pass
+
         now_utc = datetime.now(timezone.utc)
+        total_run_inserted = 0
         async with httpx.AsyncClient(timeout=30) as client:
             for var in variations:
                 var_id = var["id"]
@@ -2690,6 +2716,7 @@ async def discover_external_tiktok_posts() -> None:
                         inserted += 1
 
                     await database.commit()
+                    total_run_inserted += inserted
                     if inserted:
                         print(
                             f"[tiktok_discovery] var={var_id} inserted {inserted} new post(s)",
@@ -2701,6 +2728,15 @@ async def discover_external_tiktok_posts() -> None:
                         f"[tiktok_discovery] var={var_id} ERROR: {_tb.format_exc()}",
                         flush=True,
                     )
+
+        # Stamp final count + timestamp for UI status card
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.set_site_config(database, "tiktok_discovery_count", str(total_run_inserted))
+            await db.set_site_config(database, "last_tiktok_discovery_at", now_iso)
+            await database.commit()
+        except Exception:
+            pass
     finally:
         await database.close()
 

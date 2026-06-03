@@ -298,6 +298,8 @@ export const getSettings = () =>
   api.get("/api/settings").then((r) => r.data);
 export const updateSetting = (key: string, value: string) =>
   api.put("/api/settings", { key, value }).then((r) => r.data);
+export const getDiscoveryStatus = () =>
+  api.get("/api/discovery/status").then((r) => r.data);
 
 // --- Stats ---
 export const getStats = () => api.get("/api/stats").then((r) => r.data);

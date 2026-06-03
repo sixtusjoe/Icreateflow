@@ -4,7 +4,21 @@ import { useEffect, useState } from "react";
 import { Save, Eye, EyeOff, Link2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { getSettings, updateSetting, getUserSettings, updateUserSetting } from "@/lib/api";
+import { getSettings, updateSetting, getUserSettings, updateUserSetting, getDiscoveryStatus } from "@/lib/api";
+
+function timeAgo(iso: string): string {
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
+}
+
+const DISCOVERY_PLATFORMS = [
+  { key: "tiktok",    label: "TikTok",    color: "#000000", darkColor: "#ffffff" },
+  { key: "instagram", label: "Instagram", color: "#e1306c", darkColor: "#e1306c" },
+  { key: "youtube",   label: "YouTube",   color: "#ff0000", darkColor: "#ff0000" },
+  { key: "facebook",  label: "Facebook",  color: "#1877f2", darkColor: "#1877f2" },
+];
 
 function ToggleRow({ title, desc, on, onToggle }: {
   title: string; desc: string; on: boolean; onToggle: (v: boolean) => void;
@@ -65,10 +79,14 @@ function SecretField({ label, value, onChange, onSave, placeholder, hint }: {
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [userSettings, setUserSettings] = useState<Record<string, string>>({});
+  const [discoveryStatus, setDiscoveryStatus] = useState<{ platforms: { platform: string; last_count: number; last_run_at: string | null }[] } | null>(null);
 
   useEffect(() => {
     getSettings().then(setSettings).catch(() => {});
     getUserSettings().then(setUserSettings).catch(() => {});
+    getDiscoveryStatus().then(setDiscoveryStatus).catch(() => {});
+    const iv = setInterval(() => getDiscoveryStatus().then(setDiscoveryStatus).catch(() => {}), 30_000);
+    return () => clearInterval(iv);
   }, []);
 
   const saveGlobal = async (key: string, value: string) => {
@@ -186,6 +204,48 @@ export default function SettingsPage() {
           onClick={() => { saveGlobal("hook_font_size", val("hook_font_size", "52")); saveGlobal("title_font_size", val("title_font_size", "44")); saveGlobal("body_font_size", val("body_font_size", "36")); saveGlobal("text_color", val("text_color", "#FFFFFF")); }}>
           <Save className="h-4 w-4" /> Save Overlay Settings
         </button>
+      </div>
+
+      {/* Post Discovery Status */}
+      <div className="mb-6 rounded-2xl bg-card p-4 md:p-6">
+        <h2 className="mb-1 text-base font-semibold">Post Discovery</h2>
+        <p className="mb-5 text-xs text-muted-foreground">
+          Finds videos posted from your phone and adds them for view tracking.
+          TikTok runs every 15 min · Instagram, YouTube &amp; Facebook run every hour.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {DISCOVERY_PLATFORMS.map(({ key, label, color }) => {
+            const item = discoveryStatus?.platforms?.find((p) => p.platform === key);
+            const count = item?.last_count ?? 0;
+            const lastRun = item?.last_run_at;
+            const radius = 28;
+            const circ = 2 * Math.PI * radius;
+            const fill = Math.min(count / 20, 1); // ring fills at 20 posts
+            return (
+              <div key={key} className="flex flex-col items-center gap-2">
+                <div className="relative h-20 w-20">
+                  <svg viewBox="0 0 72 72" className="h-full w-full -rotate-90">
+                    <circle cx="36" cy="36" r={radius} fill="none"
+                      stroke="currentColor" strokeWidth="5" className="text-muted-foreground/20" />
+                    <circle cx="36" cy="36" r={radius} fill="none"
+                      stroke={color} strokeWidth="5"
+                      strokeDasharray={circ}
+                      strokeDashoffset={circ * (1 - fill)}
+                      strokeLinecap="round"
+                      style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+                  </svg>
+                  <span className="absolute inset-0 flex items-center justify-center text-lg font-bold">
+                    {count}
+                  </span>
+                </div>
+                <span className="text-xs font-semibold capitalize">{label}</span>
+                <span className="text-[11px] text-muted-foreground text-center">
+                  {lastRun ? `last: ${timeAgo(lastRun)}` : "not run yet"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Video */}

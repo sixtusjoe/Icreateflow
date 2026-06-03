@@ -5225,6 +5225,25 @@ async def delete_clip_route(clip_id: int, user: dict = Depends(get_current_user)
 
 # --- Dashboard / feed ---
 
+@app.get("/api/discovery/status")
+async def discovery_status(user: dict = Depends(get_current_user)):
+    """Return per-platform post-discovery counts and last-run timestamps."""
+    database = await db.get_db()
+    try:
+        cfg = await db.get_site_config(database)
+        platforms = ["tiktok", "instagram", "youtube", "facebook"]
+        result = []
+        for p in platforms:
+            result.append({
+                "platform": p,
+                "last_count": int(cfg.get(f"{p}_discovery_count") or 0),
+                "last_run_at": cfg.get(f"last_{p}_discovery_at"),
+            })
+        return {"platforms": result}
+    finally:
+        await database.close()
+
+
 @app.get("/api/artists/{artist_id}/dashboard")
 async def artist_dashboard(artist_id: int, user: dict = Depends(get_current_user)):
     await _verify_artist_ownership(artist_id, user)
