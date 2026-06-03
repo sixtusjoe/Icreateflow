@@ -2374,7 +2374,12 @@ async def _poll_views_loop() -> None:
     await asyncio.sleep(10)
     while True:
         try:
-            await poll_views_once()
+            # Hard cap: view poll must complete within 2 minutes.
+            # Rows are selected oldest-first so the next cycle picks up
+            # where this one left off — all rows are eventually covered.
+            await asyncio.wait_for(poll_views_once(), timeout=120)
+        except asyncio.TimeoutError:
+            print("[view_poll] cycle timed out after 120s — will resume next cycle", flush=True)
         except Exception:
             traceback.print_exc()
         last_run = datetime.now(timezone.utc)
