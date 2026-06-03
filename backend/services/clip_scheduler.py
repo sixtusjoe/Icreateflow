@@ -2176,6 +2176,19 @@ async def poll_views_once() -> None:
 
                 access_token = await _fresh_variation_token(database, variation, platform)
                 if not access_token:
+                    # No usable token (disconnected or refresh failed). Stamp
+                    # view_count_updated_at so this row leaves the 30s-cooldown
+                    # window — otherwise un-pollable rows pile up at the head of
+                    # the oldest-first queue and starve rows with valid tokens,
+                    # stalling the whole poll. Same pattern as the quota-blocked
+                    # YouTube rows above.
+                    try:
+                        await db.update_clip_post(
+                            database, cp["id"],
+                            view_count_updated_at=datetime.now(timezone.utc),
+                        )
+                    except Exception:
+                        pass
                     continue
                 adapter = ADAPTERS[platform]
 
