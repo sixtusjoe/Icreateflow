@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# One-command deploy: commit and push to GitHub.
-# The server picks up the change automatically via the systemd timer
-# (icreateflow-autodeploy.timer), which polls GitHub every 2 minutes
-# and runs deploy.sh when it detects a new commit.
+# One-command deploy: push to GitHub then update + deploy on the server.
 #
 # Usage (from repo root):
 #     bash deploy/ship.sh
 #
 set -euo pipefail
+
+HOST="${ICREATE_HOST:-root@187.124.231.108}"
+SRC_DIR="/srv/icreateflow/src"
 
 # ---- 1. Must be on main with nothing uncommitted ---------------------------
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -27,6 +27,27 @@ echo "==> Pushing main → origin"
 git push origin main
 SHA=$(git rev-parse HEAD)
 echo "==> Pushed $SHA"
-echo
-echo "==> Server will auto-deploy within ~2 minutes."
-echo "    Watch:  ssh root@187.124.231.108 'tail -f /var/log/icreateflow-autodeploy.log'"
+
+# ---- 3. Update server SRC to exact SHA -------------------------------------
+echo "==> Updating server SRC to $SHA"
+ssh "$HOST" bash -s -- "$SRC_DIR" "$SHA" <<'ENDSSH'
+set -euo pipefail
+SRC_DIR=$1
+WANT_SHA=$2
+cd "$SRC_DIR"
+for attempt in 1 2 3 4 5; do
+    git fetch origin
+    GOT=$(git rev-parse origin/main)
+    if [ "$GOT" = "$WANT_SHA" ]; then
+        break
+    fi
+    echo "  fetch attempt $attempt: got $GOT, want $WANT_SHA — retrying in 5s"
+    sleep 5
+done
+git reset --hard origin/main
+echo "  SRC is now at: $(git rev-parse --short HEAD)"
+ENDSSH
+
+# ---- 4. Run deploy.sh on server --------------------------------------------
+echo "==> Running deploy on $HOST"
+ssh "$HOST" "bash $SRC_DIR/deploy/deploy.sh"
