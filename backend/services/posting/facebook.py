@@ -48,7 +48,7 @@ async def upload_video(
 async def get_view_count(
     access_token: str, platform_post_id: str, proxy_url: str | None = None,
 ) -> int:
-    async with httpx.AsyncClient(timeout=30, proxy=proxy_url) as client:
+    async with httpx.AsyncClient(timeout=8, proxy=proxy_url) as client:
         # Existence probe + node `views` field (used as fallback value).
         # If the post is gone Meta 4xx's with 'does not exist' / 'unsupported
         # get request' / code:100 — promote to PostDeletedError.
