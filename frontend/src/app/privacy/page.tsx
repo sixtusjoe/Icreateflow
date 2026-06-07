@@ -6,6 +6,14 @@ export const metadata: Metadata = {
   title: "Privacy Policy — Icreateflow",
   description:
     "How Icreateflow collects, uses, shares, and protects your personal information when you use our promotion and distribution platform.",
+  alternates: { canonical: "/privacy" },
+  openGraph: {
+    type: "article",
+    url: "https://icreateflow.com/privacy",
+    title: "Privacy Policy — Icreateflow",
+    description:
+      "How Icreateflow collects, uses, shares, and protects your personal information when you use our promotion and distribution platform.",
+  },
 };
 
 export default function PrivacyPage() {

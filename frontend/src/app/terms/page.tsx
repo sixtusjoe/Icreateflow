@@ -6,6 +6,14 @@ export const metadata: Metadata = {
   title: "Terms & Conditions — Icreateflow",
   description:
     "The terms that govern your use of Icreateflow, a promotion and distribution platform for artists, brands, movies and podcasts.",
+  alternates: { canonical: "/terms" },
+  openGraph: {
+    type: "article",
+    url: "https://icreateflow.com/terms",
+    title: "Terms & Conditions — Icreateflow",
+    description:
+      "The terms that govern your use of Icreateflow, a promotion and distribution platform for artists, brands, movies and podcasts.",
+  },
 };
 
 export default function TermsPage() {
