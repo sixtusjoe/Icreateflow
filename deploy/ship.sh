@@ -45,7 +45,13 @@ for attempt in 1 2 3 4 5; do
     sleep 5
 done
 git reset --hard origin/main
+# Force the working tree to exactly match the commit. Without git clean,
+# untracked/stale files (e.g. an api.ts left behind by an aborted deploy)
+# can survive and get rsynced into the app dir, breaking the build.
+git clean -fd
 echo "  SRC is now at: $(git rev-parse --short HEAD)"
+echo "  Verifying tree is clean:"
+git status --short | head
 ENDSSH
 
 # ---- 4. Run deploy.sh on server --------------------------------------------
