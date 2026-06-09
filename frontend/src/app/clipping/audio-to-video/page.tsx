@@ -516,25 +516,24 @@ function ScrollLyricsView({
               ref={isActive ? activeRef : undefined}
               className="px-7"
               style={{
-                paddingTop:    "0.4rem",
-                paddingBottom: "0.4rem",
+                paddingTop:    "0.7rem",
+                paddingBottom: "0.7rem",
                 textAlign:     lyricStyle.align,
               }}
             >
               <p
                 style={{
+                  // Emphasis via weight/colour only — no scale() so the active
+                  // line never overlaps its neighbours or jitters as it moves.
                   fontSize:        `${1.25 * lyricStyle.scale}rem`,
                   fontWeight:      isActive ? 800 : 500,
                   lineHeight:      1.4,
                   letterSpacing:   "-0.01em",
                   color:           isActive ? "#ffffff" : isPast ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.2)",
                   textShadow:      isActive ? "0 2px 14px rgba(0,0,0,0.6)" : "none",
-                  // Scale active line slightly — keep small enough that long lines don't overflow
-                  transform:       isActive ? "scale(1.08)" : "scale(1)",
-                  transformOrigin: "center center",
                   display:         "block",
                   wordBreak:       "break-word",
-                  transition:      "transform 0.25s ease, color 0.25s ease, font-weight 0.2s ease, text-shadow 0.25s ease",
+                  transition:      "color 0.25s ease, font-weight 0.2s ease, text-shadow 0.25s ease",
                 }}
               >
                 {line.join(" ")}
@@ -718,8 +717,7 @@ function PreviewContent({
                           display: "inline-block",
                           color: isHighlighted ? theme.accent : isPassed ? "#ffffff" : "rgba(255,255,255,0.4)",
                           textShadow: isHighlighted ? theme.textGlow : "0 4px 10px rgba(0,0,0,0.8)",
-                          transform: isHighlighted ? "scale(1.05)" : "scale(1)",
-                          transition: "color 0.18s ease-out, text-shadow 0.18s ease-out, transform 0.18s ease-out",
+                          transition: "color 0.18s ease-out, text-shadow 0.18s ease-out",
                         }}
                       >
                         {word}
@@ -838,6 +836,20 @@ export default function AudioToVideoPage() {
   const [exportedBlobUrlByClip, setExportedBlobUrlByClip] = useState<Record<number, string>>({});
   // WebGL render mode — "match" = screen recording, "upgraded" = bloom + soft particles
   const [renderMode, setRenderMode] = useState<"match" | "upgraded">("match");
+  // Upgraded (Bloom) export needs WebGL2. Detect once; if absent we hide the
+  // toggle and stay on Match Preview so the user never hits a WebGL2 error.
+  const [webgl2Supported, setWebgl2Supported] = useState(true);
+  useEffect(() => {
+    try {
+      const c = document.createElement("canvas");
+      setWebgl2Supported(!!c.getContext("webgl2"));
+    } catch {
+      setWebgl2Supported(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (!webgl2Supported && renderMode === "upgraded") setRenderMode("match");
+  }, [webgl2Supported, renderMode]);
 
   // Screen-recording state / refs
   const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
@@ -2593,9 +2605,9 @@ export default function AudioToVideoPage() {
                               </button>
                             )}
                           </div>
-                          {/* Render mode toggle */}
+                          {/* Render mode toggle — Upgraded hidden when WebGL2 is unavailable */}
                           <div className="flex gap-2">
-                            {(["match", "upgraded"] as const).map((mode) => (
+                            {(webgl2Supported ? (["match", "upgraded"] as const) : (["match"] as const)).map((mode) => (
                               <button
                                 key={mode}
                                 onClick={() => setRenderMode(mode)}
@@ -2609,6 +2621,11 @@ export default function AudioToVideoPage() {
                               </button>
                             ))}
                           </div>
+                          {!webgl2Supported && (
+                            <p className="text-[10px] text-muted-foreground/70 leading-snug">
+                              Bloom export needs WebGL2 (turn on hardware acceleration in your browser). Using Match Preview.
+                            </p>
+                          )}
                           {/* View Last Export */}
                           {exportedBlobUrlByClip[activeClip.id] && !isExportRecording && (
                             <button
