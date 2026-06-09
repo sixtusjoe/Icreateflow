@@ -909,7 +909,7 @@ export default function AudioToVideoPage() {
   const [tapSyncDisplayTime, setTapSyncDisplayTime] = useState(0);
   const tapSyncKeyHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const tapSyncLinesRef = useRef<TapLine[]>([]);
-  const tapSyncLineEls = useRef<(HTMLDivElement | null)[]>([]);
+  const tapSyncLineEls = useRef<(HTMLElement | null)[]>([]);
 
   const activeClip = track?.clips.find((c) => c.id === editingClipId) ?? track?.clips[0] ?? null;
 
