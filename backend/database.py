@@ -514,6 +514,10 @@ class AudioVideoClip(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="'pending'")
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     render_progress: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0–100 percent
+    # CapCut-style lyric placement (nullable; client applies defaults)
+    lyric_offset_y: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    lyric_scale: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    lyric_align: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
 
@@ -1120,6 +1124,15 @@ async def _migrate_email_features(conn) -> None:
     ))
     await conn.execute(text(
         "ALTER TABLE audio_video_clips ADD COLUMN IF NOT EXISTS lyrics_mode TEXT NOT NULL DEFAULT 'karaoke'"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_video_clips ADD COLUMN IF NOT EXISTS lyric_offset_y DOUBLE PRECISION"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_video_clips ADD COLUMN IF NOT EXISTS lyric_scale DOUBLE PRECISION"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE audio_video_clips ADD COLUMN IF NOT EXISTS lyric_align TEXT"
     ))
     await conn.execute(text(
         "ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS transcription_status TEXT NOT NULL DEFAULT 'done'"

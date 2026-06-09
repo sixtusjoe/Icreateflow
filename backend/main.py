@@ -6428,6 +6428,10 @@ class AudioGenerateRequest(BaseModel):
     lyrics_mode: str = "karaoke"
     background_image_path: Optional[str] = None
     album_cover_path: Optional[str] = None
+    # CapCut-style lyric placement controls (nullable; default applied client-side)
+    lyric_offset_y: Optional[float] = None
+    lyric_scale: Optional[float] = None
+    lyric_align: Optional[str] = None
 
 
 class AudioLyricsWord(BaseModel):
@@ -7244,15 +7248,19 @@ async def save_audio_clip_settings(
         existing = await cur.fetchone()
         if existing:
             await database.execute(
-                "UPDATE audio_video_clips SET template_id = ?, lyrics_mode = ?, background_image_path = ?, album_cover_path = ? "
+                "UPDATE audio_video_clips SET template_id = ?, lyrics_mode = ?, background_image_path = ?, album_cover_path = ?, "
+                "lyric_offset_y = ?, lyric_scale = ?, lyric_align = ? "
                 "WHERE audio_clip_id = ?",
-                (data.template_id, data.lyrics_mode, data.background_image_path, data.album_cover_path, clip_id),
+                (data.template_id, data.lyrics_mode, data.background_image_path, data.album_cover_path,
+                 data.lyric_offset_y, data.lyric_scale, data.lyric_align, clip_id),
             )
         else:
             await database.execute(
-                "INSERT INTO audio_video_clips (audio_clip_id, template_id, lyrics_mode, background_image_path, album_cover_path, status) "
-                "VALUES (?, ?, ?, ?, ?, 'pending')",
-                (clip_id, data.template_id, data.lyrics_mode, data.background_image_path, data.album_cover_path),
+                "INSERT INTO audio_video_clips (audio_clip_id, template_id, lyrics_mode, background_image_path, album_cover_path, "
+                "lyric_offset_y, lyric_scale, lyric_align, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+                (clip_id, data.template_id, data.lyrics_mode, data.background_image_path, data.album_cover_path,
+                 data.lyric_offset_y, data.lyric_scale, data.lyric_align),
             )
         await database.commit()
         return {"ok": True}

@@ -57,6 +57,8 @@ export interface RendererConfig {
   clipStartS: number;
   clipDuration: number;
   renderMode?: "match" | "upgraded"; // "match" = exact HTML fidelity, "upgraded" = bloom + softer particles
+  /** Lyric placement overrides (CapCut-style text controls). */
+  lyricStyle?: { offsetY: number; scale: number; align: "left" | "center" | "right" };
   /** When provided, uses layer-composite mode (CSS-captured PNGs) instead of procedural WebGL */
   layerOverrides?: LayerOverrides;
 }
@@ -909,7 +911,6 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
   const ZIG_X  = Math.round(CW * 0.13);
   const ZIG_Y  = Math.round(CH * 0.588);
   const ZIG_W  = Math.round(CW * 0.74);
-  const ZIG_H  = 30;
   const LYRIC_Y = Math.round(CH * 0.80);
   const GROUP_SZ = 5;
 
@@ -946,13 +947,8 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
   const cardQuad = mkQuadBuf(gl, CARD_X - 40, CARD_Y - 40, CARD_X + CARD_W + 40, CARD_Y + CARD_H + 40);
   const artQuad  = mkQuadBuf(gl, ART_X - 60, ART_Y - 60, ART_X + ART_W + 60, ART_Y + ART_H + 60);
 
-  // Zigzag waveform triangle strip buffer (dynamic — rebuilt per frame)
+  // Progress-bar strip buffer (dynamic — rebuilt per frame)
   const zigBuf = gl.createBuffer()!;
-  // Pre-compute zigzag points
-  const zigPoints: [number, number][] = [[0, 15]];
-  for (let i = 0; i < 80; i++) {
-    zigPoints.push([ ((i+1)/80) * ZIG_W, i%2===0 ? 5 : 25 ]);
-  }
 
   // ── FBOs ─────────────────────────────────────────────────────────────────
   const blurFBO1 = mkFBO(gl, CW, CH);
@@ -1060,7 +1056,11 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
     const grp = groups[gi] ?? [];
     if (grp.length === 0) { uploadImageToTex(gl, textTex, textCanvas); return; }
 
-    let fs = 80;
+    // CapCut-style lyric placement controls.
+    const ls = cfg.lyricStyle ?? { offsetY: 0, scale: 1, align: "center" as const };
+    const lyricY = LYRIC_Y + (ls.offsetY / 100) * CH;
+
+    let fs = Math.round(80 * ls.scale);
     tctx.font = `bold ${fs}px -apple-system,'Segoe UI',sans-serif`;
     tctx.textBaseline = "middle";
     const parts = grp.map((w, i) => w.word + (i < grp.length-1 ? " " : ""));
@@ -1073,7 +1073,10 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
       tw = parts.reduce((s, p) => s + tctx.measureText(p).width, 0);
     }
 
-    let x = CW/2 - tw/2;
+    const MARGIN = CW * 0.09;
+    let x = ls.align === "left" ? MARGIN
+          : ls.align === "right" ? CW - MARGIN - tw
+          : CW/2 - tw/2;
     tctx.save();
     parts.forEach((p, i) => {
       const pw = tctx.measureText(p).width;
@@ -1089,7 +1092,7 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
         tctx.shadowColor = "rgba(0,0,0,0.8)";
         tctx.shadowBlur = 10;
       }
-      tctx.fillText(p, x, LYRIC_Y);
+      tctx.fillText(p, x, lyricY);
       x += pw;
       tctx.shadowBlur = 0;
     });
@@ -1121,21 +1124,21 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
   const partBuf = buildParticleAttrBuf(pSeeds);
   const flamBuf = buildFlameAttrBuf(fSeeds);
 
-  // ── Zigzag triangle strip builder ─────────────────────────────────────────
+  // ── Progress-bar strip builder ────────────────────────────────────────────
+  // Emits a flat horizontal bar rectangle (TRIANGLE_STRIP, 4 verts) clipped to
+  // `progressFraction` of the full width. Replaces the old zigzag waveform so
+  // the export matches the new player progress line in the HTML preview.
   function buildZigzagStrip(progressFraction: number): { data: Float32Array; count: number } {
-    const WIDTH = 4; // half-width of the stroke in pixels
-    const verts: number[] = [];
-    const maxI = Math.round(zigPoints.length * Math.max(0, Math.min(1, progressFraction)));
-    for (let i = 0; i < maxI; i++) {
-      const [px, py] = zigPoints[i];
-      // Normal: perpendicular to the line direction
-      const nx = ZIG_X + px;
-      const ny = ZIG_Y - ZIG_H/2 + py;
-      // Thicken along Y
-      verts.push(nx, ny - WIDTH, nx, ny + WIDTH);
-    }
-    const data = new Float32Array(verts);
-    return { data, count: verts.length / 2 };
+    const BAR_H = 6; // bar thickness in px
+    const frac = Math.max(0, Math.min(1, progressFraction));
+    const x0 = ZIG_X;
+    const x1 = ZIG_X + ZIG_W * frac;
+    const y0 = ZIG_Y - BAR_H / 2;
+    const y1 = ZIG_Y + BAR_H / 2;
+    if (x1 <= x0) return { data: new Float32Array(0), count: 0 };
+    // TRIANGLE_STRIP rectangle: (x0,y0)(x1,y0)(x0,y1)(x1,y1)
+    const data = new Float32Array([x0, y0, x1, y0, x0, y1, x1, y1]);
+    return { data, count: 4 };
   }
 
   // ── Draw helpers ──────────────────────────────────────────────────────────

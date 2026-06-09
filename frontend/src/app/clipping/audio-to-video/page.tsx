@@ -43,6 +43,9 @@ import {
   RotateCcw,
   Save,
   ChevronDown,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -165,16 +168,6 @@ const OVERLAY_THEMES = {
 type ThemeId = keyof typeof OVERLAY_THEMES;
 
 // ─── Figma Design: Zigzag Waveform Path ──────────────────────────────────────
-
-const ZIGZAG_PATH =
-  "M 0 15 " +
-  Array.from({ length: 80 })
-    .map((_, i) => {
-      const x = ((i + 1) / 80) * 1000;
-      const y = i % 2 === 0 ? 5 : 25;
-      return `L ${x.toFixed(1)} ${y}`;
-    })
-    .join(" ");
 
 // ─── Figma Design: Particles ─────────────────────────────────────────────────
 
@@ -470,12 +463,14 @@ function ConfirmModal({
 function ScrollLyricsView({
   lyricLines,
   overlayLineIndex,
+  lyricStyle = DEFAULT_LYRIC_STYLE,
 }: {
   lyricLines: string[][];
   overlayLineIndex: number;
   overlayWordIndex: number;
   isPlaying: boolean;
   theme: (typeof OVERLAY_THEMES)[ThemeId];
+  lyricStyle?: LyricStyle;
 }) {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const activeRef = React.useRef<HTMLDivElement>(null);
@@ -495,7 +490,7 @@ function ScrollLyricsView({
     <div
       className="absolute left-0 right-0 z-10 overflow-hidden pointer-events-none"
       style={{
-        top: "63%",
+        top: `calc(63% + ${lyricStyle.offsetY}%)`,
         bottom: "7%",
         // CSS mask fades lines out near the top and bottom edges
         WebkitMaskImage:
@@ -517,15 +512,16 @@ function ScrollLyricsView({
             <div
               key={li}
               ref={isActive ? activeRef : undefined}
-              className="px-7 text-center"
+              className="px-7"
               style={{
                 paddingTop:    "0.4rem",
                 paddingBottom: "0.4rem",
+                textAlign:     lyricStyle.align,
               }}
             >
               <p
                 style={{
-                  fontSize:        "1.25rem",
+                  fontSize:        `${1.25 * lyricStyle.scale}rem`,
                   fontWeight:      isActive ? 800 : 500,
                   lineHeight:      1.4,
                   letterSpacing:   "-0.01em",
@@ -552,6 +548,10 @@ function ScrollLyricsView({
   );
 }
 
+type LyricAlign = "left" | "center" | "right";
+type LyricStyle = { offsetY: number; scale: number; align: LyricAlign };
+const DEFAULT_LYRIC_STYLE: LyricStyle = { offsetY: 0, scale: 1, align: "center" };
+
 interface PreviewContentProps {
   themeId: ThemeId;
   theme: (typeof OVERLAY_THEMES)[ThemeId];
@@ -561,6 +561,8 @@ interface PreviewContentProps {
   isPlaying: boolean;
   overlayLineIndex: number;
   overlayWordIndex: number;
+  overlayProgress?: number;
+  lyricStyle?: LyricStyle;
   lyricsMode?: string;
   coverArtRef?: React.RefObject<HTMLDivElement | null>;
   zigzagLayerRef?: React.RefObject<HTMLDivElement | null>;
@@ -577,13 +579,14 @@ function PreviewContent({
   isPlaying,
   overlayLineIndex,
   overlayWordIndex,
+  overlayProgress = 0,
+  lyricStyle = DEFAULT_LYRIC_STYLE,
   lyricsMode = "karaoke",
   coverArtRef,
   zigzagLayerRef,
   lyricsLayerRef,
   isGenerating,
 }: PreviewContentProps) {
-  const zigzagClipId = React.useId();
   const albumCover = coverImageUrl ?? "";
   const isScrollMode = lyricsMode === "scroll";
 
@@ -643,44 +646,27 @@ function PreviewContent({
         </div>
       </div>
 
-      {/* 2. PROGRESS BAR — zigzag waveform at top-[58.8%] */}
-      <div ref={zigzagLayerRef} className="absolute top-[58.8%] left-[13%] w-[74%] h-[30px] -mt-[15px] z-10">
-        <svg viewBox="0 0 1000 30" className="w-full h-full drop-shadow-lg" preserveAspectRatio="none">
-          <defs>
-            <clipPath id={`zigzag-clip-${zigzagClipId}`}>
-              <motion.rect
-                x="0" y="0" height="30"
-                initial={{ width: "0%" }}
-                animate={{ width: isPlaying ? "100%" : "0%" }}
-                transition={{
-                  duration: lyricLines.length * 2.5 || 10,
-                  repeat: isPlaying ? Infinity : 0,
-                  ease: "linear",
-                }}
-              />
-            </clipPath>
-          </defs>
-          {/* Background dimmed zigzag */}
-          <path
-            d={ZIGZAG_PATH}
-            fill="none"
-            stroke="rgba(255,255,255,0.15)"
-            strokeWidth="4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+      {/* 2. PROGRESS LINE — flat player bar synced to audio at top-[58.8%] */}
+      <div ref={zigzagLayerRef} className="absolute top-[58.8%] left-[13%] w-[74%] z-10 -translate-y-1/2">
+        <div className="relative h-[5px] w-full rounded-full bg-white/15 overflow-hidden">
+          <div
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{
+              width: `${Math.max(0, Math.min(1, overlayProgress)) * 100}%`,
+              background: theme.accent,
+              boxShadow: `0 0 8px ${theme.accent}`,
+            }}
           />
-          {/* Foreground colored zigzag */}
-          <path
-            d={ZIGZAG_PATH}
-            fill="none"
-            stroke={theme.accent}
-            strokeWidth="4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            clipPath={`url(#zigzag-clip-${zigzagClipId})`}
-            style={{ filter: `drop-shadow(0 0 6px ${theme.accent})` }}
-          />
-        </svg>
+        </div>
+        {/* scrubber knob at the fill head */}
+        <div
+          className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full shadow"
+          style={{
+            left: `${Math.max(0, Math.min(1, overlayProgress)) * 100}%`,
+            background: "#fff",
+            boxShadow: `0 0 6px ${theme.accent}`,
+          }}
+        />
       </div>
 
       {/* 3. LYRICS — karaoke (bottom strip) or Apple Music scroll (full overlay) */}
@@ -691,9 +677,17 @@ function PreviewContent({
           overlayWordIndex={overlayWordIndex}
           isPlaying={isPlaying}
           theme={theme}
+          lyricStyle={lyricStyle}
         />
       ) : (
-        <div ref={lyricsLayerRef} className="absolute top-[70.3%] bottom-[5%] left-[8%] right-[8%] z-10 flex items-start justify-center overflow-hidden">
+        <div
+          ref={lyricsLayerRef}
+          className="absolute bottom-[5%] left-[8%] right-[8%] z-10 flex items-start overflow-hidden"
+          style={{
+            top: `calc(70.3% + ${lyricStyle.offsetY}%)`,
+            justifyContent: lyricStyle.align === "left" ? "flex-start" : lyricStyle.align === "right" ? "flex-end" : "center",
+          }}
+        >
           <AnimatePresence mode="sync">
             {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
               <motion.div
@@ -702,9 +696,16 @@ function PreviewContent({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.1, ease: "easeOut" }}
-                className="text-center w-full"
+                className="w-full"
+                style={{ textAlign: lyricStyle.align }}
               >
-                <p className="text-3xl font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap justify-center gap-x-2 gap-y-1">
+                <p
+                  className="font-extrabold tracking-tight leading-[1.3] drop-shadow-xl flex flex-wrap gap-x-2 gap-y-1"
+                  style={{
+                    fontSize: `${1.875 * lyricStyle.scale}rem`,
+                    justifyContent: lyricStyle.align === "left" ? "flex-start" : lyricStyle.align === "right" ? "flex-end" : "center",
+                  }}
+                >
                   {lyricLines[overlayLineIndex % lyricLines.length].map((word: string, wIdx: number) => {
                     const isHighlighted = isPlaying && wIdx === overlayWordIndex;
                     const isPassed = isPlaying && wIdx < overlayWordIndex;
@@ -791,6 +792,7 @@ export default function AudioToVideoPage() {
     lyrics_mode: string;
     bg_path?: string;
     cover_path?: string;
+    lyric_style?: LyricStyle;
   }>>({});
   const [generating, setGenerating] = useState<Record<number, boolean>>({});
   const [generationErrors, setGenerationErrors] = useState<Record<number, string>>({});
@@ -849,6 +851,7 @@ export default function AudioToVideoPage() {
   // Overlay preview karaoke state
   const [overlayLineIndex, setOverlayLineIndex] = useState(0);
   const [overlayWordIndex, setOverlayWordIndex] = useState(-1);
+  const [overlayProgress, setOverlayProgress] = useState(0);
   // Refs to avoid setState when nothing changed (prevents 120 re-renders/sec)
   const lastLineIdxRef = useRef(-1);
   const lastWordIdxRef = useRef(-2);
@@ -941,17 +944,24 @@ export default function AudioToVideoPage() {
     try {
       const trackData: AudioTrackData = await getAudioTrack(trackId);
       setTrack(trackData);
-      const configs: Record<number, { template_id: string; lyrics_mode: string; bg_path?: string; cover_path?: string }> = {};
+      const configs: Record<number, { template_id: string; lyrics_mode: string; bg_path?: string; cover_path?: string; lyric_style?: LyricStyle }> = {};
       const words: Record<number, AudioWord[]> = {};
       // trackData.clips don't carry per-clip words; distribute from the flat
       // trackData.words array (each word has a clip_index field from the DB).
       for (const clip of trackData.clips) {
+        const v: any = clip.video;
+        const hasLyricStyle = v && (v.lyric_offset_y != null || v.lyric_scale != null || v.lyric_align != null);
         configs[clip.id] = {
           template_id: clip.video?.template_id ?? "minimal",
           lyrics_mode: clip.video?.lyrics_mode ?? "karaoke",
           // Restore saved image paths so regeneration carries them forward
           bg_path: clip.video?.background_image_path ?? undefined,
           cover_path: clip.video?.album_cover_path ?? undefined,
+          ...(hasLyricStyle ? { lyric_style: {
+            offsetY: v.lyric_offset_y ?? 0,
+            scale: v.lyric_scale ?? 1,
+            align: (v.lyric_align ?? "center") as LyricAlign,
+          } } : {}),
         };
         words[clip.id] = (trackData.words ?? []).filter(
           (w: any) => w.clip_index === clip.clip_index,
@@ -1151,6 +1161,7 @@ export default function AudioToVideoPage() {
     lastAudioTimeRef.current = 0;
     setOverlayLineIndex(0);
     setOverlayWordIndex(-1);
+    setOverlayProgress(0);
     setIsPreviewPaused(true);
     if (audioPreviewRef.current) {
       audioPreviewRef.current.pause();
@@ -1293,6 +1304,10 @@ export default function AudioToVideoPage() {
       const wts   = wordTimingsRef.current;
       const ws    = clipWordsRef.current[clip.id] ?? [];
       let lineIdx = 0, wordIdx = 0;
+
+      // Drive the player progress line from real audio position.
+      const clipDur = Math.max(0.1, (clip.end_s ?? 0) - (clip.start_s ?? 0));
+      setOverlayProgress(Math.max(0, Math.min(1, curT / clipDur)));
 
       if (wts.length > 0 && lines.length > 0) {
         // ── Per-word timing sync: binary search for active display word ──
@@ -1576,6 +1591,7 @@ export default function AudioToVideoPage() {
   const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({
     lyrics: true,
     timing: true,
+    text: false,
     design: false,
     media: false,
   });
@@ -1670,7 +1686,7 @@ export default function AudioToVideoPage() {
     try {
       await handleSaveLyricsText(clipId);
       const cfg = clipConfigs[clipId] ?? { template_id: "minimal" };
-      await saveAudioClipSettings(clipId, cfg.template_id, cfg.lyrics_mode ?? "karaoke", cfg.bg_path, cfg.cover_path);
+      await saveAudioClipSettings(clipId, cfg.template_id, cfg.lyrics_mode ?? "karaoke", cfg.bg_path, cfg.cover_path, cfg.lyric_style ?? null);
       setClipConfigDirty((d) => ({ ...d, [clipId]: false }));
     } catch (err: any) {
       setExportInfoModal({ title: "Error", message: err?.response?.data?.detail || err?.message || "Failed to save settings" });
@@ -1770,6 +1786,7 @@ export default function AudioToVideoPage() {
     const bgImageUrl2   = clipCfg.bg_path ? fileUrl(clipCfg.bg_path) : null;
     const coverImageUrl2 = clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null;
     const words2        = clipWords[clip.id] ?? [];
+    const lyricStyle2   = clipCfg.lyric_style ?? DEFAULT_LYRIC_STYLE;
     const clipDuration  = clip.end_s - clip.start_s;
 
     setIsExportRecording(true);
@@ -1787,6 +1804,7 @@ export default function AudioToVideoPage() {
           clipStartS: clip.start_s,
           clipDuration,
           renderMode,
+          lyricStyle: lyricStyle2,
           layerOverrides: undefined,
         });
 
@@ -1880,15 +1898,33 @@ export default function AudioToVideoPage() {
 
       // 1. getDisplayMedia is the FIRST await — locks in gesture activation
       //    Modal is already open (opened in Phase 1), captureTargetRef is already attached
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
+      // selfBrowserSurface:"include" is required for Chrome to offer the
+      // CURRENT tab in the picker — without it the icreateflow tab is hidden.
+      // preferCurrentTab pre-selects it; the surface/monitor excludes simplify
+      // the dialog to just the tab.
+      let displayStream: MediaStream;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            displaySurface: "browser",
+            width:     { ideal: 3840 },
+            height:    { ideal: 2160 },
+            frameRate: { ideal: 60 },
+          },
+          audio: false,
           preferCurrentTab: true,
-          width:     { ideal: 3840 },
-          height:    { ideal: 2160 },
-          frameRate: { ideal: 60 },
-        } as any,
-        audio: false,
-      });
+          selfBrowserSurface: "include",
+          surfaceSwitching: "exclude",
+          monitorTypeSurfaces: "exclude",
+        } as any);
+      } catch {
+        // Older Chrome may reject the extended options — retry with a plain
+        // request so the user can still pick the tab manually.
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 60 } },
+          audio: false,
+        } as any);
+      }
       // displayVideoTrack = raw tab capture (kept alive to detect "stop sharing")
       const displayVideoTrack = displayStream.getVideoTracks()[0];
 
@@ -2428,6 +2464,7 @@ export default function AudioToVideoPage() {
           const themeId    = (cfg.template_id || "minimal") as ThemeId;
           const theme      = OVERLAY_THEMES[themeId] ?? OVERLAY_THEMES.minimal;
           const lyricsMode = cfg.lyrics_mode ?? "karaoke";
+          const lyricStyle = cfg.lyric_style ?? DEFAULT_LYRIC_STYLE;
           const coverUrl   = cfg.cover_path ? fileUrl(cfg.cover_path) : "";
           const bgUrl      = cfg.bg_path ? fileUrl(cfg.bg_path) : "";
 
@@ -2787,6 +2824,88 @@ export default function AudioToVideoPage() {
                           )}
                         </div>
 
+                        {/* ── TEXT SECTION (CapCut-style lyric placement) ── */}
+                        {(() => {
+                          const ls = cfg.lyric_style ?? DEFAULT_LYRIC_STYLE;
+                          const setLS = (patch: Partial<LyricStyle>) => {
+                            setClipConfigs((c) => {
+                              const cur = c[activeClip.id] ?? { template_id: "minimal", lyrics_mode: "karaoke" };
+                              const curLS = cur.lyric_style ?? DEFAULT_LYRIC_STYLE;
+                              return { ...c, [activeClip.id]: { ...cur, lyric_style: { ...curLS, ...patch } } };
+                            });
+                            setClipConfigDirty((d) => ({ ...d, [activeClip.id]: true }));
+                          };
+                          return (
+                        <div className="border-b border-border">
+                          <button
+                            onClick={() => toggleSection("text")}
+                            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+                          >
+                            <span className="text-xs font-bold uppercase tracking-wider text-foreground">Text</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] text-muted-foreground capitalize">{ls.align} · {Math.round(ls.scale * 100)}%</span>
+                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.text ? "" : "-rotate-90"}`} />
+                            </div>
+                          </button>
+                          {sectionOpen.text && (
+                            <div className="px-4 pb-4 space-y-4">
+                              {/* Vertical position */}
+                              <div>
+                                <div className="flex items-center justify-between mb-1.5">
+                                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Vertical position</label>
+                                  <span className="text-[11px] tabular-nums text-muted-foreground">{ls.offsetY > 0 ? "+" : ""}{ls.offsetY}%</span>
+                                </div>
+                                <input
+                                  type="range" min={-40} max={40} step={1} value={ls.offsetY}
+                                  onChange={(e) => setLS({ offsetY: parseInt(e.target.value, 10) })}
+                                  className="w-full accent-foreground"
+                                />
+                                <div className="flex justify-between text-[10px] text-muted-foreground/70"><span>Up</span><span>Down</span></div>
+                              </div>
+                              {/* Size / zoom */}
+                              <div>
+                                <div className="flex items-center justify-between mb-1.5">
+                                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Size</label>
+                                  <span className="text-[11px] tabular-nums text-muted-foreground">{Math.round(ls.scale * 100)}%</span>
+                                </div>
+                                <input
+                                  type="range" min={0.6} max={1.8} step={0.05} value={ls.scale}
+                                  onChange={(e) => setLS({ scale: parseFloat(e.target.value) })}
+                                  className="w-full accent-foreground"
+                                />
+                              </div>
+                              {/* Alignment */}
+                              <div>
+                                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">Alignment</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                  {([
+                                    { v: "left" as const, icon: AlignLeft },
+                                    { v: "center" as const, icon: AlignCenter },
+                                    { v: "right" as const, icon: AlignRight },
+                                  ]).map(({ v, icon: Icon }) => (
+                                    <button
+                                      key={v}
+                                      onClick={() => setLS({ align: v })}
+                                      className={`flex items-center justify-center py-2 rounded-lg border-2 transition-all ${ls.align === v ? "border-foreground bg-foreground/5" : "border-border hover:border-foreground/40"}`}
+                                    >
+                                      <Icon className="h-4 w-4" />
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              {/* Reset */}
+                              <button
+                                onClick={() => setLS({ offsetY: 0, scale: 1, align: "center" })}
+                                className="text-[11px] text-muted-foreground hover:text-foreground underline"
+                              >
+                                Reset text position
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                          );
+                        })()}
+
                         {/* ── DESIGN SECTION ── */}
                         <div className="border-b border-border">
                           <button
@@ -2949,6 +3068,8 @@ export default function AudioToVideoPage() {
                             isPlaying={!isPreviewPaused}
                             overlayLineIndex={overlayLineIndex}
                             overlayWordIndex={overlayWordIndex}
+                            overlayProgress={overlayProgress}
+                            lyricStyle={lyricStyle}
                             lyricsMode={lyricsMode}
                             coverArtRef={coverArtRef}
                             zigzagLayerRef={zigzagLayerRef}
@@ -3172,6 +3293,7 @@ export default function AudioToVideoPage() {
       const recBgUrl    = recCfg.bg_path    ? fileUrl(recCfg.bg_path)    : null;
       const recCoverUrl = recCfg.cover_path ? fileUrl(recCfg.cover_path) : null;
       const recLyricsMode = recCfg.lyrics_mode ?? "karaoke";
+      const recLyricStyle = recCfg.lyric_style ?? DEFAULT_LYRIC_STYLE;
       const isPreviewPhase = !isExportRecording;
       return (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
@@ -3227,6 +3349,8 @@ export default function AudioToVideoPage() {
                 isPlaying={true}
                 overlayLineIndex={overlayLineIndex}
                 overlayWordIndex={overlayWordIndex}
+                overlayProgress={overlayProgress}
+                lyricStyle={recLyricStyle}
                 lyricsMode={recLyricsMode}
                 coverArtRef={coverArtRef}
               />

@@ -603,6 +603,7 @@ export const saveAudioClipSettings = (
   lyricsMode: string,
   backgroundImagePath?: string,
   albumCoverPath?: string,
+  lyricStyle?: { offsetY: number; scale: number; align: string } | null,
 ) =>
   api
     .post(`/api/audio-to-video/clips/${clipId}/settings`, {
@@ -610,6 +611,9 @@ export const saveAudioClipSettings = (
       lyrics_mode: lyricsMode,
       background_image_path: backgroundImagePath ?? null,
       album_cover_path: albumCoverPath ?? null,
+      lyric_offset_y: lyricStyle?.offsetY ?? null,
+      lyric_scale: lyricStyle?.scale ?? null,
+      lyric_align: lyricStyle?.align ?? null,
     })
     .then((r) => r.data);
 
