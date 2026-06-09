@@ -2524,10 +2524,10 @@ export default function AudioToVideoPage() {
                     className="hidden"
                   />
                 )}
-                <div className="flex flex-col items-center gap-5 mt-2 lg:mt-4">
+                <div className="flex flex-col lg:flex-row lg:items-start gap-5 mt-2 lg:mt-4">
 
-                  {/* ══ CONTROLS: tool dock + active panel (below the preview) ═══ */}
-                  <div className={`order-2 w-full max-w-lg ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
+                  {/* ══ CONTROLS: tool dock + active panel (left side) ═══ */}
+                  <div className={`order-2 lg:order-1 w-full lg:w-[380px] shrink-0 ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
                     {/* Hidden file inputs */}
                     <input ref={bgInputRef} type="file" accept="image/*" className="hidden"
                       onChange={(e) => {
@@ -2542,8 +2542,8 @@ export default function AudioToVideoPage() {
                         e.target.value = "";
                       }} />
 
-                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden flex flex-col">
-                      <div>
+                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-8 flex flex-col">
+                      <div className="overflow-y-auto lg:max-h-[calc(100vh-7rem)]">
 
                         {/* ── PLAYBACK: always visible at top ── */}
                         <div className="p-4 border-b border-border space-y-2.5">
@@ -3067,9 +3067,9 @@ export default function AudioToVideoPage() {
                     </div>{/* end card */}
                   </div>{/* end left panel */}
 
-                  {/* ══ PREVIEW (centered, on top) ════════════════════════ */}
-                  <div className={`order-1 w-full ${mobileView === "settings" ? "hidden lg:flex lg:flex-col" : "flex flex-col"} gap-3`}>
-                    <div className="space-y-3">
+                  {/* ══ PREVIEW (centered, pinned/always visible) ════════════ */}
+                  <div className={`order-1 lg:order-2 flex-1 ${mobileView === "settings" ? "hidden lg:flex lg:flex-col" : "flex flex-col"} gap-3`}>
+                    <div className="lg:sticky lg:top-8 space-y-3">
                       {/* Canvas */}
                       <div className="flex justify-center">
                         <div
