@@ -46,6 +46,8 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  Type,
+  Sparkles,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1588,15 +1590,8 @@ export default function AudioToVideoPage() {
 
   // ── Video-editor layout ──────────────────────────────────────────────────
   // Accordion open/closed state for the left settings panel
-  const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({
-    lyrics: true,
-    timing: true,
-    text: false,
-    design: false,
-    media: false,
-  });
-  const toggleSection = (k: string) =>
-    setSectionOpen((s) => ({ ...s, [k]: !s[k] }));
+  // CapCut-style single-tool dock: only one tool's panel is open at a time.
+  const [activeTool, setActiveTool] = useState<string>("lyrics");
   // Mobile tab: show settings panel OR preview canvas
   const [mobileView, setMobileView] = useState<"preview" | "settings">("preview");
   const timingOffsetSaveRef = useRef<NodeJS.Timeout | null>(null);
@@ -2529,10 +2524,10 @@ export default function AudioToVideoPage() {
                     className="hidden"
                   />
                 )}
-                <div className="flex flex-col lg:flex-row lg:items-stretch gap-5 mt-2 lg:mt-4">
+                <div className="flex flex-col items-center gap-5 mt-2 lg:mt-4">
 
-                  {/* ══ LEFT: Settings Panel ═══════════════════════════════ */}
-                  <div className={`w-full lg:w-[370px] shrink-0 lg:h-full ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
+                  {/* ══ CONTROLS: tool dock + active panel (below the preview) ═══ */}
+                  <div className={`order-2 w-full max-w-lg ${mobileView === "preview" ? "hidden lg:flex lg:flex-col" : "flex flex-col"}`}>
                     {/* Hidden file inputs */}
                     <input ref={bgInputRef} type="file" accept="image/*" className="hidden"
                       onChange={(e) => {
@@ -2547,8 +2542,8 @@ export default function AudioToVideoPage() {
                         e.target.value = "";
                       }} />
 
-                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden lg:sticky lg:top-8 flex flex-col h-full">
-                      <div className="overflow-y-auto lg:max-h-[calc(100vh-8rem)]">
+                    <div className="rounded-2xl border border-border bg-card shadow-xl overflow-hidden flex flex-col">
+                      <div>
 
                         {/* ── PLAYBACK: always visible at top ── */}
                         <div className="p-4 border-b border-border space-y-2.5">
@@ -2629,16 +2624,38 @@ export default function AudioToVideoPage() {
                           )}
                         </div>
 
+                        {/* ── TOOL DOCK (CapCut-style) ── */}
+                        <div className="flex items-stretch gap-1 overflow-x-auto border-b border-border px-2 py-2">
+                          {([
+                            { key: "lyrics", label: "Lyrics", icon: Music2 },
+                            { key: "timing", label: "Sync",   icon: Clock },
+                            { key: "text",   label: "Text",   icon: Type },
+                            { key: "design", label: "Style",  icon: Sparkles },
+                            { key: "media",  label: "Media",  icon: ImageIcon },
+                          ] as const).map(({ key, label, icon: Icon }) => (
+                            <button
+                              key={key}
+                              onClick={() => setActiveTool(activeTool === key ? "" : key)}
+                              className={`flex flex-1 min-w-[60px] flex-col items-center gap-1 rounded-lg py-2 text-[11px] font-medium transition-colors ${
+                                activeTool === key ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted/40"
+                              }`}
+                            >
+                              <Icon className="h-4 w-4" />
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+
                         {/* ── LYRICS SECTION ── */}
                         <div className="border-b border-border">
                           <button
-                            onClick={() => toggleSection("lyrics")}
+                            onClick={() => setActiveTool(activeTool === "lyrics" ? "" : "lyrics")}
                             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
                             <span className="text-xs font-bold uppercase tracking-wider text-foreground">Lyrics</span>
-                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.lyrics ? "" : "-rotate-90"}`} />
+                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${activeTool === "lyrics" ? "" : "-rotate-90"}`} />
                           </button>
-                          {sectionOpen.lyrics && (
+                          {activeTool === "lyrics" && (
                             <div className="px-4 pb-4 space-y-3">
                               <div className="space-y-1.5">
                                 <textarea
@@ -2669,13 +2686,13 @@ export default function AudioToVideoPage() {
                         {/* ── TIMING SECTION ── */}
                         <div className="border-b border-border">
                           <button
-                            onClick={() => toggleSection("timing")}
+                            onClick={() => setActiveTool(activeTool === "timing" ? "" : "timing")}
                             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
                             <span className="text-xs font-bold uppercase tracking-wider text-foreground">Timing</span>
-                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.timing ? "" : "-rotate-90"}`} />
+                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${activeTool === "timing" ? "" : "-rotate-90"}`} />
                           </button>
-                          {sectionOpen.timing && (
+                          {activeTool === "timing" && (
                             <div className="px-4 pb-4 space-y-3">
                               {/* Global Adjust Timing */}
                               {(clipWordsBase[activeClip.id]?.length ?? 0) > 0 && (() => {
@@ -2838,16 +2855,16 @@ export default function AudioToVideoPage() {
                           return (
                         <div className="border-b border-border">
                           <button
-                            onClick={() => toggleSection("text")}
+                            onClick={() => setActiveTool(activeTool === "text" ? "" : "text")}
                             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
                             <span className="text-xs font-bold uppercase tracking-wider text-foreground">Text</span>
                             <div className="flex items-center gap-2">
                               <span className="text-[11px] text-muted-foreground capitalize">{ls.align} · {Math.round(ls.scale * 100)}%</span>
-                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.text ? "" : "-rotate-90"}`} />
+                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${activeTool === "text" ? "" : "-rotate-90"}`} />
                             </div>
                           </button>
-                          {sectionOpen.text && (
+                          {activeTool === "text" && (
                             <div className="px-4 pb-4 space-y-4">
                               {/* Vertical position */}
                               <div>
@@ -2909,16 +2926,16 @@ export default function AudioToVideoPage() {
                         {/* ── DESIGN SECTION ── */}
                         <div className="border-b border-border">
                           <button
-                            onClick={() => toggleSection("design")}
+                            onClick={() => setActiveTool(activeTool === "design" ? "" : "design")}
                             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
                             <span className="text-xs font-bold uppercase tracking-wider text-foreground">Design</span>
                             <div className="flex items-center gap-2">
                               <span className="text-[11px] text-muted-foreground capitalize">{themeId} · {lyricsMode}</span>
-                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.design ? "" : "-rotate-90"}`} />
+                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${activeTool === "design" ? "" : "-rotate-90"}`} />
                             </div>
                           </button>
-                          {sectionOpen.design && (
+                          {activeTool === "design" && (
                             <div className="px-4 pb-4 space-y-4">
                               {/* Template */}
                               <div>
@@ -2971,7 +2988,7 @@ export default function AudioToVideoPage() {
                         {/* ── MEDIA & SAVE SECTION ── */}
                         <div>
                           <button
-                            onClick={() => toggleSection("media")}
+                            onClick={() => setActiveTool(activeTool === "media" ? "" : "media")}
                             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
                           >
                             <span className="text-xs font-bold uppercase tracking-wider text-foreground">Media &amp; Save</span>
@@ -2979,10 +2996,10 @@ export default function AudioToVideoPage() {
                               {clipConfigDirty[activeClip.id] && (
                                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
                               )}
-                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${sectionOpen.media ? "" : "-rotate-90"}`} />
+                              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${activeTool === "media" ? "" : "-rotate-90"}`} />
                             </div>
                           </button>
-                          {sectionOpen.media && (
+                          {activeTool === "media" && (
                             <div className="px-4 pb-4 space-y-4">
                               <div className="grid grid-cols-2 gap-3">
                                 <div>
@@ -3050,9 +3067,9 @@ export default function AudioToVideoPage() {
                     </div>{/* end card */}
                   </div>{/* end left panel */}
 
-                  {/* ══ RIGHT: Preview ════════════════════════════════════ */}
-                  <div className={`flex-1 ${mobileView === "settings" ? "hidden lg:flex lg:flex-col" : "flex flex-col"} gap-3`}>
-                    <div className="lg:sticky lg:top-8 space-y-3">
+                  {/* ══ PREVIEW (centered, on top) ════════════════════════ */}
+                  <div className={`order-1 w-full ${mobileView === "settings" ? "hidden lg:flex lg:flex-col" : "flex flex-col"} gap-3`}>
+                    <div className="space-y-3">
                       {/* Canvas */}
                       <div className="flex justify-center">
                         <div
