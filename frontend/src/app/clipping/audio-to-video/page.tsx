@@ -1792,7 +1792,25 @@ export default function AudioToVideoPage() {
     const coverImageUrl2 = clipCfg.cover_path ? fileUrl(clipCfg.cover_path) : null;
     const words2        = clipWords[clip.id] ?? [];
     const lyricStyle2   = clipCfg.lyric_style ?? DEFAULT_LYRIC_STYLE;
+    const lyricsMode2   = clipCfg.lyrics_mode ?? "karaoke";
     const clipDuration  = clip.end_s - clip.start_s;
+
+    // Scroll-mode lines + per-line start times (mirrors the live preview) so a
+    // scroll clip exports as scroll, not karaoke.
+    const linesArr = (getLyricsText(clip.id) || "")
+      .split("\n").map((l) => l.trim()).filter(Boolean);
+    const scrollLines2: string[] = linesArr;
+    const scrollStarts2: number[] = [];
+    {
+      let wIdx = 0;
+      for (let i = 0; i < linesArr.length; i++) {
+        const fw = words2[wIdx];
+        scrollStarts2.push(
+          fw ? fw.start_s : clip.start_s + (i / Math.max(1, linesArr.length)) * clipDuration,
+        );
+        wIdx += linesArr[i].split(/\s+/).filter(Boolean).length;
+      }
+    }
 
     setIsExportRecording(true);
     setExportProgress(0);
@@ -1812,6 +1830,9 @@ export default function AudioToVideoPage() {
           clipDuration,
           renderMode,
           lyricStyle: lyricStyle2,
+          lyricsMode: lyricsMode2,
+          scrollLines: scrollLines2,
+          scrollLineStartAbs: scrollStarts2,
           layerOverrides: undefined,
         };
         let renderer;

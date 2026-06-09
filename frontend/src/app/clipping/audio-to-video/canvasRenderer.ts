@@ -59,6 +59,11 @@ export interface RendererConfig {
   renderMode?: "match" | "upgraded"; // "match" = exact HTML fidelity, "upgraded" = bloom + softer particles
   /** Lyric placement overrides (CapCut-style text controls). */
   lyricStyle?: { offsetY: number; scale: number; align: "left" | "center" | "right" };
+  /** "karaoke" (default) or "scroll" — Canvas-2D renderer honours both. */
+  lyricsMode?: string;
+  /** Scroll-mode lines (full text per line) + each line's absolute start time. */
+  scrollLines?: string[];
+  scrollLineStartAbs?: number[];
   /** When provided, uses layer-composite mode (CSS-captured PNGs) instead of procedural WebGL */
   layerOverrides?: LayerOverrides;
 }
@@ -1608,6 +1613,9 @@ export async function createCanvas2DRenderer(cfg: RendererConfig): Promise<Canva
   const accent = cfg.theme.accent;
   const ls = cfg.lyricStyle ?? { offsetY: 0, scale: 1, align: "center" as const };
   const words = cfg.words ?? [];
+  const isScroll = cfg.lyricsMode === "scroll" && (cfg.scrollLines?.length ?? 0) > 0;
+  const scrollLines = cfg.scrollLines ?? [];
+  const scrollStarts = cfg.scrollLineStartAbs ?? [];
 
   function loadImg(url: string | null): Promise<HTMLImageElement | null> {
     return new Promise((res) => {
@@ -1722,6 +1730,49 @@ export async function createCanvas2DRenderer(cfg: RendererConfig): Promise<Canva
     ctx.fill();
     ctx.restore();
 
+    const alignX = ls.align === "left" ? CW * 0.09
+                 : ls.align === "right" ? CW * 0.91
+                 : CW / 2;
+    const textAnchor: CanvasTextAlign = ls.align === "left" ? "left" : ls.align === "right" ? "right" : "center";
+
+    if (isScroll) {
+      // ── Scroll mode (Apple-Music-style line list, active line centred) ──
+      let active = -1;
+      for (let i = 0; i < scrollStarts.length; i++) {
+        if (scrollStarts[i] <= tAbs) active = i; else break;
+      }
+      if (active < 0) active = 0;
+      const areaTop = CH * (0.63 + ls.offsetY / 100);
+      const areaBot = CH * 0.93;
+      const centerY = (areaTop + areaBot) / 2;
+      const baseFs = Math.round(54 * ls.scale);
+      const lineGap = baseFs * 2.4;
+      ctx.textAlign = textAnchor;
+      ctx.textBaseline = "middle";
+      for (let i = Math.max(0, active - 3); i <= Math.min(scrollLines.length - 1, active + 3); i++) {
+        const y = centerY + (i - active) * lineGap;
+        if (y < areaTop - lineGap || y > areaBot + lineGap) continue;
+        const isActive = i === active;
+        const isPast = i < active;
+        let fs = baseFs;
+        ctx.font = `${isActive ? 800 : 500} ${fs}px -apple-system,'Segoe UI',sans-serif`;
+        // shrink overly long lines to fit
+        let lw = ctx.measureText(scrollLines[i]).width;
+        const maxW = CW * 0.84;
+        if (lw > maxW) {
+          fs = Math.floor(fs * maxW / lw);
+          ctx.font = `${isActive ? 800 : 500} ${fs}px -apple-system,'Segoe UI',sans-serif`;
+        }
+        ctx.fillStyle = isActive ? "#ffffff" : isPast ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.20)";
+        ctx.shadowColor = isActive ? "rgba(0,0,0,0.6)" : "transparent";
+        ctx.shadowBlur = isActive ? 14 : 0;
+        ctx.fillText(scrollLines[i], alignX, y);
+        ctx.shadowBlur = 0;
+      }
+      return;
+    }
+
+    // ── Karaoke mode (word-by-word, groups of 5) ──
     let wi = -1;
     for (let i = 0; i < words.length; i++) {
       if (words[i].start_s <= tAbs) wi = i; else break;
