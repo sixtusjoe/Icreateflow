@@ -103,7 +103,7 @@ interface TrackSummary {
   created_at?: string;
 }
 
-interface TapLine { text: string; start_s: number | null; }
+interface TapLine { text: string; start_s: number | null; lineIdx?: number; }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -902,6 +902,9 @@ export default function AudioToVideoPage() {
   const [tapSyncCurrentIdx, setTapSyncCurrentIdx] = useState(0);
   const tapSyncCurrentIdxRef = useRef(0);
   const [tapSyncDone, setTapSyncDone] = useState(false);
+  // When true, each tap stamps a single WORD (karaoke word-perfect sync)
+  // instead of a whole line (scroll/Apple style).
+  const [tapSyncIsWord, setTapSyncIsWord] = useState(false);
   const tapSyncRAFRef = useRef<number | null>(null);
   const [tapSyncDisplayTime, setTapSyncDisplayTime] = useState(0);
   const tapSyncKeyHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
@@ -1473,11 +1476,23 @@ export default function AudioToVideoPage() {
     }
   }, []);
 
-  const handleStartTapSync = (clipId: number) => {
+  const handleStartTapSync = (clipId: number, wordMode = false) => {
     const text = getLyricsText(clipId);
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
     if (!lines.length) return;
-    const initialLines = lines.map((l) => ({ text: l, start_s: null }));
+    let initialLines: TapLine[];
+    if (wordMode) {
+      // One tap unit per WORD, tagged with its line for grouped display.
+      initialLines = [];
+      lines.forEach((l, li) => {
+        l.split(/\s+/).filter(Boolean).forEach((w) => {
+          initialLines.push({ text: w, start_s: null, lineIdx: li });
+        });
+      });
+    } else {
+      initialLines = lines.map((l) => ({ text: l, start_s: null }));
+    }
+    setTapSyncIsWord(wordMode);
     tapSyncLinesRef.current = initialLines;
     setTapSyncLines(initialLines);
     setTapSyncClipId(clipId);
@@ -1534,26 +1549,50 @@ export default function AudioToVideoPage() {
     const clipAbsStart = clip?.start_s ?? 0;
     const clipDuration = clip ? (clip.end_s - clip.start_s) : 30;
 
-    // Convert timed lines → words with evenly-distributed timestamps within each line
     const allWords: AudioWord[] = [];
-    const timedLines = tapSyncLines.filter((l) => l.start_s !== null);
-    for (let li = 0; li < timedLines.length; li++) {
-      const lineStart = timedLines[li].start_s!; // clip-relative seconds
-      const lineEnd = li < timedLines.length - 1 ? (timedLines[li + 1].start_s ?? (lineStart + 3)) : clipDuration;
-      const lineDuration = Math.max(0.5, lineEnd - lineStart);
-      const lineWords = timedLines[li].text.split(/\s+/).filter(Boolean);
-      const wordDur = lineDuration / lineWords.length;
-      lineWords.forEach((w, wi) => {
-        allWords.push({
-          word: w,
-          start_s: clipAbsStart + lineStart + wi * wordDur,        // absolute
-          end_s:   clipAbsStart + lineStart + (wi + 1) * wordDur - 0.05,
-        });
-      });
-    }
+    let fullText: string;
 
-    // Build full text from all tap lines (including un-tapped ones at end)
-    const fullText = tapSyncLines.map((l) => l.text).join("\n");
+    if (tapSyncIsWord) {
+      // ── Word-perfect karaoke: each unit IS a word with its exact tap time ──
+      const timed = tapSyncLines.filter((u) => u.start_s !== null);
+      for (let i = 0; i < timed.length; i++) {
+        const s = timed[i].start_s!;
+        const e = i < timed.length - 1 ? (timed[i + 1].start_s ?? s + 0.4) : clipDuration;
+        allWords.push({
+          word: timed[i].text,
+          start_s: clipAbsStart + s,
+          end_s:   clipAbsStart + Math.max(s + 0.08, e - 0.03),
+        });
+      }
+      // Reconstruct lines from the lineIdx tags so the textarea keeps line breaks.
+      const byLine: Record<number, string[]> = {};
+      tapSyncLines.forEach((u) => {
+        const li = u.lineIdx ?? 0;
+        (byLine[li] ??= []).push(u.text);
+      });
+      fullText = Object.keys(byLine)
+        .map(Number).sort((a, b) => a - b)
+        .map((li) => byLine[li].join(" "))
+        .join("\n");
+    } else {
+      // ── Line sync: distribute each line's words evenly across its window ──
+      const timedLines = tapSyncLines.filter((l) => l.start_s !== null);
+      for (let li = 0; li < timedLines.length; li++) {
+        const lineStart = timedLines[li].start_s!; // clip-relative seconds
+        const lineEnd = li < timedLines.length - 1 ? (timedLines[li + 1].start_s ?? (lineStart + 3)) : clipDuration;
+        const lineDuration = Math.max(0.5, lineEnd - lineStart);
+        const lineWords = timedLines[li].text.split(/\s+/).filter(Boolean);
+        const wordDur = lineDuration / lineWords.length;
+        lineWords.forEach((w, wi) => {
+          allWords.push({
+            word: w,
+            start_s: clipAbsStart + lineStart + wi * wordDur,        // absolute
+            end_s:   clipAbsStart + lineStart + (wi + 1) * wordDur - 0.05,
+          });
+        });
+      }
+      fullText = tapSyncLines.map((l) => l.text).join("\n");
+    }
 
     setClipWords((cw) => ({ ...cw, [clipId]: allWords }));
     setClipWordsBase((cw) => ({ ...cw, [clipId]: allWords }));
@@ -2718,11 +2757,11 @@ export default function AudioToVideoPage() {
                                   className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-foreground/30 placeholder:text-muted-foreground/50"
                                 />
                                 <button
-                                  onClick={() => handleStartTapSync(activeClip.id)}
+                                  onClick={() => handleStartTapSync(activeClip.id, lyricsMode === "karaoke")}
                                   disabled={!lyricsText.trim() || !activeClip.local_path}
                                   className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors disabled:opacity-40"
                                 >
-                                  <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
+                                  <Clock className="h-3.5 w-3.5" /> {lyricsMode === "karaoke" ? "Sync Timing (tap each word)" : "Sync Timing (tap each line)"}
                                 </button>
                               </div>
                             </div>
@@ -3662,7 +3701,7 @@ export default function AudioToVideoPage() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
           <span className="font-mono text-[11px] text-white/40">{formatSyncTime(tapSyncDisplayTime)}</span>
-          <span className="text-xs font-semibold text-white">Sync Timing</span>
+          <span className="text-xs font-semibold text-white">{tapSyncIsWord ? "Tap each word" : "Tap each line"}</span>
           <button
             onClick={handleCancelTapSync}
             className="text-[11px] text-white/40 hover:text-white transition-colors"
@@ -3671,32 +3710,70 @@ export default function AudioToVideoPage() {
           </button>
         </div>
 
-        {/* Lines list */}
-        <div className="flex-1 overflow-y-auto py-3 px-4 space-y-1">
-          {tapSyncLines.map((line, idx) => {
-            const isCurrent = idx === tapSyncCurrentIdx && !tapSyncDone;
-            const isDone = line.start_s !== null;
-            return (
-              <div
-                key={idx}
-                ref={el => { tapSyncLineEls.current[idx] = el; }}
-                onClick={() => isCurrent && handleTapNext()}
-                className={[
-                  "rounded-lg px-4 py-2 flex items-center justify-between transition-all select-none",
-                  isCurrent ? "bg-white text-black font-semibold text-sm cursor-pointer" : "",
-                  isDone && !isCurrent ? "text-green-400 opacity-50 text-sm" : "",
-                  !isCurrent && !isDone ? "text-white/25 text-sm" : "",
-                ].filter(Boolean).join(" ")}
-              >
-                <span className="leading-snug">{line.text}</span>
-                <span className="ml-3 shrink-0 text-xs">
-                  {isDone && <span className="text-green-400">✓</span>}
-                  {isCurrent && <span className="text-black/40 hidden sm:block">SPACE</span>}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        {/* Tap targets — words (karaoke) grouped by line, or whole lines (scroll) */}
+        {tapSyncIsWord ? (
+          <div className="flex-1 overflow-y-auto py-4 px-4 space-y-3">
+            {(() => {
+              // Group word-units by their lineIdx, preserving flat index for state.
+              const groups: { lineIdx: number; items: { u: TapLine; idx: number }[] }[] = [];
+              tapSyncLines.forEach((u, idx) => {
+                const li = u.lineIdx ?? 0;
+                let g = groups.find((x) => x.lineIdx === li);
+                if (!g) { g = { lineIdx: li, items: [] }; groups.push(g); }
+                g.items.push({ u, idx });
+              });
+              return groups.map((g) => (
+                <div key={g.lineIdx} className="flex flex-wrap gap-x-2 gap-y-1.5 leading-snug">
+                  {g.items.map(({ u, idx }) => {
+                    const isCurrent = idx === tapSyncCurrentIdx && !tapSyncDone;
+                    const isDone = u.start_s !== null;
+                    return (
+                      <span
+                        key={idx}
+                        ref={el => { tapSyncLineEls.current[idx] = el; }}
+                        onClick={() => isCurrent && handleTapNext()}
+                        className={[
+                          "rounded-md px-2 py-0.5 transition-all select-none text-lg",
+                          isCurrent ? "bg-white text-black font-bold cursor-pointer scale-105" : "",
+                          isDone && !isCurrent ? "text-green-400/70" : "",
+                          !isCurrent && !isDone ? "text-white/25" : "",
+                        ].filter(Boolean).join(" ")}
+                      >
+                        {u.text}
+                      </span>
+                    );
+                  })}
+                </div>
+              ));
+            })()}
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto py-3 px-4 space-y-1">
+            {tapSyncLines.map((line, idx) => {
+              const isCurrent = idx === tapSyncCurrentIdx && !tapSyncDone;
+              const isDone = line.start_s !== null;
+              return (
+                <div
+                  key={idx}
+                  ref={el => { tapSyncLineEls.current[idx] = el; }}
+                  onClick={() => isCurrent && handleTapNext()}
+                  className={[
+                    "rounded-lg px-4 py-2 flex items-center justify-between transition-all select-none",
+                    isCurrent ? "bg-white text-black font-semibold text-sm cursor-pointer" : "",
+                    isDone && !isCurrent ? "text-green-400 opacity-50 text-sm" : "",
+                    !isCurrent && !isDone ? "text-white/25 text-sm" : "",
+                  ].filter(Boolean).join(" ")}
+                >
+                  <span className="leading-snug">{line.text}</span>
+                  <span className="ml-3 shrink-0 text-xs">
+                    {isDone && <span className="text-green-400">✓</span>}
+                    {isCurrent && <span className="text-black/40 hidden sm:block">SPACE</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-white/10 shrink-0">
@@ -3734,7 +3811,7 @@ export default function AudioToVideoPage() {
                 {isPreviewPaused ? "▶ Play" : "⏸ Pause"}
               </button>
               <p className="text-white/30 text-[11px]">
-                Press <kbd className="rounded bg-white/10 px-1 py-0.5 font-mono">SPACE</kbd> or tap highlighted line to stamp
+                Press <kbd className="rounded bg-white/10 px-1 py-0.5 font-mono">SPACE</kbd> or tap the highlighted {tapSyncIsWord ? "word" : "line"} on its beat
               </p>
             </div>
           )}
