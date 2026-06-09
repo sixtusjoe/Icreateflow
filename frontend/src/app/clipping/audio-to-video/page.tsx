@@ -1582,12 +1582,21 @@ export default function AudioToVideoPage() {
         const lineEnd = li < timedLines.length - 1 ? (timedLines[li + 1].start_s ?? (lineStart + 3)) : clipDuration;
         const lineDuration = Math.max(0.5, lineEnd - lineStart);
         const lineWords = timedLines[li].text.split(/\s+/).filter(Boolean);
-        const wordDur = lineDuration / lineWords.length;
+        // Weight each word's slice by its length (longer words ≈ more syllables ≈
+        // more time), so karaoke highlighting tracks the vocal more naturally than
+        // a dead-even split. Each word gets a small base weight so very short words
+        // still read.
+        const weights = lineWords.map((w) => 1 + w.replace(/[^\p{L}\p{N}]/gu, "").length);
+        const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+        let cursor = lineStart;
         lineWords.forEach((w, wi) => {
+          const wDur = (weights[wi] / totalWeight) * lineDuration;
+          const wStart = cursor;
+          cursor += wDur;
           allWords.push({
             word: w,
-            start_s: clipAbsStart + lineStart + wi * wordDur,        // absolute
-            end_s:   clipAbsStart + lineStart + (wi + 1) * wordDur - 0.05,
+            start_s: clipAbsStart + wStart,                          // absolute
+            end_s:   clipAbsStart + cursor - 0.05,
           });
         });
       }
@@ -2757,11 +2766,11 @@ export default function AudioToVideoPage() {
                                   className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-foreground/30 placeholder:text-muted-foreground/50"
                                 />
                                 <button
-                                  onClick={() => handleStartTapSync(activeClip.id, lyricsMode === "karaoke")}
+                                  onClick={() => handleStartTapSync(activeClip.id)}
                                   disabled={!lyricsText.trim() || !activeClip.local_path}
                                   className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground transition-colors disabled:opacity-40"
                                 >
-                                  <Clock className="h-3.5 w-3.5" /> {lyricsMode === "karaoke" ? "Sync Timing (tap each word)" : "Sync Timing (tap each line)"}
+                                  <Clock className="h-3.5 w-3.5" /> Sync Timing (tap each line)
                                 </button>
                               </div>
                             </div>
