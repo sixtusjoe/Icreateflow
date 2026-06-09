@@ -689,15 +689,15 @@ function PreviewContent({
             justifyContent: lyricStyle.align === "left" ? "flex-start" : lyricStyle.align === "right" ? "flex-end" : "center",
           }}
         >
-          <AnimatePresence mode="sync">
+          <AnimatePresence mode="popLayout">
             {lyricLines.length > 0 && lyricLines[overlayLineIndex % lyricLines.length] && (
               <motion.div
                 key={overlayLineIndex % lyricLines.length}
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.1, ease: "easeOut" }}
-                className="w-full"
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+                className="absolute inset-x-0 top-0 w-full"
                 style={{ textAlign: lyricStyle.align }}
               >
                 <p
