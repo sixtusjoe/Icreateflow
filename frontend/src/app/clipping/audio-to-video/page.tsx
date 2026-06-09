@@ -18,7 +18,7 @@ import {
   uploadAudioClipAsset,
   uploadAudioClipVideo,
 } from "@/lib/api";
-import { createCanvasRenderer } from "./canvasRenderer";
+import { createCanvasRenderer, createCanvas2DRenderer } from "./canvasRenderer";
 import {
   Upload,
   Music2,
@@ -834,8 +834,9 @@ export default function AudioToVideoPage() {
   const exportAudioCtxRef = useRef<AudioContext | null>(null);
   // Persists blob URLs per clip so "View Export" button can reopen the modal
   const [exportedBlobUrlByClip, setExportedBlobUrlByClip] = useState<Record<number, string>>({});
-  // WebGL render mode — "match" = screen recording, "upgraded" = bloom + soft particles
-  const [renderMode, setRenderMode] = useState<"match" | "upgraded">("match");
+  // Export mode — "match" = screen-record this tab, "upgraded" = direct canvas
+  // render (no share popup; WebGL2 with bloom, or Canvas-2D fallback).
+  const [renderMode, setRenderMode] = useState<"match" | "upgraded">("upgraded");
   // Upgraded (Bloom) export needs WebGL2. Detect once; if absent we hide the
   // toggle and stay on Match Preview so the user never hits a WebGL2 error.
   const [webgl2Supported, setWebgl2Supported] = useState(true);
@@ -847,9 +848,6 @@ export default function AudioToVideoPage() {
       setWebgl2Supported(false);
     }
   }, []);
-  useEffect(() => {
-    if (!webgl2Supported && renderMode === "upgraded") setRenderMode("match");
-  }, [webgl2Supported, renderMode]);
 
   // Screen-recording state / refs
   const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
@@ -1803,8 +1801,10 @@ export default function AudioToVideoPage() {
 
     try {
       if (renderMode === "upgraded") {
-        // ── Upgraded mode: WebGL canvas.captureStream ──────────────────────
-        const renderer = await createCanvasRenderer({
+        // ── Direct render via canvas.captureStream (no screen-share popup) ──
+        // Prefer the WebGL2 renderer (bloom); fall back to pure Canvas 2D when
+        // WebGL2 is unavailable so export works without hardware acceleration.
+        const rendererCfg = {
           width: 1080, height: 1920,
           themeId: themeId2, theme: theme2,
           words: words2, bgImageUrl: bgImageUrl2, coverImageUrl: coverImageUrl2,
@@ -1813,7 +1813,15 @@ export default function AudioToVideoPage() {
           renderMode,
           lyricStyle: lyricStyle2,
           layerOverrides: undefined,
-        });
+        };
+        let renderer;
+        try {
+          renderer = webgl2Supported
+            ? await createCanvasRenderer(rendererCfg)
+            : await createCanvas2DRenderer(rendererCfg);
+        } catch {
+          renderer = await createCanvas2DRenderer(rendererCfg);
+        }
 
         const recAudio = new Audio();
         recAudio.crossOrigin = "anonymous";
@@ -2605,9 +2613,9 @@ export default function AudioToVideoPage() {
                               </button>
                             )}
                           </div>
-                          {/* Render mode toggle — Upgraded hidden when WebGL2 is unavailable */}
+                          {/* Render mode toggle */}
                           <div className="flex gap-2">
-                            {(webgl2Supported ? (["match", "upgraded"] as const) : (["match"] as const)).map((mode) => (
+                            {(["match", "upgraded"] as const).map((mode) => (
                               <button
                                 key={mode}
                                 onClick={() => setRenderMode(mode)}
@@ -2617,15 +2625,15 @@ export default function AudioToVideoPage() {
                                     : "border-border text-muted-foreground hover:border-foreground/40"
                                 }`}
                               >
-                                {mode === "match" ? "🎯 Match Preview" : "✨ Upgraded (Bloom)"}
+                                {mode === "match" ? "🎯 Screen-record" : "⚡ Direct (no popup)"}
                               </button>
                             ))}
                           </div>
-                          {!webgl2Supported && (
-                            <p className="text-[10px] text-muted-foreground/70 leading-snug">
-                              Bloom export needs WebGL2 (turn on hardware acceleration in your browser). Using Match Preview.
-                            </p>
-                          )}
+                          <p className="text-[10px] text-muted-foreground/70 leading-snug">
+                            {renderMode === "upgraded"
+                              ? (webgl2Supported ? "Renders directly — no share popup. Bloom enabled." : "Renders directly — no share popup. (Bloom needs WebGL2.)")
+                              : "Screen-records this tab — pick \"This tab\" in the share popup."}
+                          </p>
                           {/* View Last Export */}
                           {exportedBlobUrlByClip[activeClip.id] && !isExportRecording && (
                             <button

@@ -1580,3 +1580,196 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
 
   return { canvas, renderFrame, destroy };
 }
+
+
+// ─── Canvas 2D Renderer (WebGL2-free fallback) ───────────────────────────────
+// Pure Canvas 2D — works on any browser (no WebGL2 / hardware acceleration).
+// No bloom/particles, but renders bg + card + cover + progress line + karaoke
+// lyrics with the CapCut text controls baked in. Same CanvasRenderer interface.
+export async function createCanvas2DRenderer(cfg: RendererConfig): Promise<CanvasRenderer> {
+  const CW = cfg.width;
+  const CH = cfg.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = CW;
+  canvas.height = CH;
+  const ctx = canvas.getContext("2d")!;
+
+  const CARD_X = Math.round(CW * 0.08);
+  const CARD_Y = Math.round(CH * 0.06);
+  const CARD_W = CW - 2 * CARD_X;
+  const CARD_H = Math.round(CH * 0.46);
+  const ART_PAD = Math.round(CW * 0.055);
+  const ZIG_X = Math.round(CW * 0.13);
+  const ZIG_Y = Math.round(CH * 0.588);
+  const ZIG_W = Math.round(CW * 0.74);
+  const LYRIC_Y = Math.round(CH * 0.80);
+  const GROUP_SZ = 5;
+
+  const accent = cfg.theme.accent;
+  const ls = cfg.lyricStyle ?? { offsetY: 0, scale: 1, align: "center" as const };
+  const words = cfg.words ?? [];
+
+  function loadImg(url: string | null): Promise<HTMLImageElement | null> {
+    return new Promise((res) => {
+      if (!url) return res(null);
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => res(img);
+      img.onerror = () => res(null);
+      img.src = url;
+    });
+  }
+  const [bgImg, coverImg] = await Promise.all([
+    loadImg(cfg.bgImageUrl),
+    loadImg(cfg.coverImageUrl),
+  ]);
+
+  function roundRect(x: number, y: number, w: number, h: number, r: number) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawCover(img: HTMLImageElement, dx: number, dy: number, dw: number, dh: number) {
+    const ar = img.width / img.height;
+    const dar = dw / dh;
+    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+    if (ar > dar) { sw = img.height * dar; sx = (img.width - sw) / 2; }
+    else { sh = img.width / dar; sy = (img.height - sh) / 2; }
+    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+  }
+
+  function renderFrame(audioTime: number) {
+    const tAbs = audioTime + cfg.clipStartS;
+    const progress = Math.max(0, Math.min(1, audioTime / cfg.clipDuration));
+
+    ctx.clearRect(0, 0, CW, CH);
+    ctx.fillStyle = "#0a0a0a";
+    ctx.fillRect(0, 0, CW, CH);
+    if (bgImg) {
+      ctx.save();
+      ctx.filter = "blur(24px) brightness(0.7)";
+      drawCover(bgImg, -40, -40, CW + 80, CH + 80);
+      ctx.restore();
+    }
+    const og = ctx.createLinearGradient(0, 0, 0, CH);
+    og.addColorStop(0, "rgba(0,0,0,0.55)");
+    og.addColorStop(0.5, "rgba(0,0,0,0.25)");
+    og.addColorStop(1, "rgba(0,0,0,0.85)");
+    ctx.fillStyle = og;
+    ctx.fillRect(0, 0, CW, CH);
+
+    ctx.save();
+    roundRect(CARD_X, CARD_Y, CARD_W, CARD_H, 48);
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.stroke();
+    ctx.restore();
+
+    const artSize = Math.min(CARD_W - 2 * ART_PAD, CARD_H - 2 * ART_PAD - 80);
+    const artX = CARD_X + (CARD_W - artSize) / 2;
+    const artY = CARD_Y + ART_PAD;
+    const cx = artX + artSize / 2;
+    const cy = artY + artSize / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, artSize / 2 + 14, 0, Math.PI * 2);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = accent;
+    ctx.globalAlpha = 0.7;
+    ctx.stroke();
+    ctx.restore();
+    if (coverImg) {
+      ctx.save();
+      roundRect(artX, artY, artSize, artSize, 28);
+      ctx.clip();
+      drawCover(coverImg, artX, artY, artSize, artSize);
+      ctx.restore();
+    } else {
+      ctx.save();
+      roundRect(artX, artY, artSize, artSize, 28);
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.font = "bold 22px -apple-system,'Segoe UI',sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("N O W   P L A Y I N G", CW / 2, CARD_Y + CARD_H - 40);
+    ctx.restore();
+
+    const BAR_H = 6;
+    ctx.save();
+    roundRect(ZIG_X, ZIG_Y - BAR_H / 2, ZIG_W, BAR_H, BAR_H / 2);
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.fill();
+    if (progress > 0) {
+      roundRect(ZIG_X, ZIG_Y - BAR_H / 2, ZIG_W * progress, BAR_H, BAR_H / 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(ZIG_X + ZIG_W * progress, ZIG_Y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.restore();
+
+    let wi = -1;
+    for (let i = 0; i < words.length; i++) {
+      if (words[i].start_s <= tAbs) wi = i; else break;
+    }
+    if (wi >= 0) {
+      const gi = Math.floor(wi / GROUP_SZ);
+      const li = wi - gi * GROUP_SZ;
+      const grp = words.slice(gi * GROUP_SZ, gi * GROUP_SZ + GROUP_SZ);
+      if (grp.length) {
+        let fs = Math.round(80 * ls.scale);
+        ctx.font = `bold ${fs}px -apple-system,'Segoe UI',sans-serif`;
+        ctx.textBaseline = "middle";
+        const parts = grp.map((w, i) => w.word + (i < grp.length - 1 ? " " : ""));
+        let tw = parts.reduce((s, p) => s + ctx.measureText(p).width, 0);
+        const MAX_TW = CW * 0.82;
+        if (tw > MAX_TW) {
+          fs = Math.floor(fs * MAX_TW / tw);
+          ctx.font = `bold ${fs}px -apple-system,'Segoe UI',sans-serif`;
+          tw = parts.reduce((s, p) => s + ctx.measureText(p).width, 0);
+        }
+        const lyricY = LYRIC_Y + (ls.offsetY / 100) * CH;
+        const MARGIN = CW * 0.09;
+        let x = ls.align === "left" ? MARGIN
+              : ls.align === "right" ? CW - MARGIN - tw
+              : CW / 2 - tw / 2;
+        ctx.textAlign = "left";
+        parts.forEach((p, i) => {
+          if (i === li) {
+            ctx.fillStyle = accent;
+            ctx.shadowColor = accent;
+            ctx.shadowBlur = 28;
+          } else if (i < li) {
+            ctx.fillStyle = "rgba(255,255,255,0.40)";
+            ctx.shadowBlur = 0;
+          } else {
+            ctx.fillStyle = "rgba(255,255,255,0.88)";
+            ctx.shadowColor = "rgba(0,0,0,0.8)";
+            ctx.shadowBlur = 10;
+          }
+          ctx.fillText(p, x, lyricY);
+          x += ctx.measureText(p).width;
+          ctx.shadowBlur = 0;
+        });
+      }
+    }
+  }
+
+  function destroy() { /* nothing to release for 2D */ }
+
+  return { canvas, renderFrame, destroy };
+}
