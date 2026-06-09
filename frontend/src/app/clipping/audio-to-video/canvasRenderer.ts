@@ -64,6 +64,8 @@ export interface RendererConfig {
   /** Scroll-mode lines (full text per line) + each line's absolute start time. */
   scrollLines?: string[];
   scrollLineStartAbs?: number[];
+  /** "Now playing" header text — track title (— artist). Falls back to "NOW PLAYING". */
+  nowPlayingLabel?: string;
   /** When provided, uses layer-composite mode (CSS-captured PNGs) instead of procedural WebGL */
   layerOverrides?: LayerOverrides;
 }
@@ -1037,21 +1039,40 @@ export async function createCanvasRenderer(cfg: RendererConfig): Promise<CanvasR
 
     tctx.clearRect(0, 0, CW, CH);
 
-    // NOW PLAYING label
+    // Track title — artist label (falls back to spaced "NOW PLAYING")
     const labelY = CARD_Y + CARD_H - 40;
     tctx.save();
-    tctx.font = "bold 20px -apple-system,'Segoe UI',sans-serif";
     tctx.textBaseline = "middle";
-    tctx.fillStyle = "rgba(255,255,255,0.50)";
-    const text = "NOW PLAYING";
-    const spacing = 6;
-    let totalW = 0;
-    for (const ch of text) totalW += tctx.measureText(ch).width + spacing;
-    totalW -= spacing;
-    let cx = CW/2 - totalW/2;
-    for (const ch of text) {
-      tctx.fillText(ch, cx, labelY);
-      cx += tctx.measureText(ch).width + spacing;
+    const npLabel = (cfg.nowPlayingLabel ?? "").trim();
+    if (npLabel) {
+      tctx.textAlign = "center";
+      let lfs = 30;
+      tctx.font = `bold ${lfs}px -apple-system,'Segoe UI',sans-serif`;
+      const maxW = CARD_W - 60;
+      let label = npLabel;
+      while (tctx.measureText(label).width > maxW && lfs > 18) {
+        lfs -= 1;
+        tctx.font = `bold ${lfs}px -apple-system,'Segoe UI',sans-serif`;
+      }
+      while (tctx.measureText(label).width > maxW && label.length > 4) {
+        label = label.slice(0, -2);
+      }
+      if (label !== npLabel) label = label.replace(/[\s—-]+$/, "") + "…";
+      tctx.fillStyle = "rgba(255,255,255,0.92)";
+      tctx.fillText(label, CW / 2, labelY);
+    } else {
+      tctx.font = "bold 20px -apple-system,'Segoe UI',sans-serif";
+      tctx.fillStyle = "rgba(255,255,255,0.50)";
+      const text = "NOW PLAYING";
+      const spacing = 6;
+      let totalW = 0;
+      for (const ch of text) totalW += tctx.measureText(ch).width + spacing;
+      totalW -= spacing;
+      let cx = CW/2 - totalW/2;
+      for (const ch of text) {
+        tctx.fillText(ch, cx, labelY);
+        cx += tctx.measureText(ch).width + spacing;
+      }
     }
     tctx.restore();
 
@@ -1707,11 +1728,29 @@ export async function createCanvas2DRenderer(cfg: RendererConfig): Promise<Canva
       ctx.restore();
     }
     ctx.save();
-    ctx.font = "bold 22px -apple-system,'Segoe UI',sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("N O W   P L A Y I N G", CW / 2, CARD_Y + CARD_H - 40);
+    const npLabel2 = (cfg.nowPlayingLabel ?? "").trim();
+    if (npLabel2) {
+      let lfs = 30;
+      ctx.font = `bold ${lfs}px -apple-system,'Segoe UI',sans-serif`;
+      const maxW = CARD_W - 60;
+      let label = npLabel2;
+      while (ctx.measureText(label).width > maxW && lfs > 18) {
+        lfs -= 1;
+        ctx.font = `bold ${lfs}px -apple-system,'Segoe UI',sans-serif`;
+      }
+      while (ctx.measureText(label).width > maxW && label.length > 4) {
+        label = label.slice(0, -2);
+      }
+      if (label !== npLabel2) label = label.replace(/[\s—-]+$/, "") + "…";
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillText(label, CW / 2, CARD_Y + CARD_H - 40);
+    } else {
+      ctx.font = "bold 22px -apple-system,'Segoe UI',sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.fillText("N O W   P L A Y I N G", CW / 2, CARD_Y + CARD_H - 40);
+    }
     ctx.restore();
 
     const BAR_H = 6;

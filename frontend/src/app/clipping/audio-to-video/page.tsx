@@ -565,6 +565,8 @@ interface PreviewContentProps {
   overlayProgress?: number;
   lyricStyle?: LyricStyle;
   lyricsMode?: string;
+  nowPlayingTitle?: string;
+  nowPlayingArtist?: string;
   coverArtRef?: React.RefObject<HTMLDivElement | null>;
   zigzagLayerRef?: React.RefObject<HTMLDivElement | null>;
   lyricsLayerRef?: React.RefObject<HTMLDivElement | null>;
@@ -583,6 +585,8 @@ function PreviewContent({
   overlayProgress = 0,
   lyricStyle = DEFAULT_LYRIC_STYLE,
   lyricsMode = "karaoke",
+  nowPlayingTitle,
+  nowPlayingArtist,
   coverArtRef,
   zigzagLayerRef,
   lyricsLayerRef,
@@ -639,11 +643,20 @@ function PreviewContent({
           </AnimatePresence>
         </div>
 
-        {/* "NOW PLAYING" Label */}
-        <div className="h-10 mt-4 flex items-center justify-center">
-          <span className="text-[10px] font-bold tracking-[0.3em] text-white/50 uppercase">
-            Now Playing
-          </span>
+        {/* Track title — Artist (Now Playing) */}
+        <div className="h-10 mt-4 flex items-center justify-center text-center px-2 overflow-hidden">
+          {nowPlayingTitle ? (
+            <span className="max-w-full truncate text-sm font-bold tracking-tight text-white drop-shadow-lg">
+              {nowPlayingTitle}
+              {nowPlayingArtist && (
+                <span className="font-medium text-white/60"> — {nowPlayingArtist}</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-[10px] font-bold tracking-[0.3em] text-white/50 uppercase">
+              Now Playing
+            </span>
+          )}
         </div>
       </div>
 
@@ -1881,6 +1894,8 @@ export default function AudioToVideoPage() {
           lyricsMode: lyricsMode2,
           scrollLines: scrollLines2,
           scrollLineStartAbs: scrollStarts2,
+          nowPlayingLabel: [track?.title, artists.find((a) => a.id === selectedArtistId)?.name]
+            .filter(Boolean).join(" — "),
           layerOverrides: undefined,
         };
         let renderer;
@@ -3182,6 +3197,8 @@ export default function AudioToVideoPage() {
                             overlayProgress={overlayProgress}
                             lyricStyle={lyricStyle}
                             lyricsMode={lyricsMode}
+                            nowPlayingTitle={track?.title}
+                            nowPlayingArtist={artists.find((a) => a.id === selectedArtistId)?.name}
                             coverArtRef={coverArtRef}
                             zigzagLayerRef={zigzagLayerRef}
                             lyricsLayerRef={lyricsLayerRef}
@@ -3463,6 +3480,8 @@ export default function AudioToVideoPage() {
                 overlayProgress={overlayProgress}
                 lyricStyle={recLyricStyle}
                 lyricsMode={recLyricsMode}
+                nowPlayingTitle={track?.title}
+                nowPlayingArtist={artists.find((a) => a.id === selectedArtistId)?.name}
                 coverArtRef={coverArtRef}
               />
             </div>
