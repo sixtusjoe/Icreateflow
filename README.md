@@ -6,7 +6,7 @@ A multi-user SaaS platform for content creators. The platform has **two distinct
 - **Clipping** — Music artist auto-poster. Sync short clips from Google Drive, plan posting slots in the artist's local timezone, optionally per-account video-diversify, and auto-post across the same four platforms with view tracking and auto-pause on view-target / directory-exhausted.
 - **Audio-to-Video** — Karaoke-style music video creator. Upload a music track, Whisper transcribes it, split into 1/3/5 clips, edit lyrics in the Overlay Studio (4 templates, karaoke/scroll modes), export as 9:16 MP4 with synced lyrics, assign to a variation for posting.
 
-Production: **icreateflow.com** (`187.124.231.108`) — Postgres + FastAPI + Next.js 16 on a single VPS, fronted by Apache.
+Production: **icreateflow.com** (`95.111.228.80`) — Postgres + FastAPI + Next.js 16 on a single VPS, fronted by Apache.
 
 For deep operational internals (background loops, data model, lessons, runbook), see [`memory.md`](memory.md).
 
@@ -202,19 +202,19 @@ This script:
 
 ```bash
 bash deploy/sync.sh                          # rsync code to server
-ssh root@187.124.231.108 'bash /srv/icreateflow/src/deploy/server-setup.sh'
+ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/server-setup.sh'
 ```
 
 Then enable SSL:
 ```bash
-ssh root@187.124.231.108 'certbot --apache -d icreateflow.com -d www.icreateflow.com \
+ssh root@95.111.228.80 'certbot --apache -d icreateflow.com -d www.icreateflow.com \
     --non-interactive --agree-tos --email admin@icreateflow.com --redirect'
 ```
 
 ### Logs
 
 ```bash
-ssh root@187.124.231.108
+ssh root@95.111.228.80
 journalctl -u icreateflow-backend -f
 journalctl -u icreateflow-frontend -f
 ```
