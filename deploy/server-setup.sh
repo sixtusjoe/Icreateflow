@@ -2,7 +2,7 @@
 #
 # ICREATEFLOW — one-time VPS setup.
 #
-# Run ONCE as root on the box (187.124.231.108):
+# Run ONCE as root on the box (95.111.228.80):
 #     curl -fsSL https://... | bash         # or
 #     scp deploy/server-setup.sh root@host:/tmp/ && ssh root@host "bash /tmp/server-setup.sh"
 #

@@ -7,7 +7,7 @@
 # before calling this script, so the SRC directory is always up-to-date first.
 #
 # If you must call it manually:
-#   ssh root@187.124.231.108 'bash /srv/icreateflow/src/deploy/deploy.sh'
+#   ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/deploy.sh'
 # but only AFTER ensuring /srv/icreateflow/src is at the correct commit.
 #
 # Installs/updates backend deps, builds frontend, restarts services.

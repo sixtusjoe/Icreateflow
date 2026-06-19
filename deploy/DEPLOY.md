@@ -1,6 +1,6 @@
 # ICREATEFLOW — Deployment Runbook
 
-Host: `root@187.124.231.108` (Hostinger KVM 2, AlmaLinux 9)
+Host: `root@95.111.228.80` (Contabo VPS, Ubuntu 24.04, Virtualmin)
 Domain: `icreateflow.com` + `www.icreateflow.com`
 Coexists with: `spideybot.com` (already on the same box — never touched by these scripts)
 
@@ -28,7 +28,7 @@ Isolation architecture:
 ```bash
 cd /path/to/Zagged
 bash deploy/sync.sh                          # rsync code to /srv/icreateflow/src + stage systemd/apache files
-ssh root@187.124.231.108 'bash /srv/icreateflow/src/deploy/server-setup.sh'
+ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/server-setup.sh'
 ```
 
 `server-setup.sh` is idempotent. It:
@@ -78,7 +78,7 @@ bash deploy/ship.sh
 ## 3. Enable SSL (run ONCE after first deploy)
 
 ```bash
-ssh root@187.124.231.108 'certbot --apache -d icreateflow.com -d www.icreateflow.com \
+ssh root@95.111.228.80 'certbot --apache -d icreateflow.com -d www.icreateflow.com \
     --non-interactive --agree-tos --email admin@icreateflow.com --redirect'
 ```
 
@@ -90,7 +90,7 @@ Auto-renewal handled by `certbot-renew.timer` on the box.
 
 ```bash
 # Register via the app UI at /register, then:
-ssh root@187.124.231.108 'sudo -u postgres psql icreateflow -c \
+ssh root@95.111.228.80 'sudo -u postgres psql icreateflow -c \
     "UPDATE users SET role='\''admin'\'' WHERE email='\''you@example.com'\'';"'
 ```
 
@@ -157,7 +157,7 @@ du -sh /srv/icreateflow/data/output /srv/icreateflow/data/uploads
 
 **Backend won't start: `asyncpg.InvalidPasswordError`**
 ```bash
-ssh root@187.124.231.108 'DBPW=$(openssl rand -hex 24); \
+ssh root@95.111.228.80 'DBPW=$(openssl rand -hex 24); \
     sudo -u postgres psql -c "ALTER ROLE icreateflow WITH PASSWORD '\''$DBPW'\''"; \
     sed -i "s|icreateflow:[^@]*@|icreateflow:$DBPW@|" /srv/icreateflow/backend/.env; \
     systemctl restart icreateflow-backend'
@@ -177,7 +177,7 @@ Browser cache. Hard refresh: `Cmd + Shift + R` (Chrome/Edge Mac).
 
 **Code change not on server after ship.sh**
 ```bash
-ssh root@187.124.231.108 'cd /srv/icreateflow/src && git log --oneline -1'
+ssh root@95.111.228.80 'cd /srv/icreateflow/src && git log --oneline -1'
 # Compare with: git log --oneline -1
 # If behind: cd /Users/mac/Desktop/Zagged && bash deploy/ship.sh
 ```

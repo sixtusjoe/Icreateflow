@@ -9,7 +9,7 @@
 #
 set -euo pipefail
 
-HOST="${ICREATE_HOST:-root@187.124.231.108}"
+HOST="${ICREATE_HOST:-root@95.111.228.80}"
 SRC="$(cd "$(dirname "$0")/.." && pwd)/"
 DST="/srv/icreateflow/src/"
 

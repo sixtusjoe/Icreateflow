@@ -7,7 +7,7 @@
 #
 set -euo pipefail
 
-HOST="${ICREATE_HOST:-root@187.124.231.108}"
+HOST="${ICREATE_HOST:-root@95.111.228.80}"
 SRC_DIR="/srv/icreateflow/src"
 
 # ---- 1. Must be on main with nothing uncommitted ---------------------------
