@@ -296,6 +296,8 @@ so the session survives.
 
 ### Sessions
 
+Captured on the server by `deploy/outreach-login.sh` → `backend/scripts/outreach_login.py`: Xvfb + x11vnc (localhost-bound, reached through an SSH tunnel) put a real browser on screen, the script polls for the platform's session cookie, and on success writes the encrypted `storage_state` straight into the account row. No file on disk, no copy-paste. Capturing on the server rather than a laptop is deliberate — an imported session moving to a new IP is the usual reason a fresh one gets challenged.
+
 Never a password. The operator signs in themselves and uploads Playwright
 `storage_state` JSON; `crypto.py` Fernet-encrypts it with
 `ICREATE_OUTREACH_SECRET` (falling back to `ICREATE_JWT_SECRET`).

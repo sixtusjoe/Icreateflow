@@ -55,7 +55,16 @@ Key technical detail: **Whisper timestamps are absolute** (from track start, not
 
 ## Outreach — How it works
 
-1. **Add sending accounts** — `/outreach/accounts`, up to 20. Name the account, then attach an authorized browser session (Playwright `storage_state` JSON). Sessions are encrypted at rest and never returned by the API; no password ever reaches the service.
+1. **Add sending accounts** — `/outreach/accounts`, up to 20. Name the account, then sign it in **on the server**:
+
+   ```bash
+   ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-login.sh'      # list accounts
+   ssh -t root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-login.sh 1' # sign in account 1
+   ```
+
+   That opens a real browser on a virtual display and exposes it over VNC bound to localhost. Tunnel in from your Mac (`ssh -N -L 5900:localhost:5900 root@…` then `open vnc://localhost:5900`), sign in by hand, and the session is detected and encrypted straight into the account row — no file, no copy-paste, nothing left on disk.
+
+   Doing this on the server matters: the session is created on the machine and IP that will use it. Capturing it on a laptop and importing means the platform watches an established session move to a new IP, which is the usual reason a fresh session gets challenged. The API also accepts a pasted `storage_state` JSON (`POST /api/outreach/accounts/{id}/session`) if you need it. Either way no password reaches the service, and sessions are never readable back out of the API.
 2. **Create a campaign** — name, description, and a message template with `{{username}}`, `{{profile_url}}`, `{{campaign_name}}`, `{{account_name}}` plus any campaign variable you define (`{{offer}}`, …).
 3. **Import targets** — CSV upload or paste. Accepts `username`, `profile_url`, or both, in any column order. Off-platform URLs, malformed handles and duplicates are rejected *before* insert; the summary reports `imported / duplicates / invalid / ready`.
 4. **Start** — a preflight refuses to run without a valid template, queued targets and an enabled account. Starting enqueues one `outreach_jobs` row per queued target.
