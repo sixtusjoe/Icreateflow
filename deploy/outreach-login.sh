@@ -109,7 +109,13 @@ sleep 2
 #
 # VNC passwords are truncated to 8 characters by the protocol, so there is
 # no point generating a longer one.
-VNC_PASS=$(tr -dc 'a-hjkmnp-z2-9' </dev/urandom | head -c 8)
+#
+# Generated with python rather than `tr </dev/urandom | head -c 8`: under
+# this script's `set -euo pipefail`, head closing the pipe after 8 bytes
+# kills tr with SIGPIPE, the pipeline reports 141, and the whole script
+# exits silently right here.
+VNC_PASS=$("$VENV/bin/python" -c \
+    "import secrets; print(''.join(secrets.choice('abcdefghjkmnpqrstuvwxyz23456789') for _ in range(8)))")
 PASSFILE=$(mktemp /tmp/.icf-vncpw-XXXXXX)
 chmod 600 "$PASSFILE"
 x11vnc -storepasswd "$VNC_PASS" "$PASSFILE" >/dev/null 2>&1

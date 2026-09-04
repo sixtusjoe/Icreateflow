@@ -52,13 +52,18 @@ ssh -M -S "$CTL" -f -N -L "$PORT:localhost:${ICREATE_LOGIN_VNC_PORT:-5900}" "$HO
 # first, which takes far longer than any sensible guess, and connecting
 # early just gives "Connection failed to localhost".
 #
-# `nc -z` is not enough either — the tunnel's local port is bound by ssh
-# immediately, so a bare connect succeeds even when nothing is listening on
+# A bare connect is not enough either — the tunnel's local port is bound by
+# ssh immediately, so connecting succeeds even when nothing is listening on
 # the far end. A real VNC server greets us with an "RFB 003.00x" banner, so
 # wait for that.
+#
+# Read it over bash's /dev/tcp rather than `nc … | head -c 3 | grep`: under
+# `pipefail`, head closing the pipe can kill nc with SIGPIPE and make the
+# whole condition report failure even when the banner did arrive.
 (
     for _ in $(seq 1 150); do   # up to ~5 minutes
-        if printf '' | nc -w 2 localhost "$PORT" 2>/dev/null | head -c 3 | grep -q RFB
+        if read -r -t 3 banner < "/dev/tcp/localhost/$PORT" 2>/dev/null \
+           && [ "${banner:0:3}" = "RFB" ]
         then
             sleep 1
             echo
