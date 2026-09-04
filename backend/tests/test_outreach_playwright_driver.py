@@ -183,8 +183,40 @@ NAV_DECOY = """
 </body></html>
 """
 
+# A consent banner laid over the whole page. Playwright's click waits for
+# the target to receive pointer events, so the button underneath is
+# unclickable until the banner goes — which is what a 30s click timeout on
+# a button that is plainly visible actually means.
+OVERLAY_BLOCKS_BUTTON = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div data-e2e="message-button">Message</div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <div id="cookie" style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6)">
+    <button onclick="document.getElementById('cookie').remove()">Decline all</button>
+  </div>
+  <script>
+    document.querySelector('[data-e2e=message-button]').onclick =
+      () => { document.getElementById('chat').style.display = 'block'; };
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/overlay": OVERLAY_BLOCKS_BUTTON,
     "/divbutton": DIV_MESSAGE_BUTTON,
     "/navdecoy": NAV_DECOY,
     "/renamed": RENAMED_MESSAGE_BUTTON,
@@ -245,7 +277,9 @@ def clear_received(monkeypatch):
     # The production budgets assume a cold server rendering a real profile.
     # A local stub renders instantly, so the negative cases would otherwise
     # just sit waiting them out.
-    for name, value in (("PROFILE_READY_MS", 500), ("MESSAGE_BUTTON_MS", 1500)):
+    for name, value in (
+        ("PROFILE_READY_MS", 500), ("MESSAGE_BUTTON_MS", 1500), ("CLICK_MS", 2000),
+    ):
         monkeypatch.setattr(
             f"services.outreach.browser.playwright_tiktok.{name}", value, raising=False
         )
@@ -381,6 +415,16 @@ async def test_a_nav_entry_cannot_win_over_the_real_button(driver, site):
     wrong element being clicked."""
     message = "Hello alice, quick question."
     result = await driver.send_message(account(), target(site, "/navdecoy"), message)
+    assert result.success is True
+    assert RECEIVED == [message]
+
+
+async def test_a_consent_banner_over_the_button_does_not_lose_the_job(driver, site):
+    """Seen in production as `Locator.click: Timeout 30000ms` on a button
+    that was plainly visible: an overlay was intercepting the click. The
+    driver should clear it and carry on rather than burning the attempt."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(account(), target(site, "/overlay"), message)
     assert result.success is True
     assert RECEIVED == [message]
 

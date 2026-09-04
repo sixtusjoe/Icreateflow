@@ -103,6 +103,23 @@ PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "1200
 #: nowhere near that fast, and running out of time here is indistinguishable
 #: from the button being absent.
 MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "15000"))
+#: Per-click budget. The context default (30s) is far too long to spend
+#: discovering that something is covering the button.
+CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
+
+#: Things that sit on top of the profile and swallow clicks. A consent
+#: banner intercepting pointer events is indistinguishable from a dead
+#: button: Playwright waits for the element to receive events, and times out.
+OVERLAY_DISMISS = (
+    "tiktok-cookie-banner >>> button:has-text('Decline all')",
+    "tiktok-cookie-banner >>> button:has-text('Allow all')",
+    "button:has-text('Decline all')",
+    "button:has-text('Decline optional cookies')",
+    "button:has-text('Allow all')",
+    "[data-e2e='modal-close-inner-button']",
+    "div[role='button']:has-text('Not now')",
+    "button:has-text('Not now')",
+)
 #: Where to drop a screenshot when a send cannot be verified. Set to "" to
 #: turn it off. These are the fastest way to tell a changed selector from a
 #: blocked account without watching a live browser.
@@ -285,6 +302,67 @@ class PlaywrightTikTokMessenger:
                 return found
         return None
 
+    async def _dismiss_overlays(self, page) -> list[str]:
+        """Click away consent banners and modals covering the page.
+
+        Best-effort and quiet: every selector here is optional, and a miss
+        is the normal case once the banner has been accepted for a session.
+        """
+        dismissed = []
+        for selector in OVERLAY_DISMISS:
+            try:
+                locator = page.locator(selector).first
+                if await locator.is_visible(timeout=400):
+                    await locator.click(timeout=2000)
+                    dismissed.append(selector)
+                    await page.wait_for_timeout(300)
+            except Exception:  # noqa: BLE001 — none of these are required
+                continue
+        return dismissed
+
+    async def _click(self, page, locator, what: str, username: str) -> bool:
+        """Click something, working around whatever is sitting on top of it.
+
+        A plain `.click()` waits for Playwright's actionability checks —
+        visible, stable, receives events — and a consent banner overlaying
+        the button fails the last one until the timeout expires. So: try
+        normally, clear overlays and retry, then fall back to bypassing the
+        checks entirely rather than losing the job to a cookie notice.
+        """
+        try:
+            await locator.click(timeout=CLICK_MS)
+            return True
+        except Exception:  # noqa: BLE001 — fall through to the recovery path
+            pass
+
+        dismissed = await self._dismiss_overlays(page)
+        if dismissed:
+            print(f"[outreach] dismissed overlay(s) before {what}: {dismissed}", flush=True)
+            try:
+                await locator.click(timeout=CLICK_MS)
+                return True
+            except Exception:  # noqa: BLE001
+                pass
+
+        for how in ("force", "js"):
+            try:
+                if how == "force":
+                    await locator.click(timeout=CLICK_MS, force=True)
+                else:
+                    await locator.evaluate("el => el.click()")
+                print(f"[outreach] {what}: needed a {how} click", flush=True)
+                return True
+            except Exception:  # noqa: BLE001
+                continue
+
+        await self._save_debug_shot(page, username, f"click-failed-{what}")
+        print(
+            f"[outreach] {what}: click failed on {page.url} — "
+            f"page offers: {await self._page_actions(page)}",
+            flush=True,
+        )
+        return False
+
     @staticmethod
     async def _page_actions(page, limit: int = 30) -> list[str]:
         """Every clickable thing on the page, as `data-e2e|label`.
@@ -417,7 +495,13 @@ class PlaywrightTikTokMessenger:
                     "DMs from this account, or the button has moved",
                     url=url, screenshot=shot, page_actions=actions,
                 )
-            await message_button.click()
+            if not await self._click(page, message_button, "message-button", target_username):
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    "Found the Message button but could not click it — something "
+                    "is covering it, or it never became interactive",
+                    url=page.url,
+                )
 
             editor = await self._first_visible(page, SELECTORS["message_input"], timeout_ms=8000)
             if editor is None:
@@ -446,9 +530,11 @@ class PlaywrightTikTokMessenger:
 
             # 6. Submit.
             send_button = await self._first_visible(page, SELECTORS["send_button"], timeout_ms=4000)
-            if send_button is not None:
-                await send_button.click()
-            else:
+            if send_button is None or not await self._click(
+                page, send_button, "send-button", target_username
+            ):
+                # Enter submits in most chat composers; the verification
+                # below is what decides whether it actually worked.
                 await page.keyboard.press("Enter")
 
             # 7. Verify.
@@ -500,9 +586,16 @@ class PlaywrightTikTokMessenger:
 
         except Exception as exc:  # noqa: BLE001 — every browser fault is a result
             name = type(exc).__name__
-            status = (
-                RESULT_NAVIGATION_TIMEOUT if "Timeout" in name else RESULT_BROWSER_ERROR
-            )
+            detail = str(exc)
+            if "Timeout" in name and "click" in detail.lower():
+                # A click that timed out is an unclickable element, not a page
+                # that failed to load — reporting it as navigation_timeout sent
+                # people looking at the wrong thing.
+                status = RESULT_UNEXPECTED_PAGE
+            elif "Timeout" in name:
+                status = RESULT_NAVIGATION_TIMEOUT
+            else:
+                status = RESULT_BROWSER_ERROR
             return MessageResult.failure(status, f"{name}: {exc}"[:500], url=url)
         finally:
             # 9. Clean up the page — never the context, which holds the session.
