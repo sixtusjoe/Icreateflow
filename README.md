@@ -275,7 +275,7 @@ After the first `ship.sh` that carries the outreach code:
 ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-setup.sh 2'
 ```
 
-That installs Playwright, downloads Chromium and its system libraries into `/srv/icreateflow/pw-browsers` (app-owned, so the `icreateflow` service user can read it), installs the `icreateflow-outreach-worker@` template unit, enables the requested number of workers, and launches a real headless Chromium as the service user to prove it works. Re-runnable; pass a different number to scale.
+That generates `ICREATE_OUTREACH_SECRET` into the backend `.env` if it isn't there yet (so session encryption is independent of your JWT secret), installs Playwright, downloads Chromium and its system libraries into `/srv/icreateflow/pw-browsers` (app-owned, so the `icreateflow` service user can read it), installs the `icreateflow-outreach-worker@` template unit, enables the requested number of workers, and launches a real headless Chromium as the service user to prove it works. Re-runnable; pass a different number to scale.
 
 It does **not** switch the sending driver on — the pipeline stays on `mock` until you change `outreach_driver` in `/admin → Outreach`. Rehearse a campaign on `mock` first.
 
@@ -302,7 +302,7 @@ journalctl -u 'icreateflow-outreach-worker@*' -f
 | `ICREATE_DB_DSN` | `postgresql+asyncpg://user:pw@host:5432/db` | **Yes** |
 | `ANTHROPIC_API_KEY` | Claude OCR + caption variants | Optional |
 | `REPLICATE_API_TOKEN` | Flux image generation | Optional |
-| `ICREATE_OUTREACH_SECRET` | Encrypts stored outreach sending-account sessions. Falls back to `ICREATE_JWT_SECRET`. | Optional |
+| `ICREATE_OUTREACH_SECRET` | Encrypts stored outreach sending-account sessions. Generated into `.env` by `deploy/outreach-setup.sh`; falls back to `ICREATE_JWT_SECRET` if absent. | Auto |
 | `ICREATE_OUTREACH_HEADLESS` | `0` runs the Playwright driver with a visible browser (debugging) | Optional |
 | `ICREATE_OUTREACH_TIMEOUT_MS` | Per-navigation timeout for the browser driver (default 30000) | Optional |
 

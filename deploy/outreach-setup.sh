@@ -26,6 +26,8 @@ set -euo pipefail
 
 APP_DIR=/srv/icreateflow
 SRC=$APP_DIR/src
+BACKEND=$APP_DIR/backend
+ENV_FILE=$BACKEND/.env
 VENV=$APP_DIR/venv
 SERVICE_USER=icreateflow
 BROWSERS_DIR=$APP_DIR/pw-browsers
@@ -50,6 +52,37 @@ case "$WORKERS" in
 esac
 
 echo "==> Outreach setup — $WORKERS worker(s)"
+
+# ---------------------------------------------------------------------------
+# 0. Session-encryption secret
+#
+# Sending-account sessions are encrypted at rest with this key. Without it
+# the app falls back to ICREATE_JWT_SECRET, which works — but then rotating
+# the JWT secret would silently make every stored session unreadable and
+# every account would need re-authorizing. Generate a dedicated one so the
+# two concerns can be rotated independently.
+#
+# Generated once and left alone: changing it later has exactly the failure
+# mode described above. `deploy.sh` preserves .env across deploys.
+# ---------------------------------------------------------------------------
+touch "$ENV_FILE"
+if grep -q '^ICREATE_OUTREACH_SECRET=' "$ENV_FILE"; then
+    echo "==> ICREATE_OUTREACH_SECRET already set — leaving it alone"
+    SECRET_ADDED=no
+else
+    echo "==> Generating ICREATE_OUTREACH_SECRET into $ENV_FILE"
+    {
+        printf '\n# Encrypts stored outreach sending-account sessions.\n'
+        printf '# Written by deploy/outreach-setup.sh. Rotating this makes every\n'
+        printf '# stored session unreadable — those accounts must be re-authorized.\n'
+        printf 'ICREATE_OUTREACH_SECRET=%s\n' \
+            "$("$VENV/bin/python" -c 'import secrets; print(secrets.token_hex(48))')"
+    } >> "$ENV_FILE"
+    SECRET_ADDED=yes
+fi
+# The .env holds the DB password and now this key — keep it owner-only.
+chown "$SERVICE_USER":"$SERVICE_USER" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
 # 1. Playwright in the venv
@@ -115,6 +148,16 @@ for unit in $(systemctl list-units --all --plain --no-legend \
         systemctl disable --now "$unit" || true
     fi
 done
+
+# Both processes read the secret from .env at startup: the API encrypts a
+# session when it is uploaded, the workers decrypt it when they send. A
+# freshly-generated secret only takes effect once both have restarted, and
+# `enable --now` does not restart a unit that was already running.
+if [ "$SECRET_ADDED" = yes ]; then
+    echo "==> Restarting backend + workers to pick up the new secret"
+    systemctl restart icreateflow-backend
+    systemctl restart 'icreateflow-outreach-worker@*' || true
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Prove Chromium actually launches as the service user
