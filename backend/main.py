@@ -27,7 +27,9 @@ from services import openai_image
 from services import oauth as oauth_svc
 from services import audio_video as audio_video_svc
 from services import clip_scheduler
+from services.outreach import runner as outreach_runner
 from services.auth import hash_password, verify_password, create_access_token, decode_token
+from routers import outreach as outreach_router
 
 # --- App setup ---
 
@@ -40,10 +42,13 @@ async def lifespan(app: FastAPI):
     # Kick off Clipping scheduler loops (slot planner / dispatcher / view poller)
     from services import clip_scheduler
     clip_tasks = await clip_scheduler.start_background_tasks()
+    # Outreach: reaper only (requeues jobs a crashed worker was holding).
+    # Sending runs in the standalone worker — see scripts/outreach_worker.py.
+    outreach_tasks = await outreach_runner.start_background_tasks()
     try:
         yield
     finally:
-        for t in clip_tasks:
+        for t in clip_tasks + outreach_tasks:
             t.cancel()
 
 app = FastAPI(title="ICREATEFLOW API", lifespan=lifespan)
@@ -96,6 +101,14 @@ async def admin_required(user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(403, "Admin access required")
     return user
+
+
+# --- Outreach routes ---
+#
+# Mounted as a router (the only one) rather than inlined here: the outreach
+# pipeline is self-contained, and its endpoints take the auth dependencies
+# as arguments so `routers/outreach.py` never has to import this module.
+app.include_router(outreach_router.build_router(get_current_user, admin_required))
 
 
 def _naive_utc_now() -> datetime:

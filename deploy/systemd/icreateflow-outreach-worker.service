@@ -1,0 +1,39 @@
+[Unit]
+# Outreach browser worker. Separate from the API on purpose: the API runs
+# `-w 1` and a hung browser call there would block every request.
+#
+# Enable per worker, e.g. two of them:
+#   systemctl enable --now icreateflow-outreach-worker@1
+#   systemctl enable --now icreateflow-outreach-worker@2
+#
+# The queue is claimed in Postgres with FOR UPDATE SKIP LOCKED, so any
+# number of instances is safe — they never take the same job or account.
+Description=ICREATEFLOW outreach browser worker %i
+After=network.target postgresql.service icreateflow-backend.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=icreateflow
+Group=icreateflow
+WorkingDirectory=/srv/icreateflow/backend
+EnvironmentFile=/srv/icreateflow/backend/.env
+ExecStart=/srv/icreateflow/venv/bin/python scripts/outreach_worker.py --worker-id %H-%i
+# SIGTERM stops the loop cleanly; a job still in flight keeps its lease and
+# is requeued by the reaper, so a restart never loses or double-sends a target.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=10
+# Chromium is memory-hungry; cap it so a runaway worker can't take the box down.
+CPUQuota=100%
+MemoryMax=2G
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/icreateflow
+
+[Install]
+WantedBy=multi-user.target

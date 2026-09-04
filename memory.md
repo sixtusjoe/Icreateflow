@@ -2,7 +2,7 @@
 
 > Session memory for Claude and any dev picking this up cold.
 > Heavy on exact file paths and symbol names so neither audience has to grep.
-> Last updated: 2026-05-26.
+> Last updated: 2026-09-04.
 
 ---
 
@@ -164,6 +164,13 @@ const lastLineIdxRef, lastWordIdxRef  // gate setState — only fire when change
 | `frontend/src/app/clipping/audio-to-video/page.tsx` | **A2V single-file app** (~2900 lines). 3-step wizard: upload/transcribe → split clips → Overlay Studio. Contains all karaoke sync logic (`wordTimings` memo, RAF tick, `seekAudio`, `editingLyricsRef`), all 4 templates, and both lyrics modes. |
 | `frontend/src/app/clipping/[slug]/page.tsx` | Campaign dashboard. ConfirmModal for all destructive actions (stop, reset, delete variation, delete clip, clear failed posts). Variation cards: collapsible clip directory, paused_reason chips, TikTok settings accordion. |
 | `frontend/src/components/ConfirmModal.tsx` | Reusable confirm dialog (replaces all `window.confirm` calls). |
+| `backend/routers/outreach.py` | The one APIRouter in the codebase. Takes `get_current_user` / `admin_required` as arguments (`build_router`) so it never imports `main.py`, which imports it. `_account_public()` is the only place a sending account is serialized. |
+| `backend/services/outreach/queue.py` | `enqueue_campaign`, `claim_job`, `complete_job`, `fail_job`, `reap_stale_jobs`, `start/pause/resume/stop_campaign`, `retry_failed`. All timestamps written as `NOW() AT TIME ZONE 'UTC'`. |
+| `backend/services/outreach/accounts.py` | `lease_account` (SKIP LOCKED + cooldown + per-account cap), `record_success`, `record_failure` (auto-pause rule), `release_expired_leases`. |
+| `backend/services/outreach/runner.py` | `OutreachWorker.process_one` — the claim → render → send → record cycle. `run_once()` is the seam the tests drive. `_maintenance_loop` is what the API process runs. |
+| `backend/services/outreach/browser/` | Driver registry + `MessageResult`. `mock.py` for dry runs and tests, `playwright_tiktok.py` for real sends (selectors with fallbacks in `SELECTORS`). |
+| `backend/tests/` | pytest suite for the outreach pipeline. Needs `ICREATE_TEST_DB_DSN`; skips the DB tests without it. Sends nothing — mock driver only. |
+| `frontend/src/app/outreach/` | Campaign list, campaign detail (3s live poll), sending accounts, templates. `ui.tsx` holds the shared `StatusPill` / `ProgressBar` / helpers. |
 | `deploy/ship.sh` | Local deploy script: git push + SSH server-sync + deploy.sh. Always use this. |
 | `deploy/deploy.sh` | Server-side: `git archive HEAD backend/ \| tar -x`, then pip/npm/restart. No git operations — SRC is already correct when this runs. |
 
@@ -211,6 +218,94 @@ Multi-asset OAuth handoff stored in DB (not memory — breaks under multi-worker
 
 ---
 
+## 8b. Outreach pipeline
+
+Fourth pipeline, added after the three above. Multi-account DM outreach:
+targets → campaign → job queue → account manager → browser worker → result
+processor → dashboard.
+
+### Why Postgres is the queue
+
+Same reason the Clipping dispatcher claims slots with `SKIP LOCKED`: campaign
+state and queue state commit in one transaction, so a worker dying mid-send
+cannot leave them disagreeing. No Redis, no Celery, no broker to operate.
+
+### Process split (important)
+
+| Process | Runs | Why |
+|---|---|---|
+| API (`gunicorn -w 1`) | `runner._maintenance_loop` — reaper only, every 120s | The API must never drive a browser: `-w 1` means one hung Playwright call blocks every request. |
+| Worker (`scripts/outreach_worker.py`) | Leases accounts, claims jobs, sends | Separate systemd unit (`icreateflow-outreach-worker@N`); run as many as you like. |
+
+### Exclusivity — the two leases
+
+1. **Job lease** — `claim_job` sets `worker_id` + `lease_expires_at` inside
+   `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED)`. A partial unique
+   index (`outreach_jobs_one_live_per_target`) additionally makes two live
+   jobs for one target impossible, even from hand-written SQL.
+2. **Account lease** — `accounts.lease_account` flips `status` to `active` and
+   stamps `last_activity_at` under the same SKIP LOCKED pattern. Two workers
+   driving one TikTok session is how an account gets flagged, so the lease is
+   taken in the database, not in process memory. An expired lease
+   (`last_activity_at` older than `outreach_job_lease_seconds`) counts as free.
+
+### Crash recovery
+
+`queue.reap_stale_jobs` requeues any `processing` job whose lease expired, and
+fails the ones that crashed on their final attempt. Nothing lives in worker
+memory, so that is the whole recovery story. Runs in the API process every
+120s and inside each worker every 60s.
+
+### Failure taxonomy (`services/outreach/constants.py`)
+
+| Class | Statuses | Effect |
+|---|---|---|
+| Terminal for the target | `profile_unavailable`, `messaging_unavailable` | Target → `skipped`, no retry, account not blamed. |
+| Account fault | `session_expired`, `rate_limited`, `browser_error` | Counts toward the account's consecutive-error streak. |
+| Immediate pause | `session_expired` | Pauses the account at once — retrying an expired session only burns attempts. |
+| Everything else | `navigation_timeout`, `unexpected_page`, `unknown_error` | Retried behind `backoff × attempt` until the retry limit. |
+| Above the driver | `template_error` | `force_fail=True` — the same template and target fail identically next time. |
+
+### Counters are recomputed, never incremented
+
+`stats.refresh_and_maybe_complete` recomputes the campaign counters from the
+target status histogram after every result. A crashed worker, a double-processed
+job, or a manual DB fix can therefore never leave the numbers permanently
+skewed — and it is what flips a campaign to `completed`.
+
+### Admin controls
+
+All in `site_config`, read per call so a change takes effect on the next worker
+tick with no restart (`/admin → Outreach`): `outreach_max_jobs_per_campaign`,
+`outreach_max_jobs_per_account`, `outreach_retry_limit`,
+`outreach_worker_concurrency`, `outreach_account_error_threshold`,
+`outreach_job_lease_seconds`, `outreach_retry_backoff_seconds`,
+`outreach_min_send_interval_seconds`, `outreach_worker_idle_seconds`,
+`outreach_driver`, `outreach_workers_enabled` (the "stop all workers" switch).
+Campaigns override the first three per campaign.
+
+### Browser layer
+
+`services/outreach/browser/` is the only place that knows what a web page is;
+nothing outside it imports Playwright. `get_driver(name)` resolves `mock` or
+`playwright_tiktok` from a registry. Every driver returns a `MessageResult`
+(`success` / `status` / `error` / `timestamp`) — an expected failure is never
+an exception. `playwright_tiktok` keeps one `BrowserContext` per account (the
+isolation boundary), closes only the *page* after a job, and keeps the context
+so the session survives.
+
+### Sessions
+
+Never a password. The operator signs in themselves and uploads Playwright
+`storage_state` JSON; `crypto.py` Fernet-encrypts it with
+`ICREATE_OUTREACH_SECRET` (falling back to `ICREATE_JWT_SECRET`).
+`routers/outreach.py:_account_public()` is the only serialization of an
+account and drops the ciphertext entirely, exposing `has_session: bool`.
+Rotating either secret makes stored sessions unreadable — those accounts must
+be re-authorized.
+
+---
+
 ## 8. Background loops
 
 | Loop | Cadence | Key behaviour |
@@ -220,7 +315,9 @@ Multi-asset OAuth handoff stored in DB (not memory — breaks under multi-worker
 | View poller | `view_poll_interval_seconds` (default 180s, clamped 60–3600) | Sends Clipping AND Brand pre-post reminders. Refreshes view counts (monotonic). Deletion detection. YouTube quota backoff (skips all YT until next midnight US/Pacific on 403). |
 | Cache sweep | 86400s | Prunes `variation_renders` + `passthrough_clips` older than `cache_ttl_days`. |
 
-All loops started from `clip_scheduler.start_background_tasks()` called in `main.py` lifespan.
+| Outreach reaper | 120s | Requeues jobs a crashed worker was holding; frees stranded account leases. Started from `outreach_runner.start_background_tasks()`. Never sends. |
+
+All Clipping loops started from `clip_scheduler.start_background_tasks()` called in `main.py` lifespan.
 **`-w 1` gunicorn worker is mandatory** — multiple workers each run their own scheduler loop, causing duplicate emails and double-posts.
 
 ---
@@ -479,5 +576,19 @@ UPDATE artists SET paused_reason=NULL WHERE id={artist_id};
 - **`loop` attribute on `<audio>` snaps karaoke to word 0 on every repeat.** Remove `loop`; use `onEnded` to pause cleanly and reset time. Add `key={clip.id}` so React unmounts/remounts the element when switching clips — prevents stale audio playing under new lyrics.
 
 - **OpenAI image generation replaced Replicate/Flux.** A2V background images use `gpt-image-2` via OpenAI API. Per-user OpenAI API key stored in `user_settings`. Medium quality is the default (faster).
+
+- **Outreach: never let the API process drive a browser.** The backend runs `gunicorn -w 1`; one hung Playwright call there blocks every request on the site. The API runs the DB-only reaper; sending lives in `scripts/outreach_worker.py`.
+
+- **Two leases, not one.** Claiming the job is not enough — the *account* needs its own lease too, or two workers end up driving the same TikTok session concurrently and it gets flagged. Both use `FOR UPDATE … SKIP LOCKED`.
+
+- **`NOW()` writes the DB server's local time.** The outreach TIMESTAMP columns hold UTC, so every write and comparison uses `NOW() AT TIME ZONE 'UTC'`. The older Clipping SQL relies on the server being UTC; don't copy that pattern into new code.
+
+- **`database.Connection.execute()` only takes positional `?` params.** It does `list(params)`, so passing a dict yields the *keys*. New code that needs named binds must go through `db.session.execute(text(sql), {...})` — which is what all of `services/outreach/` does.
+
+- **Retrying an expired session is pure waste.** `session_expired` pauses the account immediately instead of burning the whole consecutive-error budget on the identical failure. A closed inbox is the opposite case: terminal for the *target*, and the account must not be blamed for it at all.
+
+- **A pause must survive the lease release.** `release_account` only touches rows still `active`, so an account auto-paused mid-job is not quietly flipped back to `idle` by the worker's cleanup.
+
+- **Import dedup needs the DB constraint, not just the Python check.** Two simultaneous imports of the same CSV both pass an in-Python "already present?" test. `outreach_targets_campaign_username_uq` plus `ON CONFLICT DO NOTHING` is what actually holds, and the rows the constraint rejects are counted as duplicates in the summary.
 
 - **A2V export: `getDisplayMedia` is the correct path.** Previous attempts using Remotion server-side render, WebGL compositor, and html-to-image all had issues. The working export captures the preview `<div>` via screen recording, crops to 9:16 canvas, records with `MediaRecorder`, then remuxes WebM→MP4 on the server via ffmpeg.

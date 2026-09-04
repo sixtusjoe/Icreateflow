@@ -15,6 +15,7 @@ import {
   Settings,
   Shield,
   Scissors,
+  Send,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -32,6 +33,7 @@ const mainLinks = [
   { href: "/posts/new", label: "New Post", icon: PlusCircle },
   { href: "/clipping", label: "Clipping", icon: Scissors },
   { href: "/clipping/audio-to-video", label: "Audio to Video", icon: Music2 },
+  { href: "/outreach", label: "Outreach", icon: Send },
 ];
 
 const libraryLinks = [

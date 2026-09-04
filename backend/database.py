@@ -73,6 +73,9 @@ _TIMESTAMP_COLUMNS = {
     "scheduled_for", "posted_at", "view_count_updated_at", "last_posted_at",
     "started_at", "ended_at", "next_scheduled_at",
     "deleted_at",
+    # Outreach pipeline
+    "updated_at", "last_attempt_at", "sent_at", "last_activity_at",
+    "completed_at", "lease_expires_at", "run_after", "session_updated_at",
 }
 
 # Columns that must always be coerced to real booleans regardless of input form.
@@ -84,6 +87,7 @@ _BOOLEAN_COLUMNS = {
     "youtube_posted",
     "instagram_posted",
     "facebook_posted",
+    "enabled",
 }
 
 # INSERT OR REPLACE conflict targets per table
@@ -598,6 +602,207 @@ class ClipPost(Base):
             "status IN ('scheduled','posting','posted','failed')", name="clip_posts_status_chk"
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Outreach — DM campaign pipeline
+#
+# Target import → campaign → job queue → account manager → browser worker →
+# result processor → dashboard. The browser layer lives behind a driver
+# interface (`services/outreach/browser/`) so it can be swapped without
+# touching anything below.
+#
+# Statuses (kept in sync with services/outreach/constants.py):
+#   campaign  draft | running | paused | completed | stopped
+#   target    queued | processing | sent | failed | skipped | paused
+#   job       queued | processing | succeeded | failed | cancelled
+#   account   idle | active | paused | error
+# ---------------------------------------------------------------------------
+
+
+class OutreachTemplate(Base):
+    __tablename__ = "outreach_templates"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON object of default variable values, e.g. {"offer": "our beta"}.
+    defaults: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+
+
+class OutreachCampaign(Base):
+    __tablename__ = "outreach_campaigns"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Frozen copy of the template body at start time — editing a template
+    # later must never change what an in-flight campaign sends.
+    message_template: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    template_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("outreach_templates.id", ondelete="SET NULL"), nullable=True
+    )
+    # JSON object of campaign-level template variables (merged under the
+    # per-target ones at render time).
+    template_vars: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    platform: Mapped[str] = mapped_column(Text, server_default="tiktok")
+    status: Mapped[str] = mapped_column(Text, server_default="draft")
+    total_targets: Mapped[int] = mapped_column(Integer, server_default="0")
+    queued_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    processed_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    successful_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    failed_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    # Per-campaign overrides for the global admin controls. NULL = inherit
+    # the site_config default (see services/outreach/config.py).
+    max_jobs: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_jobs_per_account: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    retry_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft','running','paused','completed','stopped')",
+            name="outreach_campaigns_status_chk",
+        ),
+    )
+
+
+class SendingAccount(Base):
+    __tablename__ = "outreach_sending_accounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[str] = mapped_column(Text, server_default="tiktok")
+    status: Mapped[str] = mapped_column(Text, server_default="idle")
+    # Opaque human-readable pointer to the stored browser session, e.g.
+    # "outreach_sessions/acct-7.enc". NEVER a credential.
+    session_reference: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Fernet-encrypted Playwright storage_state JSON. Written by the session
+    # import endpoint, read only inside the worker process. Never serialized
+    # to any API response — see routers/outreach.py:_account_public().
+    session_state_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    session_updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    messages_processed: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_activity_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    error_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    # Reset on every success — drives the auto-pause threshold.
+    consecutive_errors: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    paused_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('idle','active','paused','error')",
+            name="outreach_accounts_status_chk",
+        ),
+    )
+
+
+class OutreachCampaignAccount(Base):
+    """Which sending accounts a campaign may use.
+
+    No rows for a campaign = every enabled account on the same platform is
+    eligible. Explicit rows narrow it to that set.
+    """
+
+    __tablename__ = "outreach_campaign_accounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    sending_account_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_sending_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "sending_account_id", name="outreach_campaign_accounts_uq"
+        ),
+    )
+
+
+class OutreachTarget(Base):
+    __tablename__ = "outreach_targets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    profile_url: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default="queued")
+    assigned_account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("outreach_sending_accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        # Import-time dedup is enforced in the DB, not just in Python — two
+        # concurrent imports of the same CSV cannot both win.
+        UniqueConstraint("campaign_id", "username", name="outreach_targets_campaign_username_uq"),
+        CheckConstraint(
+            "status IN ('queued','processing','sent','failed','skipped','paused')",
+            name="outreach_targets_status_chk",
+        ),
+    )
+
+
+class OutreachJob(Base):
+    __tablename__ = "outreach_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    target_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_targets.id", ondelete="CASCADE"), nullable=False
+    )
+    sending_account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("outreach_sending_accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, server_default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Structured status returned by the browser driver (e.g. "sent",
+    # "messaging_unavailable", "session_expired") — the dashboard groups
+    # failures by this rather than by free-text error strings.
+    result_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Crash recovery: a claimed job carries the claiming worker's id and a
+    # lease. `reap_stale_jobs` returns any job whose lease has expired to
+    # the queue, so a killed worker never strands a target.
+    worker_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # Retry backoff — a job is only claimable once NOW() >= run_after.
+    run_after: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','processing','succeeded','failed','cancelled')",
+            name="outreach_jobs_status_chk",
+        ),
+    )
+
+
+class OutreachAuditLog(Base):
+    """Who did what to which campaign/account. Append-only."""
+
+    __tablename__ = "outreach_audit_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
 
 # ---------------------------------------------------------------------------
@@ -1151,6 +1356,49 @@ async def _migrate_email_features(conn) -> None:
     ))
 
 
+async def _migrate_outreach(conn) -> None:
+    """Outreach pipeline indexes + late-added columns. Idempotent.
+
+    `Base.metadata.create_all` handles table creation; everything here is
+    for databases that already have the tables from an earlier revision,
+    plus the indexes the queue depends on for its claim query.
+    """
+    # Columns added after the first outreach release.
+    for tbl, col, ddl in (
+        ("outreach_campaigns", "template_vars", "TEXT"),
+        ("outreach_campaigns", "max_jobs", "INTEGER"),
+        ("outreach_campaigns", "max_jobs_per_account", "INTEGER"),
+        ("outreach_campaigns", "retry_limit", "INTEGER"),
+        ("outreach_sending_accounts", "session_state_encrypted", "TEXT"),
+        ("outreach_sending_accounts", "session_updated_at", "TIMESTAMP"),
+        ("outreach_sending_accounts", "consecutive_errors", "INTEGER NOT NULL DEFAULT 0"),
+        ("outreach_sending_accounts", "last_error", "TEXT"),
+        ("outreach_sending_accounts", "paused_reason", "TEXT"),
+        ("outreach_jobs", "result_status", "TEXT"),
+        ("outreach_jobs", "worker_id", "TEXT"),
+        ("outreach_jobs", "lease_expires_at", "TIMESTAMP"),
+        ("outreach_jobs", "run_after", "TIMESTAMP"),
+    ):
+        await conn.execute(
+            text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {ddl}")
+        )
+
+    # One live job per target. Without this, a double "start" on the same
+    # campaign would enqueue the same target twice and DM it twice.
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS outreach_jobs_one_live_per_target "
+        "ON outreach_jobs (target_id) WHERE status IN ('queued','processing')"
+    ))
+    for name, ddl in (
+        ("outreach_jobs_claim_idx",
+         "ON outreach_jobs (status, run_after, id)"),
+        ("outreach_jobs_campaign_idx", "ON outreach_jobs (campaign_id, status)"),
+        ("outreach_targets_campaign_idx", "ON outreach_targets (campaign_id, status)"),
+        ("outreach_audit_created_idx", "ON outreach_audit_logs (created_at DESC)"),
+    ):
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} {ddl}"))
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -1162,6 +1410,7 @@ async def init_db() -> None:
         await _migrate_user_status_pending(conn)
         await _migrate_email_features(conn)
         await _migrate_output_error_columns(conn)
+        await _migrate_outreach(conn)
     db = await get_db()
     try:
         await _seed(db)
@@ -2020,3 +2269,305 @@ async def update_clip_post(db: Connection, clip_post_id: int, **kwargs):
     s = db.session
     await s.execute(update(ClipPost).where(ClipPost.id == clip_post_id).values(**_prep(kwargs)))
     await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# Outreach CRUD
+#
+# Every helper here is ownership-agnostic — the router is responsible for
+# checking `user_id` before calling. Queue-critical operations (claiming a
+# job, releasing a lease) live in services/outreach/queue.py because they
+# need raw `FOR UPDATE … SKIP LOCKED` SQL.
+# ---------------------------------------------------------------------------
+
+
+def _touch(kwargs: dict) -> dict:
+    """Stamp updated_at on any outreach mutation."""
+    out = _prep(kwargs)
+    out.setdefault("updated_at", datetime.now(timezone.utc).replace(tzinfo=None))
+    return out
+
+
+# --- Templates ---
+
+async def create_outreach_template(db: Connection, user_id: int | None, name: str, body: str, defaults: str | None = None):
+    s = db.session
+    stmt = insert(OutreachTemplate).values(
+        user_id=user_id, name=name, body=body, defaults=defaults
+    ).returning(OutreachTemplate.id)
+    tid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return tid
+
+
+async def get_outreach_templates(db: Connection, user_id: int | None = None):
+    s = db.session
+    q = select(OutreachTemplate).order_by(OutreachTemplate.id.desc())
+    if user_id is not None:
+        q = q.where(OutreachTemplate.user_id == user_id)
+    return _rows((await s.execute(q)).scalars().all())
+
+
+async def get_outreach_template(db: Connection, template_id: int):
+    s = db.session
+    obj = (await s.execute(
+        select(OutreachTemplate).where(OutreachTemplate.id == template_id)
+    )).scalar_one_or_none()
+    return _row(obj)
+
+
+async def update_outreach_template(db: Connection, template_id: int, **kwargs):
+    s = db.session
+    await s.execute(
+        update(OutreachTemplate).where(OutreachTemplate.id == template_id).values(**_touch(kwargs))
+    )
+    await s.commit()
+
+
+async def delete_outreach_template(db: Connection, template_id: int):
+    s = db.session
+    await s.execute(delete(OutreachTemplate).where(OutreachTemplate.id == template_id))
+    await s.commit()
+
+
+# --- Campaigns ---
+
+async def create_outreach_campaign(db: Connection, user_id: int | None, name: str, **kwargs):
+    s = db.session
+    stmt = insert(OutreachCampaign).values(
+        user_id=user_id, name=name, **_prep(kwargs)
+    ).returning(OutreachCampaign.id)
+    cid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return cid
+
+
+async def get_outreach_campaigns(db: Connection, user_id: int | None = None):
+    s = db.session
+    q = select(OutreachCampaign).order_by(OutreachCampaign.id.desc())
+    if user_id is not None:
+        q = q.where(OutreachCampaign.user_id == user_id)
+    return _rows((await s.execute(q)).scalars().all())
+
+
+async def get_outreach_campaign(db: Connection, campaign_id: int):
+    s = db.session
+    obj = (await s.execute(
+        select(OutreachCampaign).where(OutreachCampaign.id == campaign_id)
+    )).scalar_one_or_none()
+    return _row(obj)
+
+
+async def update_outreach_campaign(db: Connection, campaign_id: int, **kwargs):
+    s = db.session
+    await s.execute(
+        update(OutreachCampaign).where(OutreachCampaign.id == campaign_id).values(**_touch(kwargs))
+    )
+    await s.commit()
+
+
+async def delete_outreach_campaign(db: Connection, campaign_id: int):
+    s = db.session
+    await s.execute(delete(OutreachCampaign).where(OutreachCampaign.id == campaign_id))
+    await s.commit()
+
+
+# --- Sending accounts ---
+
+async def create_sending_account(db: Connection, user_id: int | None, name: str, **kwargs):
+    s = db.session
+    stmt = insert(SendingAccount).values(
+        user_id=user_id, name=name, **_prep(kwargs)
+    ).returning(SendingAccount.id)
+    aid = (await s.execute(stmt)).scalar_one()
+    await s.commit()
+    return aid
+
+
+async def get_sending_accounts(db: Connection, user_id: int | None = None, platform: str | None = None):
+    s = db.session
+    q = select(SendingAccount).order_by(SendingAccount.id.asc())
+    if user_id is not None:
+        q = q.where(SendingAccount.user_id == user_id)
+    if platform:
+        q = q.where(SendingAccount.platform == platform)
+    return _rows((await s.execute(q)).scalars().all())
+
+
+async def get_sending_account(db: Connection, account_id: int):
+    s = db.session
+    obj = (await s.execute(
+        select(SendingAccount).where(SendingAccount.id == account_id)
+    )).scalar_one_or_none()
+    return _row(obj)
+
+
+async def update_sending_account(db: Connection, account_id: int, **kwargs):
+    s = db.session
+    await s.execute(
+        update(SendingAccount).where(SendingAccount.id == account_id).values(**_touch(kwargs))
+    )
+    await s.commit()
+
+
+async def delete_sending_account(db: Connection, account_id: int):
+    s = db.session
+    await s.execute(delete(SendingAccount).where(SendingAccount.id == account_id))
+    await s.commit()
+
+
+# --- Campaign ↔ account assignment ---
+
+async def assign_account_to_campaign(db: Connection, campaign_id: int, account_id: int):
+    s = db.session
+    await s.execute(text(
+        "INSERT INTO outreach_campaign_accounts (campaign_id, sending_account_id) "
+        "VALUES (:c, :a) ON CONFLICT DO NOTHING"
+    ), {"c": campaign_id, "a": account_id})
+    await s.commit()
+
+
+async def unassign_account_from_campaign(db: Connection, campaign_id: int, account_id: int):
+    s = db.session
+    await s.execute(
+        delete(OutreachCampaignAccount).where(
+            OutreachCampaignAccount.campaign_id == campaign_id,
+            OutreachCampaignAccount.sending_account_id == account_id,
+        )
+    )
+    await s.commit()
+
+
+async def get_campaign_account_ids(db: Connection, campaign_id: int) -> list[int]:
+    s = db.session
+    rows = await s.execute(
+        select(OutreachCampaignAccount.sending_account_id)
+        .where(OutreachCampaignAccount.campaign_id == campaign_id)
+        .order_by(OutreachCampaignAccount.sending_account_id.asc())
+    )
+    return [int(r) for r in rows.scalars().all()]
+
+
+# --- Targets ---
+
+async def get_outreach_targets(
+    db: Connection,
+    campaign_id: int,
+    status: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+):
+    s = db.session
+    q = select(OutreachTarget).where(OutreachTarget.campaign_id == campaign_id)
+    if status:
+        q = q.where(OutreachTarget.status == status)
+    q = q.order_by(OutreachTarget.id.asc()).offset(offset)
+    if limit:
+        q = q.limit(limit)
+    return _rows((await s.execute(q)).scalars().all())
+
+
+async def get_outreach_target(db: Connection, target_id: int):
+    s = db.session
+    obj = (await s.execute(
+        select(OutreachTarget).where(OutreachTarget.id == target_id)
+    )).scalar_one_or_none()
+    return _row(obj)
+
+
+async def update_outreach_target(db: Connection, target_id: int, **kwargs):
+    s = db.session
+    await s.execute(
+        update(OutreachTarget).where(OutreachTarget.id == target_id).values(**_touch(kwargs))
+    )
+    await s.commit()
+
+
+async def count_outreach_targets(db: Connection, campaign_id: int) -> dict[str, int]:
+    """Status histogram for one campaign — the source of truth the
+    campaign counters are recomputed from."""
+    s = db.session
+    rows = await s.execute(
+        select(OutreachTarget.status, func.count())
+        .where(OutreachTarget.campaign_id == campaign_id)
+        .group_by(OutreachTarget.status)
+    )
+    return {str(k): int(v) for k, v in rows.all()}
+
+
+# --- Jobs ---
+
+async def get_outreach_jobs(
+    db: Connection,
+    campaign_id: int | None = None,
+    status: str | None = None,
+    account_id: int | None = None,
+    limit: int | None = 100,
+):
+    s = db.session
+    q = select(OutreachJob)
+    if campaign_id is not None:
+        q = q.where(OutreachJob.campaign_id == campaign_id)
+    if status:
+        q = q.where(OutreachJob.status == status)
+    if account_id is not None:
+        q = q.where(OutreachJob.sending_account_id == account_id)
+    q = q.order_by(OutreachJob.id.desc())
+    if limit:
+        q = q.limit(limit)
+    return _rows((await s.execute(q)).scalars().all())
+
+
+async def get_outreach_job(db: Connection, job_id: int):
+    s = db.session
+    obj = (await s.execute(select(OutreachJob).where(OutreachJob.id == job_id))).scalar_one_or_none()
+    return _row(obj)
+
+
+async def update_outreach_job(db: Connection, job_id: int, **kwargs):
+    s = db.session
+    await s.execute(
+        update(OutreachJob).where(OutreachJob.id == job_id).values(**_touch(kwargs))
+    )
+    await s.commit()
+
+
+# --- Audit ---
+
+async def log_outreach_audit(
+    db: Connection,
+    action: str,
+    entity_type: str,
+    entity_id: int | None = None,
+    user_id: int | None = None,
+    detail: str | None = None,
+):
+    """Append an audit row. Best-effort, like log_error — an audit write
+    must never break the action it is recording."""
+    try:
+        s = db.session
+        await s.execute(insert(OutreachAuditLog).values(
+            action=action, entity_type=entity_type, entity_id=entity_id,
+            user_id=user_id, detail=(detail or "")[:4000] or None,
+        ))
+        await s.commit()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def get_outreach_audit_logs(
+    db: Connection,
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    user_id: int | None = None,
+    limit: int = 100,
+):
+    s = db.session
+    q = select(OutreachAuditLog).order_by(OutreachAuditLog.id.desc()).limit(limit)
+    if entity_type:
+        q = q.where(OutreachAuditLog.entity_type == entity_type)
+    if entity_id is not None:
+        q = q.where(OutreachAuditLog.entity_id == entity_id)
+    if user_id is not None:
+        q = q.where(OutreachAuditLog.user_id == user_id)
+    return _rows((await s.execute(q)).scalars().all())

@@ -686,3 +686,246 @@ export const uploadAudioClipAsset = (
     )
     .then((r) => r.data);
 };
+
+// --- Outreach ---
+export type OutreachCampaign = {
+  id: number;
+  name: string;
+  description: string | null;
+  message_template: string;
+  template_id: number | null;
+  template_vars: string | null;
+  platform: string;
+  status: "draft" | "running" | "paused" | "completed" | "stopped";
+  total_targets: number;
+  queued_count: number;
+  processed_count: number;
+  successful_count: number;
+  failed_count: number;
+  max_jobs: number | null;
+  max_jobs_per_account: number | null;
+  retry_limit: number | null;
+  progress: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OutreachAccount = {
+  id: number;
+  name: string;
+  platform: string;
+  status: "idle" | "active" | "paused" | "error";
+  session_reference: string | null;
+  session_updated_at: string | null;
+  has_session: boolean;
+  messages_processed: number;
+  last_activity_at: string | null;
+  error_count: number;
+  consecutive_errors: number;
+  last_error: string | null;
+  paused_reason: string | null;
+  enabled: boolean;
+  created_at: string;
+};
+
+export type OutreachTarget = {
+  id: number;
+  campaign_id: number;
+  username: string;
+  profile_url: string;
+  status: "queued" | "processing" | "sent" | "failed" | "skipped" | "paused";
+  assigned_account_id: number | null;
+  attempts: number;
+  last_attempt_at: string | null;
+  sent_at: string | null;
+  error_message: string | null;
+};
+
+export type OutreachJob = {
+  id: number;
+  campaign_id: number;
+  target_id: number;
+  sending_account_id: number | null;
+  status: "queued" | "processing" | "succeeded" | "failed" | "cancelled";
+  attempts: number;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  result_status: string | null;
+};
+
+export type OutreachTemplate = {
+  id: number;
+  name: string;
+  body: string;
+  defaults: string | null;
+  variables?: string[];
+  created_at: string;
+};
+
+export type OutreachImportSummary = {
+  imported: number;
+  duplicates: number;
+  invalid: number;
+  ready: number;
+  invalid_rows: { line: number; value: string; reason: string }[];
+  invalid_truncated: number;
+};
+
+export type OutreachAudit = {
+  id: number;
+  action: string;
+  entity_type: string;
+  entity_id: number | null;
+  detail: string | null;
+  created_at: string;
+};
+
+// Campaigns
+export const listOutreachCampaigns = (): Promise<OutreachCampaign[]> =>
+  api.get("/api/outreach/campaigns").then((r) => r.data);
+export const createOutreachCampaign = (data: {
+  name: string;
+  description?: string;
+  message_template?: string;
+  template_id?: number | null;
+  template_vars?: Record<string, string>;
+  platform?: string;
+  max_jobs?: number | null;
+  max_jobs_per_account?: number | null;
+  retry_limit?: number | null;
+}): Promise<OutreachCampaign> =>
+  api.post("/api/outreach/campaigns", data).then((r) => r.data);
+export const getOutreachCampaign = (id: number) =>
+  api.get(`/api/outreach/campaigns/${id}`).then((r) => r.data);
+export const getOutreachProgress = (id: number) =>
+  api.get(`/api/outreach/campaigns/${id}/progress`).then((r) => r.data);
+export const updateOutreachCampaign = (
+  id: number,
+  data: Partial<{
+    name: string;
+    description: string;
+    message_template: string;
+    template_vars: Record<string, string>;
+    max_jobs: number | null;
+    max_jobs_per_account: number | null;
+    retry_limit: number | null;
+  }>,
+): Promise<OutreachCampaign> =>
+  api.put(`/api/outreach/campaigns/${id}`, data).then((r) => r.data);
+export const deleteOutreachCampaign = (id: number) =>
+  api.delete(`/api/outreach/campaigns/${id}`).then((r) => r.data);
+
+export const importOutreachTargetsFile = (
+  id: number,
+  file: File,
+): Promise<OutreachImportSummary> => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post(`/api/outreach/campaigns/${id}/import`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    })
+    .then((r) => r.data);
+};
+export const importOutreachTargetsText = (
+  id: number,
+  content: string,
+): Promise<OutreachImportSummary> =>
+  api
+    .post(`/api/outreach/campaigns/${id}/import-text`, { content })
+    .then((r) => r.data);
+
+export const listOutreachTargets = (
+  id: number,
+  params: { status?: string; limit?: number; offset?: number } = {},
+): Promise<{ targets: OutreachTarget[]; counts: Record<string, number>; total: number }> =>
+  api.get(`/api/outreach/campaigns/${id}/targets`, { params }).then((r) => r.data);
+
+export const startOutreachCampaign = (id: number) =>
+  api.post(`/api/outreach/campaigns/${id}/start`).then((r) => r.data);
+export const pauseOutreachCampaign = (id: number) =>
+  api.post(`/api/outreach/campaigns/${id}/pause`).then((r) => r.data);
+export const resumeOutreachCampaign = (id: number) =>
+  api.post(`/api/outreach/campaigns/${id}/resume`).then((r) => r.data);
+export const stopOutreachCampaign = (id: number) =>
+  api.post(`/api/outreach/campaigns/${id}/stop`).then((r) => r.data);
+export const retryOutreachFailed = (id: number) =>
+  api.post(`/api/outreach/campaigns/${id}/retry-failed`).then((r) => r.data);
+export const outreachExportUrl = (id: number) =>
+  `${api.defaults.baseURL}/api/outreach/campaigns/${id}/export.csv`;
+export const downloadOutreachResults = (id: number) =>
+  api
+    .get(`/api/outreach/campaigns/${id}/export.csv`, { responseType: "blob" })
+    .then((r) => r.data as Blob);
+
+export const assignOutreachAccount = (campaignId: number, accountId: number) =>
+  api
+    .post(`/api/outreach/campaigns/${campaignId}/accounts/${accountId}`)
+    .then((r) => r.data);
+export const unassignOutreachAccount = (campaignId: number, accountId: number) =>
+  api
+    .delete(`/api/outreach/campaigns/${campaignId}/accounts/${accountId}`)
+    .then((r) => r.data);
+
+// Sending accounts
+export const listOutreachAccounts = (): Promise<OutreachAccount[]> =>
+  api.get("/api/outreach/accounts").then((r) => r.data);
+export const createOutreachAccount = (data: {
+  name: string;
+  platform?: string;
+  session_reference?: string;
+}): Promise<OutreachAccount> =>
+  api.post("/api/outreach/accounts", data).then((r) => r.data);
+export const getOutreachAccount = (id: number) =>
+  api.get(`/api/outreach/accounts/${id}`).then((r) => r.data);
+export const updateOutreachAccount = (
+  id: number,
+  data: { name?: string; enabled?: boolean; session_reference?: string },
+): Promise<OutreachAccount> =>
+  api.put(`/api/outreach/accounts/${id}`, data).then((r) => r.data);
+export const setOutreachAccountSession = (
+  id: number,
+  session_state: string,
+): Promise<OutreachAccount> =>
+  api
+    .post(`/api/outreach/accounts/${id}/session`, { session_state })
+    .then((r) => r.data);
+export const resumeOutreachAccount = (id: number): Promise<OutreachAccount> =>
+  api.post(`/api/outreach/accounts/${id}/resume`).then((r) => r.data);
+export const deleteOutreachAccount = (id: number) =>
+  api.delete(`/api/outreach/accounts/${id}`).then((r) => r.data);
+
+// Templates
+export const listOutreachTemplates = (): Promise<OutreachTemplate[]> =>
+  api.get("/api/outreach/templates").then((r) => r.data);
+export const createOutreachTemplate = (data: {
+  name: string;
+  body: string;
+  defaults?: Record<string, string>;
+}): Promise<OutreachTemplate> =>
+  api.post("/api/outreach/templates", data).then((r) => r.data);
+export const updateOutreachTemplate = (
+  id: number,
+  data: { name?: string; body?: string; defaults?: Record<string, string> },
+): Promise<OutreachTemplate> =>
+  api.put(`/api/outreach/templates/${id}`, data).then((r) => r.data);
+export const deleteOutreachTemplate = (id: number) =>
+  api.delete(`/api/outreach/templates/${id}`).then((r) => r.data);
+export const previewOutreachTemplate = (
+  body: string,
+  variables?: Record<string, string>,
+): Promise<{ variables: string[]; preview: string }> =>
+  api.post("/api/outreach/templates/preview", { body, variables }).then((r) => r.data);
+
+// Admin controls
+export const getOutreachSettings = () =>
+  api.get("/api/outreach/settings").then((r) => r.data);
+export const updateOutreachSettings = (values: Record<string, string | number | boolean>) =>
+  api.put("/api/outreach/settings", { values }).then((r) => r.data);
+export const listOutreachAudit = (params: {
+  entity_type?: string;
+  entity_id?: number;
+  limit?: number;
+} = {}): Promise<OutreachAudit[]> =>
+  api.get("/api/outreach/audit", { params }).then((r) => r.data);

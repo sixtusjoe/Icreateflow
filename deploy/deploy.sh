@@ -94,11 +94,25 @@ echo "==> Restarting services"
 systemctl restart icreateflow-backend
 systemctl restart icreateflow-frontend
 
+# Outreach workers, if any are enabled on this box. A restart is safe at any
+# moment: an in-flight job keeps its lease and is requeued by the reaper, so
+# nothing is lost and nothing is sent twice.
+OUTREACH_UNITS=$(systemctl list-units --state=active --plain --no-legend \
+    'icreateflow-outreach-worker@*' 2>/dev/null | awk '{print $1}')
+if [ -n "$OUTREACH_UNITS" ]; then
+    echo "==> Restarting outreach workers"
+    # shellcheck disable=SC2086
+    systemctl restart $OUTREACH_UNITS
+fi
+
 sleep 2
 echo
 echo "==> Service status:"
 systemctl is-active icreateflow-backend  && echo "  backend  : active"
 systemctl is-active icreateflow-frontend && echo "  frontend : active"
+for unit in $OUTREACH_UNITS; do
+    systemctl is-active "$unit" >/dev/null && echo "  $unit : active"
+done
 echo
 echo "==> Deploy complete."
 echo "    Logs:  journalctl -u icreateflow-backend -f"

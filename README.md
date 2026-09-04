@@ -5,6 +5,7 @@ A multi-user SaaS platform for content creators. The platform has **two distinct
 - **Brands** — TikTok slideshow scaling. Import or upload slides, OCR the text, generate per-account variations (keep / replace / Flux face-swap), assemble 9:16 videos, and schedule across TikTok, YouTube Shorts, Instagram Reels, and Facebook.
 - **Clipping** — Music artist auto-poster. Sync short clips from Google Drive, plan posting slots in the artist's local timezone, optionally per-account video-diversify, and auto-post across the same four platforms with view tracking and auto-pause on view-target / directory-exhausted.
 - **Audio-to-Video** — Karaoke-style music video creator. Upload a music track, Whisper transcribes it, split into 1/3/5 clips, edit lyrics in the Overlay Studio (4 templates, karaoke/scroll modes), export as 9:16 MP4 with synced lyrics, assign to a variation for posting.
+- **Outreach** — Multi-account DM campaigns. Import a list of TikTok profiles, write a `{{variable}}` message template, and let a Postgres-backed job queue hand targets to up to 20 sending accounts, each driven in its own isolated browser session. Live progress, retries, per-account auto-pause, audit log.
 
 Production: **icreateflow.com** (`95.111.228.80`) — Postgres + FastAPI + Next.js 16 on a single VPS, fronted by Apache.
 
@@ -52,6 +53,21 @@ Frontend: `frontend/src/app/clipping/audio-to-video/page.tsx` (single file, ~290
 
 Key technical detail: **Whisper timestamps are absolute** (from track start, not clip start). The karaoke RAF tick converts: `tAbs = audio.currentTime + clip.start_s`. Sync uses a per-display-word `wordTimings` array — 1:1 Whisper timestamps for auto-generated text, even time distribution for user-edited text.
 
+## Outreach — How it works
+
+1. **Add sending accounts** — `/outreach/accounts`, up to 20. Name the account, then attach an authorized browser session (Playwright `storage_state` JSON). Sessions are encrypted at rest and never returned by the API; no password ever reaches the service.
+2. **Create a campaign** — name, description, and a message template with `{{username}}`, `{{profile_url}}`, `{{campaign_name}}`, `{{account_name}}` plus any campaign variable you define (`{{offer}}`, …).
+3. **Import targets** — CSV upload or paste. Accepts `username`, `profile_url`, or both, in any column order. Off-platform URLs, malformed handles and duplicates are rejected *before* insert; the summary reports `imported / duplicates / invalid / ready`.
+4. **Start** — a preflight refuses to run without a valid template, queued targets and an enabled account. Starting enqueues one `outreach_jobs` row per queued target.
+5. **Workers** — `scripts/outreach_worker.py`, run as one or more processes. Each cycle leases a free sending account, claims a job with `FOR UPDATE SKIP LOCKED`, renders the message, calls the browser driver, records the structured result, and releases the lease.
+6. **Monitor** — the campaign page polls every 3 s: progress bar, per-status target list, sending accounts, recent activity, error log, audit trail. Pause / Resume / Stop / Retry failed / Export CSV.
+7. **Self-healing** — a claimed job carries a lease; if its worker dies, the reaper requeues it. An account that keeps failing (expired session, rate limit, browser crash) auto-pauses with the reason shown to the administrator instead of retrying forever.
+
+The browser layer is isolated behind a driver interface (`services/outreach/browser/`) — `mock` (sends nothing, for dry runs and tests) and `playwright_tiktok` ship today; swapping the automation technology means adding a module there and changing one setting.
+
+Tables: `outreach_campaigns`, `outreach_targets`, `outreach_sending_accounts`, `outreach_jobs`, `outreach_templates`, `outreach_campaign_accounts`, `outreach_audit_logs`.
+Frontend: `frontend/src/app/outreach/`. Admin controls: `/admin → Outreach`.
+
 ---
 
 ## Repo layout
@@ -62,6 +78,9 @@ Key technical detail: **Whisper timestamps are absolute** (from track start, not
 │   ├── main.py             All API endpoints + JWT auth + lifespan startup
 │   ├── database.py         ORM models, init_db(), idempotent migrations
 │   ├── requirements.txt
+│   ├── routers/outreach.py Outreach API (the one router; everything else is in main.py)
+│   ├── scripts/outreach_worker.py  Outreach browser worker CLI
+│   ├── tests/              pytest suite (outreach pipeline)
 │   └── services/
 │       ├── auth.py             JWT + bcrypt
 │       ├── email.py            SMTP email (reminders + HURRAY results)
@@ -75,6 +94,17 @@ Key technical detail: **Whisper timestamps are absolute** (from track start, not
 │       ├── gdrive.py           Google Drive clip listing
 │       ├── oauth.py            Per-platform OAuth flows + token refresh
 │       ├── caption_variants.py Caption variation generation
+│       ├── outreach/           ★ DM campaign pipeline
+│       │   ├── queue.py            Postgres job queue (claim / retry / reap)
+│       │   ├── accounts.py         Sending-account leasing + health
+│       │   ├── runner.py           Worker loop + in-process reaper
+│       │   ├── importer.py         CSV import + validation + dedup
+│       │   ├── templates.py        {{variable}} rendering
+│       │   ├── config.py           Admin-tunable limits (site_config)
+│       │   ├── stats.py            Campaign counter maintenance
+│       │   └── browser/            Swappable automation drivers
+│       │       ├── mock.py             No browser — dry runs and tests
+│       │       └── playwright_tiktok.py Isolated context per account
 │       └── posting/            Platform upload adapters
 │           ├── __init__.py     PostingError, PostDeletedError
 │           ├── tiktok.py
@@ -180,6 +210,30 @@ npm run dev
 
 Frontend runs at **http://localhost:3000** and points to `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000`).
 
+### 5. Outreach worker (optional)
+
+The API process never drives a browser. To actually send outreach messages, run at least one worker alongside it:
+
+```bash
+cd backend
+python3 scripts/outreach_worker.py --driver mock     # dry run — sends nothing
+python3 scripts/outreach_worker.py                   # driver from the admin panel
+python3 scripts/outreach_worker.py --concurrency 3
+```
+
+For the real TikTok driver: `pip install playwright && playwright install chromium`, then set `outreach_driver` to `playwright_tiktok` in `/admin → Outreach`.
+
+### 6. Tests
+
+```bash
+createdb icreateflow_test
+cd backend
+pip install pytest pytest-asyncio
+ICREATE_TEST_DB_DSN=postgresql+asyncpg://postgres@127.0.0.1:5432/icreateflow_test python3 -m pytest
+```
+
+The suite covers the outreach pipeline end to end against a real Postgres (the queue's guarantees are `SKIP LOCKED` and unique indexes, which a stub cannot exercise). Every send goes through the mock driver — no browser, no messages. Without a reachable database the DB-backed tests skip and the pure-logic ones still run.
+
 ---
 
 ## Production deploy
@@ -211,12 +265,26 @@ ssh root@95.111.228.80 'certbot --apache -d icreateflow.com -d www.icreateflow.c
     --non-interactive --agree-tos --email admin@icreateflow.com --redirect'
 ```
 
+### Outreach workers (once per box)
+
+```bash
+ssh root@95.111.228.80
+cp /srv/icreateflow/src/deploy/systemd/icreateflow-outreach-worker.service /etc/systemd/system/
+/srv/icreateflow/venv/bin/pip install playwright && /srv/icreateflow/venv/bin/playwright install chromium
+systemctl daemon-reload
+systemctl enable --now icreateflow-outreach-worker@1
+systemctl enable --now icreateflow-outreach-worker@2   # as many as you want
+```
+
+Workers claim jobs and accounts in Postgres, so any number of instances is safe. Restarting one never loses or double-sends a target: an in-flight job keeps its lease and is requeued by the reaper.
+
 ### Logs
 
 ```bash
 ssh root@95.111.228.80
 journalctl -u icreateflow-backend -f
 journalctl -u icreateflow-frontend -f
+journalctl -u 'icreateflow-outreach-worker@*' -f
 ```
 
 ---
@@ -231,6 +299,9 @@ journalctl -u icreateflow-frontend -f
 | `ICREATE_DB_DSN` | `postgresql+asyncpg://user:pw@host:5432/db` | **Yes** |
 | `ANTHROPIC_API_KEY` | Claude OCR + caption variants | Optional |
 | `REPLICATE_API_TOKEN` | Flux image generation | Optional |
+| `ICREATE_OUTREACH_SECRET` | Encrypts stored outreach sending-account sessions. Falls back to `ICREATE_JWT_SECRET`. | Optional |
+| `ICREATE_OUTREACH_HEADLESS` | `0` runs the Playwright driver with a visible browser (debugging) | Optional |
+| `ICREATE_OUTREACH_TIMEOUT_MS` | Per-navigation timeout for the browser driver (default 30000) | Optional |
 
 All OAuth client IDs/secrets, SMTP config, Google Drive API key, and site config are stored in the `settings` / `site_config` tables — edit from `/admin` and `/settings` in the UI.
 
@@ -287,6 +358,24 @@ All endpoints except auth require `Authorization: Bearer <token>`.
 | `POST` | `/api/audio-to-video/clips/{id}/assign` | Assign exported MP4 to a variation clip |
 | `POST` | `/api/audio-to-video/convert-to-mp4` | Server-side WebM→MP4 remux |
 | `DELETE` | `/api/audio-to-video/{id}` | Delete track + all files |
+
+### Outreach
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET/POST` | `/api/outreach/campaigns` | List / create campaigns |
+| `GET` | `/api/outreach/campaigns/{id}` | Campaign detail (targets, accounts, jobs, audit) |
+| `GET` | `/api/outreach/campaigns/{id}/progress` | Small payload for the live poll |
+| `POST` | `/api/outreach/campaigns/{id}/import` | CSV upload → validated targets |
+| `POST` | `/api/outreach/campaigns/{id}/import-text` | Same, from a pasted list |
+| `POST` | `/api/outreach/campaigns/{id}/start\|pause\|resume\|stop` | Campaign controls |
+| `POST` | `/api/outreach/campaigns/{id}/retry-failed` | Re-queue failed targets |
+| `GET` | `/api/outreach/campaigns/{id}/export.csv` | Export results |
+| `GET/POST` | `/api/outreach/accounts` | List / add sending accounts (max 20) |
+| `POST` | `/api/outreach/accounts/{id}/session` | Store an encrypted browser session |
+| `PUT` | `/api/outreach/accounts/{id}` | Rename, enable / disable |
+| `GET/POST` | `/api/outreach/templates` | Reusable message templates |
+| `POST` | `/api/outreach/templates/preview` | Validate + render with sample data |
+| `GET/PUT` | `/api/outreach/settings` | Admin limits, driver, worker kill switch |
 
 ### Admin
 | Method | Endpoint | Description |

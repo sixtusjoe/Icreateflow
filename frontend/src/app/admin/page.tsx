@@ -22,9 +22,10 @@ import {
   getBrandCacheStats, clearBrandCache,
   sendTestEmail,
   uploadAsset,
+  getOutreachSettings, updateOutreachSettings,
 } from "@/lib/api";
 
-type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email";
+type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email" | "outreach";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -77,6 +78,7 @@ export default function AdminPage() {
     { id: "errors", label: "Errors" },
     { id: "branding", label: "Branding" },
     { id: "email", label: "Email / SMTP" },
+    { id: "outreach", label: "Outreach" },
   ];
 
   return (
@@ -117,6 +119,7 @@ export default function AdminPage() {
       {tab === "errors" && <ErrorsTab />}
       {tab === "branding" && <BrandingTab siteConfig={siteConfig} setSiteConfig={setSiteConfig} />}
       {tab === "email" && <EmailTab siteConfig={siteConfig} setSiteConfig={setSiteConfig} adminEmail={user?.email} />}
+      {tab === "outreach" && <OutreachTab />}
     </div>
   );
 }
@@ -1475,5 +1478,148 @@ function ErrorsTab() {
       onConfirm={handleClear}
     />
     </>
+  );
+}
+
+
+/* ============================================================
+ * OUTREACH — worker limits, driver, and the global kill switch
+ * ============================================================ */
+type OutreachSettings = {
+  values: Record<string, string | number | boolean>;
+  spec: Record<string, { default: number; min: number; max: number }>;
+  drivers: string[];
+  max_sending_accounts: number;
+};
+
+function OutreachTab() {
+  const [settings, setSettings] = useState<OutreachSettings | null>(null);
+  const [values, setValues] = useState<Record<string, string | number | boolean>>({});
+  const [saving, setSaving] = useState(false);
+
+  const load = () =>
+    getOutreachSettings()
+      .then((s: OutreachSettings) => {
+        setSettings(s);
+        setValues(s.values);
+      })
+      .catch(() => toast.error("Failed to load outreach settings"));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const save = async (patch: Record<string, string | number | boolean>) => {
+    setSaving(true);
+    try {
+      const result = await updateOutreachSettings(patch);
+      setValues(result.values);
+      toast.success("Outreach settings saved");
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!settings) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const workersOn = values.outreach_workers_enabled !== false;
+
+  const LABELS: Record<string, string> = {
+    outreach_max_jobs_per_campaign: "Maximum jobs per campaign",
+    outreach_max_jobs_per_account: "Maximum jobs per account (per campaign)",
+    outreach_retry_limit: "Retry limit",
+    outreach_worker_concurrency: "Worker concurrency",
+    outreach_account_error_threshold: "Errors before an account auto-pauses",
+    outreach_job_lease_seconds: "Job lease (seconds)",
+    outreach_retry_backoff_seconds: "Retry backoff (seconds)",
+    outreach_min_send_interval_seconds: "Minimum gap between sends, per account (seconds)",
+    outreach_worker_idle_seconds: "Worker idle poll (seconds)",
+  };
+
+  return (
+    <div className="space-y-6">
+      <Section title="Workers">
+        <div className="rounded-xl border border-border bg-card p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">
+                {workersOn ? "Workers are running" : "All workers stopped"}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Stopping workers leaves every campaign and job exactly where it is —
+                nothing is cancelled, and sending resumes when you switch this back on.
+              </p>
+            </div>
+            <button
+              onClick={() => save({ outreach_workers_enabled: !workersOn })}
+              disabled={saving}
+              className={`min-h-[44px] whitespace-nowrap rounded-lg px-5 text-sm font-medium transition-opacity hover:opacity-90 disabled:opacity-50 ${
+                workersOn ? "bg-destructive text-white" : "bg-foreground text-background"
+              }`}
+            >
+              {workersOn ? "Stop all workers" : "Start workers"}
+            </button>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Automation driver">
+        <div className="rounded-xl border border-border bg-card p-5">
+          <select
+            value={String(values.outreach_driver ?? "mock")}
+            onChange={(e) => save({ outreach_driver: e.target.value })}
+            disabled={saving}
+            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground"
+          >
+            {settings.drivers.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-sm text-muted-foreground">
+            <code>mock</code> runs campaigns end to end without contacting any platform —
+            use it to rehearse a campaign. Any other driver sends for real.
+          </p>
+        </div>
+      </Section>
+
+      <Section title="Limits">
+        <div className="grid gap-4 rounded-xl border border-border bg-card p-5 sm:grid-cols-2">
+          {Object.keys(settings.spec).map((key) => (
+            <div key={key}>
+              <label className="mb-1.5 block text-sm font-medium">
+                {LABELS[key] ?? key}
+              </label>
+              <input
+                type="number"
+                min={settings.spec[key].min}
+                max={settings.spec[key].max}
+                value={String(values[key] ?? settings.spec[key].default)}
+                onChange={(e) => setValues({ ...values, [key]: e.target.value })}
+                onBlur={(e) => {
+                  const next = Number(e.target.value);
+                  if (Number.isFinite(next) && next !== settings.values[key]) {
+                    save({ [key]: next });
+                  }
+                }}
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                default {settings.spec[key].default} · range {settings.spec[key].min}–
+                {settings.spec[key].max}
+              </p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Campaigns can override the first three per campaign; these are the defaults.
+          A change takes effect on each worker&apos;s next job — no restart needed.
+        </p>
+      </Section>
+    </div>
   );
 }
