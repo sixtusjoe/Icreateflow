@@ -70,6 +70,15 @@ Key technical detail: **Whisper timestamps are absolute** (from track start, not
 4. **Start** — a preflight refuses to run without a valid template, queued targets and an enabled account. Starting enqueues one `outreach_jobs` row per queued target.
 5. **Workers** — `scripts/outreach_worker.py`, run as one or more processes. Each cycle leases a free sending account, claims a job with `FOR UPDATE SKIP LOCKED`, renders the message, calls the browser driver, records the structured result, and releases the lease.
 6. **Monitor** — the campaign page polls every 3 s: progress bar, per-status target list, sending accounts, recent activity, error log, audit trail. Pause / Resume / Stop / Retry failed / Export CSV.
+
+   To watch a send actually happen, run one job with the browser visible:
+
+   ```bash
+   bash deploy/outreach-watch-mac.sh          # a real send, watched
+   bash deploy/outreach-watch-mac.sh mock     # rehearse, sends nothing
+   ```
+
+   Same tunnel and viewer as the login flow. It takes the next queued job off the same queue through the same worker code — the only difference is you can see it load the profile, click Message, type and submit. Background workers are paused for the duration so the job can't be claimed out from under you, and restarted on exit however it ends. When a selector breaks, this is faster than reading logs.
 7. **Self-healing** — a claimed job carries a lease; if its worker dies, the reaper requeues it. An account that keeps failing (expired session, rate limit, browser crash) auto-pauses with the reason shown to the administrator instead of retrying forever.
 
 The browser layer is isolated behind a driver interface (`services/outreach/browser/`) — `mock` (sends nothing, for dry runs and tests) and `playwright_tiktok` ship today; swapping the automation technology means adding a module there and changing one setting.

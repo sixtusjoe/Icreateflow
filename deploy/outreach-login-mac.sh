@@ -12,9 +12,10 @@
 #
 set -euo pipefail
 
-HOST="${ICREATE_HOST:-root@95.111.228.80}"
 REMOTE=/srv/icreateflow/src/deploy/outreach-login.sh
-PORT="${ICREATE_LOGIN_VNC_PORT:-5900}"
+
+# shellcheck source=/dev/null
+. "$(dirname "$0")/_vnc-tunnel-mac.sh"
 
 # --- no account given → just list them -------------------------------------
 if [ $# -lt 1 ]; then
@@ -26,60 +27,13 @@ fi
 
 ACCOUNT_ID=$1
 case "$ACCOUNT_ID" in
-    ''|*[!0-9]*) echo "ERROR: give an account ID (a number). Run with no arguments to list them."; exit 1 ;;
+    ''|*[!0-9]*)
+        echo "ERROR: give an account ID (a number). Run with no arguments to list them."
+        exit 1 ;;
 esac
 
-# macOS enables its own screen sharing on 5900; step aside if it's in use.
-if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-    PORT=5901
-    echo "==> Port 5900 is busy on this Mac, using $PORT instead"
-fi
-
-# A control socket makes the background tunnel easy to shut down cleanly.
-CTL="/tmp/icreateflow-vnc-$$"
-cleanup() {
-    ssh -S "$CTL" -O exit "$HOST" 2>/dev/null || true
-    rm -f "$CTL"
-}
-trap cleanup EXIT INT TERM
-
-echo "==> Opening tunnel to $HOST"
-ssh -M -S "$CTL" -f -N -L "$PORT:localhost:${ICREATE_LOGIN_VNC_PORT:-5900}" "$HOST"
-
-# Wait for the VNC server to actually answer before opening the viewer.
-#
-# A fixed delay is wrong: the first run on a box installs Xvfb and x11vnc
-# first, which takes far longer than any sensible guess, and connecting
-# early just gives "Connection failed to localhost".
-#
-# A bare connect is not enough either — the tunnel's local port is bound by
-# ssh immediately, so connecting succeeds even when nothing is listening on
-# the far end. A real VNC server greets us with an "RFB 003.00x" banner, so
-# wait for that.
-#
-# Read it over bash's /dev/tcp rather than `nc … | head -c 3 | grep`: under
-# `pipefail`, head closing the pipe can kill nc with SIGPIPE and make the
-# whole condition report failure even when the banner did arrive.
-(
-    for _ in $(seq 1 150); do   # up to ~5 minutes
-        if read -r -t 3 banner < "/dev/tcp/localhost/$PORT" 2>/dev/null \
-           && [ "${banner:0:3}" = "RFB" ]
-        then
-            sleep 1
-            echo
-            echo "==> Opening Screen Sharing — sign in to the account in that window."
-            open "vnc://localhost:$PORT" 2>/dev/null || {
-                echo "!!  Couldn't open Screen Sharing automatically."
-                echo "!!  In Finder press Cmd-K and enter:  vnc://localhost:$PORT"
-            }
-            exit 0
-        fi
-        sleep 2
-    done
-    echo
-    echo "!!  The server's VNC never came up. Once you see 'Starting VNC' above,"
-    echo "!!  press Cmd-K in Finder and enter:  vnc://localhost:$PORT"
-) &
+trap tunnel_close EXIT INT TERM
+tunnel_open
 
 echo "==> Starting the browser on the server"
 echo

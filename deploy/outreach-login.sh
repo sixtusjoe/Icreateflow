@@ -29,8 +29,6 @@ BACKEND=$APP_DIR/backend
 VENV=$APP_DIR/venv
 SERVICE_USER=icreateflow
 BROWSERS_DIR=$APP_DIR/pw-browsers
-DISPLAY_NUM="${ICREATE_LOGIN_DISPLAY:-99}"
-VNC_PORT="${ICREATE_LOGIN_VNC_PORT:-5900}"
 TIMEOUT="${ICREATE_LOGIN_TIMEOUT:-600}"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -73,80 +71,22 @@ fi
 ACCOUNT_ID=$1
 
 # --- display + VNC ---------------------------------------------------------
-
-if ! command -v x11vnc >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
-    echo "==> Installing Xvfb + x11vnc (first run only, takes a minute)"
-    # NEEDRESTART_MODE=a stops the post-install service scanner from
-    # scribbling over this script's own output.
-    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
-    apt-get update -qq
-    apt-get install -y -qq xvfb x11vnc >/dev/null 2>&1
-fi
-
-XVFB_PID=""
-VNC_PID=""
-PASSFILE=""
-cleanup() {
-    [ -n "$VNC_PID" ] && kill "$VNC_PID" 2>/dev/null || true
-    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
-    [ -n "$PASSFILE" ] && rm -f "$PASSFILE" 2>/dev/null || true
-    rm -f "/tmp/.X${DISPLAY_NUM}-lock" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-echo "==> Starting virtual display :$DISPLAY_NUM"
-Xvfb ":$DISPLAY_NUM" -screen 0 1280x900x24 >/dev/null 2>&1 &
-XVFB_PID=$!
-sleep 2
-
-# A one-time password, regenerated every run and deleted on exit.
 #
-# The real security boundary is -localhost: the VNC port is not reachable
-# from the internet, only through an SSH tunnel by someone who already has
-# access to this box. The password exists because macOS Screen Sharing
-# refuses to connect to a VNC server that offers no authentication — it
-# prompts for a password with nothing valid to type.
-#
-# VNC passwords are truncated to 8 characters by the protocol, so there is
-# no point generating a longer one.
-#
-# Generated with python rather than `tr </dev/urandom | head -c 8`: under
-# this script's `set -euo pipefail`, head closing the pipe after 8 bytes
-# kills tr with SIGPIPE, the pipeline reports 141, and the whole script
-# exits silently right here.
-VNC_PASS=$("$VENV/bin/python" -c \
-    "import secrets; print(''.join(secrets.choice('abcdefghjkmnpqrstuvwxyz23456789') for _ in range(8)))")
-PASSFILE=$(mktemp /tmp/.icf-vncpw-XXXXXX)
-chmod 600 "$PASSFILE"
-x11vnc -storepasswd "$VNC_PASS" "$PASSFILE" >/dev/null 2>&1
+# Shared with outreach-watch.sh: see deploy/_vnc-session.sh.
 
-echo "==> Starting VNC on 127.0.0.1:$VNC_PORT (localhost only)"
-x11vnc -display ":$DISPLAY_NUM" -rfbport "$VNC_PORT" -localhost \
-       -rfbauth "$PASSFILE" -forever -shared -quiet >/dev/null 2>&1 &
-VNC_PID=$!
-sleep 2
+# shellcheck source=/dev/null
+. "$(dirname "$0")/_vnc-session.sh"
 
-cat <<BANNER
+trap vnc_cleanup EXIT INT TERM
 
-  ─────────────────────────────────────────────────────────────
-   Screen Sharing will ask for a password. Use this one:
-
-           $VNC_PASS
-
-   NOT your Mac password. It is generated for this session
-   only and is thrown away when this finishes.
-
-   Once you have signed in, the window will drop out and say
-   "Reconnecting…". That is the finish, not an error — it means
-   the session was captured and the remote browser closed.
-   Watch THIS terminal for the result.
-
-   If the window doesn't open by itself, press Cmd-K in Finder
-   and enter:   vnc://localhost:$VNC_PORT
-  ─────────────────────────────────────────────────────────────
-
-BANNER
+vnc_require_deps
+vnc_start "$VENV/bin/python"
+vnc_banner \
+    "Sign in to the account in the window that appears. This
+   captures the session by itself — no copy-paste." \
+    "Once signed in, the window drops out and says
+   \"Reconnecting…\". That is the finish, not an error. Watch
+   THIS terminal for the result."
 
 cd "$BACKEND"
-export DISPLAY=":$DISPLAY_NUM"
 run_capture "$ACCOUNT_ID" --timeout "$TIMEOUT"
