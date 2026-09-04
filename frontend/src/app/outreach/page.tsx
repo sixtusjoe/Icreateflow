@@ -10,6 +10,7 @@ import {
   FileText,
   CheckCircle2,
   XCircle,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -199,13 +200,30 @@ export default function OutreachPage() {
                 />
               </div>
 
-              <div className="mt-4">
-                <ProgressBar
-                  processed={c.processed_count}
-                  total={c.total_targets}
-                  successful={c.successful_count}
-                />
-              </div>
+              {/* A campaign with nothing in it needs a next step, not a 0%
+                  bar. The import lives on the campaign page, which isn't
+                  obvious from here. */}
+              {c.total_targets === 0 ? (
+                <Link
+                  href={`/outreach/${c.id}`}
+                  className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-4 py-3 text-sm transition-colors hover:border-foreground/40 hover:bg-muted/50"
+                >
+                  <span className="text-muted-foreground">
+                    No targets yet — open the campaign to import your list.
+                  </span>
+                  <span className="inline-flex shrink-0 items-center gap-1.5 font-medium">
+                    <Upload className="h-4 w-4" /> Import
+                  </span>
+                </Link>
+              ) : (
+                <div className="mt-4">
+                  <ProgressBar
+                    processed={c.processed_count}
+                    total={c.total_targets}
+                    successful={c.successful_count}
+                  />
+                </div>
+              )}
             </div>
           ))}
         </div>
