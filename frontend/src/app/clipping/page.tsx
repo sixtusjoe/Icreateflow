@@ -84,9 +84,7 @@ export default function ClippingPage() {
     <div className="mx-auto max-w-4xl">
       <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
-            <Scissors className="h-5 w-5 text-background" />
-          </div>
+          <Scissors className="h-7 w-7 shrink-0 text-foreground" strokeWidth={1.75} />
           <div>
             <h1 className="text-xl md:text-2xl font-bold tracking-tight">Clipping</h1>
             <p className="mt-1 text-sm text-muted-foreground">

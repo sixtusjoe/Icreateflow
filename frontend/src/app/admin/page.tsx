@@ -84,9 +84,7 @@ export default function AdminPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6 md:mb-8 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
-          <Shield className="h-5 w-5 text-background" />
-        </div>
+        <Shield className="h-7 w-7 shrink-0 text-foreground" strokeWidth={1.75} />
         <div>
           <h1 className="text-xl md:text-2xl font-bold tracking-tight">Admin Command Center</h1>
           <p className="mt-1 text-sm text-muted-foreground">Full visibility across every user on the platform.</p>
@@ -192,9 +190,7 @@ function Card({ icon: Icon, label, value, hint, accent }: any) {
   return (
     <div className="rounded-2xl bg-card p-4 md:p-5">
       <div className="flex items-center gap-3">
-        <div className={`flex h-9 w-9 items-center justify-center rounded-lg bg-foreground`}>
-          <Icon className="h-4 w-4 text-background" />
-        </div>
+        <Icon className="h-6 w-6 shrink-0 text-foreground" strokeWidth={1.75} />
         <div className="min-w-0">
           <p className={`text-lg md:text-xl font-bold tracking-tight truncate ${accentCls}`}>{value ?? "—"}</p>
           <p className="text-xs text-muted-foreground truncate">{label}</p>

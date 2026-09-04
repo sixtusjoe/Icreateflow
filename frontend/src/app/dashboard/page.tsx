@@ -56,9 +56,7 @@ export default function DashboardPage() {
                 <p className="text-xs font-medium text-muted-foreground truncate">{s.label}</p>
                 <p className="mt-1 text-2xl md:text-3xl font-bold tracking-tight text-foreground">{s.value}</p>
               </div>
-              <div className="flex h-9 w-9 md:h-10 md:w-10 flex-shrink-0 items-center justify-center rounded-xl bg-foreground transition-transform group-hover:scale-110">
-                <s.icon className="h-4 w-4 text-background" />
-              </div>
+              <s.icon className="h-6 w-6 flex-shrink-0 text-foreground transition-transform group-hover:scale-110" strokeWidth={1.75} />
             </div>
           </div>
         ))}
@@ -76,9 +74,7 @@ export default function DashboardPage() {
                 <p className="text-xs font-medium text-muted-foreground truncate">{s.label}</p>
                 <p className="mt-1 text-2xl md:text-3xl font-bold tracking-tight text-foreground">{s.value}</p>
               </div>
-              <div className="flex h-9 w-9 md:h-10 md:w-10 flex-shrink-0 items-center justify-center rounded-xl bg-foreground transition-transform group-hover:scale-110">
-                <s.icon className="h-4 w-4 text-background" />
-              </div>
+              <s.icon className="h-6 w-6 flex-shrink-0 text-foreground transition-transform group-hover:scale-110" strokeWidth={1.75} />
             </div>
           </div>
         ))}

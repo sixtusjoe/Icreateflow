@@ -120,9 +120,7 @@ export default function MusicPage() {
             return (
               <div key={track.id} className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3.5">
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground">
-                    <Music className="h-3.5 w-3.5 text-background" />
-                  </div>
+                  <Music className="h-5 w-5 shrink-0 text-foreground" strokeWidth={1.75} />
                   <span className="text-sm font-medium">{track.name}</span>
                   {track.genre && (
                     <span className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{track.genre}</span>

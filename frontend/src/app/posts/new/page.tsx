@@ -723,9 +723,7 @@ function NewPostPageInner() {
 
           <div className="flex items-center justify-between">
             <h2 className="flex items-center gap-2 text-base font-semibold">
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground">
-                <Type className="h-3.5 w-3.5 text-background" />
-              </div>
+              <Type className="h-5 w-5 shrink-0 text-foreground" strokeWidth={1.75} />
               Slides (OCR-extracted text — review & edit)
             </h2>
             <button onClick={handleRerunOcr} disabled={rerunningOcr}
@@ -822,9 +820,7 @@ function NewPostPageInner() {
       {step === "variations" && post && (
         <div className="space-y-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground">
-              <Sparkles className="h-3.5 w-3.5 text-background" />
-            </div>
+            <Sparkles className="h-5 w-5 shrink-0 text-foreground" strokeWidth={1.75} />
             Slide Variations per Account
           </h2>
           <p className="text-sm text-muted-foreground">
