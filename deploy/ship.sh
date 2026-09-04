@@ -34,6 +34,16 @@ ssh "$HOST" bash -s -- "$SRC_DIR" "$SHA" <<'ENDSSH'
 set -euo pipefail
 SRC_DIR=$1
 WANT_SHA=$2
+
+# Git refuses to operate on a repo owned by another user ("detected dubious
+# ownership"): we SSH in as root, but /srv/icreateflow/src is owned by the
+# icreateflow service user. Whitelist it once — checked first so repeated
+# deploys don't append the same line to ~/.gitconfig forever.
+if ! git config --global --get-all safe.directory 2>/dev/null | grep -qx "$SRC_DIR"; then
+    echo "  whitelisting $SRC_DIR as a safe.directory for $(whoami)"
+    git config --global --add safe.directory "$SRC_DIR"
+fi
+
 cd "$SRC_DIR"
 for attempt in 1 2 3 4 5; do
     git fetch origin
