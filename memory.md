@@ -583,6 +583,14 @@ UPDATE artists SET paused_reason=NULL WHERE id={artist_id};
 
 - **Serial selector fallbacks multiply the timeout.** Three fallbacks tried in turn against a page that will never match costs `timeout x 3` — 24s per job at the composer's 8s budget. `_first_visible` races them concurrently instead (full budget each, bounded at one), and `_present` does not wait at all, since every one of its callers is asking "did the page come back broken?" after navigation already settled. That pair took the driver's own test suite from 65s to 40s.
 
+- **TikTok builds its controls out of divs.** The Message button on a profile is a `div[role="button"]`, so `button:has-text('Message')` never matches it and the target gets skipped as "does not accept DMs" — indistinguishable, from the dashboard, from a genuine block. Selector groups are tiered (`data-e2e` first, generic role/text second) because `_first_visible` races within a tier and a loose "anything saying Message" would otherwise beat the real control to a nav link.
+
+- **The profile is a client-rendered shell.** `domcontentloaded` fires long before the action buttons exist, so any check that runs immediately is racing an empty page. Wait for `profile_loaded` first, and budget seconds not milliseconds for the button — the original 2.5s was tuned against a stub that rendered instantly.
+
+- **"Is the message text on the page?" is not delivery confirmation.** The composer is part of the page: a send that silently fails leaves the text in the input, the check finds it, and the campaign reports thousands sent having sent none. Confirmation is composer EMPTY *and* the text still present — it moved out of the input into the conversation. Never match the thread's own class names for this; a false negative costs a duplicate DM on retry.
+
+- **A stub test only proves the direction it exercises.** The verification bug above shipped because the stub cleared its composer on send, so the failing direction was never run. Every driver stub now has a deliberately-broken twin (`/silentfail`, `/swallowed`, `/renamed`, `/divbutton`), and the fix for each was confirmed to fail against the old code before being trusted.
+
 - **Outreach: never let the API process drive a browser.** The backend runs `gunicorn -w 1`; one hung Playwright call there blocks every request on the site. The API runs the DB-only reaper; sending lives in `scripts/outreach_worker.py`.
 
 - **Two leases, not one.** Claiming the job is not enough — the *account* needs its own lease too, or two workers end up driving the same TikTok session concurrently and it gets flagged. Both use `FOR UPDATE … SKIP LOCKED`.

@@ -43,6 +43,14 @@ from services.outreach.constants import (
 
 #: Ordered fallbacks — the first selector that resolves wins.
 SELECTORS: dict[str, tuple[str, ...]] = {
+    # Something proving the profile actually rendered, so the button checks
+    # don't run against a shell that has not hydrated yet.
+    "profile_loaded": (
+        "[data-e2e='user-title']",
+        "[data-e2e='user-subtitle']",
+        "[data-e2e='followers-count']",
+        "h1",
+    ),
     "profile_missing": (
         "text=Couldn't find this account",
         "text=Couldn't find this account.",
@@ -53,10 +61,19 @@ SELECTORS: dict[str, tuple[str, ...]] = {
         "text=Log in to TikTok",
         "text=Sign up for TikTok",
     ),
+    # Tiered, most specific first. Ordering matters: "anything containing the
+    # word Message" would happily match a nav item, and _first_visible races
+    # its selectors, so the loosest could win. Tiers are tried in sequence;
+    # only the selectors inside one tier race each other.
     "message_button": (
-        "[data-e2e='message-button']",
-        "button:has-text('Message')",
-        "a:has-text('Message')",
+        ("[data-e2e='message-button']", "[data-e2e='message-button-inline']"),
+        # TikTok builds most of its controls out of divs, not <button>.
+        (
+            "button:has-text('Message')",
+            "a:has-text('Message')",
+            "div[role='button']:has-text('Message')",
+            "[role='button']:has-text('Message')",
+        ),
     ),
     "message_input": (
         "[data-e2e='message-input-area']",
@@ -79,6 +96,13 @@ SELECTORS: dict[str, tuple[str, ...]] = {
 }
 
 DEFAULT_TIMEOUT_MS = int(os.environ.get("ICREATE_OUTREACH_TIMEOUT_MS", "30000"))
+#: How long to let the profile shell hydrate before looking for anything.
+PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "12000"))
+#: Budget for finding the Message button. The old 2.5s was tuned against a
+#: local stub that rendered instantly; a real profile on a cold server is
+#: nowhere near that fast, and running out of time here is indistinguishable
+#: from the button being absent.
+MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "15000"))
 #: Where to drop a screenshot when a send cannot be verified. Set to "" to
 #: turn it off. These are the fastest way to tell a changed selector from a
 #: blocked account without watching a live browser.
@@ -240,6 +264,53 @@ class PlaywrightTikTokMessenger:
             await asyncio.sleep(0.25)
         return False
 
+    async def _first_visible_tiered(self, page, tiers, timeout_ms: int = 2500):
+        """Try groups of selectors in order, racing within each group.
+
+        Specificity has to beat latency here. A generic
+        `[role="button"]:has-text("Message")` will match a nav entry as
+        happily as the real control, and because `_first_visible` races its
+        selectors, the loosest one can win the race and get clicked. Tiers
+        keep the precise `data-e2e` hooks strictly ahead of the guesses,
+        while still racing the alternatives inside each tier.
+
+        A flat tuple of strings is treated as a single tier, so the other
+        selector groups keep working unchanged.
+        """
+        if tiers and isinstance(tiers[0], str):
+            tiers = (tiers,)
+        for tier in tiers:
+            found = await self._first_visible(page, tuple(tier), timeout_ms)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    async def _page_actions(page, limit: int = 30) -> list[str]:
+        """Every clickable thing on the page, as `data-e2e|label`.
+
+        When a selector misses, the useful question isn't "which selector
+        failed" — it's "what is on the page instead". This turns a stale
+        attribute into a one-line diff in the worker log, without anyone
+        having to open a browser against the live site.
+        """
+        try:
+            return await page.evaluate(
+                """(limit) => Array.from(
+                        document.querySelectorAll('button, a[role="button"], a')
+                    )
+                    .map(el => {
+                        const e2e = el.getAttribute('data-e2e') || '';
+                        const text = (el.innerText || '').trim().slice(0, 40);
+                        return (e2e || text) ? `${e2e}|${text}` : null;
+                    })
+                    .filter(Boolean)
+                    .slice(0, limit)""",
+                limit,
+            )
+        except Exception:  # noqa: BLE001 — diagnostics must never raise
+            return []
+
     async def _save_debug_shot(self, page, username: str, reason: str) -> Optional[str]:
         """Screenshot a page that did not verify, for selector diagnosis.
 
@@ -295,11 +366,21 @@ class PlaywrightTikTokMessenger:
                     url=url,
                 )
 
+            # TikTok's profile is a client-rendered shell: domcontentloaded
+            # fires long before the action buttons exist. Give it a beat to
+            # paint something recognisable, or every check below races an
+            # empty page and reports "no Message button" on profiles that
+            # plainly have one.
+            await self._first_visible(
+                page, SELECTORS["profile_loaded"], timeout_ms=PROFILE_READY_MS
+            )
+
             if await self._present(page, SELECTORS["profile_missing"]):
                 return MessageResult.failure(
                     RESULT_PROFILE_UNAVAILABLE,
                     "Profile not found or private",
                     url=url,
+                    screenshot=await self._save_debug_shot(page, target_username, "profile-missing"),
                 )
             if await self._present(page, SELECTORS["login_wall"]):
                 # The stored session no longer authenticates us.
@@ -307,19 +388,34 @@ class PlaywrightTikTokMessenger:
                     RESULT_SESSION_EXPIRED,
                     "Session expired — TikTok is showing the login wall",
                     url=url,
+                    screenshot=await self._save_debug_shot(page, target_username, "login-wall"),
                 )
             if await self._present(page, SELECTORS["rate_limited"]):
                 return MessageResult.failure(
-                    RESULT_RATE_LIMITED, "Platform is rate limiting this account", url=url
+                    RESULT_RATE_LIMITED, "Platform is rate limiting this account", url=url,
+                    screenshot=await self._save_debug_shot(page, target_username, "rate-limited"),
                 )
 
             # 3-4. Is the messaging interface available, and open it.
-            message_button = await self._first_visible(page, SELECTORS["message_button"])
+            message_button = await self._first_visible_tiered(
+                page, SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
+            )
             if message_button is None:
+                # Two very different causes, indistinguishable from here: the
+                # target may not accept DMs from this account, or the button's
+                # markup may have moved. Capture what the page actually offers
+                # so the log answers that rather than the message guessing.
+                actions = await self._page_actions(page)
+                shot = await self._save_debug_shot(page, target_username, "no-message-button")
+                print(
+                    f"[outreach] no Message button on {url} — page offers: {actions}",
+                    flush=True,
+                )
                 return MessageResult.failure(
                     RESULT_MESSAGING_UNAVAILABLE,
-                    "No Message button on this profile — the account does not accept DMs",
-                    url=url,
+                    "No Message button on this profile — either it doesn't accept "
+                    "DMs from this account, or the button has moved",
+                    url=url, screenshot=shot, page_actions=actions,
                 )
             await message_button.click()
 
@@ -329,10 +425,18 @@ class PlaywrightTikTokMessenger:
                     return MessageResult.failure(
                         RESULT_SESSION_EXPIRED, "Session expired at the message step", url=url
                     )
+                actions = await self._page_actions(page)
+                print(
+                    f"[outreach] composer never opened on {page.url} — "
+                    f"page offers: {actions}",
+                    flush=True,
+                )
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,
                     "Message composer did not open — the page structure may have changed",
                     url=page.url,
+                    screenshot=await self._save_debug_shot(page, target_username, "composer-not-open"),
+                    page_actions=actions,
                 )
 
             # 5. Enter the message. `type` rather than `fill` — the composer

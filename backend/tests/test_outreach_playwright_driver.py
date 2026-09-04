@@ -119,8 +119,75 @@ SEND_SWALLOWS_MESSAGE = """
 </body></html>
 """
 
+# A profile whose message entry point has been renamed — the shape a TikTok
+# redesign takes. The driver can't send, but it should report what the page
+# *does* offer so the new selector is obvious from the log.
+RENAMED_MESSAGE_BUTTON = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="follow-button">Follow</button>
+  <button data-e2e="dm-entry">Chat</button>
+</body></html>
+"""
+
+# The Message control as a div, which is how TikTok actually builds it —
+# the shape that made a real profile report "no Message button".
+DIV_MESSAGE_BUTTON = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div role="button">Message</div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    document.querySelector('div[role=button]').onclick =
+      () => { document.getElementById('chat').style.display = 'block'; };
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
+# A nav "Messages" entry alongside the real control, to prove the loose
+# selector cannot win the race against the specific one.
+NAV_DECOY = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <a role="button" href="/messages">Messages</a>
+  <div data-e2e="message-button">Message</div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    document.querySelector('[data-e2e=message-button]').onclick =
+      () => { document.getElementById('chat').style.display = 'block'; };
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/divbutton": DIV_MESSAGE_BUTTON,
+    "/navdecoy": NAV_DECOY,
+    "/renamed": RENAMED_MESSAGE_BUTTON,
     "/silentfail": SEND_SILENTLY_FAILS,
     "/swallowed": SEND_SWALLOWS_MESSAGE,
     "/bob": SENDABLE,
@@ -175,6 +242,13 @@ def clear_received(monkeypatch):
     monkeypatch.setattr(
         "services.outreach.browser.playwright_tiktok.DEBUG_DIR", "", raising=False
     )
+    # The production budgets assume a cold server rendering a real profile.
+    # A local stub renders instantly, so the negative cases would otherwise
+    # just sit waiting them out.
+    for name, value in (("PROFILE_READY_MS", 500), ("MESSAGE_BUTTON_MS", 1500)):
+        monkeypatch.setattr(
+            f"services.outreach.browser.playwright_tiktok.{name}", value, raising=False
+        )
 
 
 @pytest.fixture
@@ -289,6 +363,44 @@ async def test_bad_page_states_map_to_statuses_not_exceptions(
     assert result.success is False
     assert result.status == expected
     assert result.error
+
+
+async def test_finds_a_message_control_built_as_a_div(driver, site):
+    """The failure seen in production: the profile plainly had a Message
+    button, but it is a div rather than a <button>, so the selectors missed
+    it and the target was skipped as "does not accept DMs"."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(account(), target(site, "/divbutton"), message)
+    assert result.success is True
+    assert RECEIVED == [message]
+
+
+async def test_a_nav_entry_cannot_win_over_the_real_button(driver, site):
+    """The generic tier matches a nav "Messages" link just as well as the
+    real control, and _first_visible races — so tier order is what stops the
+    wrong element being clicked."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(account(), target(site, "/navdecoy"), message)
+    assert result.success is True
+    assert RECEIVED == [message]
+
+
+async def test_a_missing_message_button_reports_what_the_page_does_offer(driver, site):
+    """When a selector goes stale, "we didn't find it" is not a useful
+    report — "here is what was there instead" is. Without this the only way
+    to tell a renamed button from an account that blocks DMs is to drive a
+    browser against the live site by hand."""
+    result = await driver.send_message(
+        account(), target(site, "/renamed"), "Hi there."
+    )
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE
+
+    offered = result.detail.get("page_actions") or []
+    assert "dm-entry|Chat" in offered
+    assert "follow-button|Follow" in offered
+    # And it must not claim to know which of the two causes it was.
+    assert "either" in (result.error or "")
 
 
 async def test_an_unreachable_host_is_a_result_not_a_crash(driver):
