@@ -214,8 +214,104 @@ OVERLAY_BLOCKS_BUTTON = """
 </body></html>
 """
 
+# A nav "Messages" entry on a profile whose real control has no data-e2e
+# hook and renders a beat late — the exact shape that broke in production.
+# `:has-text('Message')` matches the word inside "Messages", so the loose
+# tier could win the race against a button that isn't in the DOM yet, click
+# the nav link, and land on the inbox with nothing to type into.
+NAV_MESSAGES_DECOY = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <a role="button" href="/inboxempty">Messages</a>
+  <div id="late"></div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    setTimeout(() => {
+      const real = document.createElement('div');
+      real.setAttribute('role', 'button');
+      real.textContent = 'Message';
+      real.onclick = () => { document.getElementById('chat').style.display = 'block'; };
+      document.getElementById('late').appendChild(real);
+    }, 400);
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
+# Clicking Message hands off to the messages app rather than opening a box
+# in place — TikTok's real behaviour, and why the driver has to cope with
+# arriving at a conversation list instead of a composer.
+INBOX_HANDOFF = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div data-e2e="message-button" onclick="location.href='/inboxlist'">Message</div>
+</body></html>
+"""
+
+# The same hand-off, landing in an inbox that has no thread for the target.
+INBOX_HANDOFF_MISS = INBOX_HANDOFF.replace("/inboxlist", "/inboxempty")
+
+
+def _inbox(*names: str) -> str:
+    """An inbox page listing `names` as conversations, none of them open.
+
+    The composer only appears once a row is clicked, and what it submits is
+    tagged with the thread it went to — so a test can prove not just that
+    something was sent, but that it was sent to the right person.
+    """
+    rows = "".join(
+        f"""<div data-e2e="chat-list-item" onclick="openThread('{name}')">
+              <span data-e2e="inbox-title">{name}</span>
+            </div>"""
+        for name in names
+    )
+    return f"""
+<html><body>
+  <div data-e2e="chat-list">{rows}</div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    let current = null;
+    function openThread(name) {{
+      current = name;
+      document.getElementById('chat').style.display = 'block';
+    }}
+    function sendChat() {{
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', {{ method: 'POST', body: current + '|' + ed.innerText }});
+      ed.innerText = '';
+    }}
+  </script>
+</body></html>
+"""
+
+
 PAGES = {
     "/alice": SENDABLE,
+    "/navmessages": NAV_MESSAGES_DECOY,
+    "/inbox": INBOX_HANDOFF,
+    "/inboxmiss": INBOX_HANDOFF_MISS,
+    "/inboxlist": _inbox("Pain", "alice", "Véronique koumassa"),
+    # The same hand-off, but this account has never spoken to the target, so
+    # there is no thread to fall back on.
+    "/inboxempty": _inbox("Pain", "Véronique koumassa"),
     "/overlay": OVERLAY_BLOCKS_BUTTON,
     "/divbutton": DIV_MESSAGE_BUTTON,
     "/navdecoy": NAV_DECOY,
@@ -279,6 +375,7 @@ def clear_received(monkeypatch):
     # just sit waiting them out.
     for name, value in (
         ("PROFILE_READY_MS", 500), ("MESSAGE_BUTTON_MS", 1500), ("CLICK_MS", 2000),
+        ("COMPOSER_MS", 1500),
     ):
         monkeypatch.setattr(
             f"services.outreach.browser.playwright_tiktok.{name}", value, raising=False
@@ -417,6 +514,49 @@ async def test_a_nav_entry_cannot_win_over_the_real_button(driver, site):
     result = await driver.send_message(account(), target(site, "/navdecoy"), message)
     assert result.success is True
     assert RECEIVED == [message]
+
+
+async def test_the_nav_messages_link_cannot_win_over_a_late_rendering_button(
+    driver, site
+):
+    """The production failure: `composer never opened`, with the log listing
+    `inbox-title|…` entries — i.e. the driver was standing in the inbox.
+
+    "Messages" in the left nav contains the word "Message", the loose tier
+    matched it, and `_first_visible` races — so on a profile whose real
+    control renders a beat late, the nav link wins, gets clicked, and
+    navigates away from the profile entirely. Exact text matching is what
+    stops it.
+    """
+    message = "Hello alice, quick question."
+    result = await driver.send_message(account(), target(site, "/navmessages"), message)
+    assert result.success is True
+    assert RECEIVED == [message]
+
+
+async def test_a_handoff_to_the_inbox_still_finds_the_targets_thread(driver, site):
+    """Clicking Message does not always open a box in place — TikTok can
+    navigate to its messages app, and the composer only exists once the
+    conversation is selected."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(account(), target(site, "/inbox"), message)
+    assert result.success is True
+    # The thread it went to, not just that something was sent.
+    assert RECEIVED == [f"alice|{message}"]
+
+
+async def test_no_thread_for_the_target_never_messages_somebody_else(driver, site):
+    """The inbox is full of other people's conversations. With no row for
+    this target, the only safe move is to fail the job — DMing the closest
+    match would send a stranger a message meant for someone else."""
+    result = await driver.send_message(
+        account(), target(site, "/inboxmiss"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_UNEXPECTED_PAGE
+    assert RECEIVED == []
+    # And it says which of the two composer failures this was.
+    assert "inbox" in (result.error or "").lower()
 
 
 async def test_a_consent_banner_over_the_button_does_not_lose_the_job(driver, site):

@@ -68,17 +68,33 @@ SELECTORS: dict[str, tuple[str, ...]] = {
     "message_button": (
         ("[data-e2e='message-button']", "[data-e2e='message-button-inline']"),
         # TikTok builds most of its controls out of divs, not <button>.
+        #
+        # `:text-is` (exact) rather than `:has-text` (substring) is load
+        # bearing: TikTok's left navigation has a "Messages" entry, which
+        # contains the word "Message", and because _first_visible races its
+        # selectors that nav link can win over the profile's own control.
+        # Clicking it navigates to the inbox — which is exactly the
+        # "composer never opened, page offers inbox-title|…" failure seen in
+        # production.
         (
-            "button:has-text('Message')",
-            "a:has-text('Message')",
-            "div[role='button']:has-text('Message')",
-            "[role='button']:has-text('Message')",
+            "button:text-is('Message')",
+            "a:text-is('Message')",
+            "div[role='button']:text-is('Message')",
+            "[role='button']:text-is('Message')",
         ),
     ),
     "message_input": (
         "[data-e2e='message-input-area']",
         "div[contenteditable='true'][role='textbox']",
         "div[contenteditable='true']",
+    ),
+    # The DM inbox: a list of conversations with none of them open. Landing
+    # here after clicking Message means no thread was started, so there is
+    # nothing to type into.
+    "messages_view": (
+        "[data-e2e='chat-list']",
+        "[data-e2e='inbox-title']",
+        "[data-e2e='chat-list-item']",
     ),
     "send_button": (
         "[data-e2e='message-send']",
@@ -106,6 +122,13 @@ MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "15
 #: Per-click budget. The context default (30s) is far too long to spend
 #: discovering that something is covering the button.
 CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
+#: Budget for the composer to appear after clicking Message. Clicking it can
+#: navigate to a whole separate messages app rather than opening an inline
+#: box, and 8s was another stub-speed number that a real page misses.
+COMPOSER_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_MS", "15000"))
+
+#: Rows in the inbox conversation list, matched by their own text.
+THREAD_ROWS = "[data-e2e='chat-list-item'], [data-e2e='inbox-title']"
 
 #: Things that sit on top of the profile and swallow clicks. A consent
 #: banner intercepting pointer events is indistinguishable from a dead
@@ -363,6 +386,53 @@ class PlaywrightTikTokMessenger:
         )
         return False
 
+    async def _open_thread(self, page, target: dict[str, Any]) -> bool:
+        """Open this target's conversation from the inbox list.
+
+        Clicking Message does not always open a composer in place: TikTok
+        can hand off to its messages app, and if the thread does not get
+        selected you are left looking at a list of every conversation the
+        account has.
+
+        Only ever opens a row whose label matches this target exactly. A
+        fuzzy match is not acceptable here — the rows are other people's
+        conversations, and clicking the nearest-looking one sends a stranger
+        a DM meant for someone else. Failing the job is the cheaper mistake,
+        so anything short of an exact match returns False.
+        """
+        wanted = {
+            str(value).strip().lstrip("@").lower()
+            for value in (
+                target.get("username"),
+                target.get("display_name"),
+                target.get("nickname"),
+            )
+            if value
+        }
+        if not wanted:
+            return False
+
+        rows = page.locator(THREAD_ROWS)
+        try:
+            count = await rows.count()
+        except Exception:  # noqa: BLE001 — no list, nothing to open
+            return False
+
+        for index in range(min(count, 40)):
+            row = rows.nth(index)
+            try:
+                label = ((await row.inner_text(timeout=500)) or "").strip()
+            except Exception:  # noqa: BLE001 — row went away mid-scan
+                continue
+            if label.lstrip("@").lower() not in wanted:
+                continue
+            username = str(target.get("username") or "target")
+            if await self._click(page, row, "chat-list-item", username):
+                print(f"[outreach] opened the existing thread for {label}", flush=True)
+                return True
+            return False
+        return False
+
     @staticmethod
     async def _page_actions(page, limit: int = 30) -> list[str]:
         """Every clickable thing on the page, as `data-e2e|label`.
@@ -503,21 +573,42 @@ class PlaywrightTikTokMessenger:
                     url=page.url,
                 )
 
-            editor = await self._first_visible(page, SELECTORS["message_input"], timeout_ms=8000)
+            editor = await self._first_visible(
+                page, SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+            )
+
+            # Clicking Message can hand off to the messages app instead of
+            # opening a box in place. When the thread does not come with it
+            # we land on the inbox — a list of every conversation and no
+            # composer at all — so pick the target's own thread out of it.
+            if editor is None and await self._present(page, SELECTORS["messages_view"]):
+                if await self._open_thread(page, target):
+                    editor = await self._first_visible(
+                        page, SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+                    )
+
             if editor is None:
                 if await self._present(page, SELECTORS["login_wall"]):
                     return MessageResult.failure(
                         RESULT_SESSION_EXPIRED, "Session expired at the message step", url=url
                     )
+                on_inbox = await self._present(page, SELECTORS["messages_view"])
                 actions = await self._page_actions(page)
                 print(
-                    f"[outreach] composer never opened on {page.url} — "
+                    f"[outreach] composer never opened on {page.url} "
+                    f"({'inbox, no thread open' if on_inbox else 'not the inbox'}) — "
                     f"page offers: {actions}",
                     flush=True,
                 )
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,
-                    "Message composer did not open — the page structure may have changed",
+                    (
+                        f"Ended up on the TikTok inbox with no conversation open for "
+                        f"@{target_username} — the Message button did not start a thread"
+                        if on_inbox
+                        else "Message composer did not open — the page structure "
+                        "may have changed"
+                    ),
                     url=page.url,
                     screenshot=await self._save_debug_shot(page, target_username, "composer-not-open"),
                     page_actions=actions,
