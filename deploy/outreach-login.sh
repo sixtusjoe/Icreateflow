@@ -75,10 +75,12 @@ ACCOUNT_ID=$1
 # --- display + VNC ---------------------------------------------------------
 
 if ! command -v x11vnc >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
-    echo "==> Installing Xvfb + x11vnc"
-    export DEBIAN_FRONTEND=noninteractive
+    echo "==> Installing Xvfb + x11vnc (first run only, takes a minute)"
+    # NEEDRESTART_MODE=a stops the post-install service scanner from
+    # scribbling over this script's own output.
+    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
     apt-get update -qq
-    apt-get install -y -qq xvfb x11vnc >/dev/null
+    apt-get install -y -qq xvfb x11vnc >/dev/null 2>&1
 fi
 
 XVFB_PID=""

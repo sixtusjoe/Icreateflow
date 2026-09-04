@@ -46,16 +46,34 @@ trap cleanup EXIT INT TERM
 echo "==> Opening tunnel to $HOST"
 ssh -M -S "$CTL" -f -N -L "$PORT:localhost:${ICREATE_LOGIN_VNC_PORT:-5900}" "$HOST"
 
-# The remote side needs a moment to bring up the display and the browser
-# before there is anything to look at.
+# Wait for the VNC server to actually answer before opening the viewer.
+#
+# A fixed delay is wrong: the first run on a box installs Xvfb and x11vnc
+# first, which takes far longer than any sensible guess, and connecting
+# early just gives "Connection failed to localhost".
+#
+# `nc -z` is not enough either — the tunnel's local port is bound by ssh
+# immediately, so a bare connect succeeds even when nothing is listening on
+# the far end. A real VNC server greets us with an "RFB 003.00x" banner, so
+# wait for that.
 (
-    sleep 12
+    for _ in $(seq 1 150); do   # up to ~5 minutes
+        if printf '' | nc -w 2 localhost "$PORT" 2>/dev/null | head -c 3 | grep -q RFB
+        then
+            sleep 1
+            echo
+            echo "==> Opening Screen Sharing — sign in to the account in that window."
+            open "vnc://localhost:$PORT" 2>/dev/null || {
+                echo "!!  Couldn't open Screen Sharing automatically."
+                echo "!!  In Finder press Cmd-K and enter:  vnc://localhost:$PORT"
+            }
+            exit 0
+        fi
+        sleep 2
+    done
     echo
-    echo "==> Opening Screen Sharing — sign in to the account in that window."
-    open "vnc://localhost:$PORT" 2>/dev/null || {
-        echo "!!  Couldn't open Screen Sharing automatically."
-        echo "!!  In Finder press Cmd-K and enter:  vnc://localhost:$PORT"
-    }
+    echo "!!  The server's VNC never came up. Once you see 'Starting VNC' above,"
+    echo "!!  press Cmd-K in Finder and enter:  vnc://localhost:$PORT"
 ) &
 
 echo "==> Starting the browser on the server"
