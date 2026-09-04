@@ -26,6 +26,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from services.outreach.browser import MessageResult
@@ -77,6 +79,10 @@ SELECTORS: dict[str, tuple[str, ...]] = {
 }
 
 DEFAULT_TIMEOUT_MS = int(os.environ.get("ICREATE_OUTREACH_TIMEOUT_MS", "30000"))
+#: Where to drop a screenshot when a send cannot be verified. Set to "" to
+#: turn it off. These are the fastest way to tell a changed selector from a
+#: blocked account without watching a live browser.
+DEBUG_DIR = os.environ.get("ICREATE_OUTREACH_DEBUG_DIR", "outreach-debug")
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -215,6 +221,45 @@ class PlaywrightTikTokMessenger:
                 continue
         return False
 
+    @staticmethod
+    async def _composer_cleared(editor, attempts: int = 20) -> bool:
+        """Did the input box empty out after the send?
+
+        The app clearing the composer is the one signal that it accepted the
+        submission. Polls rather than waiting a fixed beat, because the clear
+        happens on the network round-trip. A composer that has been detached
+        entirely also counts — the view moved on.
+        """
+        for _ in range(attempts):
+            try:
+                remaining = (await editor.inner_text(timeout=1000)) or ""
+            except Exception:  # noqa: BLE001 — element gone: the view moved on
+                return True
+            if not remaining.strip():
+                return True
+            await asyncio.sleep(0.25)
+        return False
+
+    async def _save_debug_shot(self, page, username: str, reason: str) -> Optional[str]:
+        """Screenshot a page that did not verify, for selector diagnosis.
+
+        Only ever written on a failure, so a healthy campaign leaves nothing
+        behind. Best-effort: a screenshot that fails must not turn a
+        reportable failure into an exception.
+        """
+        if not DEBUG_DIR:
+            return None
+        try:
+            directory = Path(DEBUG_DIR)
+            directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            path = directory / f"{stamp}-{username or 'target'}-{reason}.png"
+            await page.screenshot(path=str(path), full_page=False)
+            print(f"[outreach] saved debug screenshot: {path}", flush=True)
+            return str(path)
+        except Exception:  # noqa: BLE001
+            return None
+
     # --- the one method the pipeline calls -------------------------------
 
     async def send_message(
@@ -233,6 +278,7 @@ class PlaywrightTikTokMessenger:
 
         page = None
         url = target.get("profile_url") or ""
+        target_username = str(target.get("username") or "target")
         try:
             from playwright.async_api import TimeoutError as PlaywrightTimeout
 
@@ -301,27 +347,48 @@ class PlaywrightTikTokMessenger:
             else:
                 await page.keyboard.press("Enter")
 
-            # 7. Verify: the composer empties and the message appears in the
-            # thread. Neither is guaranteed by TikTok, so a miss is reported
-            # as unexpected_page rather than assumed successful.
+            # 7. Verify.
+            #
+            # The test is: the composer is now EMPTY, and the message text is
+            # still somewhere on the page. Together those mean the text moved
+            # out of the input and into the conversation.
+            #
+            # Checking only "is the message text on the page" — which is what
+            # this did originally — is worthless: the composer is part of the
+            # page, so a send that silently did nothing left the text sitting
+            # in the box and the check happily called it delivered. That is a
+            # campaign reporting thousands sent having sent none, so it is
+            # worth being strict here.
+            #
+            # Deliberately not matched against the thread's own markup: class
+            # names are the first thing a redesign changes, and a false
+            # negative here costs a duplicate DM on retry.
             await page.wait_for_timeout(1500)
             if await self._present(page, SELECTORS["rate_limited"]):
                 return MessageResult.failure(
                     RESULT_RATE_LIMITED, "Rate limited while sending", url=page.url
                 )
 
-            confirmed = False
-            try:
-                body = (await page.locator("body").inner_text(timeout=3000)) or ""
-                confirmed = message[:60] in body
-            except Exception:  # noqa: BLE001
-                confirmed = False
-            if not confirmed:
-                confirmed = await self._present(page, SELECTORS["sent_confirmation"])
-            if not confirmed:
+            composer_cleared = await self._composer_cleared(editor)
+            if not composer_cleared:
+                await self._save_debug_shot(page, target_username, "composer-not-cleared")
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,
-                    "Could not confirm the message was delivered",
+                    "The message is still sitting in the composer — the send "
+                    "did not go through",
+                    url=page.url,
+                )
+
+            try:
+                body = (await page.locator("body").inner_text(timeout=3000)) or ""
+            except Exception:  # noqa: BLE001
+                body = ""
+            if message[:60] not in body:
+                await self._save_debug_shot(page, target_username, "not-in-thread")
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    "The composer emptied but the message is not visible in the "
+                    "conversation — could not confirm delivery",
                     url=page.url,
                 )
 

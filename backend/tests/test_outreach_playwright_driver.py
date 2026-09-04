@@ -82,8 +82,47 @@ COMPOSER_NEVER_OPENS = """
 </body></html>
 """
 
+# Clicking send does nothing at all: the text stays in the composer. This is
+# what a real failed send looks like — and exactly what the original
+# "is the message text anywhere on the page?" check reported as delivered,
+# because the composer is part of the page.
+SEND_SILENTLY_FAILS = """
+<html><body>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+  </script>
+</body></html>
+"""
+
+# The composer clears but the message never appears in the conversation —
+# the other half of "cleared" not being proof on its own.
+SEND_SWALLOWS_MESSAGE = """
+<html><body>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="swallow()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function swallow() {
+      document.querySelector('[data-e2e="message-input-area"]').innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/silentfail": SEND_SILENTLY_FAILS,
+    "/swallowed": SEND_SWALLOWS_MESSAGE,
     "/bob": SENDABLE,
     "/nodm": NO_MESSAGE_BUTTON,
     "/gone": MISSING_PROFILE,
@@ -130,8 +169,12 @@ def site():
 
 
 @pytest.fixture(autouse=True)
-def clear_received():
+def clear_received(monkeypatch):
     RECEIVED.clear()
+    # No screenshots from the test suite.
+    monkeypatch.setattr(
+        "services.outreach.browser.playwright_tiktok.DEBUG_DIR", "", raising=False
+    )
 
 
 @pytest.fixture
@@ -190,6 +233,34 @@ async def test_the_typed_message_actually_reaches_the_composer(driver, site):
 async def test_nothing_is_submitted_when_the_composer_never_opens(driver, site):
     await driver.send_message(account(), target(site, "/redesigned"), "Hello there.")
     assert RECEIVED == []
+
+
+async def test_a_send_that_silently_does_nothing_is_not_reported_as_sent(driver, site):
+    """The regression that shipped: a real campaign reported "sent" with
+    nothing delivered.
+
+    The send button does nothing here, so the message is still sitting in
+    the composer afterwards. The old check asked "is the message text
+    anywhere on the page?", found its own leftover input, and called that
+    success — which is how a campaign reports thousands sent having sent
+    none.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/silentfail"), "Hello there, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_UNEXPECTED_PAGE
+    assert "composer" in (result.error or "")
+
+
+async def test_a_cleared_composer_alone_is_not_proof_of_delivery(driver, site):
+    """Clearing the box is necessary but not sufficient — the message also
+    has to show up in the conversation."""
+    result = await driver.send_message(
+        account(), target(site, "/swallowed"), "Hello there, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_UNEXPECTED_PAGE
 
 
 async def test_delivery_that_cannot_be_confirmed_is_not_reported_as_sent(driver, site):
