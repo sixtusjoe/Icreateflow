@@ -83,4 +83,19 @@ ssh -M -S "$CTL" -f -N -L "$PORT:localhost:${ICREATE_LOGIN_VNC_PORT:-5900}" "$HO
 
 echo "==> Starting the browser on the server"
 echo
-ssh -t "$HOST" "bash $REMOTE $ACCOUNT_ID"
+
+# Screen Sharing goes to "Reconnecting…" the moment the remote side tears
+# down its display, which happens on success AND on timeout. Report which
+# one it was, so the window's behaviour is never the thing you have to
+# interpret.
+if ssh -t "$HOST" "bash $REMOTE $ACCOUNT_ID"; then
+    echo
+    echo "==> Done. Close the Screen Sharing window if it's still up —"
+    echo "    \"Reconnecting…\" just means the remote browser has shut down."
+    echo "    Check Outreach → Accounts: the account should show a stored session."
+else
+    echo
+    echo "!!  The sign-in did not complete, so nothing was saved."
+    echo "!!  Re-run when you're ready:  bash $0 $ACCOUNT_ID"
+    exit 1
+fi

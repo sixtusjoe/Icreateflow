@@ -136,6 +136,11 @@ cat <<BANNER
    NOT your Mac password. It is generated for this session
    only and is thrown away when this finishes.
 
+   Once you have signed in, the window will drop out and say
+   "Reconnecting…". That is the finish, not an error — it means
+   the session was captured and the remote browser closed.
+   Watch THIS terminal for the result.
+
    If the window doesn't open by itself, press Cmd-K in Finder
    and enter:   vnc://localhost:$VNC_PORT
   ─────────────────────────────────────────────────────────────
