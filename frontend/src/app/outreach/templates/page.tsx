@@ -13,7 +13,7 @@ import {
   type OutreachTemplate,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { inputClass, apiErrorMessage } from "../ui";
+import { PageIcon, inputClass, apiErrorMessage } from "../ui";
 
 const STARTER =
   "Hello {{username}}, we came across your content and wanted to reach out about {{offer}}.";
@@ -120,9 +120,7 @@ export default function OutreachTemplatesPage() {
       </Link>
 
       <div className="mb-6 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
-          <FileText className="h-5 w-5 text-background" />
-        </div>
+        <PageIcon icon={FileText} />
         <div>
           <h1 className="text-xl md:text-2xl font-bold tracking-tight">Message templates</h1>
           <p className="mt-1 text-sm text-muted-foreground">

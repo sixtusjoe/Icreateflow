@@ -23,7 +23,7 @@ import {
   type OutreachAccount,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { StatusPill, ProgressBar, inputClass, apiErrorMessage } from "./ui";
+import { StatusPill, ProgressBar, PageIcon, inputClass, apiErrorMessage } from "./ui";
 
 export default function OutreachPage() {
   const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
@@ -96,9 +96,7 @@ export default function OutreachPage() {
     <div className="mx-auto max-w-6xl">
       <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
-            <Send className="h-5 w-5 text-background" />
-          </div>
+          <PageIcon icon={Send} />
           <div>
             <h1 className="text-xl md:text-2xl font-bold tracking-tight">Outreach</h1>
             <p className="mt-1 text-sm text-muted-foreground">

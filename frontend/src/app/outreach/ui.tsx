@@ -1,6 +1,62 @@
 "use client";
 
+import type { LucideIcon } from "lucide-react";
+
 import { cn } from "@/lib/utils";
+
+/**
+ * Section heading icon. Drawn as a bare glyph in `text-foreground` rather
+ * than reversed out of a filled tile, so it inverts with the theme instead
+ * of staying a hard black or white block in one of the two.
+ */
+export function PageIcon({ icon: Icon }: { icon: LucideIcon }) {
+  return <Icon className="h-7 w-7 shrink-0 text-foreground" strokeWidth={1.75} />;
+}
+
+/**
+ * On/off switch.
+ *
+ * Laid out with padding and a flex child rather than absolute offsets: the
+ * track's 2px padding is the gap on both sides, so the knob can't end up
+ * closer to one edge than the other. The knob stays white in both themes —
+ * `bg-background` would render it near-black against the green in dark mode.
+ */
+export function Toggle({
+  checked,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onChange}
+      className={cn(
+        "inline-flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground",
+        "focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        checked ? "bg-emerald-500" : "bg-muted-foreground/30",
+      )}
+    >
+      <span
+        className={cn(
+          "h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200",
+          checked ? "translate-x-5" : "translate-x-0",
+        )}
+      />
+    </button>
+  );
+}
 
 /** Matches the input styling used across the Clipping pages. */
 export const inputClass =

@@ -22,7 +22,7 @@ import {
   type OutreachAccount,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { StatusPill, inputClass, relativeTime, apiErrorMessage } from "../ui";
+import { StatusPill, PageIcon, Toggle, inputClass, relativeTime, apiErrorMessage } from "../ui";
 
 const MAX_ACCOUNTS = 20;
 
@@ -125,9 +125,7 @@ export default function OutreachAccountsPage() {
 
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
-            <Users className="h-5 w-5 text-background" />
-          </div>
+          <PageIcon icon={Users} />
           <div>
             <h1 className="text-xl md:text-2xl font-bold tracking-tight">Sending accounts</h1>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -202,21 +200,11 @@ export default function OutreachAccountsPage() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => handleToggle(a)}
-                      role="switch"
-                      aria-checked={a.enabled}
-                      aria-label={`${a.enabled ? "Disable" : "Enable"} ${a.name}`}
-                      className={`relative h-6 w-11 rounded-full transition-colors ${
-                        a.enabled ? "bg-emerald-500" : "bg-muted"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-background transition-transform ${
-                          a.enabled ? "translate-x-5" : "translate-x-0.5"
-                        }`}
-                      />
-                    </button>
+                    <Toggle
+                      checked={a.enabled}
+                      onChange={() => handleToggle(a)}
+                      label={`${a.enabled ? "Disable" : "Enable"} ${a.name}`}
+                    />
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
