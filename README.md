@@ -234,6 +234,8 @@ ICREATE_TEST_DB_DSN=postgresql+asyncpg://postgres@127.0.0.1:5432/icreateflow_tes
 
 The suite covers the outreach pipeline end to end against a real Postgres (the queue's guarantees are `SKIP LOCKED` and unique indexes, which a stub cannot exercise). Every send goes through the mock driver — no browser, no messages. Without a reachable database the DB-backed tests skip and the pure-logic ones still run.
 
+`tests/test_outreach_playwright_driver.py` additionally drives the real Playwright driver against a local stub site (never TikTok): context-per-account isolation, session loading, typing and submitting, delivery verification, and each bad-page state mapping to the right status. It needs `pip install playwright==1.56.0 && playwright install chromium` and skips without them.
+
 ---
 
 ## Production deploy
@@ -267,16 +269,17 @@ ssh root@95.111.228.80 'certbot --apache -d icreateflow.com -d www.icreateflow.c
 
 ### Outreach workers (once per box)
 
+After the first `ship.sh` that carries the outreach code:
+
 ```bash
-ssh root@95.111.228.80
-cp /srv/icreateflow/src/deploy/systemd/icreateflow-outreach-worker.service /etc/systemd/system/
-/srv/icreateflow/venv/bin/pip install playwright && /srv/icreateflow/venv/bin/playwright install chromium
-systemctl daemon-reload
-systemctl enable --now icreateflow-outreach-worker@1
-systemctl enable --now icreateflow-outreach-worker@2   # as many as you want
+ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-setup.sh 2'
 ```
 
-Workers claim jobs and accounts in Postgres, so any number of instances is safe. Restarting one never loses or double-sends a target: an in-flight job keeps its lease and is requeued by the reaper.
+That installs Playwright, downloads Chromium and its system libraries into `/srv/icreateflow/pw-browsers` (app-owned, so the `icreateflow` service user can read it), installs the `icreateflow-outreach-worker@` template unit, enables the requested number of workers, and launches a real headless Chromium as the service user to prove it works. Re-runnable; pass a different number to scale.
+
+It does **not** switch the sending driver on — the pipeline stays on `mock` until you change `outreach_driver` in `/admin → Outreach`. Rehearse a campaign on `mock` first.
+
+Workers claim jobs and accounts in Postgres, so any number of instances is safe. Restarting one never loses or double-sends a target: an in-flight job keeps its lease and is requeued by the reaper. Later deploys restart the workers automatically (`deploy.sh` picks up any active `icreateflow-outreach-worker@*` units).
 
 ### Logs
 

@@ -168,25 +168,50 @@ class PlaywrightTikTokMessenger:
 
     @staticmethod
     async def _first_visible(page, keys: tuple[str, ...], timeout_ms: int = 2500):
-        """Return the first selector in `keys` that is actually visible."""
-        for selector in keys:
-            try:
-                locator = page.locator(selector).first
-                await locator.wait_for(state="visible", timeout=timeout_ms)
-                return locator
-            except Exception:  # noqa: BLE001 — a miss is expected, try the next
-                continue
-        return None
+        """Whichever of these selectors becomes visible first, or None.
+
+        Races them concurrently rather than trying each in turn. Waiting in
+        series costs `timeout × len(keys)` whenever the page has changed and
+        none of them will ever match — with the composer's 8s budget and three
+        fallbacks that is 24 seconds burned per job before giving up. Racing
+        gives every selector the full budget and still bounds the total at one.
+        """
+        async def wait_for(selector):
+            locator = page.locator(selector).first
+            await locator.wait_for(state="visible", timeout=timeout_ms)
+            return locator
+
+        pending = {asyncio.create_task(wait_for(s)) for s in keys}
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    # A miss raises; only a hit returns a locator.
+                    if not task.cancelled() and task.exception() is None:
+                        return task.result()
+            return None
+        finally:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     @staticmethod
-    async def _present(page, keys: tuple[str, ...], timeout_ms: int = 1200) -> bool:
+    async def _present(page, keys: tuple[str, ...]) -> bool:
+        """Is any of these selectors visible *right now*?
+
+        Deliberately does not wait. Every caller is asking "did the page come
+        back in a bad state?" after navigation already settled, and there are
+        eight such selectors across the checks — waiting out a per-selector
+        timeout would add ~10s of dead time to every successful send.
+        """
         for selector in keys:
             try:
-                await page.locator(selector).first.wait_for(
-                    state="visible", timeout=timeout_ms
-                )
-                return True
-            except Exception:  # noqa: BLE001
+                if await page.locator(selector).first.is_visible(timeout=250):
+                    return True
+            except Exception:  # noqa: BLE001 — a miss is expected, try the next
                 continue
         return False
 

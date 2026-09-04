@@ -577,6 +577,10 @@ UPDATE artists SET paused_reason=NULL WHERE id={artist_id};
 
 - **OpenAI image generation replaced Replicate/Flux.** A2V background images use `gpt-image-2` via OpenAI API. Per-user OpenAI API key stored in `user_settings`. Medium quality is the default (faster).
 
+- **Playwright browsers must not live in root's `~/.cache`.** `playwright install` drops them in the *invoking* user's cache; the workers run as `icreateflow` and cannot read root's. `deploy/outreach-setup.sh` installs to `/srv/icreateflow/pw-browsers` and the unit sets `PLAYWRIGHT_BROWSERS_PATH` to match. A mismatched pip version is the other half of this trap — Playwright only launches the exact Chromium build it shipped with, so `playwright==1.56.0` is pinned in `requirements.txt`, in the setup script, and in the driver tests.
+
+- **Serial selector fallbacks multiply the timeout.** Three fallbacks tried in turn against a page that will never match costs `timeout x 3` — 24s per job at the composer's 8s budget. `_first_visible` races them concurrently instead (full budget each, bounded at one), and `_present` does not wait at all, since every one of its callers is asking "did the page come back broken?" after navigation already settled. That pair took the driver's own test suite from 65s to 40s.
+
 - **Outreach: never let the API process drive a browser.** The backend runs `gunicorn -w 1`; one hung Playwright call there blocks every request on the site. The API runs the DB-only reaper; sending lives in `scripts/outreach_worker.py`.
 
 - **Two leases, not one.** Claiming the job is not enough — the *account* needs its own lease too, or two workers end up driving the same TikTok session concurrently and it gets flagged. Both use `FOR UPDATE … SKIP LOCKED`.

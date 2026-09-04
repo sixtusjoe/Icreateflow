@@ -2,9 +2,13 @@
 # Outreach browser worker. Separate from the API on purpose: the API runs
 # `-w 1` and a hung browser call there would block every request.
 #
-# Enable per worker, e.g. two of them:
+# This is a TEMPLATE unit — it must be installed with the `@` in its name:
+#   cp icreateflow-outreach-worker.service \
+#      /etc/systemd/system/icreateflow-outreach-worker@.service
 #   systemctl enable --now icreateflow-outreach-worker@1
-#   systemctl enable --now icreateflow-outreach-worker@2
+#
+# `deploy/outreach-setup.sh` does that (plus Playwright and Chromium) for
+# you — prefer it over installing this by hand.
 #
 # The queue is claimed in Postgres with FOR UPDATE SKIP LOCKED, so any
 # number of instances is safe — they never take the same job or account.
@@ -18,6 +22,9 @@ User=icreateflow
 Group=icreateflow
 WorkingDirectory=/srv/icreateflow/backend
 EnvironmentFile=/srv/icreateflow/backend/.env
+# Chromium lives in an app-owned path, not root's ~/.cache — the service user
+# has to be able to read it. `deploy/outreach-setup.sh` populates this.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/srv/icreateflow/pw-browsers
 ExecStart=/srv/icreateflow/venv/bin/python scripts/outreach_worker.py --worker-id %H-%i
 # SIGTERM stops the loop cleanly; a job still in flight keeps its lease and
 # is requeued by the reaper, so a restart never loses or double-sends a target.
