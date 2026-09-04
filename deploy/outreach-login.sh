@@ -85,9 +85,11 @@ fi
 
 XVFB_PID=""
 VNC_PID=""
+PASSFILE=""
 cleanup() {
     [ -n "$VNC_PID" ] && kill "$VNC_PID" 2>/dev/null || true
     [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+    [ -n "$PASSFILE" ] && rm -f "$PASSFILE" 2>/dev/null || true
     rm -f "/tmp/.X${DISPLAY_NUM}-lock" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -97,29 +99,39 @@ Xvfb ":$DISPLAY_NUM" -screen 0 1280x900x24 >/dev/null 2>&1 &
 XVFB_PID=$!
 sleep 2
 
-# -localhost is the security boundary: the VNC port is not reachable from
-# the internet, only through an SSH tunnel by someone who already has
-# access to this box. That is why it runs without a VNC password.
+# A one-time password, regenerated every run and deleted on exit.
+#
+# The real security boundary is -localhost: the VNC port is not reachable
+# from the internet, only through an SSH tunnel by someone who already has
+# access to this box. The password exists because macOS Screen Sharing
+# refuses to connect to a VNC server that offers no authentication — it
+# prompts for a password with nothing valid to type.
+#
+# VNC passwords are truncated to 8 characters by the protocol, so there is
+# no point generating a longer one.
+VNC_PASS=$(tr -dc 'a-hjkmnp-z2-9' </dev/urandom | head -c 8)
+PASSFILE=$(mktemp /tmp/.icf-vncpw-XXXXXX)
+chmod 600 "$PASSFILE"
+x11vnc -storepasswd "$VNC_PASS" "$PASSFILE" >/dev/null 2>&1
+
 echo "==> Starting VNC on 127.0.0.1:$VNC_PORT (localhost only)"
-x11vnc -display ":$DISPLAY_NUM" -rfbport "$VNC_PORT" -localhost -nopw \
-       -forever -shared -quiet >/dev/null 2>&1 &
+x11vnc -display ":$DISPLAY_NUM" -rfbport "$VNC_PORT" -localhost \
+       -rfbauth "$PASSFILE" -forever -shared -quiet >/dev/null 2>&1 &
 VNC_PID=$!
 sleep 2
 
 cat <<BANNER
 
   ─────────────────────────────────────────────────────────────
-  On YOUR MAC, in a second terminal:
+   Screen Sharing will ask for a password. Use this one:
 
-      ssh -N -L $VNC_PORT:localhost:$VNC_PORT root@$(hostname -I | awk '{print $1}')
+           $VNC_PASS
 
-  then:
+   NOT your Mac password. It is generated for this session
+   only and is thrown away when this finishes.
 
-      open vnc://localhost:$VNC_PORT
-
-  Sign in to the account in the window that appears. This will
-  detect it and save the session by itself — then close the
-  tunnel with Ctrl-C.
+   If the window doesn't open by itself, press Cmd-K in Finder
+   and enter:   vnc://localhost:$VNC_PORT
   ─────────────────────────────────────────────────────────────
 
 BANNER
