@@ -56,6 +56,12 @@ RESULT_NAVIGATION_TIMEOUT = "navigation_timeout"
 RESULT_UNEXPECTED_PAGE = "unexpected_page"
 RESULT_BROWSER_ERROR = "browser_error"
 RESULT_RATE_LIMITED = "rate_limited"
+#: TikTok is showing a human-verification challenge (the slider puzzle)
+#: instead of letting the account act. Nothing about the target is wrong, so
+#: the target must stay retryable — recording it as "does not accept DMs"
+#: skips a perfectly good profile for good. Only a person can clear this,
+#: so the account is paused immediately rather than retried into the ground.
+RESULT_CHALLENGE_REQUIRED = "challenge_required"
 RESULT_UNKNOWN = "unknown_error"
 #: Raised above the driver: the message could not be rendered for this
 #: target. Never retried — the same template and target produce the same
@@ -77,11 +83,19 @@ ACCOUNT_FAULT_RESULTS = frozenset({
     RESULT_SESSION_EXPIRED,
     RESULT_RATE_LIMITED,
     RESULT_BROWSER_ERROR,
+    RESULT_CHALLENGE_REQUIRED,
 })
 
-#: An expired session can never fix itself by retrying — pause immediately
-#: rather than burning the whole error budget on the same failure.
-IMMEDIATE_ACCOUNT_PAUSE_RESULTS = frozenset({RESULT_SESSION_EXPIRED})
+#: Failures no amount of retrying can clear — pause immediately rather than
+#: burning the whole error budget on the same failure. An expired session
+#: needs a fresh sign-in; a verification challenge needs a person to solve
+#: the puzzle. Both are worse for being retried: every attempt in the
+#: meantime fails, and each one is another challenged request from an
+#: account TikTok is already suspicious of.
+IMMEDIATE_ACCOUNT_PAUSE_RESULTS = frozenset({
+    RESULT_SESSION_EXPIRED,
+    RESULT_CHALLENGE_REQUIRED,
+})
 
 # --- Audit actions --------------------------------------------------------
 AUDIT_CAMPAIGN_CREATED = "campaign.created"

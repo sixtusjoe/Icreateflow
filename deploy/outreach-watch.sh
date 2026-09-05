@@ -38,10 +38,6 @@ fi
 # shellcheck source=/dev/null
 . "$(dirname "$0")/_vnc-session.sh"
 
-set -a
-# shellcheck disable=SC1090
-. "$BACKEND/.env"
-set +a
 export PLAYWRIGHT_BROWSERS_PATH="$BROWSERS_DIR"
 # The whole point: a browser you can see.
 export ICREATE_OUTREACH_HEADLESS=0
@@ -80,9 +76,28 @@ echo
 ARGS=(--once)
 [ -n "$DRIVER" ] && ARGS+=(--driver "$DRIVER")
 
+# The secrets are read by the child, out of .env, and never enter this
+# script environment at all.
+#
+# Handing them to sudo looked like the careful option: it keeps values off
+# the command line, where ps would show them to anyone on the box. But sudo
+# records the environment it was given in its own log line, so every run
+# wrote ICREATE_DB_DSN (database password included), ICREATE_JWT_SECRET and
+# ICREATE_OUTREACH_SECRET to the journal and /var/log/auth.log in plain
+# text, where they persist for as long as the logs are kept. Sourcing .env
+# inside the child is what deploy.sh already does, and it logs only paths.
 sudo -u "$SERVICE_USER" \
-    --preserve-env=ICREATE_DB_DSN,ICREATE_OUTREACH_SECRET,ICREATE_JWT_SECRET,PLAYWRIGHT_BROWSERS_PATH,DISPLAY,ICREATE_OUTREACH_HEADLESS \
-    "$VENV/bin/python" "$BACKEND/scripts/outreach_worker.py" "${ARGS[@]}"
+    PLAYWRIGHT_BROWSERS_PATH="$BROWSERS_DIR" \
+    DISPLAY="${DISPLAY:-}" \
+    ICREATE_OUTREACH_HEADLESS=0 \
+    bash -c '
+        set -a
+        . "$1/.env"
+        set +a
+        cd "$1"
+        shift
+        exec "$@"
+    ' _ "$BACKEND" "$VENV/bin/python" "$BACKEND/scripts/outreach_worker.py" "${ARGS[@]}"
 
 echo
 echo "==> Finished. Check the campaign page for the recorded result."

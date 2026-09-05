@@ -33,6 +33,7 @@ from typing import Any, Optional
 from services.outreach.browser import MessageResult
 from services.outreach.constants import (
     RESULT_BROWSER_ERROR,
+    RESULT_CHALLENGE_REQUIRED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_NAVIGATION_TIMEOUT,
     RESULT_PROFILE_UNAVAILABLE,
@@ -109,7 +110,31 @@ SELECTORS: dict[str, tuple[str, ...]] = {
         "text=You're sending messages too fast",
         "text=Too many attempts",
     ),
+    # TikTok's human-verification puzzle. It renders *over* a perfectly
+    # normal profile: the Message button is right there and visible, so
+    # every check above passes and the click simply never lands. Without
+    # this the driver reports "no Message button" and the queue skips a
+    # good target for good.
+    #
+    # Matched by container id/class as well as text, because the wording is
+    # localised and the puzzle has several variants (slider, rotate, pick
+    # two objects).
+    "verification_challenge": (
+        "#captcha-verify-container",
+        "#captcha_container",
+        "div[id*='captcha-verify']",
+        "div[class*='captcha_verify_container']",
+        "text=Drag the slider to fit the puzzle",
+        "text=Verify to continue",
+        "text=Slide to verify",
+        "text=Verification failed",
+    ),
 }
+
+#: A frame whose URL looks like the captcha service. The puzzle is often
+#: served in an iframe, and `page.locator` does not search into frames — so
+#: a selector-only check sees a blank page and calls it healthy.
+CHALLENGE_FRAME_HINTS = ("captcha", "verify", "secsdk")
 
 DEFAULT_TIMEOUT_MS = int(os.environ.get("ICREATE_OUTREACH_TIMEOUT_MS", "30000"))
 #: How long to let the profile shell hydrate before looking for anything.
@@ -456,8 +481,52 @@ class PlaywrightTikTokMessenger:
                     .slice(0, limit)""",
                 limit,
             )
-        except Exception:  # noqa: BLE001 — diagnostics must never raise
-            return []
+        except Exception as exc:  # noqa: BLE001 — diagnostics must never raise
+            # Never return a bare [] here. An empty list already means "the
+            # page offered nothing clickable", and a production failure was
+            # misread for exactly that reason: `page offers: []` was taken as
+            # evidence about the page when in fact this call had thrown and
+            # the page was never inspected at all. Say which happened.
+            return [f"<page-actions failed: {type(exc).__name__}: {exc}>"]
+
+    @staticmethod
+    async def _page_frames(page) -> list[str]:
+        """The URLs of every frame on the page, main frame excluded.
+
+        Pairs with `_page_actions`: that only ever sees the top document, so
+        a page whose real content is in an iframe — the verification puzzle,
+        for one — reads as empty. When the action list looks bare, this says
+        whether there was somewhere else to look.
+        """
+        try:
+            return [f.url for f in page.frames if f is not page.main_frame][:10]
+        except Exception as exc:  # noqa: BLE001
+            return [f"<frames failed: {type(exc).__name__}: {exc}>"]
+
+    async def _challenge_present(self, page) -> bool:
+        """Is TikTok showing a human-verification puzzle?
+
+        Checked on the page itself and across its frames. The puzzle is
+        commonly served in an iframe, and `page.locator` does not descend
+        into frames, so selectors alone miss it and the profile underneath
+        looks perfectly healthy.
+
+        Deliberately only ever *detects*. Solving the puzzle is a person's
+        job — `outreach-watch.sh` puts the browser on screen for exactly
+        that.
+        """
+        if await self._present(page, SELECTORS["verification_challenge"]):
+            return True
+        try:
+            for frame in page.frames:
+                if frame is page.main_frame:
+                    continue
+                url = (frame.url or "").lower()
+                if any(hint in url for hint in CHALLENGE_FRAME_HINTS):
+                    return True
+        except Exception:  # noqa: BLE001 — a frame can vanish mid-check
+            pass
+        return False
 
     async def _save_debug_shot(self, page, username: str, reason: str) -> Optional[str]:
         """Screenshot a page that did not verify, for selector diagnosis.
@@ -476,7 +545,15 @@ class PlaywrightTikTokMessenger:
             await page.screenshot(path=str(path), full_page=False)
             print(f"[outreach] saved debug screenshot: {path}", flush=True)
             return str(path)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # Say so. A silent None here is indistinguishable from "debug
+            # shots are switched off", and the failure that most needs a
+            # screenshot is exactly the one where taking it goes wrong.
+            print(
+                f"[outreach] could not save debug screenshot ({reason}): "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
             return None
 
     # --- the one method the pipeline calls -------------------------------
@@ -543,6 +620,21 @@ class PlaywrightTikTokMessenger:
                     RESULT_RATE_LIMITED, "Platform is rate limiting this account", url=url,
                     screenshot=await self._save_debug_shot(page, target_username, "rate-limited"),
                 )
+            # Before anything is concluded about the target: is there a
+            # verification puzzle over this page? It sits on top of a
+            # completely normal profile, so every check below misreads it —
+            # the button is found but unclickable, or not found at all, and
+            # the target gets skipped as "doesn't accept DMs".
+            if await self._challenge_present(page):
+                return MessageResult.failure(
+                    RESULT_CHALLENGE_REQUIRED,
+                    "TikTok is asking this account to pass a verification puzzle. "
+                    "Nothing is wrong with the target — a person has to solve it "
+                    "(deploy/outreach-watch-mac.sh shows the browser), then resume "
+                    "the account",
+                    url=url,
+                    screenshot=await self._save_debug_shot(page, target_username, "challenge"),
+                )
 
             # 3-4. Is the messaging interface available, and open it.
             message_button = await self._first_visible_tiered(
@@ -556,7 +648,8 @@ class PlaywrightTikTokMessenger:
                 actions = await self._page_actions(page)
                 shot = await self._save_debug_shot(page, target_username, "no-message-button")
                 print(
-                    f"[outreach] no Message button on {url} — page offers: {actions}",
+                    f"[outreach] no Message button on {url} — page offers: {actions} "
+                    f"— frames: {await self._page_frames(page)}",
                     flush=True,
                 )
                 return MessageResult.failure(
@@ -592,12 +685,23 @@ class PlaywrightTikTokMessenger:
                     return MessageResult.failure(
                         RESULT_SESSION_EXPIRED, "Session expired at the message step", url=url
                     )
+                if await self._challenge_present(page):
+                    return MessageResult.failure(
+                        RESULT_CHALLENGE_REQUIRED,
+                        "A verification puzzle appeared after clicking Message. "
+                        "The target is fine — a person has to solve it, then "
+                        "resume the account",
+                        url=page.url,
+                        screenshot=await self._save_debug_shot(
+                            page, target_username, "challenge"
+                        ),
+                    )
                 on_inbox = await self._present(page, SELECTORS["messages_view"])
                 actions = await self._page_actions(page)
                 print(
                     f"[outreach] composer never opened on {page.url} "
                     f"({'inbox, no thread open' if on_inbox else 'not the inbox'}) — "
-                    f"page offers: {actions}",
+                    f"page offers: {actions} — frames: {await self._page_frames(page)}",
                     flush=True,
                 )
                 return MessageResult.failure(

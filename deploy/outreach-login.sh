@@ -44,19 +44,27 @@ if [ ! -f "$BACKEND/scripts/outreach_login.py" ]; then
     exit 1
 fi
 
-# The DB DSN and the session-encryption key live here.
-set -a
-# shellcheck disable=SC1090
-. "$BACKEND/.env"
-set +a
 export PLAYWRIGHT_BROWSERS_PATH="$BROWSERS_DIR"
 
 run_capture() {
-    # --preserve-env rather than putting secrets on the command line, where
-    # they would be visible in `ps` to every user on the box.
+    # The DB DSN and the session-encryption key are read by the child, from
+    # .env, and never enter this script environment.
+    #
+    # Handing them to sudo keeps them out of `ps`, which was the point, but
+    # sudo logs the environment it was given — so every capture wrote all
+    # three secrets to the journal and /var/log/auth.log in plain text.
+    # Sourcing .env inside the child leaks nothing but paths.
     sudo -u "$SERVICE_USER" \
-        --preserve-env=ICREATE_DB_DSN,ICREATE_OUTREACH_SECRET,ICREATE_JWT_SECRET,PLAYWRIGHT_BROWSERS_PATH,DISPLAY \
-        "$VENV/bin/python" "$BACKEND/scripts/outreach_login.py" "$@"
+        PLAYWRIGHT_BROWSERS_PATH="$BROWSERS_DIR" \
+        DISPLAY="${DISPLAY:-}" \
+        bash -c '
+            set -a
+            . "$1/.env"
+            set +a
+            cd "$1"
+            shift
+            exec "$@"
+        ' _ "$BACKEND" "$VENV/bin/python" "$BACKEND/scripts/outreach_login.py" "$@"
 }
 
 # No account given → just list them. No display needed for that.

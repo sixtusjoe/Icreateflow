@@ -45,10 +45,12 @@ blocked account. Look at them.
   `outreach_account_error_threshold` is **5**. One more failure auto-pauses
   it. If it pauses: `/outreach/accounts` → Resume
   (`POST /api/outreach/accounts/{id}/resume`).
-- Last campaign run: job #4 came back `unexpected_page`, target still
-  `queued`. That failure is what the newest fix addresses.
-- Latest commits on `main`: `3c26dc3` (the driver fix), `cbbc728` (ship.sh
-  pulls before pushing).
+- Bug 3's fix **is** deployed and has now been seen against live TikTok. It
+  did not fix the send — the blocker turned out to be something else
+  entirely (bug 4 below).
+- Job #5 came back `messaging_unavailable` on `@findsbymia0`, which is
+  terminal, so that target is **skipped** and the queue is empty. It is a
+  perfectly good target — re-import or re-queue it before testing again.
 
 ### Do this first
 
@@ -98,7 +100,25 @@ Each was invisible to the test suite and only appeared against live TikTok.
    never fuzzily**, because those rows are other people's chats and a
    near-match would DM a stranger.
 
-Bug 3's fix is the unverified one.
+4. **A verification puzzle is not "this profile has no Message button".**
+   TikTok threw its slider CAPTCHA over the profile. The button was right
+   there in the debug screenshot; the overlay just ate the click. With no
+   check for it the driver reported `messaging_unavailable` — *terminal* —
+   and the queue skipped a real, reachable target permanently, then moved
+   on to do the same to the next one. There is now a `challenge_required`
+   result: not terminal, so the target survives, and it pauses the account
+   immediately, because retrying cannot clear a challenge and every attempt
+   is another challenged request from an account TikTok already distrusts.
+
+   The driver only ever *detects* it. Solving the puzzle is a person's job —
+   that is what `outreach-watch-mac.sh` is for.
+
+**What misled the previous round:** `page offers: []` was read as "the page
+had nothing on it". It actually meant the diagnostic itself threw — the page
+was never inspected. `_page_actions` and `_save_debug_shot` now say when
+they fail instead of returning an empty list and `None`, and both failure
+logs list frame URLs, because the puzzle is served in an iframe and
+`page.locator` does not descend into frames.
 
 ---
 
@@ -182,8 +202,19 @@ whole budget on the identical failure.
 
 ## Open items
 
-- **Unverified:** whether the inbox/nav fix actually works against live
-  TikTok. This is the next thing to establish.
+- **Unverified:** whether a send completes once a human clears the puzzle.
+  That is still the one thing never observed end to end. Re-queue a target,
+  run `bash deploy/outreach-watch-mac.sh`, solve the puzzle in the VNC
+  window, and watch what happens next.
+- **Decision outstanding:** `ICREATE_JWT_SECRET`, `ICREATE_DB_DSN` and
+  `ICREATE_OUTREACH_SECRET` were written in plain text to the journal and
+  `/var/log/auth.log` by every `outreach-watch.sh` / `outreach-login.sh`
+  run, because sudo logs the environment it is handed. The scripts no
+  longer do that. The already-written logs have **not** been scrubbed and
+  nothing has been rotated. `ICREATE_JWT_SECRET` is the one that matters —
+  it forges logins from the internet, and rotating it only costs a
+  logout-everyone. Do **not** rotate `ICREATE_OUTREACH_SECRET` casually: it
+  makes every stored session undecryptable.
 - **Offered, never answered:** `outreach-watch-mac.sh` takes *the next queued
   job*, not one picked from the list. A per-target "watch this one" would need
   a UI button and an API endpoint. The user was offered this and has not said

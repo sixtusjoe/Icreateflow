@@ -27,12 +27,16 @@ from services.outreach.browser.playwright_tiktok import (  # noqa: E402
     PlaywrightTikTokMessenger,
 )
 from services.outreach.constants import (  # noqa: E402
+    ACCOUNT_FAULT_RESULTS,
+    IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
+    RESULT_CHALLENGE_REQUIRED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_PROFILE_UNAVAILABLE,
     RESULT_RATE_LIMITED,
     RESULT_SENT,
     RESULT_SESSION_EXPIRED,
     RESULT_UNEXPECTED_PAGE,
+    TERMINAL_RESULTS,
 )
 
 # --- stub pages, using the same data-e2e hooks the driver looks for ---------
@@ -303,8 +307,62 @@ def _inbox(*names: str) -> str:
 """
 
 
+#: The puzzle sitting on top of an otherwise normal, sendable profile —
+#: what production actually hit. The Message button is present and visible,
+#: so every page-state check passes; the overlay just eats the click.
+CAPTCHA_OVER_PROFILE = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send">Send</button>
+  </div>
+  <div id="captcha-verify-container"
+       style="position:fixed;top:0;left:0;width:100%;height:100%;background:#222;z-index:99">
+    <p>Drag the slider to fit the puzzle</p>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+  </script>
+</body></html>
+"""
+
+#: The same challenge, but thrown before the profile's controls render — so
+#: there is no Message button to find at all. This is the damaging one: the
+#: driver used to call this "does not accept DMs", which is terminal, and
+#: the target was skipped permanently over a puzzle nobody was asked to solve.
+CAPTCHA_INSTEAD_OF_CONTROLS = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div id="captcha-verify-container">
+    <p>Drag the slider to fit the puzzle</p>
+  </div>
+</body></html>
+"""
+
+#: The challenge served in an iframe, which is how TikTok normally does it.
+#: The top document has nothing clickable on it whatsoever — this is the
+#: `page offers: []` seen in the worker log — and `page.locator` does not
+#: descend into frames, so a selector-only check sees a healthy blank page.
+CAPTCHA_IN_FRAME = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <iframe src="/captcha-verify-inner" style="width:400px;height:300px"></iframe>
+</body></html>
+"""
+
+CAPTCHA_FRAME_INNER = """
+<html><body><p>Drag the slider to fit the puzzle</p></body></html>
+"""
+
+
 PAGES = {
     "/alice": SENDABLE,
+    "/captcha": CAPTCHA_OVER_PROFILE,
+    "/captchaonly": CAPTCHA_INSTEAD_OF_CONTROLS,
+    "/captchaframe": CAPTCHA_IN_FRAME,
+    "/captcha-verify-inner": CAPTCHA_FRAME_INNER,
     "/navmessages": NAV_MESSAGES_DECOY,
     "/inbox": INBOX_HANDOFF,
     "/inboxmiss": INBOX_HANDOFF_MISS,
@@ -654,3 +712,87 @@ async def test_export_session_returns_storage_state(driver, site):
     assert exported is not None
     assert "cookies" in json.loads(exported)
     assert await driver.export_session({"id": 999}) is None
+
+
+# --- the verification puzzle ----------------------------------------------
+
+async def test_a_puzzle_over_the_profile_is_not_blamed_on_the_target(driver, site):
+    """The production failure, in its most expensive form.
+
+    TikTok threw its slider puzzle over a perfectly ordinary profile. With
+    no check for it the driver found no Message button, returned
+    `messaging_unavailable` — which is *terminal* — and the queue skipped a
+    real, reachable target for good. The account was never told to stop, so
+    the next target got the same treatment.
+
+    The target must survive this. Only the account is at fault.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/captchaonly"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_CHALLENGE_REQUIRED
+    assert result.status not in TERMINAL_RESULTS, "a puzzle must never skip the target"
+    assert RECEIVED == []
+
+
+async def test_a_puzzle_covering_a_visible_button_is_reported_as_a_puzzle(driver, site):
+    """Here the button *is* found — the overlay simply eats the click, so
+    the composer never opens. That used to surface as `unexpected_page`,
+    which is retryable but tells the operator nothing about what to do."""
+    result = await driver.send_message(
+        account(), target(site, "/captcha"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_CHALLENGE_REQUIRED
+    assert RECEIVED == []
+
+
+async def test_a_puzzle_inside_an_iframe_is_still_seen(driver, site):
+    """How TikTok actually serves it. `page.locator` does not search into
+    frames, so a selector-only check finds nothing and declares the page
+    healthy — while the top document is empty enough to log the
+    `page offers: []` that sent the last debugging round after the wrong
+    bug entirely."""
+    result = await driver.send_message(
+        account(), target(site, "/captchaframe"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_CHALLENGE_REQUIRED
+    assert RECEIVED == []
+
+
+async def test_the_error_says_a_person_has_to_solve_it(driver, site):
+    """The operator reads this string and needs to know it is their move —
+    the driver deliberately cannot solve the puzzle itself."""
+    result = await driver.send_message(
+        account(), target(site, "/captchaonly"), "Hello alice, quick question."
+    )
+    assert "puzzle" in (result.error or "").lower()
+    assert "target" in (result.error or "").lower()
+
+
+async def test_a_puzzle_pauses_the_account_instead_of_burning_its_budget(driver, site):
+    """Retrying cannot clear a challenge, and every attempt is another
+    challenged request from an account TikTok already distrusts. So it
+    pauses on the first one rather than after the error threshold."""
+    assert RESULT_CHALLENGE_REQUIRED in ACCOUNT_FAULT_RESULTS
+    assert RESULT_CHALLENGE_REQUIRED in IMMEDIATE_ACCOUNT_PAUSE_RESULTS
+
+
+# --- diagnostics that do not lie -------------------------------------------
+
+async def test_a_failed_action_dump_says_so_rather_than_looking_empty(driver, site):
+    """`page offers: []` was read as "the page had nothing on it" when in
+    truth the call had thrown and the page was never inspected. Two very
+    different facts must not share one representation — the last debugging
+    round was spent on the wrong bug because they did.
+    """
+    context = await driver._context_for(account())
+    page = await context.new_page()
+    await page.goto(f"{site}/alice")
+    await page.close()
+
+    actions = await PlaywrightTikTokMessenger._page_actions(page)
+    assert actions, "a thrown diagnostic must not come back as an empty list"
+    assert "failed" in actions[0]
