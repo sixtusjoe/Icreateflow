@@ -387,6 +387,49 @@ CAPTCHA_THEN_SOLVED = """
 </body></html>
 """
 
+#: The puzzle that *eats the click*. Clicking Message throws the challenge
+#: instead of opening the composer, then the challenge clears — leaving a
+#: healthy profile, an untouched Message button and no composer. This is
+#: what live TikTok did twice: "puzzle cleared — carrying on" followed
+#: immediately by "composer never opened".
+CAPTCHA_EATS_THE_CLICK = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="onMessage()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <div id="captcha-verify-container"
+       style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:#222;z-index:99">
+    <p>Drag the slider to fit the puzzle</p>
+  </div>
+  <script>
+    let swallowed = false;
+    function onMessage() {
+      if (!swallowed) {
+        swallowed = true;
+        const c = document.getElementById('captcha-verify-container');
+        c.style.display = 'block';
+        setTimeout(function () { c.remove(); }, 1500);
+        return;
+      }
+      document.getElementById('chat').style.display = 'block';
+    }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 CAPTCHA_FRAME_INNER = """
 <html><body><p>Drag the slider to fit the puzzle</p></body></html>
 """
@@ -398,6 +441,7 @@ PAGES = {
     "/captchaonly": CAPTCHA_INSTEAD_OF_CONTROLS,
     "/captchaframe": CAPTCHA_IN_FRAME,
     "/captchaclears": CAPTCHA_THEN_SOLVED,
+    "/captchaeatsclick": CAPTCHA_EATS_THE_CLICK,
     "/captcha-verify-inner": CAPTCHA_FRAME_INNER,
     "/navmessages": NAV_MESSAGES_DECOY,
     "/inbox": INBOX_HANDOFF,
@@ -897,3 +941,32 @@ async def test_an_aborted_job_neither_skips_the_target_nor_blames_the_account():
     is nobody's fault and says nothing about either party."""
     assert RESULT_ABORTED not in TERMINAL_RESULTS
     assert RESULT_ABORTED not in ACCOUNT_FAULT_RESULTS
+
+
+async def test_a_puzzle_that_swallowed_the_click_gets_the_click_again(
+    driver, site, monkeypatch
+):
+    """Seen twice against live TikTok, and it wasted a solved puzzle both
+    times:
+
+        message-button: needed a force click
+        verification puzzle — waiting up to 300s
+        puzzle cleared — carrying on
+        composer never opened
+
+    The challenge consumed the click. Clearing it does not replay that
+    click, so the driver sat waiting for a composer nothing had asked for,
+    then blamed the page — while the screenshot showed a healthy profile
+    with its Message button untouched. Waiting for the puzzle is only half
+    the fix; the click has to be made again.
+    """
+    monkeypatch.setattr(
+        "services.outreach.browser.playwright_tiktok.CHALLENGE_WAIT_MS", 15000
+    )
+    message = "Hello alice, quick question."
+    result = await driver.send_message(
+        account(), target(site, "/captchaeatsclick"), message
+    )
+
+    assert result.success is True, result.error
+    assert RECEIVED == [message]

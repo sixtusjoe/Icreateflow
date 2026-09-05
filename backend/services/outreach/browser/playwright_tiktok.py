@@ -593,6 +593,44 @@ class PlaywrightTikTokMessenger:
         )
         return False
 
+    async def _retry_message_click(self, page, target: dict[str, Any], username: str):
+        """Click Message once more when the first click opened nothing.
+
+        A challenge thrown by the click consumes it: the page is healthy
+        afterwards, the button is right there, but nothing was ever opened.
+        Clearing the puzzle does not replay the click, so the composer wait
+        times out and the page gets blamed for a click it never received.
+
+        Deliberately not conditional on having *seen* the challenge. The
+        puzzle can come and go inside the composer wait — it did exactly
+        that in testing, vanishing before the check ran — and any swallowed
+        click looks the same from here. One extra click on a control we
+        already found is cheap; losing the job is not.
+        """
+        button = await self._first_visible_tiered(
+            page, SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
+        )
+        if button is None:
+            print(
+                "[outreach] no Message button to retry after the puzzle cleared",
+                flush=True,
+            )
+            return None
+        if not await self._click(page, button, "message-button (after puzzle)", username):
+            return None
+
+        editor = await self._first_visible(
+            page, SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+        )
+        if editor is None and await self._present(page, SELECTORS["messages_view"]):
+            if await self._open_thread(page, target):
+                editor = await self._first_visible(
+                    page, SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+                )
+        if editor is not None:
+            print("[outreach] composer opened on the retry after the puzzle", flush=True)
+        return editor
+
     async def _save_debug_shot(self, page, username: str, reason: str) -> Optional[str]:
         """Screenshot a page that did not verify, for selector diagnosis.
 
@@ -762,14 +800,13 @@ class PlaywrightTikTokMessenger:
                     "likely the worker was stopped mid-job",
                     url=url,
                 )
-            if editor is None:
-                if await self._present(page, SELECTORS["login_wall"]):
-                    return MessageResult.failure(
-                        RESULT_SESSION_EXPIRED, "Session expired at the message step", url=url
-                    )
-                if await self._challenge_present(page) and not await (
-                    self._challenge_cleared_by_hand(page, target_username)
-                ):
+            if editor is None and await self._present(page, SELECTORS["login_wall"]):
+                return MessageResult.failure(
+                    RESULT_SESSION_EXPIRED, "Session expired at the message step", url=url
+                )
+
+            if editor is None and await self._challenge_present(page):
+                if not await self._challenge_cleared_by_hand(page, target_username):
                     return MessageResult.failure(
                         RESULT_CHALLENGE_REQUIRED,
                         "A verification puzzle appeared after clicking Message. "
@@ -780,6 +817,19 @@ class PlaywrightTikTokMessenger:
                             page, target_username, "challenge"
                         ),
                     )
+                # The puzzle ate the click that was meant to open the
+                # composer, and clearing it does not replay that click — so
+                # waiting for a composer that was never asked for just times
+                # out and reports "composer never opened" on a profile whose
+                # Message button is sitting there untouched. Ask again.
+                editor = await self._retry_message_click(page, target, target_username)
+
+            # The click may also have been swallowed by a puzzle that came
+            # and went while we waited, leaving nothing to detect above.
+            if editor is None and not self._page_is_gone(page):
+                editor = await self._retry_message_click(page, target, target_username)
+
+            if editor is None:
                 on_inbox = await self._present(page, SELECTORS["messages_view"])
                 actions = await self._page_actions(page)
                 print(
