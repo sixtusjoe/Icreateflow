@@ -70,6 +70,12 @@ RESULT_CHALLENGE_REQUIRED = "challenge_required"
 #: it — "may be in violation of our Community Guidelines, and has not been
 #: sent to protect our community", shown beside the message with an error
 #: marker. Nothing was delivered, so this must never be reported as sent.
+#: The target has just been followed and the message is deliberately held
+#: back. Not a failure — the job is requeued to run after the wait, which
+#: is the point: a follow and a DM in the same second is not what a person
+#: looks like, and TikTok gates who may message whom on the follow
+#: relationship in the first place.
+RESULT_FOLLOW_PENDING = "follow_pending"
 RESULT_MESSAGE_REFUSED = "message_refused"
 RESULT_ABORTED = "aborted"
 RESULT_UNKNOWN = "unknown_error"

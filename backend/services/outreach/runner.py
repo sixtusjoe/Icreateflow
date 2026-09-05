@@ -36,6 +36,7 @@ from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
 from services.outreach.constants import (
     RESULT_DB_ERROR,
+    RESULT_FOLLOW_PENDING,
     RESULT_TEMPLATE_ERROR,
     RESULT_UNKNOWN,
 )
@@ -201,7 +202,14 @@ class OutreachWorker:
         }
         try:
             result = await driver.send_message(
-                payload, {"username": target["username"], "profile_url": target["profile_url"]},
+                payload,
+                {
+                    "username": target["username"],
+                    "profile_url": target["profile_url"],
+                    "follow_wait_seconds": int(
+                        settings.get("outreach_follow_wait_seconds") or 0
+                    ),
+                },
                 message,
             )
             if not isinstance(result, MessageResult):
@@ -234,6 +242,14 @@ class OutreachWorker:
     ) -> None:
         """Persist one attempt — the result processor."""
         account_id = int(account["id"])
+        if result.status == RESULT_FOLLOW_PENDING:
+            # Neither a send nor a failure — the target was followed and the
+            # message deliberately deferred. Nobody is blamed for it.
+            await job_queue.hold_job(
+                database, job, result.status, result.error,
+                int(settings.get("outreach_follow_wait_seconds") or 0),
+            )
+            return
         if result.success:
             await job_queue.complete_job(database, job, result.status)
             await account_mgr.record_success(database, account_id)

@@ -36,6 +36,7 @@ from services.outreach.constants import (
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_FOLLOW_PENDING,
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_NAVIGATION_TIMEOUT,
@@ -86,6 +87,24 @@ SELECTORS: dict[str, tuple[str, ...]] = {
             "div[role='button']:text-is('Message')",
             "[role='button']:text-is('Message')",
         ),
+    ),
+    # The profile's own Follow control. Tiered for the same reason the
+    # Message button is: TikTok's left navigation has a "Following" entry,
+    # and a loose match on that word would find it instead. The generic tier
+    # is exact-text and excludes links, because the nav entry is a link.
+    "follow_button": (
+        ("[data-e2e='follow-button']",),
+        (
+            "button:text-is('Follow')",
+            "div[role='button']:text-is('Follow')",
+        ),
+    ),
+    #: Already followed — the same control, showing its other state.
+    "already_following": (
+        "[data-e2e='follow-button']:has-text('Following')",
+        "[data-e2e='follow-button']:has-text('Friends')",
+        "button:text-is('Following')",
+        "div[role='button']:text-is('Following')",
     ),
     "message_input": (
         "[data-e2e='message-input-area']",
@@ -167,6 +186,10 @@ CHALLENGE_FRAME_HINTS = ("captcha", "verify", "secsdk")
 #: with a visible browser over VNC precisely so somebody CAN clear it, and
 #: bailing out instantly closes the window in their face. So the default is
 #: the operator's patience, not the worker's.
+#: How long to leave a submitted message alone before confirming it a
+#: second time. An optimistic render survives the first look and not the
+#: second, which is the difference between a delivery and a lie.
+SETTLE_MS = int(os.environ.get("ICREATE_OUTREACH_SETTLE_MS", "2500"))
 CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
 CHALLENGE_WAIT_HEADFUL_MS = int(
     os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_HEADFUL_MS", "300000")
@@ -614,6 +637,58 @@ class PlaywrightTikTokMessenger:
         )
         return False
 
+    async def _message_in_thread(self, page, message: str) -> bool:
+        """Is the message on the page — in the thread if we can tell, else
+        anywhere?
+
+        The thread's own items are checked first because they are the honest
+        place to look. But a miss there is NOT taken as proof of failure:
+        those attributes are the first thing a redesign renames, and a false
+        negative here costs a duplicate DM on the retry. So the page body
+        remains the fallback, exactly as before.
+
+        What actually catches a phantom send is not where we look but how
+        often — see `_delivery_holds`.
+        """
+        needle = message[:60].strip()
+        if not needle:
+            return False
+        for selector in SELECTORS["sent_confirmation"]:
+            try:
+                items = page.locator(selector)
+                for i in range(min(await items.count(), 40)):
+                    text = (await items.nth(i).inner_text(timeout=1000)) or ""
+                    if needle in text:
+                        return True
+            except Exception:  # noqa: BLE001 — try the next shape
+                continue
+        try:
+            body = (await page.locator("body").inner_text(timeout=3000)) or ""
+        except Exception:  # noqa: BLE001
+            return False
+        return needle in body
+
+    async def _delivery_holds(self, page, message: str) -> bool:
+        """Is the message in the thread, and does it stay there?
+
+        An optimistic render satisfies a single check and then vanishes: a
+        campaign reported `sent` and the recipient's thread was empty, because
+        the text was on the page at the moment it was looked at and gone
+        afterwards. So it is checked, left alone, and checked again — a
+        message the platform actually took is still there the second time.
+        """
+        if not await self._message_in_thread(page, message):
+            return False
+        await page.wait_for_timeout(SETTLE_MS)
+        if not await self._message_in_thread(page, message):
+            print(
+                "[outreach] the message appeared in the thread and then "
+                "disappeared — not delivered",
+                flush=True,
+            )
+            return False
+        return True
+
     async def _reload_and_settle(self, page, url: str) -> None:
         """Reload the profile and wait for its shell again.
 
@@ -783,6 +858,40 @@ class PlaywrightTikTokMessenger:
                 # What sits underneath a cleared puzzle is regularly
                 # TikTok's own error page rather than the profile.
                 await self._reload_and_settle(page, url)
+
+            # 2b. Follow first, if asked to, and let the message wait.
+            #
+            # A follow and a DM in the same second is not what a person looks
+            # like, and TikTok decides who may message whom partly on the
+            # follow relationship — so the message is held back rather than
+            # sent now. The job is requeued to run after the wait, which
+            # keeps the browser free instead of sleeping with a lease open.
+            follow_wait = int(target.get("follow_wait_seconds") or 0)
+            if follow_wait > 0 and not await self._present(
+                page, SELECTORS["already_following"]
+            ):
+                follow_button = await self._first_visible_tiered(
+                    page, SELECTORS["follow_button"], timeout_ms=MESSAGE_BUTTON_MS
+                )
+                if follow_button is not None and await self._click(
+                    page, follow_button, "follow-button", target_username
+                ):
+                    print(
+                        f"[outreach] followed @{target_username} — holding the "
+                        f"message for {follow_wait}s",
+                        flush=True,
+                    )
+                    return MessageResult.failure(
+                        RESULT_FOLLOW_PENDING,
+                        f"Followed @{target_username}. The message is held for "
+                        f"{follow_wait}s so the follow lands first",
+                        url=url,
+                    )
+                print(
+                    f"[outreach] no Follow control on @{target_username} — "
+                    f"messaging without following",
+                    flush=True,
+                )
 
             # 3-4. Is the messaging interface available, and open it.
             message_button = await self._first_visible_tiered(
@@ -961,16 +1070,13 @@ class PlaywrightTikTokMessenger:
                     url=page.url,
                 )
 
-            try:
-                body = (await page.locator("body").inner_text(timeout=3000)) or ""
-            except Exception:  # noqa: BLE001
-                body = ""
-            if message[:60] not in body:
+            if not await self._delivery_holds(page, message):
                 await self._save_debug_shot(page, target_username, "not-in-thread")
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,
-                    "The composer emptied but the message is not visible in the "
-                    "conversation — could not confirm delivery",
+                    "The composer emptied but the message is not in the "
+                    "conversation, or did not stay there — nothing was "
+                    "confirmed delivered",
                     url=page.url,
                 )
 

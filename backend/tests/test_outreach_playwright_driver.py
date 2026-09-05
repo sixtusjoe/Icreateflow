@@ -32,6 +32,7 @@ from services.outreach.constants import (  # noqa: E402
     NEVER_RETRY_RESULTS,
     RESULT_ABORTED,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_FOLLOW_PENDING,
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_PROFILE_UNAVAILABLE,
@@ -437,6 +438,67 @@ CAPTCHA_EATS_THE_CLICK = """
 #: The send that looks exactly like a success and is not one. TikTok takes
 #: the message, clears the composer, puts the text in the thread — and then
 #: marks it undelivered. Both delivery checks pass; nothing was sent.
+#: The message the app renders optimistically and then throws away. It is
+#: in the thread when you look, and gone a moment later — which is a
+#: campaign reporting `sent` against an empty inbox.
+SEND_VANISHES = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      ed.innerText = '';
+      // Rendered, then discarded — after the old single check had passed.
+      setTimeout(function () { item.remove(); }, 2000);
+    }
+  </script>
+</body></html>
+"""
+
+#: A profile with a Follow control, used by the follow-first tests.
+FOLLOWABLE = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <a href="/following">Following</a>
+  <button data-e2e="follow-button" onclick="this.textContent='Following'">Follow</button>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
+#: The same profile, already followed.
+ALREADY_FOLLOWING = FOLLOWABLE.replace(
+    '''<button data-e2e="follow-button" onclick="this.textContent=\'Following\'">Follow</button>''',
+    '''<button data-e2e="follow-button">Following</button>''',
+)
+
 SEND_REFUSED = """
 <html><body>
   <div data-e2e="user-title">@alice</div>
@@ -488,6 +550,9 @@ PAGES = {
     "/captchaeatsclick": CAPTCHA_EATS_THE_CLICK,
     "/siteerror": SITE_ERROR,
     "/refused": SEND_REFUSED,
+    "/vanishes": SEND_VANISHES,
+    "/followable": FOLLOWABLE,
+    "/alreadyfollowing": ALREADY_FOLLOWING,
     "/captcha-verify-inner": CAPTCHA_FRAME_INNER,
     "/navmessages": NAV_MESSAGES_DECOY,
     "/inbox": INBOX_HANDOFF,
@@ -1095,3 +1160,56 @@ async def test_a_refused_message_is_never_retried_and_stops_the_account():
     said is at risk."""
     assert RESULT_MESSAGE_REFUSED in NEVER_RETRY_RESULTS
     assert RESULT_MESSAGE_REFUSED in IMMEDIATE_ACCOUNT_PAUSE_RESULTS
+
+
+
+async def test_a_message_that_vanishes_from_the_thread_is_not_a_delivery(driver, site):
+    """The false success that sent nothing and said otherwise.
+
+    The app renders the message optimistically, the composer clears, and the
+    text is in the thread — every check passes. Then the platform discards
+    it and the recipient's inbox stays empty. Looking once cannot tell that
+    apart from a real send, so it is looked at twice.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/vanishes"), "Hello alice, quick question."
+    )
+    assert result.success is False, "a message that disappeared was never delivered"
+    assert result.status == RESULT_UNEXPECTED_PAGE
+
+
+async def test_following_first_holds_the_message_back(driver, site):
+    """A follow and a DM in the same second is not what a person looks like,
+    and TikTok gates messaging on the follow relationship anyway. So the
+    follow happens now and the message waits for a later pass."""
+    result = await driver.send_message(
+        account(),
+        {**target(site, "/followable"), "follow_wait_seconds": 600},
+        "Hello alice, quick question.",
+    )
+    assert result.status == RESULT_FOLLOW_PENDING
+    assert RECEIVED == [], "the message must not go out on the follow pass"
+
+
+async def test_an_already_followed_target_is_messaged_straight_away(driver, site):
+    """The second pass. The profile itself says we already follow them, so
+    there is nothing to wait for — no extra column needed to remember it."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(
+        account(),
+        {**target(site, "/alreadyfollowing"), "follow_wait_seconds": 600},
+        message,
+    )
+    assert result.success is True, result.error
+    assert RECEIVED == [message]
+
+
+async def test_following_is_off_unless_asked_for(driver, site):
+    """Zero wait means the old behaviour exactly — message now, follow
+    nobody."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(
+        account(), {**target(site, "/followable"), "follow_wait_seconds": 0}, message
+    )
+    assert result.success is True, result.error
+    assert RECEIVED == [message]

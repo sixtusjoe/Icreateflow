@@ -512,6 +512,35 @@ async def stop_campaign(database, campaign_id: int) -> None:
     await stats.refresh_campaign_totals(database, campaign_id)
 
 
+async def hold_job(database, job: dict, result_status: str, error: str | None,
+                   delay_seconds: int) -> None:
+    """Put a job back on the queue after a deliberate wait.
+
+    Not a failure and not an attempt: the driver did what it was asked and
+    chose to come back later. Counting it against the retry budget would
+    mean a campaign that follows first runs out of attempts before it ever
+    sends anything.
+    """
+    session = database.session
+    await session.execute(
+        text(
+            f"UPDATE outreach_jobs "
+            f"   SET status = :queued, result_status = :result, "
+            f"       error_message = :err, worker_id = NULL, "
+            f"       lease_expires_at = NULL, "
+            f"       attempts = GREATEST(attempts - 1, 0), "
+            f"       run_after = {UTC_NOW} + (:delay * INTERVAL \'1 second\'), "
+            f"       updated_at = {UTC_NOW} "
+            f" WHERE id = :id"
+        ),
+        {
+            "id": job["id"], "queued": JOB_QUEUED, "result": result_status,
+            "err": (error or result_status)[:2000], "delay": max(int(delay_seconds), 0),
+        },
+    )
+    await session.commit()
+
+
 async def retry_failed(database, campaign_id: int) -> int:
     """Put failed targets back in the queue. Returns how many were reset.
 

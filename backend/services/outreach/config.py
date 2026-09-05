@@ -32,6 +32,8 @@ SPEC: dict[str, tuple[int, int, int]] = {
     "outreach_retry_backoff_seconds": (300, 5, 86_400),
     # Minimum gap between two sends from the same account.
     "outreach_min_send_interval_seconds": (45, 0, 3600),
+    # Follow the target, wait, then message on a later pass. 0 disables it.
+    "outreach_follow_wait_seconds": (0, 0, 86400),
     # Seconds a worker sleeps when it finds no claimable job.
     "outreach_worker_idle_seconds": (10, 1, 300),
 }
