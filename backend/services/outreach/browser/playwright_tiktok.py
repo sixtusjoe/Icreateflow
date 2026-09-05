@@ -687,6 +687,37 @@ class PlaywrightTikTokMessenger:
                 flush=True,
             )
             return False
+
+        # The only check that cannot be satisfied by the page alone.
+        #
+        # Two "sent" results were recorded against a conversation that was
+        # empty when a person opened it. The text was in the thread, it was
+        # still there 2.5s later, and TikTok had kept none of it — the DOM
+        # simply cannot tell an accepted message from a discarded optimistic
+        # render. A reload throws away everything the client made up and
+        # shows only what the server will give back.
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=self._timeout)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[outreach] could not reload to confirm delivery "
+                f"({type(exc).__name__}) — refusing to claim it sent",
+                flush=True,
+            )
+            return False
+
+        await self._first_visible(
+            page, SELECTORS["sent_confirmation"], timeout_ms=COMPOSER_MS
+        )
+        if not await self._message_in_thread(page, message):
+            print(
+                "[outreach] the message did not survive a reload — TikTok "
+                "did not keep it, so it was never delivered",
+                flush=True,
+            )
+            return False
+
+        print("[outreach] delivery confirmed: the message survived a reload", flush=True)
         return True
 
     async def _reload_and_settle(self, page, url: str) -> None:
@@ -1070,18 +1101,9 @@ class PlaywrightTikTokMessenger:
                     url=page.url,
                 )
 
-            if not await self._delivery_holds(page, message):
-                await self._save_debug_shot(page, target_username, "not-in-thread")
-                return MessageResult.failure(
-                    RESULT_UNEXPECTED_PAGE,
-                    "The composer emptied but the message is not in the "
-                    "conversation, or did not stay there — nothing was "
-                    "confirmed delivered",
-                    url=page.url,
-                )
-
-            # Both checks above pass on a message TikTok has explicitly
-            # refused to deliver, so this is the last word on it.
+            # An explicit refusal is judged before anything else: TikTok
+            # has already said it did not send this, so there is nothing
+            # for a persistence check to add.
             if await self._present(page, SELECTORS["message_refused"]):
                 return MessageResult.failure(
                     RESULT_MESSAGE_REFUSED,
@@ -1095,6 +1117,17 @@ class PlaywrightTikTokMessenger:
                     ),
                 )
 
+            if not await self._delivery_holds(page, message):
+                await self._save_debug_shot(page, target_username, "not-in-thread")
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    "The composer emptied but the message is not in the "
+                    "conversation, or did not stay there — nothing was "
+                    "confirmed delivered",
+                    url=page.url,
+                )
+
+            await self._save_debug_shot(page, target_username, "sent")
             return MessageResult.sent(url=page.url)
 
         except Exception as exc:  # noqa: BLE001 — every browser fault is a result

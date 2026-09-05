@@ -528,6 +528,34 @@ SEND_REFUSED = """
 </body></html>
 """
 
+#: The phantom send. The message goes into the thread and stays there — it
+#: survives every check the page can offer — but the server never kept it,
+#: so a reload comes back empty. Two campaigns reported `sent` on exactly
+#: this, and the recipient's thread had nothing in it.
+SEND_NOT_PERSISTED = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      ed.innerText = '';
+      // Nothing is persisted: a reload serves this same page again, empty.
+    }
+  </script>
+</body></html>
+"""
+
 SITE_ERROR = """
 <html><body>
   <h2>Something went wrong</h2>
@@ -550,6 +578,7 @@ PAGES = {
     "/captchaeatsclick": CAPTCHA_EATS_THE_CLICK,
     "/siteerror": SITE_ERROR,
     "/refused": SEND_REFUSED,
+    "/notpersisted": SEND_NOT_PERSISTED,
     "/vanishes": SEND_VANISHES,
     "/followable": FOLLOWABLE,
     "/alreadyfollowing": ALREADY_FOLLOWING,
@@ -592,6 +621,17 @@ class _Handler(BaseHTTPRequestHandler):
             body = SITE_ERROR if len(SITE_ERROR_HITS) == 1 else SENDABLE
         else:
             body = PAGES.get(self.path, "<html><body>not found</body></html>")
+
+        # Serve back what was actually submitted, the way a real server does.
+        # The driver now confirms a send by reloading — a message the server
+        # kept comes back, one the client only rendered does not. `/notpersisted`
+        # is the stub that deliberately keeps nothing.
+        if self.path != "/notpersisted" and '<div id="thread"></div>' in body:
+            items = "".join(
+                f'<div data-e2e="chat-item">{m.split("|")[-1]}</div>'
+                for m in RECEIVED
+            )
+            body = body.replace('<div id="thread"></div>', f'<div id="thread">{items}</div>')
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1213,3 +1253,29 @@ async def test_following_is_off_unless_asked_for(driver, site):
     )
     assert result.success is True, result.error
     assert RECEIVED == [message]
+
+
+async def test_a_send_that_does_not_survive_a_reload_is_not_a_send(driver, site):
+    """The phantom that got past every page-based check.
+
+    Two campaigns recorded `sent` against a conversation that was empty when
+    a person opened it. The message was in the thread, it was still there
+    2.5 seconds later, and TikTok had kept none of it — the DOM cannot tell
+    an accepted message from a discarded optimistic render.
+
+    A reload can: it throws away whatever the client invented and shows only
+    what the server gives back.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/notpersisted"), "Hello alice, quick question."
+    )
+    assert result.success is False, "an unpersisted message must never count as sent"
+    assert result.status == RESULT_UNEXPECTED_PAGE
+
+
+async def test_a_genuinely_delivered_message_still_passes(driver, site):
+    """The guard has to admit real sends — the stub's thread is rebuilt from
+    its own state on reload, so a message that was really kept comes back."""
+    message = "Hello alice, we loved your latest post."
+    result = await driver.send_message(account(), target(site, "/alice"), message)
+    assert result.success is True, result.error
