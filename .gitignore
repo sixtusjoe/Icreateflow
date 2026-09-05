@@ -52,3 +52,6 @@ backend/music/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 .claude/worktrees/
+
+# Local dev env (secrets, never commit)
+local-env.sh
