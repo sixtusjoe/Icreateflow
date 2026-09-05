@@ -108,6 +108,15 @@ SELECTORS: dict[str, tuple[str, ...]] = {
         "[data-e2e='chat-item']",
         "div[class*='DivChatItem']",
     ),
+    # TikTok's own error page. It replaces the whole profile — no avatar,
+    # no buttons — and it is what the site serves after a verification
+    # puzzle often enough to matter. Without this the empty page reads as
+    # "this profile has no Message button".
+    "site_error": (
+        "text=Something went wrong",
+        "text=Please try again later",
+        "text=Sorry about that!",
+    ),
     "rate_limited": (
         "text=You're sending messages too fast",
         "text=Too many attempts",
@@ -593,6 +602,24 @@ class PlaywrightTikTokMessenger:
         )
         return False
 
+    async def _reload_and_settle(self, page, url: str) -> None:
+        """Reload the profile and wait for its shell again.
+
+        TikTok's "Something went wrong" page has a Refresh button on it for
+        a reason — the state is transient. Reloading is the same move, and
+        it is what stands between a temporary site error and a target being
+        written off.
+        """
+        print(f"[outreach] reloading {url} after a site error", flush=True)
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
+        except Exception as exc:  # noqa: BLE001 — the caller reports the outcome
+            print(f"[outreach] reload failed: {type(exc).__name__}: {exc}", flush=True)
+            return
+        await self._first_visible(
+            page, SELECTORS["profile_loaded"], timeout_ms=PROFILE_READY_MS
+        )
+
     async def _retry_message_click(self, page, target: dict[str, Any], username: str):
         """Click Message once more when the first click opened nothing.
 
@@ -728,18 +755,22 @@ class PlaywrightTikTokMessenger:
             # completely normal profile, so every check below misreads it —
             # the button is found but unclickable, or not found at all, and
             # the target gets skipped as "doesn't accept DMs".
-            if await self._challenge_present(page) and not await (
-                self._challenge_cleared_by_hand(page, target_username)
-            ):
-                return MessageResult.failure(
-                    RESULT_CHALLENGE_REQUIRED,
-                    "TikTok is asking this account to pass a verification puzzle. "
-                    "Nothing is wrong with the target — a person has to solve it "
-                    "(deploy/outreach-watch-mac.sh shows the browser), then resume "
-                    "the account",
-                    url=url,
-                    screenshot=await self._save_debug_shot(page, target_username, "challenge"),
-                )
+            if await self._challenge_present(page):
+                if not await self._challenge_cleared_by_hand(page, target_username):
+                    return MessageResult.failure(
+                        RESULT_CHALLENGE_REQUIRED,
+                        "TikTok is asking this account to pass a verification "
+                        "puzzle. Nothing is wrong with the target — a person has "
+                        "to solve it (deploy/outreach-watch-mac.sh shows the "
+                        "browser), then resume the account",
+                        url=url,
+                        screenshot=await self._save_debug_shot(
+                            page, target_username, "challenge"
+                        ),
+                    )
+                # What sits underneath a cleared puzzle is regularly
+                # TikTok's own error page rather than the profile.
+                await self._reload_and_settle(page, url)
 
             # 3-4. Is the messaging interface available, and open it.
             message_button = await self._first_visible_tiered(
@@ -753,6 +784,26 @@ class PlaywrightTikTokMessenger:
                     "learned about this target",
                     url=url,
                 )
+            if message_button is None and await self._present(page, SELECTORS["site_error"]):
+                # Not the target's doing: TikTok replaced the whole profile
+                # with its own error page, which has a Refresh button on it
+                # precisely because the state is transient. Take the hint.
+                await self._reload_and_settle(page, url)
+                message_button = await self._first_visible_tiered(
+                    page, SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
+                )
+                if message_button is None and await self._present(page, SELECTORS["site_error"]):
+                    return MessageResult.failure(
+                        RESULT_UNEXPECTED_PAGE,
+                        "TikTok served its own \"Something went wrong\" page instead "
+                        "of the profile, and it was still there after a reload. "
+                        "Nothing is known about this target — worth another run",
+                        url=url,
+                        screenshot=await self._save_debug_shot(
+                            page, target_username, "site-error"
+                        ),
+                    )
+
             if message_button is None:
                 # Two very different causes, indistinguishable from here: the
                 # target may not accept DMs from this account, or the button's

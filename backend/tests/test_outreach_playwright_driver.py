@@ -430,6 +430,16 @@ CAPTCHA_EATS_THE_CLICK = """
 </body></html>
 """
 
+#: TikTok's own error page, which replaces the entire profile — no avatar,
+#: no buttons, nothing. Served regularly after a verification puzzle.
+SITE_ERROR = """
+<html><body>
+  <h2>Something went wrong</h2>
+  <p>Sorry about that! Please try again later.</p>
+  <button>Refresh</button>
+</body></html>
+"""
+
 CAPTCHA_FRAME_INNER = """
 <html><body><p>Drag the slider to fit the puzzle</p></body></html>
 """
@@ -442,6 +452,7 @@ PAGES = {
     "/captchaframe": CAPTCHA_IN_FRAME,
     "/captchaclears": CAPTCHA_THEN_SOLVED,
     "/captchaeatsclick": CAPTCHA_EATS_THE_CLICK,
+    "/siteerror": SITE_ERROR,
     "/captcha-verify-inner": CAPTCHA_FRAME_INNER,
     "/navmessages": NAV_MESSAGES_DECOY,
     "/inbox": INBOX_HANDOFF,
@@ -468,10 +479,19 @@ PAGES = {
 #: Message bodies the stub page reported as actually submitted.
 RECEIVED: list[str] = []
 
+#: How many times `/siteerroronce` has been asked for. It errors the first
+#: time and serves a normal profile afterwards, so a reload rescues it —
+#: which is exactly what TikTok's own Refresh button implies.
+SITE_ERROR_HITS: list[int] = []
+
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's interface
-        body = PAGES.get(self.path, "<html><body>not found</body></html>")
+        if self.path == "/siteerroronce":
+            SITE_ERROR_HITS.append(1)
+            body = SITE_ERROR if len(SITE_ERROR_HITS) == 1 else SENDABLE
+        else:
+            body = PAGES.get(self.path, "<html><body>not found</body></html>")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -504,6 +524,7 @@ def site():
 @pytest.fixture(autouse=True)
 def clear_received(monkeypatch):
     RECEIVED.clear()
+    SITE_ERROR_HITS.clear()
     # No screenshots from the test suite.
     monkeypatch.setattr(
         "services.outreach.browser.playwright_tiktok.DEBUG_DIR", "", raising=False
@@ -970,3 +991,45 @@ async def test_a_puzzle_that_swallowed_the_click_gets_the_click_again(
 
     assert result.success is True, result.error
     assert RECEIVED == [message]
+
+
+async def test_tiktoks_own_error_page_is_not_the_targets_fault(driver, site):
+    """The third distinct cause of a falsely skipped target.
+
+    After a puzzle cleared, TikTok replaced the whole profile with
+    "Something went wrong — please try again later". No avatar, no Message
+    button. The driver read the absence as "this profile does not accept
+    DMs", which used to be terminal, and a live target was written off over
+    a transient site error.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/siteerror"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status != RESULT_MESSAGING_UNAVAILABLE
+    assert result.status == RESULT_UNEXPECTED_PAGE
+    assert RECEIVED == []
+
+
+async def test_a_transient_site_error_is_reloaded_rather_than_written_off(driver, site):
+    """That error page ships with a Refresh button because the state is
+    transient. Reloading is the same move, and it turns a lost target into a
+    delivered message."""
+    message = "Hello alice, quick question."
+    result = await driver.send_message(
+        account(), target(site, "/siteerroronce"), message
+    )
+    assert result.success is True, result.error
+    assert RECEIVED == [message]
+
+
+async def test_no_verdict_reached_by_absence_is_ever_permanent():
+    """The rule the last three failures all broke.
+
+    Only things actually *seen* may be terminal. `messaging_unavailable` is
+    inferred from a missing button, and a button can go missing because of a
+    puzzle, a killed browser or a site error — none of which say anything
+    about whether the target accepts DMs.
+    """
+    assert RESULT_MESSAGING_UNAVAILABLE not in TERMINAL_RESULTS
+    assert RESULT_PROFILE_UNAVAILABLE in TERMINAL_RESULTS

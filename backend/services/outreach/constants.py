@@ -77,9 +77,22 @@ RESULT_DB_ERROR = "database_error"
 
 #: Permanent for this target — retrying cannot help, so the target is
 #: marked `skipped` and the account is not blamed.
+#:
+#: Only verdicts reached by *seeing* something belong here. A profile that
+#: renders "Couldn't find this account" really is gone, and no number of
+#: retries changes that.
+#:
+#: `messaging_unavailable` is deliberately NOT in this set, though it reads
+#: like it belongs. It is inferred from the *absence* of a Message button,
+#: and absence turned out to have many causes that have nothing to do with
+#: the target: a verification puzzle covering the profile, a browser closed
+#: mid-job by a worker restart, and TikTok serving its own "Something went
+#: wrong" page. Each one skipped a live, reachable target permanently, with
+#: no way back short of editing the database. Retrying a profile that
+#: genuinely has DMs closed costs a handful of attempts; the other mistake
+#: costs the target for good.
 TERMINAL_RESULTS = frozenset({
     RESULT_PROFILE_UNAVAILABLE,
-    RESULT_MESSAGING_UNAVAILABLE,
 })
 
 #: The account, not the target, is the problem. These count toward the
