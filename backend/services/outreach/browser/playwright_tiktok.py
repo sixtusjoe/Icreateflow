@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from services.outreach.browser import MessageResult
 from services.outreach.constants import (
+    RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
     RESULT_MESSAGING_UNAVAILABLE,
@@ -542,6 +543,22 @@ class PlaywrightTikTokMessenger:
             pass
         return False
 
+    @staticmethod
+    def _page_is_gone(page) -> bool:
+        """Did the page disappear underneath us?
+
+        Every selector helper swallows its own exceptions, so a page closed
+        mid-job does not raise — it just makes every lookup return None,
+        which reads exactly like "this profile has no Message button". That
+        cost a live target: the watch script stops the background workers,
+        systemd killed a mid-send worker together with its Chromium, and the
+        job recorded messaging_unavailable, which is terminal.
+        """
+        try:
+            return page.is_closed()
+        except Exception:  # noqa: BLE001 — no page left to ask
+            return True
+
     def _challenge_wait_ms(self) -> int:
         """How long to let a human clear a puzzle. 0 = don't wait."""
         if CHALLENGE_WAIT_MS:
@@ -690,6 +707,14 @@ class PlaywrightTikTokMessenger:
             message_button = await self._first_visible_tiered(
                 page, SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
             )
+            if message_button is None and self._page_is_gone(page):
+                return MessageResult.failure(
+                    RESULT_ABORTED,
+                    "The browser closed before the Message button could be found "
+                    "— most likely the worker was stopped mid-job. Nothing was "
+                    "learned about this target",
+                    url=url,
+                )
             if message_button is None:
                 # Two very different causes, indistinguishable from here: the
                 # target may not accept DMs from this account, or the button's
@@ -730,6 +755,13 @@ class PlaywrightTikTokMessenger:
                         page, SELECTORS["message_input"], timeout_ms=COMPOSER_MS
                     )
 
+            if editor is None and self._page_is_gone(page):
+                return MessageResult.failure(
+                    RESULT_ABORTED,
+                    "The browser closed before the composer could open — most "
+                    "likely the worker was stopped mid-job",
+                    url=url,
+                )
             if editor is None:
                 if await self._present(page, SELECTORS["login_wall"]):
                     return MessageResult.failure(

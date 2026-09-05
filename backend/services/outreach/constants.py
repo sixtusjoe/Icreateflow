@@ -62,6 +62,11 @@ RESULT_RATE_LIMITED = "rate_limited"
 #: skips a perfectly good profile for good. Only a person can clear this,
 #: so the account is paused immediately rather than retried into the ground.
 RESULT_CHALLENGE_REQUIRED = "challenge_required"
+#: The browser went away underneath the job — almost always because the
+#: worker was being shut down and systemd killed Chromium along with it.
+#: Nothing was learned about the target or the account, so neither may be
+#: blamed: not terminal, not an account fault, just run it again.
+RESULT_ABORTED = "aborted"
 RESULT_UNKNOWN = "unknown_error"
 #: Raised above the driver: the message could not be rendered for this
 #: target. Never retried — the same template and target produce the same

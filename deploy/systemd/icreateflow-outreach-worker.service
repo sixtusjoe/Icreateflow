@@ -29,6 +29,14 @@ ExecStart=/srv/icreateflow/venv/bin/python scripts/outreach_worker.py --worker-i
 # SIGTERM stops the loop cleanly; a job still in flight keeps its lease and
 # is requeued by the reaper, so a restart never loses or double-sends a target.
 KillSignal=SIGTERM
+# Signal ONLY the worker, not everything in the cgroup. The default
+# (control-group) SIGTERMs Chromium too, so a worker stopped mid-send lost
+# its browser instantly, every selector lookup came back empty, and the job
+# recorded "no Message button" — terminal — against a perfectly good target.
+# outreach-watch.sh stops the workers on purpose, so this was not a rare race.
+# With `mixed`, Python gets the signal and closes the browser itself within
+# TimeoutStopSec.
+KillMode=mixed
 TimeoutStopSec=120
 Restart=on-failure
 RestartSec=10

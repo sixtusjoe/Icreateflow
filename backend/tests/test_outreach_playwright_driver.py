@@ -29,6 +29,7 @@ from services.outreach.browser.playwright_tiktok import (  # noqa: E402
 from services.outreach.constants import (  # noqa: E402
     ACCOUNT_FAULT_RESULTS,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
+    RESULT_ABORTED,
     RESULT_CHALLENGE_REQUIRED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_PROFILE_UNAVAILABLE,
@@ -864,3 +865,35 @@ async def test_a_headless_worker_does_not_sit_waiting_on_a_puzzle(driver, site):
     assert result.success is False
     assert result.status == RESULT_CHALLENGE_REQUIRED
     assert RECEIVED == []
+
+
+async def test_a_browser_closed_mid_job_is_not_blamed_on_the_target(driver, site):
+    """The failure that cost a live target twice over.
+
+    outreach-watch.sh stops the background workers on purpose, and the unit
+    had no KillMode, so systemd SIGTERMed Chromium along with the worker. A
+    closed page makes every selector helper return None — indistinguishable
+    from a profile with no Message button — and that verdict is terminal, so
+    the target was skipped permanently by the act of trying to watch it.
+
+    Nothing is known about the target here, so nothing may be concluded.
+    """
+    async def close_the_page(page, *args, **kwargs):
+        await page.close()
+        return None
+
+    driver._first_visible_tiered = close_the_page
+
+    result = await driver.send_message(
+        account(), target(site, "/alice"), "Hello alice, quick question."
+    )
+    assert result.status == RESULT_ABORTED
+    assert result.status != RESULT_MESSAGING_UNAVAILABLE
+    assert RECEIVED == []
+
+
+async def test_an_aborted_job_neither_skips_the_target_nor_blames_the_account():
+    """It has to stay retryable and blameless — the worker being restarted
+    is nobody's fault and says nothing about either party."""
+    assert RESULT_ABORTED not in TERMINAL_RESULTS
+    assert RESULT_ABORTED not in ACCOUNT_FAULT_RESULTS
