@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -135,6 +136,19 @@ SELECTORS: dict[str, tuple[str, ...]] = {
 #: served in an iframe, and `page.locator` does not search into frames — so
 #: a selector-only check sees a blank page and calls it healthy.
 CHALLENGE_FRAME_HINTS = ("captcha", "verify", "secsdk")
+
+#: How long to hold the browser open on a verification puzzle so a person
+#: can solve it.
+#:
+#: A headless worker waits zero — nobody is there, and failing fast is what
+#: keeps the account from being ground down. But `outreach-watch.sh` runs
+#: with a visible browser over VNC precisely so somebody CAN clear it, and
+#: bailing out instantly closes the window in their face. So the default is
+#: the operator's patience, not the worker's.
+CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
+CHALLENGE_WAIT_HEADFUL_MS = int(
+    os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_HEADFUL_MS", "300000")
+)
 
 DEFAULT_TIMEOUT_MS = int(os.environ.get("ICREATE_OUTREACH_TIMEOUT_MS", "30000"))
 #: How long to let the profile shell hydrate before looking for anything.
@@ -528,6 +542,40 @@ class PlaywrightTikTokMessenger:
             pass
         return False
 
+    def _challenge_wait_ms(self) -> int:
+        """How long to let a human clear a puzzle. 0 = don't wait."""
+        if CHALLENGE_WAIT_MS:
+            return CHALLENGE_WAIT_MS  # explicit override wins either way
+        return 0 if self._headless else CHALLENGE_WAIT_HEADFUL_MS
+
+    async def _challenge_cleared_by_hand(self, page, username: str) -> bool:
+        """Hold on a verification puzzle while somebody solves it.
+
+        Returns True if it went away in time, False if it is still there —
+        in which case the caller reports `challenge_required` exactly as
+        before. The driver never touches the puzzle itself.
+        """
+        budget_ms = self._challenge_wait_ms()
+        if budget_ms <= 0:
+            return False
+
+        print(
+            f"[outreach] verification puzzle on @{username} — waiting up to "
+            f"{budget_ms // 1000}s for someone to solve it in the browser window",
+            flush=True,
+        )
+        deadline = time.monotonic() + (budget_ms / 1000)
+        while time.monotonic() < deadline:
+            await page.wait_for_timeout(1000)
+            if not await self._challenge_present(page):
+                print("[outreach] puzzle cleared — carrying on", flush=True)
+                return True
+        print(
+            f"[outreach] puzzle still up after {budget_ms // 1000}s — giving up",
+            flush=True,
+        )
+        return False
+
     async def _save_debug_shot(self, page, username: str, reason: str) -> Optional[str]:
         """Screenshot a page that did not verify, for selector diagnosis.
 
@@ -625,7 +673,9 @@ class PlaywrightTikTokMessenger:
             # completely normal profile, so every check below misreads it —
             # the button is found but unclickable, or not found at all, and
             # the target gets skipped as "doesn't accept DMs".
-            if await self._challenge_present(page):
+            if await self._challenge_present(page) and not await (
+                self._challenge_cleared_by_hand(page, target_username)
+            ):
                 return MessageResult.failure(
                     RESULT_CHALLENGE_REQUIRED,
                     "TikTok is asking this account to pass a verification puzzle. "
@@ -685,7 +735,9 @@ class PlaywrightTikTokMessenger:
                     return MessageResult.failure(
                         RESULT_SESSION_EXPIRED, "Session expired at the message step", url=url
                     )
-                if await self._challenge_present(page):
+                if await self._challenge_present(page) and not await (
+                    self._challenge_cleared_by_hand(page, target_username)
+                ):
                     return MessageResult.failure(
                         RESULT_CHALLENGE_REQUIRED,
                         "A verification puzzle appeared after clicking Message. "

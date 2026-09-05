@@ -352,6 +352,40 @@ CAPTCHA_IN_FRAME = """
 </body></html>
 """
 
+#: The puzzle a person then solves. It clears itself after a beat, standing
+#: in for somebody dragging the slider in the VNC window — after which the
+#: profile underneath is perfectly sendable.
+CAPTCHA_THEN_SOLVED = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <div id="captcha-verify-container"
+       style="position:fixed;top:0;left:0;width:100%;height:100%;background:#222;z-index:99">
+    <p>Drag the slider to fit the puzzle</p>
+  </div>
+  <script>
+    setTimeout(function () {
+      document.getElementById('captcha-verify-container').remove();
+    }, 1500);
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 CAPTCHA_FRAME_INNER = """
 <html><body><p>Drag the slider to fit the puzzle</p></body></html>
 """
@@ -362,6 +396,7 @@ PAGES = {
     "/captcha": CAPTCHA_OVER_PROFILE,
     "/captchaonly": CAPTCHA_INSTEAD_OF_CONTROLS,
     "/captchaframe": CAPTCHA_IN_FRAME,
+    "/captchaclears": CAPTCHA_THEN_SOLVED,
     "/captcha-verify-inner": CAPTCHA_FRAME_INNER,
     "/navmessages": NAV_MESSAGES_DECOY,
     "/inbox": INBOX_HANDOFF,
@@ -796,3 +831,36 @@ async def test_a_failed_action_dump_says_so_rather_than_looking_empty(driver, si
     actions = await PlaywrightTikTokMessenger._page_actions(page)
     assert actions, "a thrown diagnostic must not come back as an empty list"
     assert "failed" in actions[0]
+
+
+async def test_waits_for_a_person_to_solve_the_puzzle_when_the_browser_is_visible(
+    driver, site, monkeypatch
+):
+    """Detecting the puzzle instantly is right for a headless worker and
+    wrong for `outreach-watch.sh`, which shows the browser over VNC for the
+    express purpose of letting somebody clear it — bailing out closes the
+    window in their face before they can touch it.
+
+    Here the puzzle goes away after a beat, standing in for a solved slider.
+    The send should then go through normally.
+    """
+    monkeypatch.setattr(
+        "services.outreach.browser.playwright_tiktok.CHALLENGE_WAIT_MS", 15000
+    )
+    message = "Hello alice, quick question."
+    result = await driver.send_message(account(), target(site, "/captchaclears"), message)
+
+    assert result.success is True
+    assert RECEIVED == [message]
+
+
+async def test_a_headless_worker_does_not_sit_waiting_on_a_puzzle(driver, site):
+    """Nobody is watching a background worker, so waiting would just hold a
+    browser and the account's lease open for nothing. It fails immediately
+    and lets the account pause."""
+    result = await driver.send_message(
+        account(), target(site, "/captchaclears"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_CHALLENGE_REQUIRED
+    assert RECEIVED == []
