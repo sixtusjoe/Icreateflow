@@ -36,6 +36,7 @@ from services.outreach.constants import (
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_NAVIGATION_TIMEOUT,
     RESULT_PROFILE_UNAVAILABLE,
@@ -116,6 +117,17 @@ SELECTORS: dict[str, tuple[str, ...]] = {
         "text=Something went wrong",
         "text=Please try again later",
         "text=Sorry about that!",
+    ),
+    # TikTok takes the message, puts it in the thread, and then refuses to
+    # deliver it — an error marker beside the message and this notice under
+    # it. Both delivery checks pass in that state: the composer does clear,
+    # and the text really is on the page. Without this the queue reports a
+    # send that never happened, which is the exact failure the
+    # composer-cleared check exists to prevent.
+    "message_refused": (
+        "text=has not been sent",
+        "text=may be in violation of our Community Guidelines",
+        "text=to protect our community",
     ),
     "rate_limited": (
         "text=You're sending messages too fast",
@@ -960,6 +972,21 @@ class PlaywrightTikTokMessenger:
                     "The composer emptied but the message is not visible in the "
                     "conversation — could not confirm delivery",
                     url=page.url,
+                )
+
+            # Both checks above pass on a message TikTok has explicitly
+            # refused to deliver, so this is the last word on it.
+            if await self._present(page, SELECTORS["message_refused"]):
+                return MessageResult.failure(
+                    RESULT_MESSAGE_REFUSED,
+                    "TikTok put the message in the thread and then refused to "
+                    "deliver it: it says the message has not been sent. Nothing "
+                    "reached the target. The wording and the account standing "
+                    "are what to change, not the target",
+                    url=page.url,
+                    screenshot=await self._save_debug_shot(
+                        page, target_username, "message-refused"
+                    ),
                 )
 
             return MessageResult.sent(url=page.url)

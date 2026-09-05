@@ -66,6 +66,11 @@ RESULT_CHALLENGE_REQUIRED = "challenge_required"
 #: worker was being shut down and systemd killed Chromium along with it.
 #: Nothing was learned about the target or the account, so neither may be
 #: blamed: not terminal, not an account fault, just run it again.
+#: TikTok accepted the message into the thread and then refused to deliver
+#: it — "may be in violation of our Community Guidelines, and has not been
+#: sent to protect our community", shown beside the message with an error
+#: marker. Nothing was delivered, so this must never be reported as sent.
+RESULT_MESSAGE_REFUSED = "message_refused"
 RESULT_ABORTED = "aborted"
 RESULT_UNKNOWN = "unknown_error"
 #: Raised above the driver: the message could not be rendered for this
@@ -102,6 +107,7 @@ ACCOUNT_FAULT_RESULTS = frozenset({
     RESULT_RATE_LIMITED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_MESSAGE_REFUSED,
 })
 
 #: Failures no amount of retrying can clear — pause immediately rather than
@@ -113,6 +119,16 @@ ACCOUNT_FAULT_RESULTS = frozenset({
 IMMEDIATE_ACCOUNT_PAUSE_RESULTS = frozenset({
     RESULT_SESSION_EXPIRED,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_MESSAGE_REFUSED,
+})
+
+#: Retrying these is pointless — the same input produces the same outcome.
+#: A refused message will be refused again word for word, and every attempt
+#: is another flagged message from an account the platform has already told
+#: us is at risk.
+NEVER_RETRY_RESULTS = frozenset({
+    RESULT_TEMPLATE_ERROR,
+    RESULT_MESSAGE_REFUSED,
 })
 
 # --- Audit actions --------------------------------------------------------

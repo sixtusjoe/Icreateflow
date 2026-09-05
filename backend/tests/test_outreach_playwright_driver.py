@@ -29,8 +29,10 @@ from services.outreach.browser.playwright_tiktok import (  # noqa: E402
 from services.outreach.constants import (  # noqa: E402
     ACCOUNT_FAULT_RESULTS,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
+    NEVER_RETRY_RESULTS,
     RESULT_ABORTED,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_PROFILE_UNAVAILABLE,
     RESULT_RATE_LIMITED,
@@ -432,6 +434,38 @@ CAPTCHA_EATS_THE_CLICK = """
 
 #: TikTok's own error page, which replaces the entire profile — no avatar,
 #: no buttons, nothing. Served regularly after a verification puzzle.
+#: The send that looks exactly like a success and is not one. TikTok takes
+#: the message, clears the composer, puts the text in the thread — and then
+#: marks it undelivered. Both delivery checks pass; nothing was sent.
+SEND_REFUSED = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+    <div id="notice" style="display:none">
+      This message may be in violation of our Community Guidelines, and has
+      not been sent to protect our community.
+    </div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      // Composer clears and the text is on the page — but nothing was sent.
+      ed.innerText = '';
+      document.getElementById('notice').style.display = 'block';
+    }
+  </script>
+</body></html>
+"""
+
 SITE_ERROR = """
 <html><body>
   <h2>Something went wrong</h2>
@@ -453,6 +487,7 @@ PAGES = {
     "/captchaclears": CAPTCHA_THEN_SOLVED,
     "/captchaeatsclick": CAPTCHA_EATS_THE_CLICK,
     "/siteerror": SITE_ERROR,
+    "/refused": SEND_REFUSED,
     "/captcha-verify-inner": CAPTCHA_FRAME_INNER,
     "/navmessages": NAV_MESSAGES_DECOY,
     "/inbox": INBOX_HANDOFF,
@@ -1033,3 +1068,30 @@ async def test_no_verdict_reached_by_absence_is_ever_permanent():
     """
     assert RESULT_MESSAGING_UNAVAILABLE not in TERMINAL_RESULTS
     assert RESULT_PROFILE_UNAVAILABLE in TERMINAL_RESULTS
+
+
+async def test_a_message_tiktok_refuses_to_deliver_is_not_reported_as_sent(driver, site):
+    """The false success that got past both delivery checks.
+
+    A campaign reported `sent` and the message never arrived. TikTok had
+    taken it, cleared the composer and put the text in the thread — so
+    "composer empty" and "text on the page" were both true — then marked it
+    undelivered: "may be in violation of our Community Guidelines, and has
+    not been sent to protect our community".
+
+    Reporting that as delivered is the worst thing this system can do: the
+    target is marked sent, never retried, and nobody finds out.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/refused"), "Hello alice, quick question."
+    )
+    assert result.success is False, "a refused message must never count as sent"
+    assert result.status == RESULT_MESSAGE_REFUSED
+
+
+async def test_a_refused_message_is_never_retried_and_stops_the_account():
+    """Retrying sends the identical text again, gets the identical refusal,
+    and adds another flagged message to an account the platform has already
+    said is at risk."""
+    assert RESULT_MESSAGE_REFUSED in NEVER_RETRY_RESULTS
+    assert RESULT_MESSAGE_REFUSED in IMMEDIATE_ACCOUNT_PAUSE_RESULTS

@@ -45,6 +45,7 @@ from services.outreach.constants import (
     TARGET_QUEUED,
     TARGET_SENT,
     TARGET_SKIPPED,
+    NEVER_RETRY_RESULTS,
     TERMINAL_RESULTS,
 )
 
@@ -283,7 +284,12 @@ async def fail_job(
     session = database.session
 
     terminal = result_status in TERMINAL_RESULTS
-    can_retry = (not terminal) and (not force_fail) and attempts <= limit
+    can_retry = (
+        (not terminal)
+        and (not force_fail)
+        and result_status not in NEVER_RETRY_RESULTS
+        and attempts <= limit
+    )
     outcome = "retry" if can_retry else ("skip" if terminal else "fail")
 
     if can_retry:
