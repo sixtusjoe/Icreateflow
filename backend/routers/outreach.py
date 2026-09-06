@@ -36,6 +36,7 @@ import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import config as cfg
 from services.outreach import importer, session_capture, watch_run
+from services.outreach import runner as outreach_runner
 from services.outreach import queue as job_queue
 from services.outreach import stats
 from services.outreach import templates as template_svc
@@ -601,6 +602,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             await database.close()
 
         watch = watch_run.status_for(campaign_id)
+        sender = outreach_runner.local_worker_state()
         return {
             "available": watch_run.unavailable_reason() is None,
             "unavailable_reason": watch_run.unavailable_reason(),
@@ -608,6 +610,11 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             "busy_elsewhere": watch_run.any_running()
             and not watch_run.is_running(campaign_id),
             "watch": watch.to_dict() if watch else None,
+            # When the local sender is up, campaigns send by themselves and
+            # the window is already on screen — there is nothing to start.
+            "sender_running": bool(sender.get("running")),
+            "sender_busy": bool(sender.get("busy")),
+            "sender_error": sender.get("last_error"),
         }
 
     @router.post("/campaigns/{campaign_id}/watch")

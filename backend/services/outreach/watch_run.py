@@ -97,10 +97,19 @@ def any_running() -> bool:
 def start(campaign: dict[str, Any]) -> Watch:
     """Open a window and run one job. Returns immediately.
 
-    Raises ValueError when a watched run is already open — see `any_running`.
+    Raises ValueError when something is already sending — see `any_running`
+    and the local sender. Two claimants would race each other for jobs and
+    for the same account's lease.
     """
+    from services.outreach.runner import local_worker_running
+
     campaign_id = int(campaign["id"])
     platform = (campaign.get("platform") or "").strip().lower()
+    if local_worker_running():
+        raise ValueError(
+            "Sending is already running on this machine, in a visible "
+            "browser — watch that window rather than starting a second one."
+        )
     if any_running():
         raise ValueError(
             "A watched run is already open. Finish or close that window first."

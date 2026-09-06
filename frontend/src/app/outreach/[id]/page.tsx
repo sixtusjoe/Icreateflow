@@ -310,7 +310,7 @@ export default function OutreachCampaignPage() {
               onClick={() => act(() => stopOutreachCampaign(id), "Campaign stopped")}
             />
           )}
-          {watch?.available && (
+          {watch?.available && !watch.sender_running && (
             <ActionButton
               icon={<Eye className="h-4 w-4" />}
               label={watch.running ? "Watching…" : "Watch a send"}
@@ -326,6 +326,14 @@ export default function OutreachCampaignPage() {
               act(() => retryOutreachFailed(id), "Failed targets re-queued")
             }
           />
+          {watch?.sender_running && (
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+              <Eye className="h-3.5 w-3.5" />
+              {watch.sender_busy
+                ? "Sending now — the browser window is open"
+                : "Sending automatically — a window opens when there is work"}
+            </span>
+          )}
           <ActionButton
             icon={<Upload className="h-4 w-4" />}
             label="Import"

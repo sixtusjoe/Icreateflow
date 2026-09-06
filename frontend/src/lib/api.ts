@@ -915,6 +915,10 @@ export interface WatchState {
   running: boolean;
   busy_elsewhere: boolean;
   watch: WatchRun | null;
+  /** A local sender is up: campaigns send by themselves, window already open. */
+  sender_running: boolean;
+  sender_busy: boolean;
+  sender_error: string | null;
 }
 /** Run one job in a browser window on the machine hosting the backend. */
 export const startWatchRun = (campaignId: number): Promise<WatchRun> =>

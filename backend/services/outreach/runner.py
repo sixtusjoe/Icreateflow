@@ -72,6 +72,7 @@ class OutreachWorker:
         driver: Any = None,
         concurrency: Optional[int] = None,
         once: bool = False,
+        headless: Optional[bool] = None,
     ):
         self.worker_id = worker_id or default_worker_id()
         self.driver_name = driver_name
@@ -81,6 +82,10 @@ class OutreachWorker:
         self._drivers: dict[str, Any] = {}
         self.concurrency_override = concurrency
         self.once = once
+        #: None leaves it to the driver's own default. False is how a local
+        #: worker keeps every window on screen — the operator has to be able
+        #: to reach a verification puzzle, whichever platform threw it.
+        self._headless = headless
         self._stopping = asyncio.Event()
 
     # --- lifecycle -------------------------------------------------------
@@ -134,7 +139,8 @@ class OutreachWorker:
         name = self._driver_name_for(settings, platform)
         driver = self._drivers.get(name)
         if driver is None:
-            driver = get_driver(name)
+            kwargs = {} if self._headless is None else {"headless": self._headless}
+            driver = get_driver(name, **kwargs)
             await driver.startup()
             self._drivers[name] = driver
         return driver
@@ -472,6 +478,84 @@ async def _maintenance_loop() -> None:
         await asyncio.sleep(120)
 
 
+def local_worker_enabled() -> bool:
+    """Should this process send, as well as serve the API?
+
+    False everywhere by default. On the server, sending belongs to the
+    systemd workers: an API process that also drives browsers would restart
+    with every deploy, mid-send. On a laptop there are no systemd workers,
+    so without this "Start campaign" queues work that nothing ever claims —
+    which looks exactly like the app being broken.
+    """
+    return (os.environ.get("ICREATE_OUTREACH_LOCAL_WORKER") or "").strip().lower() not in (
+        "", "0", "false", "no", "off",
+    )
+
+
+def local_worker_running() -> bool:
+    return _LOCAL_WORKER.get("running", False)
+
+
+def local_worker_state() -> dict[str, Any]:
+    return dict(_LOCAL_WORKER)
+
+
+#: What the local sender is doing, for the campaign page to show.
+_LOCAL_WORKER: dict[str, Any] = {"running": False, "busy": False, "last_error": None}
+
+
+async def _local_worker_loop() -> None:
+    """Claim and send, in visible browsers, for as long as the API runs.
+
+    Deliberately visible: this exists so a person can watch it and clear a
+    puzzle when one appears. A headless local worker would hit the same
+    challenge and simply pause the account, which is the situation this is
+    meant to get out of.
+    """
+    worker = OutreachWorker(headless=False)
+    _LOCAL_WORKER["running"] = True
+    print("[outreach] local sender started — browsers will be visible", flush=True)
+    try:
+        while True:
+            try:
+                database = await db.get_db()
+                try:
+                    settings = await cfg.get_all(database)
+                finally:
+                    await database.close()
+
+                if not settings[cfg.WORKERS_ENABLED_KEY]:
+                    await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
+                    continue
+
+                _LOCAL_WORKER["busy"] = True
+                did_work = await worker.process_one(settings)
+                _LOCAL_WORKER["busy"] = False
+                _LOCAL_WORKER["last_error"] = None
+                if not did_work:
+                    await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — one bad job must not
+                # end the sender; the next pass may be fine.
+                _LOCAL_WORKER["busy"] = False
+                _LOCAL_WORKER["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+                traceback.print_exc()
+                await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        raise
+    finally:
+        _LOCAL_WORKER["running"] = False
+        _LOCAL_WORKER["busy"] = False
+        try:
+            await worker.shutdown()
+        except Exception:  # noqa: BLE001 — shutdown must not raise
+            traceback.print_exc()
+
+
 async def start_background_tasks() -> list[asyncio.Task]:
     """Kick off the outreach maintenance loop. Call from FastAPI lifespan."""
-    return [asyncio.create_task(_maintenance_loop())]
+    tasks = [asyncio.create_task(_maintenance_loop())]
+    if local_worker_enabled():
+        tasks.append(asyncio.create_task(_local_worker_loop()))
+    return tasks
