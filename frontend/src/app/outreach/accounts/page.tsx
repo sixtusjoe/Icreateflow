@@ -25,7 +25,7 @@ import {
   type BrowserLoginState,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { StatusPill, PageIcon, Toggle, inputClass, relativeTime, apiErrorMessage } from "../ui";
+import { StatusPill, PageIcon, Toggle, Select, inputClass, relativeTime, apiErrorMessage } from "../ui";
 
 const MAX_ACCOUNTS = 20;
 
@@ -304,14 +304,10 @@ export default function OutreachAccountsPage() {
             onChange={(e) => setName(e.target.value)}
           />
           <label className="mb-1.5 mt-4 block text-sm font-medium">Platform</label>
-          <select
-            className={inputClass}
-            value={platform}
-            onChange={(e) => setPlatform(e.target.value)}
-          >
+          <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
             <option value="tiktok">TikTok</option>
             <option value="instagram">Instagram</option>
-          </select>
+          </Select>
           <p className="mt-2 text-xs text-muted-foreground">
             A label for you — the account is authorized separately by attaching a browser
             session. The platform cannot be changed later, and an account can only be

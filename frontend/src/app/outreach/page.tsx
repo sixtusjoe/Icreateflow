@@ -24,7 +24,7 @@ import {
   type OutreachAccount,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { StatusPill, ProgressBar, PageIcon, inputClass, apiErrorMessage } from "./ui";
+import { StatusPill, ProgressBar, PageIcon, Select, inputClass, apiErrorMessage } from "./ui";
 
 export default function OutreachPage() {
   const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
@@ -253,14 +253,13 @@ export default function OutreachPage() {
               </div>
               <div>
                 <label className="mb-1.5 block text-sm font-medium">Platform</label>
-                <select
-                  className={inputClass}
+                <Select
                   value={form.platform}
                   onChange={(e) => setForm({ ...form, platform: e.target.value })}
                 >
                   <option value="tiktok">TikTok</option>
                   <option value="instagram">Instagram</option>
-                </select>
+                </Select>
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   Decides how profile URLs are read and which sending accounts can be
                   assigned. It cannot be changed once targets are imported.

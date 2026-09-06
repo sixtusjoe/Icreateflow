@@ -1,6 +1,6 @@
 "use client";
 
-import type { LucideIcon } from "lucide-react";
+import { ChevronDown, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -61,6 +61,43 @@ export function Toggle({
 /** Matches the input styling used across the Clipping pages. */
 export const inputClass =
   "w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none transition-colors focus:border-foreground placeholder:text-muted-foreground";
+
+/**
+ * A `<select>` that matches the inputs beside it.
+ *
+ * The native control draws its own arrow inside the field's right padding,
+ * which sits at a different offset from everything else in the form and
+ * renders differently per browser. Suppressing it and placing the chevron
+ * ourselves keeps the alignment honest and identical everywhere; the extra
+ * right padding is what stops a long option running underneath it.
+ */
+export function Select({
+  value,
+  onChange,
+  children,
+  className,
+}: {
+  value: string;
+  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={onChange}
+        className={cn(inputClass, "cursor-pointer appearance-none pr-10", className)}
+      >
+        {children}
+      </select>
+      <ChevronDown
+        aria-hidden
+        className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+      />
+    </div>
+  );
+}
 
 const TONES: Record<string, string> = {
   // Campaign

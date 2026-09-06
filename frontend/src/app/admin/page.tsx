@@ -1562,24 +1562,47 @@ function OutreachTab() {
         </div>
       </Section>
 
-      <Section title="Automation driver">
+      <Section title="Sending mode">
         <div className="rounded-xl border border-border bg-card p-5">
           <select
-            value={String(values.outreach_driver ?? "mock")}
+            value={String(values.outreach_driver ?? "mock") === "mock" ? "mock" : "auto"}
             onChange={(e) => save({ outreach_driver: e.target.value })}
             disabled={saving}
             className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground"
           >
-            {settings.drivers.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
+            <option value="auto">Send for real</option>
+            <option value="mock">Rehearse — contacts nothing</option>
           </select>
           <p className="mt-2 text-sm text-muted-foreground">
-            <code>mock</code> runs campaigns end to end without contacting any platform —
-            use it to rehearse a campaign. Any other driver sends for real.
+            Rehearsing runs campaigns end to end — queue, retries, accounts, reporting —
+            without contacting any platform. Sending for real routes each job by its
+            account&apos;s platform, so TikTok and Instagram campaigns can run at the same
+            time in the same worker.
           </p>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              Advanced: pin one driver
+            </summary>
+            <select
+              value={String(values.outreach_driver ?? "mock")}
+              onChange={(e) => save({ outreach_driver: e.target.value })}
+              disabled={saving}
+              className="mt-2 w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-foreground"
+            >
+              <option value="auto">auto — route by platform</option>
+              {settings.drivers.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Only for debugging one platform. Naming a single browser driver here does
+              not force it: apart from <code>mock</code>, jobs are still routed by their
+              account&apos;s platform, because a TikTok selector table finds nothing on an
+              Instagram profile.
+            </p>
+          </details>
         </div>
       </Section>
 

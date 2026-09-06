@@ -41,6 +41,10 @@ SPEC: dict[str, tuple[int, int, int]] = {
 #: Non-numeric settings.
 DRIVER_KEY = "outreach_driver"
 DRIVER_DEFAULT = "mock"
+#: Not a driver: "let each job's platform choose". The only other value
+#: that changes behaviour is `mock`; naming a single browser driver here is
+#: a debugging pin, not a routing instruction.
+DRIVER_AUTO = "auto"
 WORKERS_ENABLED_KEY = "outreach_workers_enabled"
 
 #: Hard ceiling on sending accounts, per the product spec. Not tunable —

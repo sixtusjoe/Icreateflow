@@ -1010,9 +1010,13 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         unknown = sorted(set(data.values) - allowed)
         if unknown:
             raise HTTPException(400, f"Unknown setting(s): {', '.join(unknown)}")
-        if cfg.DRIVER_KEY in data.values and data.values[cfg.DRIVER_KEY] not in DRIVERS:
+        if cfg.DRIVER_KEY in data.values and data.values[cfg.DRIVER_KEY] not in (
+            set(DRIVERS) | {cfg.DRIVER_AUTO}
+        ):
             raise HTTPException(
-                400, f"Unknown driver. Available: {', '.join(sorted(DRIVERS))}"
+                400,
+                f"Unknown driver. Available: {cfg.DRIVER_AUTO} (route by platform), "
+                f"{', '.join(sorted(DRIVERS))}",
             )
 
         database = await db.get_db()

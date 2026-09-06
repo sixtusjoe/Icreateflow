@@ -34,13 +34,6 @@ from services.outreach import config as cfg
 from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
-
-#: Which driver serves which platform. Adding a platform is this line plus
-#: a selector table — the engine is shared.
-PLATFORM_DRIVERS: dict[str, str] = {
-    "tiktok": "playwright_tiktok",
-    "instagram": "playwright_instagram",
-}
 from services.outreach.constants import (
     RESULT_DB_ERROR,
     RESULT_FOLLOW_PENDING,
@@ -48,6 +41,14 @@ from services.outreach.constants import (
     RESULT_UNKNOWN,
 )
 from services.outreach.crypto import decrypt_session
+
+#: Which driver serves which platform. Adding a platform is this line plus
+#: a selector table — the engine underneath is shared.
+PLATFORM_DRIVERS: dict[str, str] = {
+    "tiktok": "playwright_tiktok",
+    "instagram": "playwright_instagram",
+}
+
 
 def default_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
@@ -84,24 +85,43 @@ class OutreachWorker:
 
     # --- lifecycle -------------------------------------------------------
 
+    def _pinned_driver(self, settings: dict[str, Any]) -> Optional[str]:
+        """A driver chosen deliberately for every job, or None to route.
+
+        Only two things pin: `--driver` on the command line, and `mock` in
+        the settings. Both are explicit statements about what should happen
+        to every job regardless of platform, and mock in particular is a
+        deliberate "contact nothing" that must never be quietly overridden.
+
+        A settings value naming one real driver does NOT pin. Installs
+        configured before there was more than one platform still say
+        `playwright_tiktok`, and honouring that literally would hand
+        Instagram jobs to TikTok's selector table — which would find
+        nothing, on every send, for a reason nobody would guess from the
+        outside.
+        """
+        if self.driver_name:
+            return self.driver_name
+        configured = (settings.get(cfg.DRIVER_KEY) or "").strip()
+        return configured if configured == "mock" else None
+
     def _driver_name_for(self, settings: dict[str, Any], platform: Optional[str]) -> str:
         """Which driver sends for this account.
 
-        The account's platform decides, not a global setting — one worker
-        serves campaigns on every platform, and a TikTok selector table has
-        nothing useful to say about an Instagram profile.
-
-        `mock` still wins outright when it is configured, because that is a
-        deliberate "send nothing" and must not be quietly overridden. An
-        unrecognised platform falls back to whatever is configured rather
-        than guessing.
+        The account's platform decides, unless something pinned it. One
+        worker serves campaigns on every platform, and a TikTok selector
+        table has nothing useful to say about an Instagram profile.
         """
-        configured = (self.driver_name or settings.get(cfg.DRIVER_KEY) or "").strip()
-        if configured == "mock":
-            return configured
-        return PLATFORM_DRIVERS.get(
-            (platform or "").strip().lower(), configured or cfg.DRIVER_DEFAULT
-        )
+        pinned = self._pinned_driver(settings)
+        if pinned:
+            return pinned
+        name = PLATFORM_DRIVERS.get((platform or "").strip().lower())
+        if not name:
+            raise DriverUnavailable(
+                f"No driver for platform {platform!r}. "
+                f"Known platforms: {', '.join(sorted(PLATFORM_DRIVERS))}."
+            )
+        return name
 
     async def _get_driver(self, settings: dict[str, Any], platform: Optional[str] = None):
         # A driver handed in directly (tests, rehearsals) is used as-is.
@@ -388,11 +408,15 @@ class OutreachWorker:
         concurrency = int(
             self.concurrency_override or settings["outreach_worker_concurrency"]
         )
-        try:
-            await self._get_driver(settings)
-        except DriverUnavailable:
-            await self.shutdown()
-            raise
+        # Fail fast on a driver that cannot load — but only when one is
+        # pinned. Without a pin there is no single driver to check: each is
+        # started the first time a job on its platform arrives.
+        if self._pinned_driver(settings) or self._driver is not None:
+            try:
+                await self._get_driver(settings)
+            except DriverUnavailable:
+                await self.shutdown()
+                raise
 
         tasks = [asyncio.create_task(self._maintenance())]
         tasks += [asyncio.create_task(self._slot()) for _ in range(concurrency)]
