@@ -35,7 +35,7 @@ from pydantic import BaseModel
 import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import config as cfg
-from services.outreach import importer
+from services.outreach import importer, session_capture
 from services.outreach import queue as job_queue
 from services.outreach import stats
 from services.outreach import templates as template_svc
@@ -814,6 +814,59 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             return _account_public(dict(row))
         finally:
             await database.close()
+
+    @router.get("/accounts/{account_id}/session/browser")
+    async def browser_login_status(
+        account_id: int, user: dict = Depends(get_current_user)
+    ):
+        """Whether a browser sign-in can run here, and how one is going.
+
+        Polled while a window is open — signing in takes minutes, which is
+        far longer than a request should be held.
+        """
+        database = await db.get_db()
+        try:
+            await _own_account(database, account_id, user)
+        finally:
+            await database.close()
+
+        reason = session_capture.unavailable_reason()
+        capture = session_capture.status_for(account_id)
+        return {
+            "available": reason is None,
+            "unavailable_reason": reason,
+            "running": session_capture.is_running(account_id),
+            "capture": capture.to_dict() if capture else None,
+        }
+
+    @router.post("/accounts/{account_id}/session/browser")
+    async def start_browser_login(
+        account_id: int, user: dict = Depends(get_current_user)
+    ):
+        """Open a real login window so the operator can sign in by hand.
+
+        No password reaches this service: a browser opens on the machine
+        running the backend, the person signs in, and the resulting session
+        is encrypted straight into the account row.
+
+        Only ever offered where someone can see the window — see
+        `session_capture.is_enabled`.
+        """
+        reason = session_capture.unavailable_reason()
+        if reason:
+            raise HTTPException(400, reason)
+
+        database = await db.get_db()
+        try:
+            account = dict(await _own_account(database, account_id, user))
+        finally:
+            await database.close()
+
+        try:
+            capture = session_capture.start(account)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return capture.to_dict()
 
     @router.post("/accounts/{account_id}/resume")
     async def resume_account(account_id: int, user: dict = Depends(get_current_user)):

@@ -34,21 +34,10 @@ import database as db  # noqa: E402
 from services.outreach.constants import ACCOUNT_IDLE  # noqa: E402
 from services.outreach.crypto import crypto_available, encrypt_session  # noqa: E402
 
-#: Where to send the operator to sign in, and the cookie that proves they did.
-PLATFORMS = {
-    "tiktok": {
-        "login_url": "https://www.tiktok.com/login",
-        "cookie": "sessionid",
-        "domain": "tiktok.com",
-    },
-    "instagram": {
-        "login_url": "https://www.instagram.com/accounts/login/",
-        # Instagram's session cookie. `csrftoken` is set before sign-in, so
-        # it proves nothing; this one only appears once authenticated.
-        "cookie": "sessionid",
-        "domain": "instagram.com",
-    },
-}
+#: Where to send the operator to sign in, and the cookie that proves they
+#: did. Defined once, in the service the app's own "Sign in" button uses —
+#: a second copy here would drift the moment a platform changed.
+from services.outreach.session_capture import PLATFORMS  # noqa: E402
 
 POLL_SECONDS = 2
 

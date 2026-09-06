@@ -877,6 +877,28 @@ export const createOutreachAccount = (data: {
   session_reference?: string;
 }): Promise<OutreachAccount> =>
   api.post("/api/outreach/accounts", data).then((r) => r.data);
+export interface BrowserLoginCapture {
+  account_id: number;
+  platform: string;
+  status: "opening" | "waiting" | "saved" | "failed";
+  message: string;
+  cookies: number;
+  done: boolean;
+  started_at: string;
+  finished_at: string | null;
+}
+export interface BrowserLoginState {
+  available: boolean;
+  unavailable_reason: string | null;
+  running: boolean;
+  capture: BrowserLoginCapture | null;
+}
+/** Open a real login window on the machine running the backend. */
+export const startBrowserLogin = (id: number): Promise<BrowserLoginCapture> =>
+  api.post(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);
+/** Poll a sign-in in progress — it takes minutes, so it is not a request. */
+export const getBrowserLoginState = (id: number): Promise<BrowserLoginState> =>
+  api.get(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);
 export const getOutreachAccount = (id: number) =>
   api.get(`/api/outreach/accounts/${id}`).then((r) => r.data);
 export const updateOutreachAccount = (

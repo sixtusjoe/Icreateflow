@@ -20,6 +20,9 @@ import {
   setOutreachAccountSession,
   resumeOutreachAccount,
   type OutreachAccount,
+  startBrowserLogin,
+  getBrowserLoginState,
+  type BrowserLoginState,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { StatusPill, PageIcon, Toggle, inputClass, relativeTime, apiErrorMessage } from "../ui";
@@ -34,6 +37,7 @@ export default function OutreachAccountsPage() {
   const [busy, setBusy] = useState(false);
   const [sessionFor, setSessionFor] = useState<OutreachAccount | null>(null);
   const [sessionJson, setSessionJson] = useState("");
+  const [login, setLogin] = useState<BrowserLoginState | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<OutreachAccount | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -62,6 +66,51 @@ export default function OutreachAccountsPage() {
       toast.error(apiErrorMessage(e, "Failed to add account"));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Ask whether this host can open a login window, whenever the modal opens.
+  useEffect(() => {
+    if (!sessionFor) return setLogin(null);
+    let live = true;
+    getBrowserLoginState(sessionFor.id)
+      .then((s) => live && setLogin(s))
+      .catch(() => live && setLogin(null));
+    return () => {
+      live = false;
+    };
+  }, [sessionFor]);
+
+  // While a window is open, poll until it resolves. Signing in takes
+  // minutes, so the request that started it returned long ago.
+  useEffect(() => {
+    if (!sessionFor || !login?.running) return;
+    const iv = setInterval(async () => {
+      try {
+        const next = await getBrowserLoginState(sessionFor.id);
+        setLogin(next);
+        if (next.capture?.status === "saved") {
+          toast.success(next.capture.message);
+          load();
+          setSessionFor(null);
+        } else if (next.capture?.status === "failed") {
+          toast.error(next.capture.message);
+        }
+      } catch {
+        /* keep polling — a dropped poll is not a failed sign-in */
+      }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [sessionFor, login?.running]);
+
+  const handleBrowserLogin = async () => {
+    if (!sessionFor) return;
+    try {
+      const capture = await startBrowserLogin(sessionFor.id);
+      setLogin((prev) => (prev ? { ...prev, running: true, capture } : prev));
+      toast.success("A browser window is opening — sign in there");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not open a sign-in window"));
     }
   };
 
@@ -291,12 +340,41 @@ export default function OutreachAccountsPage() {
           onClose={() => setSessionFor(null)}
           title={`Attach a session to “${sessionFor.name}”`}
         >
+          {login?.available && (
+            <div className="mb-4 rounded-lg border border-border p-3">
+              <p className="text-sm font-medium">
+                Sign in to {sessionFor.platform} in a browser
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Opens a real {sessionFor.platform} login window on this machine. Sign in
+                by hand and the session is captured automatically — no copy-paste, and no
+                password ever reaches this app.
+              </p>
+              {login.capture && !login.capture.done ? (
+                <p className="mt-3 text-xs font-medium text-amber-600 dark:text-amber-500">
+                  {login.capture.message}
+                </p>
+              ) : (
+                <button
+                  onClick={handleBrowserLogin}
+                  className="mt-3 min-h-[40px] rounded-lg bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
+                >
+                  Open {sessionFor.platform} sign-in
+                </button>
+              )}
+              {login.capture?.status === "failed" && (
+                <p className="mt-2 text-xs text-red-500">{login.capture.message}</p>
+              )}
+            </div>
+          )}
+
           <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
             <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
             <p>
-              Paste the Playwright <code>storage_state</code> JSON for an account you are
-              authorized to send from. It is encrypted before storage and never returned by
-              the API. Never paste a password here — this system does not accept one.
+              {login?.available ? "Or paste" : "Paste"} the Playwright{" "}
+              <code>storage_state</code> JSON for an account you are authorized to send
+              from. It is encrypted before storage and never returned by the API. Never
+              paste a password here — this system does not accept one.
             </p>
           </div>
           <textarea
