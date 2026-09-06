@@ -34,6 +34,13 @@ from services.outreach import config as cfg
 from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
+
+#: Which driver serves which platform. Adding a platform is this line plus
+#: a selector table — the engine is shared.
+PLATFORM_DRIVERS: dict[str, str] = {
+    "tiktok": "playwright_tiktok",
+    "instagram": "playwright_instagram",
+}
 from services.outreach.constants import (
     RESULT_DB_ERROR,
     RESULT_FOLLOW_PENDING,
@@ -69,20 +76,48 @@ class OutreachWorker:
         self.driver_name = driver_name
         self._driver = driver
         self._driver_started = driver is not None
+        #: One live driver per platform in play, started on first use.
+        self._drivers: dict[str, Any] = {}
         self.concurrency_override = concurrency
         self.once = once
         self._stopping = asyncio.Event()
 
     # --- lifecycle -------------------------------------------------------
 
-    async def _get_driver(self, settings: dict[str, Any]):
-        if self._driver is None:
-            name = self.driver_name or settings[cfg.DRIVER_KEY]
-            self._driver = get_driver(name)
-        if not self._driver_started:
-            await self._driver.startup()
-            self._driver_started = True
-        return self._driver
+    def _driver_name_for(self, settings: dict[str, Any], platform: Optional[str]) -> str:
+        """Which driver sends for this account.
+
+        The account's platform decides, not a global setting — one worker
+        serves campaigns on every platform, and a TikTok selector table has
+        nothing useful to say about an Instagram profile.
+
+        `mock` still wins outright when it is configured, because that is a
+        deliberate "send nothing" and must not be quietly overridden. An
+        unrecognised platform falls back to whatever is configured rather
+        than guessing.
+        """
+        configured = (self.driver_name or settings.get(cfg.DRIVER_KEY) or "").strip()
+        if configured == "mock":
+            return configured
+        return PLATFORM_DRIVERS.get(
+            (platform or "").strip().lower(), configured or cfg.DRIVER_DEFAULT
+        )
+
+    async def _get_driver(self, settings: dict[str, Any], platform: Optional[str] = None):
+        # A driver handed in directly (tests, rehearsals) is used as-is.
+        if self._driver is not None:
+            if not self._driver_started:
+                await self._driver.startup()
+                self._driver_started = True
+            return self._driver
+
+        name = self._driver_name_for(settings, platform)
+        driver = self._drivers.get(name)
+        if driver is None:
+            driver = get_driver(name)
+            await driver.startup()
+            self._drivers[name] = driver
+        return driver
 
     async def shutdown(self) -> None:
         self._stopping.set()
@@ -92,6 +127,12 @@ class OutreachWorker:
             except Exception:  # noqa: BLE001 — shutdown must not raise
                 traceback.print_exc()
             self._driver_started = False
+        for name, driver in list(self._drivers.items()):
+            try:
+                await driver.shutdown()
+            except Exception:  # noqa: BLE001 — shutdown must not raise
+                traceback.print_exc()
+            self._drivers.pop(name, None)
 
     def stop(self) -> None:
         self._stopping.set()
@@ -192,7 +233,7 @@ class OutreachWorker:
             return
 
         # --- send --------------------------------------------------------
-        driver = await self._get_driver(settings)
+        driver = await self._get_driver(settings, account.get("platform"))
         payload = {
             "id": int(account["id"]),
             "name": account.get("name"),

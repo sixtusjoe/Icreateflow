@@ -34,6 +34,13 @@ PLATFORMS: dict[str, dict[str, Any]] = {
         # TikTok handles: 2-24 of letters/digits/underscore/period.
         "username_re": re.compile(r"^[A-Za-z0-9_.]{2,24}$"),
     },
+    "instagram": {
+        "hosts": ("instagram.com", "www.instagram.com", "m.instagram.com"),
+        "profile": "https://www.instagram.com/{username}/",
+        # Instagram handles: up to 30 of letters/digits/underscore/period.
+        # No leading @ by the time this runs — normalize_username strips it.
+        "username_re": re.compile(r"^[A-Za-z0-9_.]{1,30}$"),
+    },
 }
 
 DEFAULT_PLATFORM = "tiktok"

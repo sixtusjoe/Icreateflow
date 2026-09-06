@@ -667,7 +667,7 @@ def clear_received(monkeypatch):
     SITE_ERROR_HITS.clear()
     # No screenshots from the test suite.
     monkeypatch.setattr(
-        "services.outreach.browser.playwright_tiktok.DEBUG_DIR", "", raising=False
+        "services.outreach.browser.playwright_base.DEBUG_DIR", ""
     )
     # The production budgets assume a cold server rendering a real profile.
     # A local stub renders instantly, so the negative cases would otherwise
@@ -676,8 +676,10 @@ def clear_received(monkeypatch):
         ("PROFILE_READY_MS", 500), ("MESSAGE_BUTTON_MS", 1500), ("CLICK_MS", 2000),
         ("COMPOSER_MS", 1500),
     ):
+        # Deliberately raising=True. These moved modules once already and
+        # the silent no-op cost fifteen minutes a run before anyone noticed.
         monkeypatch.setattr(
-            f"services.outreach.browser.playwright_tiktok.{name}", value, raising=False
+            f"services.outreach.browser.playwright_base.{name}", value
         )
 
 
@@ -1051,7 +1053,7 @@ async def test_waits_for_a_person_to_solve_the_puzzle_when_the_browser_is_visibl
     The send should then go through normally.
     """
     monkeypatch.setattr(
-        "services.outreach.browser.playwright_tiktok.CHALLENGE_WAIT_MS", 15000
+        "services.outreach.browser.playwright_base.CHALLENGE_WAIT_MS", 15000
     )
     message = "Hello alice, quick question."
     result = await driver.send_message(account(), target(site, "/captchaclears"), message)
@@ -1122,7 +1124,7 @@ async def test_a_puzzle_that_swallowed_the_click_gets_the_click_again(
     the fix; the click has to be made again.
     """
     monkeypatch.setattr(
-        "services.outreach.browser.playwright_tiktok.CHALLENGE_WAIT_MS", 15000
+        "services.outreach.browser.playwright_base.CHALLENGE_WAIT_MS", 15000
     )
     message = "Hello alice, quick question."
     result = await driver.send_message(

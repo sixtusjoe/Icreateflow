@@ -30,6 +30,7 @@ export default function OutreachAccountsPage() {
   const [accounts, setAccounts] = useState<OutreachAccount[]>([]);
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
+  const [platform, setPlatform] = useState("tiktok");
   const [busy, setBusy] = useState(false);
   const [sessionFor, setSessionFor] = useState<OutreachAccount | null>(null);
   const [sessionJson, setSessionJson] = useState("");
@@ -51,8 +52,9 @@ export default function OutreachAccountsPage() {
     if (!name.trim()) return toast.error("Account name is required");
     setBusy(true);
     try {
-      await createOutreachAccount({ name: name.trim() });
+      await createOutreachAccount({ name: name.trim(), platform });
       setName("");
+      setPlatform("tiktok");
       setShowNew(false);
       load();
       toast.success("Account added");
@@ -252,9 +254,19 @@ export default function OutreachAccountsPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
+          <label className="mb-1.5 mt-4 block text-sm font-medium">Platform</label>
+          <select
+            className={inputClass}
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+          >
+            <option value="tiktok">TikTok</option>
+            <option value="instagram">Instagram</option>
+          </select>
           <p className="mt-2 text-xs text-muted-foreground">
             A label for you — the account is authorized separately by attaching a browser
-            session.
+            session. The platform cannot be changed later, and an account can only be
+            assigned to campaigns on the same platform.
           </p>
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button

@@ -42,6 +42,7 @@ export default function OutreachPage() {
     message_template: "Hi {{username}}, we came across your content and wanted to reach out about {{offer}}.",
     template_id: "",
     offer: "",
+    platform: "tiktok",
   });
 
   const load = () => {
@@ -64,6 +65,7 @@ export default function OutreachPage() {
         message_template: form.message_template,
         template_id: form.template_id ? Number(form.template_id) : null,
         template_vars: form.offer.trim() ? { offer: form.offer.trim() } : undefined,
+        platform: form.platform,
       });
       setShowNew(false);
       setForm({ ...form, name: "", description: "", offer: "" });
@@ -248,6 +250,21 @@ export default function OutreachPage() {
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">Platform</label>
+                <select
+                  className={inputClass}
+                  value={form.platform}
+                  onChange={(e) => setForm({ ...form, platform: e.target.value })}
+                >
+                  <option value="tiktok">TikTok</option>
+                  <option value="instagram">Instagram</option>
+                </select>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Decides how profile URLs are read and which sending accounts can be
+                  assigned. It cannot be changed once targets are imported.
+                </p>
               </div>
               <div>
                 <label className="mb-1.5 block text-sm font-medium">Description</label>

@@ -104,6 +104,8 @@ class MessengerDriver(Protocol):
 DRIVERS: dict[str, str] = {
     "mock": "services.outreach.browser.mock:MockMessenger",
     "playwright_tiktok": "services.outreach.browser.playwright_tiktok:PlaywrightTikTokMessenger",
+    "playwright_instagram":
+        "services.outreach.browser.playwright_instagram:PlaywrightInstagramMessenger",
 }
 
 

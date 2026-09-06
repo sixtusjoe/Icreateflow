@@ -41,6 +41,13 @@ PLATFORMS = {
         "cookie": "sessionid",
         "domain": "tiktok.com",
     },
+    "instagram": {
+        "login_url": "https://www.instagram.com/accounts/login/",
+        # Instagram's session cookie. `csrftoken` is set before sign-in, so
+        # it proves nothing; this one only appears once authenticated.
+        "cookie": "sessionid",
+        "domain": "instagram.com",
+    },
 }
 
 POLL_SECONDS = 2
