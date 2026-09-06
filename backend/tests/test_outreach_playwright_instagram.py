@@ -109,8 +109,44 @@ SEND_REFUSED = f"""
 </body></html>
 """
 
+#: What Instagram actually did. The send happens in a chat dock over the
+#: profile, so a reload comes back to a bare profile with no conversation on
+#: it — a delivered message and a discarded one look identical. Reopening
+#: the conversation asks the server, and the message is there.
+DOCK_OVER_PROFILE = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div role="button" onclick="openChat()">Message</div>
+  <div id="chat" style="display:none">
+    <div role="textbox" contenteditable="true"></div>
+    <div role="button" onclick="sendChat()">Send</div>
+    <div id="thread"></div>
+  </div>
+  <script>
+    // The dock is closed on load, exactly as a reloaded profile is. The
+    // thread only exists once the conversation is opened.
+    function openChat() {
+      document.getElementById('chat').style.display = 'block';
+      fetch('/history').then(r => r.text()).then(html => {
+        document.getElementById('thread').innerHTML = html;
+      });
+    }
+    function sendChat() {
+      const ed = document.querySelector('div[role="textbox"]');
+      const row = document.createElement('div');
+      row.setAttribute('role', 'row');
+      row.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(row);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/dock": DOCK_OVER_PROFILE,
     "/navdecoy": NAV_MESSAGES_DECOY,
     "/nodm": NO_MESSAGE_BUTTON,
     "/gone": MISSING_PROFILE,
@@ -123,10 +159,21 @@ RECEIVED: list[str] = []
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's interface
+        if self.path == "/history":
+            # What the server has actually stored for this conversation.
+            body = "".join(f'<div role="row">{m}</div>' for m in RECEIVED)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
         body = PAGES.get(self.path, "<html><body>not found</body></html>")
         # Serve back what was submitted. The engine confirms a send by
         # reloading, so a stub that stores nothing would fail every send.
-        if '<div id="thread"></div>' in body:
+        # `/dock` is the exception: its conversation does not exist until it
+        # is opened, which is the whole point of that page. Pre-filling it
+        # would hide the bug it exists to reproduce.
+        if self.path != "/dock" and '<div id="thread"></div>' in body:
             rows = "".join(f'<div role="row">{m}</div>' for m in RECEIVED)
             body = body.replace('<div id="thread"></div>', f'<div id="thread">{rows}</div>')
         self.send_response(200)
@@ -244,3 +291,22 @@ async def test_a_refused_message_is_not_reported_as_sent(driver, site):
     result = await driver.send_message(account(), target(site, "/refused"), "Hi alice.")
     assert result.success is False
     assert result.status == RESULT_MESSAGE_REFUSED
+
+
+async def test_a_send_from_a_dock_over_the_profile_is_confirmed(driver, site):
+    """The first real Instagram send, and the driver called it undelivered.
+
+    The message arrived — it was sitting in the recipient's requests — but
+    Instagram sends from a chat dock over the profile, so reloading came
+    back to a bare profile with no conversation on it. Nothing to find, so
+    the delivery check reported nothing delivered, left the target queued,
+    and would have messaged the same person twice on the retry.
+
+    Reopening the conversation asks the platform for it, which is the same
+    proof the reload was after: a message that comes back was really stored.
+    """
+    message = "Hi alice, quick question."
+    result = await driver.send_message(account(), target(site, "/dock"), message)
+
+    assert result.success is True, result.error
+    assert RECEIVED == [message]

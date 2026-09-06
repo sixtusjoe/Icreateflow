@@ -13,7 +13,7 @@ this file by design (see SECURITY in the outreach README section).
 
 Page structure is the one thing here guaranteed to rot. Every selector
 lives in each platform's `SELECTORS` table with several fallbacks, and any miss comes
-back as `unexpected_page` rather than an exception, so a TikTok redesign
+back as `unexpected_page` rather than an exception, so a redesign
 degrades into a clearly-labelled failure the operator can see on the
 dashboard instead of a crashed worker.
 
@@ -93,8 +93,6 @@ THREAD_ROWS = "[data-e2e='chat-list-item'], [data-e2e='inbox-title']"
 #: banner intercepting pointer events is indistinguishable from a dead
 #: button: Playwright waits for the element to receive events, and times out.
 OVERLAY_DISMISS = (
-    "tiktok-cookie-banner >>> button:has-text('Decline all')",
-    "tiktok-cookie-banner >>> button:has-text('Allow all')",
     "button:has-text('Decline all')",
     "button:has-text('Decline optional cookies')",
     "button:has-text('Allow all')",
@@ -374,7 +372,7 @@ class PlaywrightMessenger:
     async def _open_thread(self, page, target: dict[str, Any]) -> bool:
         """Open this target's conversation from the inbox list.
 
-        Clicking Message does not always open a composer in place: TikTok
+        Clicking Message does not always open a composer in place: a site
         can hand off to its messages app, and if the thread does not get
         selected you are left looking at a list of every conversation the
         account has.
@@ -464,7 +462,7 @@ class PlaywrightMessenger:
             return [f"<frames failed: {type(exc).__name__}: {exc}>"]
 
     async def _challenge_present(self, page) -> bool:
-        """Is TikTok showing a human-verification puzzle?
+        """Is the site showing a human-verification puzzle?
 
         Checked on the page itself and across its frames. The puzzle is
         commonly served in an iframe, and `page.locator` does not descend
@@ -569,7 +567,9 @@ class PlaywrightMessenger:
             return False
         return needle in body
 
-    async def _delivery_holds(self, page, message: str) -> bool:
+    async def _delivery_holds(
+        self, page, message: str, target: dict[str, Any], username: str
+    ) -> bool:
         """Is the message in the thread, and does it stay there?
 
         An optimistic render satisfies a single check and then vanishes: a
@@ -611,20 +611,55 @@ class PlaywrightMessenger:
             page, self.SELECTORS["sent_confirmation"], timeout_ms=COMPOSER_MS
         )
         if not await self._message_in_thread(page, message):
+            # A reload only proves anything if the conversation is on the
+            # page it reloaded. Instagram sends from a chat dock over the
+            # profile, so reloading returns a bare profile with no thread on
+            # it at all — a real, delivered message looked identical to a
+            # discarded one. Reopening the conversation asks the server for
+            # it again, which is the same proof by a different route.
+            if not await self._reopen_conversation(page, target, username):
+                print(
+                    "[outreach] the message did not survive a reload, and the "
+                    "conversation could not be reopened — not delivered",
+                    flush=True,
+                )
+                return False
+            if not await self._message_in_thread(page, message):
+                print(
+                    "[outreach] the reopened conversation does not contain the "
+                    "message — the platform did not keep it",
+                    flush=True,
+                )
+                return False
             print(
-                "[outreach] the message did not survive a reload — TikTok "
-                "did not keep it, so it was never delivered",
+                "[outreach] delivery confirmed: the message is in the "
+                "conversation after reopening it",
                 flush=True,
             )
-            return False
+            return True
 
         print("[outreach] delivery confirmed: the message survived a reload", flush=True)
+        return True
+
+    async def _reopen_conversation(self, page, target: dict[str, Any], username: str) -> bool:
+        """Open this target's conversation again, from the profile.
+
+        Used only to confirm a delivery. Clicking Message re-fetches the
+        conversation from the platform, so what appears in it came from the
+        server rather than from anything this page invented.
+        """
+        editor = await self._retry_message_click(page, target, username)
+        if editor is None:
+            return False
+        # Give the history a moment to populate — the composer appears
+        # before the messages above it do.
+        await page.wait_for_timeout(SETTLE_MS)
         return True
 
     async def _reload_and_settle(self, page, url: str) -> None:
         """Reload the profile and wait for its shell again.
 
-        TikTok's "Something went wrong" page has a Refresh button on it for
+        A site error page carries a Refresh button for
         a reason — the state is transient. Reloading is the same move, and
         it is what stands between a temporary site error and a target being
         written off.
@@ -740,7 +775,7 @@ class PlaywrightMessenger:
                     url=url,
                 )
 
-            # TikTok's profile is a client-rendered shell: domcontentloaded
+            # These profiles are client-rendered shells: domcontentloaded
             # fires long before the action buttons exist. Give it a beat to
             # paint something recognisable, or every check below races an
             # empty page and reports "no Message button" on profiles that
@@ -760,7 +795,7 @@ class PlaywrightMessenger:
                 # The stored session no longer authenticates us.
                 return MessageResult.failure(
                     RESULT_SESSION_EXPIRED,
-                    "Session expired — TikTok is showing the login wall",
+                    "Session expired — the site is showing its login wall",
                     url=url,
                     screenshot=await self._save_debug_shot(page, target_username, "login-wall"),
                 )
@@ -1018,7 +1053,7 @@ class PlaywrightMessenger:
                     ),
                 )
 
-            if not await self._delivery_holds(page, message):
+            if not await self._delivery_holds(page, message, target, target_username):
                 await self._save_debug_shot(page, target_username, "not-in-thread")
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,

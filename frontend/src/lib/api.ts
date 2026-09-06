@@ -899,6 +899,28 @@ export const startBrowserLogin = (id: number): Promise<BrowserLoginCapture> =>
 /** Poll a sign-in in progress — it takes minutes, so it is not a request. */
 export const getBrowserLoginState = (id: number): Promise<BrowserLoginState> =>
   api.get(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);
+export interface WatchRun {
+  campaign_id: number;
+  platform: string;
+  status: "starting" | "running" | "finished" | "failed";
+  message: string;
+  did_work: boolean;
+  done: boolean;
+  started_at: string;
+  finished_at: string | null;
+}
+export interface WatchState {
+  available: boolean;
+  unavailable_reason: string | null;
+  running: boolean;
+  busy_elsewhere: boolean;
+  watch: WatchRun | null;
+}
+/** Run one job in a browser window on the machine hosting the backend. */
+export const startWatchRun = (campaignId: number): Promise<WatchRun> =>
+  api.post(`/api/outreach/campaigns/${campaignId}/watch`).then((r) => r.data);
+export const getWatchState = (campaignId: number): Promise<WatchState> =>
+  api.get(`/api/outreach/campaigns/${campaignId}/watch`).then((r) => r.data);
 export const getOutreachAccount = (id: number) =>
   api.get(`/api/outreach/accounts/${id}`).then((r) => r.data);
 export const updateOutreachAccount = (

@@ -14,6 +14,7 @@ import {
   Users,
   AlertTriangle,
   Activity,
+  Eye,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -36,6 +37,9 @@ import {
   type OutreachImportSummary,
   type OutreachJob,
   type OutreachTarget,
+  startWatchRun,
+  getWatchState,
+  type WatchState,
 } from "@/lib/api";
 import { StatusPill, ProgressBar, inputClass, relativeTime, apiErrorMessage } from "../ui";
 
@@ -64,6 +68,7 @@ export default function OutreachCampaignPage() {
   const [targets, setTargets] = useState<OutreachTarget[]>([]);
   const [targetTab, setTargetTab] = useState<(typeof TARGET_TABS)[number]>("all");
   const [busy, setBusy] = useState(false);
+  const [watch, setWatch] = useState<WatchState | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [pasted, setPasted] = useState("");
   const [summary, setSummary] = useState<OutreachImportSummary | null>(null);
@@ -139,6 +144,48 @@ export default function OutreachCampaignPage() {
     }, 3000);
     return () => clearInterval(iv);
   }, [running, id, loadDetail, loadTargets]);
+
+  // Can this host open a window, and is one open right now?
+  useEffect(() => {
+    let live = true;
+    getWatchState(id)
+      .then((w) => live && setWatch(w))
+      .catch(() => live && setWatch(null));
+    return () => {
+      live = false;
+    };
+  }, [id]);
+
+  // While a window is open, poll it. A run outlives the request that
+  // started it — a puzzle alone can hold the page for five minutes.
+  useEffect(() => {
+    if (!watch?.running) return;
+    const iv = setInterval(async () => {
+      try {
+        const next = await getWatchState(id);
+        setWatch(next);
+        if (next.watch?.done) {
+          if (next.watch.status === "failed") toast.error(next.watch.message);
+          else toast.success(next.watch.message);
+          await loadDetail();
+          await loadTargets();
+        }
+      } catch {
+        /* a dropped poll is not a failed run */
+      }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [id, watch?.running]);
+
+  const handleWatch = async () => {
+    try {
+      const started = await startWatchRun(id);
+      setWatch((prev) => (prev ? { ...prev, running: true, watch: started } : prev));
+      toast.success("A browser window is opening — watch it work");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not start a watched run"));
+    }
+  };
 
   const act = async (fn: () => Promise<unknown>, message: string) => {
     setBusy(true);
@@ -261,6 +308,14 @@ export default function OutreachCampaignPage() {
               label="Stop"
               disabled={busy}
               onClick={() => act(() => stopOutreachCampaign(id), "Campaign stopped")}
+            />
+          )}
+          {watch?.available && (
+            <ActionButton
+              icon={<Eye className="h-4 w-4" />}
+              label={watch.running ? "Watching…" : "Watch a send"}
+              disabled={busy || watch.running || watch.busy_elsewhere}
+              onClick={handleWatch}
             />
           )}
           <ActionButton

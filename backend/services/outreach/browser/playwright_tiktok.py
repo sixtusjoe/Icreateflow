@@ -139,9 +139,18 @@ TIKTOK_SELECTORS: dict[str, Any] = {
 }
 
 
+#: TikTok's own consent banner sits in a shadow root, so it needs piercing
+#: selectors the generic list has no reason to carry.
+TIKTOK_OVERLAY_DISMISS = (
+    "tiktok-cookie-banner >>> button:has-text('Decline all')",
+    "tiktok-cookie-banner >>> button:has-text('Allow all')",
+) + PlaywrightMessenger.OVERLAY_DISMISS
+
+
 class PlaywrightTikTokMessenger(PlaywrightMessenger):
     """TikTok. The engine, plus the table above."""
 
     PLATFORM = "tiktok"
+    OVERLAY_DISMISS = TIKTOK_OVERLAY_DISMISS
     SELECTORS = TIKTOK_SELECTORS
     name = "playwright_tiktok"

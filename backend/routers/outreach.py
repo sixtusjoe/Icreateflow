@@ -35,7 +35,7 @@ from pydantic import BaseModel
 import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import config as cfg
-from services.outreach import importer, session_capture
+from services.outreach import importer, session_capture, watch_run
 from services.outreach import queue as job_queue
 from services.outreach import stats
 from services.outreach import templates as template_svc
@@ -590,6 +590,49 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             return {"ok": True, "campaign": _campaign_public(dict(row))}
         finally:
             await database.close()
+
+    @router.get("/campaigns/{campaign_id}/watch")
+    async def watch_status(campaign_id: int, user: dict = Depends(get_current_user)):
+        """Whether a send can be watched here, and how the current one is going."""
+        database = await db.get_db()
+        try:
+            await _own_campaign(database, campaign_id, user)
+        finally:
+            await database.close()
+
+        watch = watch_run.status_for(campaign_id)
+        return {
+            "available": watch_run.unavailable_reason() is None,
+            "unavailable_reason": watch_run.unavailable_reason(),
+            "running": watch_run.is_running(campaign_id),
+            "busy_elsewhere": watch_run.any_running()
+            and not watch_run.is_running(campaign_id),
+            "watch": watch.to_dict() if watch else None,
+        }
+
+    @router.post("/campaigns/{campaign_id}/watch")
+    async def start_watch(campaign_id: int, user: dict = Depends(get_current_user)):
+        """Run one job in a browser window, so a person can watch it.
+
+        The driver already holds the page open for several minutes when a
+        verification puzzle appears, because only a person can clear one.
+        This is what gives them a window to clear it in.
+        """
+        reason = watch_run.unavailable_reason()
+        if reason:
+            raise HTTPException(400, reason)
+
+        database = await db.get_db()
+        try:
+            campaign = dict(await _own_campaign(database, campaign_id, user))
+        finally:
+            await database.close()
+
+        try:
+            watch = watch_run.start(campaign)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return watch.to_dict()
 
     @router.post("/campaigns/{campaign_id}/retry-failed")
     async def retry_failed(campaign_id: int, user: dict = Depends(get_current_user)):

@@ -14,9 +14,8 @@ WHERE IT CAN RUN
 Opening a window only makes sense where a person can see it: a laptop
 running the backend locally. On a headless server there is no display, and
 an endpoint that launches browsers on a production host is a capability
-worth withholding rather than merely documenting. So it is off unless
-`ICREATE_OUTREACH_BROWSER_LOGIN` is set, and the API reports it as
-unavailable rather than failing obscurely.
+worth withholding rather than merely documenting. The gate is shared with
+watched sends — see `local_browser`.
 
 The work outlives the request that starts it — signing in takes minutes —
 so a capture runs as a background task and the caller polls for its state.
@@ -31,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import database as db
+from services.outreach import local_browser
 from services.outreach.constants import ACCOUNT_IDLE
 from services.outreach.crypto import crypto_available, encrypt_session
 
@@ -100,28 +100,19 @@ _TASKS: dict[int, asyncio.Task] = {}
 
 def is_enabled() -> bool:
     """Is opening a login window allowed on this host?"""
-    return (os.environ.get("ICREATE_OUTREACH_BROWSER_LOGIN") or "").strip().lower() not in (
-        "", "0", "false", "no", "off",
-    )
+    return local_browser.is_enabled()
 
 
 def unavailable_reason() -> Optional[str]:
     """Why a browser sign-in cannot be offered here, or None if it can."""
-    if not is_enabled():
-        return (
-            "Browser sign-in is switched off on this host. It opens a real "
-            "window, so it is only enabled where someone can see it — set "
-            "ICREATE_OUTREACH_BROWSER_LOGIN=1 when running the app locally."
-        )
+    reason = local_browser.unavailable_reason("Browser sign-in")
+    if reason:
+        return reason
     if not crypto_available():
         return (
             "No encryption key, so a captured session could not be stored. "
             "Set ICREATE_OUTREACH_SECRET (or ICREATE_JWT_SECRET)."
         )
-    try:
-        import playwright.async_api  # noqa: F401
-    except ImportError:
-        return "Playwright is not installed on this host."
     return None
 
 
