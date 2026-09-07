@@ -628,6 +628,11 @@ class OutreachTemplate(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     # JSON object of default variable values, e.g. {"offer": "our beta"}.
     defaults: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # An image campaigns made from this template inherit — copied to the
+    # campaign, never shared, so editing this cannot change what a running
+    # campaign sends.
+    attachment_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attachment_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
 
@@ -659,6 +664,10 @@ class OutreachCampaign(Base):
     max_jobs: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     max_jobs_per_account: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     retry_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # An image sent with every message. The path on disk, not the bytes —
+    # this row is read on every job claim.
+    attachment_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attachment_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     __table_args__ = (
@@ -675,6 +684,10 @@ class SendingAccount(Base):
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     platform: Mapped[str] = mapped_column(Text, server_default="tiktok")
+    # What this account is for: sending messages, or finding profiles.
+    # Harvesting is many page loads in a short window and is the likelier
+    # way to lose an account, so the two are never the same account.
+    purpose: Mapped[str] = mapped_column(Text, server_default="sending")
     status: Mapped[str] = mapped_column(Text, server_default="idle")
     # Opaque human-readable pointer to the stored browser session, e.g.
     # "outreach_sessions/acct-7.enc". NEVER a credential.
@@ -1435,7 +1448,35 @@ async def _migrate_outreach(conn) -> None:
     plus the indexes the queue depends on for its claim query.
     """
     # Columns added after the first outreach release.
-    for tbl, col, ddl in (
+    for tbl, col, ddl in ADDED_COLUMNS:
+        await conn.execute(
+            text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {ddl}")
+        )
+
+    # One live job per target. Without this, a double "start" on the same
+    # campaign would enqueue the same target twice and DM it twice.
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS outreach_jobs_one_live_per_target "
+        "ON outreach_jobs (target_id) WHERE status IN ('queued','processing')"
+    ))
+    for name, ddl in (
+        ("outreach_jobs_claim_idx",
+         "ON outreach_jobs (status, run_after, id)"),
+        ("outreach_jobs_campaign_idx", "ON outreach_jobs (campaign_id, status)"),
+        ("outreach_targets_campaign_idx", "ON outreach_targets (campaign_id, status)"),
+        ("outreach_audit_created_idx", "ON outreach_audit_logs (created_at DESC)"),
+    ):
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} {ddl}"))
+
+
+#: Columns added to outreach tables after the first release.
+#:
+#: Every entry here must also exist on its ORM model. A column added to
+#: this list alone is created in the database and invisible to SQLAlchemy,
+#: so reads of it come back empty and any `update(...).values(col=...)`
+#: raises — which is exactly how five of these shipped broken. There is a
+#: test that walks this list and checks the models; keep them together.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         ("outreach_campaigns", "template_vars", "TEXT"),
         ("outreach_campaigns", "max_jobs", "INTEGER"),
         ("outreach_campaigns", "max_jobs_per_account", "INTEGER"),
@@ -1464,25 +1505,7 @@ async def _migrate_outreach(conn) -> None:
         # the difference between losing a scraper and losing your sender.
         ("outreach_sending_accounts", "purpose",
          "TEXT NOT NULL DEFAULT 'sending'"),
-    ):
-        await conn.execute(
-            text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {ddl}")
-        )
-
-    # One live job per target. Without this, a double "start" on the same
-    # campaign would enqueue the same target twice and DM it twice.
-    await conn.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS outreach_jobs_one_live_per_target "
-        "ON outreach_jobs (target_id) WHERE status IN ('queued','processing')"
-    ))
-    for name, ddl in (
-        ("outreach_jobs_claim_idx",
-         "ON outreach_jobs (status, run_after, id)"),
-        ("outreach_jobs_campaign_idx", "ON outreach_jobs (campaign_id, status)"),
-        ("outreach_targets_campaign_idx", "ON outreach_targets (campaign_id, status)"),
-        ("outreach_audit_created_idx", "ON outreach_audit_logs (created_at DESC)"),
-    ):
-        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} {ddl}"))
+)
 
 
 async def init_db() -> None:
