@@ -123,6 +123,19 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
     "post_people": (
         "main a[href^='/']",
     ),
+    # What to put the pointer over before scrolling. The likes list lives
+    # in a dialog and the page behind it does not move, so a wheel event
+    # aimed at the window scrolls nothing at all.
+    "scroll_container": (
+        "div[role='dialog']",
+    ),
+    # Instagram renders a few comments and fetches the rest behind a "+".
+    # Scrolling alone misses those, so the control is pressed too.
+    "load_more": (
+        "button[aria-label='Load more comments']",
+        "[aria-label='Load more comments']",
+        "button:has-text('View all')",
+    ),
     # Who liked it. Instagram puts this behind a dialog, but the dialog has
     # its own URL, so it can be asked for directly.
     "liker": (

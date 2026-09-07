@@ -47,6 +47,10 @@ SPEC: dict[str, tuple[int, int, int]] = {
     "outreach_discovery_interval_seconds": (6, 1, 600),
     # Profiles one search may open, whatever the operator asked for.
     "outreach_discovery_max_per_search": (300, 1, 5_000),
+    # How many times to scroll a comment list or likes dialog before moving
+    # on. Both are paged: without this only the dozen that render first are
+    # ever seen. More rounds means more people per post and more time on it.
+    "outreach_discovery_scroll_rounds": (4, 0, 30),
 }
 
 #: Non-numeric settings.

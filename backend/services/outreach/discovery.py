@@ -244,6 +244,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             include_commenters=bool(search.get("include_commenters")),
             include_likers=bool(search.get("include_likers")),
             interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
+            scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]),
             should_stop=lambda: search_id in _CANCELLED,
             on_found=on_found,
         )

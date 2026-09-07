@@ -66,6 +66,8 @@ CHALLENGE_FRAME_HINTS = ("captcha", "verify", "secsdk")
 #: second time. An optimistic render survives the first look and not the
 #: second, which is the difference between a delivery and a lie.
 SETTLE_MS = int(os.environ.get("ICREATE_OUTREACH_SETTLE_MS", "2500"))
+#: How long to let a lazily-loaded list fetch its next page after a scroll.
+SCROLL_PAUSE_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_PAUSE_MS", "1200"))
 CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
 CHALLENGE_WAIT_HEADFUL_MS = int(
     os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_HEADFUL_MS", "300000")
@@ -1173,6 +1175,7 @@ class PlaywrightMessenger:
         include_commenters: bool = False,
         include_likers: bool = False,
         interval_seconds: float = 6.0,
+        scroll_rounds: int = 4,
         should_stop: Optional[Any] = None,
         on_found: Optional[Any] = None,
     ) -> list[dict[str, Any]]:
@@ -1243,7 +1246,8 @@ class PlaywrightMessenger:
                 for post_url in posts:
                     if done():
                         break
-                    people = await self._people_on_post(page, post_url)
+                    people = await self._people_on_post(
+                        page, post_url, scroll_rounds)
                     if people:
                         # First is whoever posted it; the rest commented.
                         await remember(people[0], label, "")
@@ -1253,7 +1257,9 @@ class PlaywrightMessenger:
                                 if done():
                                     break
                     if include_likers and not done():
-                        for name in await self._post_likers(page, post_url):
+                        for name in await self._post_likers(
+                            page, post_url, scroll_rounds
+                        ):
                             await remember(name, f"likes:{label}", "")
                             if done():
                                 break
@@ -1362,7 +1368,8 @@ class PlaywrightMessenger:
             print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
             return []
 
-    async def _people_on_post(self, page, post_url: str) -> list[str]:
+    async def _people_on_post(self, page, post_url: str,
+                              scroll_rounds: int = 0) -> list[str]:
         """Everyone named on a post, in document order.
 
         The author comes first and commenters follow, because that is the
@@ -1372,10 +1379,12 @@ class PlaywrightMessenger:
         matched nothing at all.
         """
         return await self._profile_links(
-            page, self._absolute(post_url), self.SELECTORS.get("post_people") or ()
+            page, self._absolute(post_url),
+            self.SELECTORS.get("post_people") or (), scroll_rounds,
         )
 
-    async def _post_likers(self, page, post_url: str) -> list[str]:
+    async def _post_likers(self, page, post_url: str,
+                           scroll_rounds: int = 0) -> list[str]:
         """Who liked a post.
 
         Instagram keeps this behind a dialog, but the dialog has a URL of
@@ -1386,29 +1395,101 @@ class PlaywrightMessenger:
         if not selectors:
             return []
         url = self._absolute(post_url).rstrip("/") + "/liked_by/"
-        return await self._profile_links(page, url, selectors)
+        return await self._profile_links(page, url, selectors, scroll_rounds)
 
-    async def _profile_links(self, page, url: str, selectors) -> list[str]:
-        """Profile handles linked from a page, in order, deduped."""
+    async def _collect_profile_links(self, page, selectors) -> list[str]:
+        """Profile handles currently rendered, in document order, deduped."""
+        names: list[str] = []
+        for selector in selectors:
+            try:
+                links = page.locator(selector)
+                for i in range(min(await links.count(), 400)):
+                    href = await links.nth(i).get_attribute("href") or ""
+                    username = self.username_from_url(href)
+                    if username and username not in names:
+                        names.append(username)
+            except Exception:  # noqa: BLE001 — try the next shape
+                continue
+            if names:
+                break
+        return names
+
+    async def _load_more(self, page) -> None:
+        """Scroll whatever holds the list, and press any "load more" control.
+
+        Comments and likes are both paged: the page renders a dozen and
+        fetches the rest as you scroll. Reading what happens to be on screen
+        gets the first handful of each and nothing else, which is why a
+        search burned through posts finding twelve people at a time.
+
+        Scrolls the dialog when one is open — the likes list is inside it
+        and the page behind does not move — and the window otherwise.
+        """
+        for selector in self.SELECTORS.get("load_more") or ():
+            try:
+                control = page.locator(selector).first
+                if await control.is_visible(timeout=300):
+                    await control.click(timeout=CLICK_MS)
+                    await page.wait_for_timeout(SCROLL_PAUSE_MS)
+            except Exception:  # noqa: BLE001 — it is a convenience, not a step
+                pass
+        # A wheel event, not `scrollTop = scrollHeight`. These lists fetch
+        # their next page when a sentinel near the bottom comes into view,
+        # and jumping straight to the end skips past it without ever firing
+        # the observer: a post with 718 likes gave up 99 and stopped, no
+        # matter how many times it was "scrolled".
+        moved = False
+        for selector in self.SELECTORS.get("scroll_container") or ():
+            try:
+                box = await page.locator(selector).first.bounding_box(timeout=400)
+            except Exception:  # noqa: BLE001
+                box = None
+            if box:
+                await page.mouse.move(
+                    box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                )
+                moved = True
+                break
+        try:
+            if not moved:
+                size = page.viewport_size or {"width": 1280, "height": 800}
+                await page.mouse.move(size["width"] / 2, size["height"] / 2)
+            # Several smaller turns rather than one large one, so the
+            # sentinel is actually crossed rather than jumped over.
+            for _ in range(4):
+                await page.mouse.wheel(0, 900)
+                await page.wait_for_timeout(200)
+        except Exception:  # noqa: BLE001
+            pass
+        await page.wait_for_timeout(SCROLL_PAUSE_MS)
+
+    async def _profile_links(self, page, url: str, selectors,
+                             scroll_rounds: int = 0) -> list[str]:
+        """Profile handles linked from a page, in order, deduped.
+
+        Scrolls up to `scroll_rounds` times, stopping early the moment a
+        round adds nobody — a post with nine comments should not sit through
+        ten scrolls to prove it.
+        """
         if not selectors:
             return []
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
             await self._dismiss_overlays(page)
+            # Wait for the list itself rather than a fixed pause. The likes
+            # dialog arrives after its URL does, and reading too early
+            # returns nobody at all — which reads as "this post has no
+            # likes" rather than "ask again in a moment".
+            await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
             await page.wait_for_timeout(SETTLE_MS)
-            names: list[str] = []
-            for selector in selectors:
-                try:
-                    links = page.locator(selector)
-                    for i in range(min(await links.count(), 120)):
-                        href = await links.nth(i).get_attribute("href") or ""
-                        username = self.username_from_url(href)
-                        if username and username not in names:
-                            names.append(username)
-                except Exception:  # noqa: BLE001 — try the next shape
-                    continue
-                if names:
+
+            names = await self._collect_profile_links(page, selectors)
+            for _ in range(max(scroll_rounds, 0)):
+                await self._load_more(page)
+                grown = await self._collect_profile_links(page, selectors)
+                if len(grown) <= len(names):
                     break
+                names = grown
             return names
         except Exception as exc:  # noqa: BLE001
             print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
