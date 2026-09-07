@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Plus,
@@ -22,6 +22,7 @@ import {
   type OutreachCampaign,
   type OutreachTemplate,
   type OutreachAccount,
+  setCampaignAttachment,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { StatusPill, ProgressBar, PageIcon, Select, inputClass, apiErrorMessage } from "./ui";
@@ -36,6 +37,8 @@ export default function OutreachPage() {
     null,
   );
   const [deleting, setDeleting] = useState(false);
+  const imageRef = useRef<HTMLInputElement>(null);
+  const [image, setImage] = useState<File | null>(null);
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -67,7 +70,19 @@ export default function OutreachPage() {
         template_vars: form.offer.trim() ? { offer: form.offer.trim() } : undefined,
         platform: form.platform,
       });
+      // The campaign has to exist before an image can hang off it, so this
+      // is a second call rather than part of the create.
+      if (image) {
+        try {
+          await setCampaignAttachment(created.id, image);
+        } catch (e) {
+          toast.error(
+            apiErrorMessage(e, "Campaign created, but the image did not attach")
+          );
+        }
+      }
       setShowNew(false);
+      setImage(null);
       setForm({ ...form, name: "", description: "", offer: "" });
       load();
       toast.success(`Campaign “${created.name}” created`);
@@ -250,6 +265,46 @@ export default function OutreachPage() {
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">Image</label>
+                <input
+                  ref={imageRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  onChange={(e) => setImage(e.target.files?.[0] ?? null)}
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => imageRef.current?.click()}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                  >
+                    {image ? "Change image" : "Add image"}
+                  </button>
+                  {image && (
+                    <>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {image.name}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImage(null);
+                          if (imageRef.current) imageRef.current.value = "";
+                        }}
+                        className="text-xs text-muted-foreground underline"
+                      >
+                        remove
+                      </button>
+                    </>
+                  )}
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Optional, sent with every message. A template with its own image
+                  fills this in automatically. Instagram only.
+                </p>
               </div>
               <div>
                 <label className="mb-1.5 block text-sm font-medium">Platform</label>

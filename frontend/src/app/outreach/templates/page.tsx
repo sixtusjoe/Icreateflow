@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, FileText, Plus, Trash2, Save } from "lucide-react";
 import { toast } from "sonner";
@@ -11,6 +11,9 @@ import {
   deleteOutreachTemplate,
   previewOutreachTemplate,
   type OutreachTemplate,
+  setTemplateAttachment,
+  clearTemplateAttachment,
+  templateAttachmentUrl,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { PageIcon, inputClass, apiErrorMessage } from "../ui";
@@ -21,6 +24,8 @@ const STARTER =
 export default function OutreachTemplatesPage() {
   const [templates, setTemplates] = useState<OutreachTemplate[]>([]);
   const [selected, setSelected] = useState<OutreachTemplate | null>(null);
+  const imageRef = useRef<HTMLInputElement>(null);
+  const [imageBusy, setImageBusy] = useState(false);
   const [name, setName] = useState("");
   const [body, setBody] = useState(STARTER);
   const [preview, setPreview] = useState("");
@@ -72,6 +77,37 @@ export default function OutreachTemplatesPage() {
     setSelected(template);
     setName(template.name);
     setBody(template.body);
+  };
+
+  const handleAttach = async (file?: File) => {
+    if (!file || !selected) return;
+    setImageBusy(true);
+    try {
+      const updated = await setTemplateAttachment(selected.id, file);
+      setSelected(updated);
+      toast.success("Image attached — new campaigns from this template get a copy");
+      load();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not attach that image"));
+    } finally {
+      setImageBusy(false);
+      if (imageRef.current) imageRef.current.value = "";
+    }
+  };
+
+  const handleClearImage = async () => {
+    if (!selected) return;
+    setImageBusy(true);
+    try {
+      const updated = await clearTemplateAttachment(selected.id);
+      setSelected(updated);
+      toast.success("Image removed");
+      load();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not remove the image"));
+    } finally {
+      setImageBusy(false);
+    }
   };
 
   const handleSave = async () => {
@@ -193,6 +229,57 @@ export default function OutreachTemplatesPage() {
             <p className="mt-1 text-xs text-muted-foreground">
               {"Built-in variables: {{username}}, {{profile_url}}, {{campaign_name}}, {{account_name}}. Any other name is filled from the campaign's variables."}
             </p>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-sm font-medium">Image</label>
+            {!selected ? (
+              <p className="text-xs text-muted-foreground">
+                Save the template first, then an image can be attached to it.
+              </p>
+            ) : selected.has_attachment ? (
+              <div className="rounded-xl border border-border p-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={templateAttachmentUrl(selected.id)}
+                  alt={selected.attachment_name || "Template image"}
+                  className="max-h-40 w-full rounded-lg object-contain"
+                />
+                <p className="mt-2 truncate text-xs text-muted-foreground">
+                  {selected.attachment_name}
+                </p>
+                <button
+                  onClick={handleClearImage}
+                  disabled={imageBusy}
+                  className="mt-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  Remove image
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  ref={imageRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  onChange={(e) => handleAttach(e.target.files?.[0])}
+                />
+                <button
+                  onClick={() => imageRef.current?.click()}
+                  disabled={imageBusy}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  Add image
+                </button>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Sent with the message. Campaigns made from this template get their
+                  own copy, so editing the template later cannot change what a
+                  running campaign sends. Instagram only — TikTok&apos;s web
+                  composer is text-only.
+                </p>
+              </>
+            )}
           </div>
 
           {error ? (

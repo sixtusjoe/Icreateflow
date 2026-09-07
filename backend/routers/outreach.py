@@ -29,13 +29,13 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import config as cfg
-from services.outreach import importer, session_capture, watch_run
+from services.outreach import attachments, importer, session_capture, watch_run
 from services.outreach import runner as outreach_runner
 from services.outreach import queue as job_queue
 from services.outreach import stats
@@ -175,11 +175,23 @@ def _account_public(row: dict) -> dict:
     return out
 
 
+def _template_public(row: dict) -> dict:
+    """A template as the client sees it — never its attachment's path."""
+    out = _tag_utc(row)
+    out["variables"] = template_svc.extract_variables(row.get("body") or "")
+    out["has_attachment"] = bool(out.pop("attachment_path", None))
+    return out
+
+
 def _campaign_public(row: dict) -> dict:
     out = _tag_utc(row)
     total = int(out.get("total_targets") or 0)
     processed = int(out.get("processed_count") or 0)
     out["progress"] = round(processed / total, 4) if total else 0.0
+    # The attachment's location on disk is nobody's business but the
+    # driver's. The client only needs to know there is one and what it was
+    # called; the bytes come from the endpoint, which checks ownership.
+    out["has_attachment"] = bool(out.pop("attachment_path", None))
     return out
 
 
@@ -249,6 +261,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         database = await db.get_db()
         try:
             body = data.message_template
+            template = None
             if data.template_id:
                 template = await _own_template(database, data.template_id, user)
                 body = body or template["body"]
@@ -274,6 +287,20 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 max_jobs_per_account=data.max_jobs_per_account,
                 retry_limit=data.retry_limit,
             )
+            # A template's image becomes the campaign's own copy. Sharing
+            # the file would mean editing a template changed what a running
+            # campaign sends, without anyone touching that campaign.
+            if template is not None and dict(template).get("attachment_path"):
+                tpl = dict(template)
+                path, att_name = attachments.copy_for_campaign(
+                    tpl.get("attachment_path"), campaign_id, tpl.get("attachment_name")
+                )
+                if path:
+                    await db.update_outreach_campaign(
+                        database, campaign_id,
+                        attachment_path=path, attachment_name=att_name,
+                    )
+
             await db.log_outreach_audit(
                 database, AUDIT_CAMPAIGN_CREATED, "campaign", campaign_id,
                 user_id=user["id"], detail=name,
@@ -591,6 +618,69 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             return {"ok": True, "campaign": _campaign_public(dict(row))}
         finally:
             await database.close()
+
+    @router.post("/campaigns/{campaign_id}/attachment")
+    async def set_campaign_attachment(
+        campaign_id: int,
+        file: UploadFile = File(...),
+        user: dict = Depends(get_current_user),
+    ):
+        """Attach an image to every message this campaign sends."""
+        data = await file.read()
+        try:
+            path, name = attachments.save(
+                campaign_id, data, file.content_type, file.filename
+            )
+        except attachments.AttachmentError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        database = await db.get_db()
+        try:
+            campaign = dict(await _own_campaign(database, campaign_id, user))
+            # Replacing one leaves no orphan behind.
+            attachments.remove(campaign.get("attachment_path"))
+            await db.update_outreach_campaign(
+                database, campaign_id, attachment_path=path, attachment_name=name
+            )
+            row = await db.get_outreach_campaign(database, campaign_id)
+            return _campaign_public(dict(row))
+        except Exception:
+            # The row was not updated, so the file we just wrote is unreachable.
+            attachments.remove(path)
+            raise
+        finally:
+            await database.close()
+
+    @router.delete("/campaigns/{campaign_id}/attachment")
+    async def clear_campaign_attachment(
+        campaign_id: int, user: dict = Depends(get_current_user)
+    ):
+        database = await db.get_db()
+        try:
+            campaign = dict(await _own_campaign(database, campaign_id, user))
+            attachments.remove(campaign.get("attachment_path"))
+            await db.update_outreach_campaign(
+                database, campaign_id, attachment_path=None, attachment_name=None
+            )
+            row = await db.get_outreach_campaign(database, campaign_id)
+            return _campaign_public(dict(row))
+        finally:
+            await database.close()
+
+    @router.get("/campaigns/{campaign_id}/attachment")
+    async def get_campaign_attachment(
+        campaign_id: int, user: dict = Depends(get_current_user)
+    ):
+        """The image itself, for previewing it in the campaign page."""
+        database = await db.get_db()
+        try:
+            campaign = dict(await _own_campaign(database, campaign_id, user))
+        finally:
+            await database.close()
+        path = campaign.get("attachment_path")
+        if not attachments.exists(path):
+            raise HTTPException(404, "This campaign has no attachment.")
+        return FileResponse(path)
 
     @router.get("/campaigns/{campaign_id}/watch")
     async def watch_status(campaign_id: int, user: dict = Depends(get_current_user)):
@@ -959,10 +1049,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         database = await db.get_db()
         try:
             rows = await db.get_outreach_templates(database, user_id=_scope(user))
-            return [
-                {**_tag_utc(dict(r)), "variables": template_svc.extract_variables(r["body"])}
-                for r in rows
-            ]
+            return [_template_public(dict(r)) for r in rows]
         finally:
             await database.close()
 
@@ -981,9 +1068,67 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 defaults=template_svc.dump_vars(data.defaults),
             )
             row = await db.get_outreach_template(database, template_id)
-            return _tag_utc(dict(row))
+            return _template_public(dict(row))
         finally:
             await database.close()
+
+    @router.post("/templates/{template_id}/attachment")
+    async def set_template_attachment(
+        template_id: int,
+        file: UploadFile = File(...),
+        user: dict = Depends(get_current_user),
+    ):
+        """Attach an image to this template, inherited by new campaigns."""
+        data = await file.read()
+        try:
+            path, name = attachments.save(
+                template_id, data, file.content_type, file.filename, kind="template"
+            )
+        except attachments.AttachmentError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        database = await db.get_db()
+        try:
+            template = dict(await _own_template(database, template_id, user))
+            attachments.remove(template.get("attachment_path"))
+            await db.update_outreach_template(
+                database, template_id, attachment_path=path, attachment_name=name
+            )
+            return _template_public(dict(await db.get_outreach_template(database, template_id)))
+        except Exception:
+            attachments.remove(path)
+            raise
+        finally:
+            await database.close()
+
+    @router.delete("/templates/{template_id}/attachment")
+    async def clear_template_attachment(
+        template_id: int, user: dict = Depends(get_current_user)
+    ):
+        database = await db.get_db()
+        try:
+            template = dict(await _own_template(database, template_id, user))
+            attachments.remove(template.get("attachment_path"))
+            await db.update_outreach_template(
+                database, template_id, attachment_path=None, attachment_name=None
+            )
+            return _template_public(dict(await db.get_outreach_template(database, template_id)))
+        finally:
+            await database.close()
+
+    @router.get("/templates/{template_id}/attachment")
+    async def get_template_attachment(
+        template_id: int, user: dict = Depends(get_current_user)
+    ):
+        database = await db.get_db()
+        try:
+            template = dict(await _own_template(database, template_id, user))
+        finally:
+            await database.close()
+        path = template.get("attachment_path")
+        if not attachments.exists(path):
+            raise HTTPException(404, "This template has no attachment.")
+        return FileResponse(path)
 
     @router.put("/templates/{template_id}")
     async def update_template(
@@ -1006,7 +1151,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             if updates:
                 await db.update_outreach_template(database, template_id, **updates)
             row = await db.get_outreach_template(database, template_id)
-            return _tag_utc(dict(row))
+            return _template_public(dict(row))
         finally:
             await database.close()
 

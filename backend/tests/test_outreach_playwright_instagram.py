@@ -144,8 +144,44 @@ DOCK_OVER_PROFILE = """
 </body></html>
 """
 
+#: A composer that takes an image, the way Instagram's does — a hidden file
+#: input behind the photo icon. Clicking the icon would open an OS picker no
+#: automation can reach; setting the input is the only route in.
+WITH_ATTACHMENT = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div role="button" onclick="openChat()">Message</div>
+  <div id="chat" style="display:none">
+    <div role="textbox" contenteditable="true"></div>
+    <input type="file" accept="image/*" style="display:none" onchange="picked()" />
+    <div role="button" onclick="sendChat()">Send</div>
+    <div id="thread"></div>
+  </div>
+  <script>
+    let attached = '';
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function picked() {
+      const f = document.querySelector('input[type=file]').files[0];
+      attached = f ? f.name : '';
+    }
+    function sendChat() {
+      const ed = document.querySelector('div[role="textbox"]');
+      const row = document.createElement('div');
+      row.setAttribute('role', 'row');
+      // The stub reports the attachment alongside the text, so a test can
+      // assert the image really reached the composer.
+      row.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(row);
+      fetch('/sent', { method: 'POST', body: ed.innerText + '|img=' + attached });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/withimage": WITH_ATTACHMENT,
     "/dock": DOCK_OVER_PROFILE,
     "/navdecoy": NAV_MESSAGES_DECOY,
     "/nodm": NO_MESSAGE_BUTTON,
@@ -310,3 +346,54 @@ async def test_a_send_from_a_dock_over_the_profile_is_confirmed(driver, site):
 
     assert result.success is True, result.error
     assert RECEIVED == [message]
+
+
+async def test_an_image_reaches_the_composer_before_the_message_is_sent(
+    driver, site, tmp_path
+):
+    """The image has to be in the composer when it submits, not after.
+
+    Added afterwards it would be a second, separate message — which is not
+    what "send this image with this text" means.
+    """
+    image = tmp_path / "promo.png"
+    # A one-pixel PNG: enough for a file input to accept.
+    image.write_bytes(bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
+        "00000049454e44ae426082"
+    ))
+    message = "Hi alice, quick question."
+    t = target(site, "/withimage")
+    t["attachment_path"] = str(image)
+
+    result = await driver.send_message(account(), t, message)
+
+    assert result.success is True, result.error
+    assert RECEIVED == [f"{message}|img=promo.png"]
+
+
+async def test_a_platform_that_cannot_send_images_says_so_and_sends_nothing(
+    driver, site, tmp_path
+):
+    """TikTok's web composer is text only. Sending the text alone and
+    reporting success would be the same class of lie as claiming a delivery
+    that never happened — so it fails, and says which thing to change."""
+    from services.outreach.browser.playwright_tiktok import PlaywrightTikTokMessenger
+
+    image = tmp_path / "promo.png"
+    image.write_bytes(b"not really a png, never opened")
+
+    text_only = PlaywrightTikTokMessenger(headless=True, timeout_ms=8000)
+    assert not text_only.SELECTORS.get("attach_image"), (
+        "this test is meaningless if TikTok grows an attachment control"
+    )
+    problem = await text_only._attach_image(None, str(image), "alice")
+    assert problem and "cannot carry an image" in problem
+
+
+async def test_a_missing_image_file_is_reported_rather_than_skipped(driver, tmp_path):
+    """An attachment the campaign points at but which is not on disk is a
+    real problem, not something to quietly send without."""
+    problem = await driver._attach_image(None, str(tmp_path / "gone.png"), "alice")
+    assert problem and "missing from disk" in problem

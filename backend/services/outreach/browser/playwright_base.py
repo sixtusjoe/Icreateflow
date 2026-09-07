@@ -110,6 +110,10 @@ DEFAULT_USER_AGENT = (
 )
 
 
+class DiscoveryUnsupported(RuntimeError):
+    """This driver cannot find profiles — only message them."""
+
+
 class PlaywrightMessenger:
     """The engine: one isolated browser context per account, and everything
     that has to be true of a send regardless of which site it happens on.
@@ -129,6 +133,11 @@ class PlaywrightMessenger:
 
     #: Which platform's accounts this driver serves.
     PLATFORM = "tiktok"
+
+    #: Where the site lives, and where its search is. Only discovery uses
+    #: these; messaging navigates to a target's own profile URL.
+    SITE_URL = ""
+    SEARCH_URL = ""
 
     #: The site's selector table — the whole platform-specific surface.
     SELECTORS: dict[str, Any] = {}
@@ -641,6 +650,39 @@ class PlaywrightMessenger:
         print("[outreach] delivery confirmed: the message survived a reload", flush=True)
         return True
 
+    async def _attach_image(self, page, path: str, username: str) -> Optional[str]:
+        """Put an image in the open composer. None on success, else why not.
+
+        Driven by a file input rather than by clicking the paperclip: the
+        picker a click opens is an OS dialog, which Playwright cannot touch.
+        Setting the input directly is both possible and the only thing that
+        works — hidden inputs included, which is how these are usually built.
+
+        A platform with no `attach_image` selectors cannot send images at
+        all. That is reported, not ignored: sending the text alone and
+        calling it done would be a quieter version of claiming a delivery
+        that did not happen.
+        """
+        selectors = self.SELECTORS.get("attach_image") or ()
+        if not selectors:
+            return (
+                f"{self.PLATFORM} messages cannot carry an image — its web "
+                f"composer has no attachment control"
+            )
+        if not Path(path).is_file():
+            return f"The campaign's image is missing from disk ({path})"
+
+        for selector in selectors:
+            try:
+                await page.set_input_files(selector, path, timeout=CLICK_MS)
+            except Exception:  # noqa: BLE001 — try the next shape
+                continue
+            print(f"[outreach] attached an image for @{username}", flush=True)
+            # The upload has to reach the composer before anything submits.
+            await page.wait_for_timeout(SETTLE_MS)
+            return None
+        return "Could not find anywhere to attach an image in the composer"
+
     async def _reopen_conversation(self, page, target: dict[str, Any], username: str) -> bool:
         """Open this target's conversation again, from the profile.
 
@@ -996,6 +1038,24 @@ class PlaywrightMessenger:
             await editor.click()
             await editor.type(message, delay=25)
 
+            # 5b. The campaign's image, if it has one. Before submitting:
+            # the composer sends text and attachment together, and an image
+            # added afterwards would be a second, separate message.
+            attachment = target.get("attachment_path")
+            if attachment:
+                problem = await self._attach_image(page, attachment, target_username)
+                if problem:
+                    return MessageResult.failure(
+                        RESULT_UNEXPECTED_PAGE,
+                        f"{problem}. Nothing was sent — remove the image from "
+                        f"the campaign, or send it from a platform that "
+                        f"supports one",
+                        url=page.url,
+                        screenshot=await self._save_debug_shot(
+                            page, target_username, "attach-failed"
+                        ),
+                    )
+
             # 6. Submit.
             send_button = await self._first_visible(page, self.SELECTORS["send_button"], timeout_ms=4000)
             if send_button is None or not await self._click(
@@ -1088,6 +1148,217 @@ class PlaywrightMessenger:
                     pass
 
     # --- session capture -------------------------------------------------
+
+    # --- discovery -------------------------------------------------------
+    #
+    # Finding profiles, as opposed to messaging them. Same context handling,
+    # same overlay clearing, same puzzle waiting; a different set of pages.
+    #
+    # This is browsing, at a person's pace, for things a person could see —
+    # but a great deal of it, which is what makes it the likelier way to
+    # lose an account. The caller enforces the caps; what is here refuses to
+    # go faster than it is told and stops the moment it is asked to.
+
+    async def discover_profiles(
+        self,
+        account: dict[str, Any],
+        *,
+        hashtags: tuple[str, ...] = (),
+        terms: tuple[str, ...] = (),
+        limit: int = 50,
+        include_commenters: bool = False,
+        interval_seconds: float = 6.0,
+        should_stop: Optional[Any] = None,
+        on_found: Optional[Any] = None,
+    ) -> list[dict[str, Any]]:
+        """Collect public profiles matching these hashtags and search terms.
+
+        Returns `[{username, profile_url, display_name, source}]`, deduped.
+        Stops at `limit`, or as soon as `should_stop()` says to.
+
+        Nothing here logs in, follows, likes or comments — it reads pages
+        the account can already see. `include_commenters` opens posts and
+        reads who commented, which is a lot more page loads for the same
+        number of names; the caller decides whether that is worth it.
+        """
+        if not self.SELECTORS.get("search_input") and not self.SELECTORS.get("hashtag_url"):
+            raise DiscoveryUnsupported(
+                f"{self.PLATFORM} discovery is not implemented in this driver."
+            )
+
+        found: dict[str, dict[str, Any]] = {}
+        context = await self._context_for(account)
+        page = await context.new_page()
+
+        def done() -> bool:
+            if len(found) >= limit:
+                return True
+            return bool(should_stop and should_stop())
+
+        async def remember(username: str, source: str, display_name: str = "") -> None:
+            username = (username or "").strip().lstrip("@")
+            if not username or username in found:
+                return
+            found[username] = {
+                "username": username,
+                "profile_url": self.profile_url(username),
+                "display_name": display_name or None,
+                "source": source,
+            }
+            if on_found:
+                await on_found(found[username])
+
+        try:
+            for term in terms:
+                if done():
+                    break
+                for entry in await self._search_accounts(page, term, limit - len(found)):
+                    await remember(entry["username"], f"search:{term}", entry.get("name", ""))
+                    if done():
+                        break
+                await page.wait_for_timeout(int(interval_seconds * 1000))
+
+            for tag in hashtags:
+                if done():
+                    break
+                posts = await self._hashtag_posts(page, tag, limit - len(found))
+                for post_url in posts:
+                    if done():
+                        break
+                    if include_commenters:
+                        for name in await self._post_commenters(page, post_url):
+                            await remember(name, f"comments:#{tag}", "")
+                            if done():
+                                break
+                    else:
+                        author = await self._post_author(page, post_url)
+                        if author:
+                            await remember(author, f"#{tag}", "")
+                    await page.wait_for_timeout(int(interval_seconds * 1000))
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        return list(found.values())
+
+    def profile_url(self, username: str) -> str:
+        """Where this platform keeps a profile. Overridden per platform."""
+        raise DiscoveryUnsupported(f"{self.PLATFORM} has no profile URL template.")
+
+    async def _search_accounts(self, page, term: str, limit: int) -> list[dict[str, str]]:
+        """Accounts the site's own search returns for this term."""
+        selectors = self.SELECTORS.get("search_input") or ()
+        if not selectors or limit <= 0:
+            return []
+        try:
+            await page.goto(self.SEARCH_URL, wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await self._dismiss_overlays(page)
+            box = await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
+            if box is None:
+                return []
+            await box.click()
+            await box.type(term, delay=40)
+            # Results arrive as you type; there is nothing to submit.
+            await page.wait_for_timeout(SETTLE_MS)
+            return await self._collect_search_results(page, limit)
+        except Exception as exc:  # noqa: BLE001 — a bad term is not fatal
+            print(f"[discovery] search {term!r} failed: {type(exc).__name__}: {exc}",
+                  flush=True)
+            return []
+
+    async def _collect_search_results(self, page, limit: int) -> list[dict[str, str]]:
+        selectors = self.SELECTORS.get("search_result") or ()
+        out: list[dict[str, str]] = []
+        for selector in selectors:
+            try:
+                links = page.locator(selector)
+                for i in range(min(await links.count(), limit * 3)):
+                    href = await links.nth(i).get_attribute("href") or ""
+                    username = self.username_from_url(href)
+                    if username:
+                        out.append({"username": username, "name": ""})
+                    if len(out) >= limit:
+                        return out
+            except Exception:  # noqa: BLE001 — try the next shape
+                continue
+        return out
+
+    async def _hashtag_posts(self, page, tag: str, limit: int) -> list[str]:
+        """Post URLs from a hashtag page."""
+        if not self.SELECTORS.get("post_link") or limit <= 0:
+            return []
+        try:
+            await page.goto(self.hashtag_url(tag), wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await self._dismiss_overlays(page)
+            await page.wait_for_timeout(SETTLE_MS)
+            urls: list[str] = []
+            for selector in self.SELECTORS["post_link"]:
+                try:
+                    links = page.locator(selector)
+                    for i in range(min(await links.count(), limit * 2)):
+                        href = await links.nth(i).get_attribute("href") or ""
+                        if href and href not in urls:
+                            urls.append(href)
+                        if len(urls) >= limit:
+                            return urls
+                except Exception:  # noqa: BLE001
+                    continue
+            return urls
+        except Exception as exc:  # noqa: BLE001
+            print(f"[discovery] hashtag #{tag} failed: {type(exc).__name__}: {exc}",
+                  flush=True)
+            return []
+
+    async def _post_author(self, page, post_url: str) -> Optional[str]:
+        return await self._names_on_post(page, post_url, "post_author", first_only=True)
+
+    async def _post_commenters(self, page, post_url: str) -> list[str]:
+        names = await self._names_on_post(page, post_url, "comment_author")
+        return names or []
+
+    async def _names_on_post(self, page, post_url: str, key: str,
+                             first_only: bool = False):
+        selectors = self.SELECTORS.get(key) or ()
+        if not selectors:
+            return None if first_only else []
+        try:
+            await page.goto(self._absolute(post_url), wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await page.wait_for_timeout(SETTLE_MS)
+            names: list[str] = []
+            for selector in selectors:
+                try:
+                    links = page.locator(selector)
+                    for i in range(min(await links.count(), 60)):
+                        href = await links.nth(i).get_attribute("href") or ""
+                        username = self.username_from_url(href)
+                        if username and username not in names:
+                            names.append(username)
+                            if first_only:
+                                return username
+                except Exception:  # noqa: BLE001
+                    continue
+            return None if first_only else names
+        except Exception as exc:  # noqa: BLE001
+            print(f"[discovery] post {post_url} failed: {type(exc).__name__}: {exc}",
+                  flush=True)
+            return None if first_only else []
+
+    def _absolute(self, href: str) -> str:
+        if href.startswith("http"):
+            return href
+        return f"{self.SITE_URL.rstrip('/')}/{href.lstrip('/')}"
+
+    def hashtag_url(self, tag: str) -> str:
+        raise DiscoveryUnsupported(f"{self.PLATFORM} has no hashtag URL template.")
+
+    def username_from_url(self, href: str) -> str:
+        """The profile handle in this URL, or "" if it is not a profile."""
+        return ""
 
     async def export_session(self, account: dict[str, Any]) -> Optional[str]:
         """Dump the account context's current storage state as JSON.

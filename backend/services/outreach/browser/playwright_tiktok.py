@@ -148,7 +148,12 @@ TIKTOK_OVERLAY_DISMISS = (
 
 
 class PlaywrightTikTokMessenger(PlaywrightMessenger):
-    """TikTok. The engine, plus the table above."""
+    """TikTok. The engine, plus the table above.
+
+    No `attach_image` entry: TikTok's web composer sends text only. A
+    campaign with an image assigned to a TikTok account fails saying so,
+    rather than sending the text alone and reporting success.
+    """
 
     PLATFORM = "tiktok"
     OVERLAY_DISMISS = TIKTOK_OVERLAY_DISMISS

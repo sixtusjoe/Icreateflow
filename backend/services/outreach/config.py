@@ -36,6 +36,17 @@ SPEC: dict[str, tuple[int, int, int]] = {
     "outreach_follow_wait_seconds": (0, 0, 86400),
     # Seconds a worker sleeps when it finds no claimable job.
     "outreach_worker_idle_seconds": (10, 1, 300),
+    # --- Lead discovery ---
+    # Profiles a discovery account may open in a rolling 24 hours. Harvesting
+    # is a lot of page loads in a short window and is the likeliest way to
+    # lose an account, so it is capped and the cap is meant to be tuned down
+    # rather than up if a platform starts pushing back.
+    "outreach_discovery_daily_cap": (1000, 1, 20_000),
+    # Seconds between profile visits during a search. Discovery is not
+    # urgent, and going slowly is most of what keeps it unremarkable.
+    "outreach_discovery_interval_seconds": (6, 1, 600),
+    # Profiles one search may open, whatever the operator asked for.
+    "outreach_discovery_max_per_search": (300, 1, 5_000),
 }
 
 #: Non-numeric settings.

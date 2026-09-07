@@ -754,6 +754,77 @@ class OutreachTarget(Base):
     )
 
 
+class OutreachLeadSearch(Base):
+    """One discovery run: what was asked for, and how it went.
+
+    Kept apart from campaigns on purpose. A search that returns rubbish, or
+    that a platform cuts short, must not leave anything in a campaign — the
+    operator reviews what was found and promotes what they want.
+    """
+
+    __tablename__ = "outreach_lead_searches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    campaign_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("outreach_campaigns.id", ondelete="SET NULL"), nullable=True
+    )
+    platform: Mapped[str] = mapped_column(Text, server_default="instagram")
+    #: What the operator asked for, in their words.
+    niche: Mapped[str] = mapped_column(Text, nullable=False)
+    location: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    interests: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    wanted: Mapped[int] = mapped_column(Integer, server_default="50")
+    include_commenters: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    #: The hashtags and search terms an LLM derived from the above.
+    queries: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("outreach_sending_accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, server_default="queued")
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    found: Mapped[int] = mapped_column(Integer, server_default="0")
+    visited: Mapped[int] = mapped_column(Integer, server_default="0")
+    started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','running','done','failed','cancelled')",
+            name="outreach_lead_searches_status_chk",
+        ),
+    )
+
+
+class OutreachLead(Base):
+    """A profile a search turned up, before anyone decides to contact it."""
+
+    __tablename__ = "outreach_leads"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    search_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_lead_searches.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    platform: Mapped[str] = mapped_column(Text, server_default="instagram")
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    profile_url: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    followers: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    #: Where it came from — a hashtag page, a search, a post's comments.
+    source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: 0-100 from the relevance pass, and why. Null when unscored.
+    score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: Set once promoted into a campaign, so it is never imported twice.
+    imported_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    __table_args__ = (
+        # The same profile can turn up under three hashtags in one run.
+        UniqueConstraint("search_id", "username", name="outreach_leads_search_username_uq"),
+    )
+
+
 class OutreachJob(Base):
     __tablename__ = "outreach_jobs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1378,6 +1449,21 @@ async def _migrate_outreach(conn) -> None:
         ("outreach_jobs", "worker_id", "TEXT"),
         ("outreach_jobs", "lease_expires_at", "TIMESTAMP"),
         ("outreach_jobs", "run_after", "TIMESTAMP"),
+        # An image sent alongside the message. Path on disk, not the bytes —
+        # these are a few hundred KB each and the row is read on every claim.
+        ("outreach_campaigns", "attachment_path", "TEXT"),
+        ("outreach_campaigns", "attachment_name", "TEXT"),
+        # A template's image is the default for campaigns made from it —
+        # copied at creation, not referenced, so editing the template later
+        # cannot silently change what a running campaign sends.
+        ("outreach_templates", "attachment_path", "TEXT"),
+        ("outreach_templates", "attachment_name", "TEXT"),
+        # What an account is for. A harvesting account browses hashtags and
+        # comment threads all day; a sending account must never be asked to,
+        # and a harvesting account must never send a DM. Separating them is
+        # the difference between losing a scraper and losing your sender.
+        ("outreach_sending_accounts", "purpose",
+         "TEXT NOT NULL DEFAULT 'sending'"),
     ):
         await conn.execute(
             text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {ddl}")

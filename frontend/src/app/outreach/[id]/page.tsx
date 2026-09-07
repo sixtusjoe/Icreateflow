@@ -39,6 +39,9 @@ import {
   type OutreachTarget,
   startWatchRun,
   getWatchState,
+  setCampaignAttachment,
+  clearCampaignAttachment,
+  campaignAttachmentUrl,
   type WatchState,
 } from "@/lib/api";
 import { StatusPill, ProgressBar, inputClass, relativeTime, apiErrorMessage } from "../ui";
@@ -69,6 +72,7 @@ export default function OutreachCampaignPage() {
   const [targetTab, setTargetTab] = useState<(typeof TARGET_TABS)[number]>("all");
   const [busy, setBusy] = useState(false);
   const [watch, setWatch] = useState<WatchState | null>(null);
+  const imageRef = useRef<HTMLInputElement>(null);
   const [showImport, setShowImport] = useState(false);
   const [pasted, setPasted] = useState("");
   const [summary, setSummary] = useState<OutreachImportSummary | null>(null);
@@ -176,6 +180,34 @@ export default function OutreachCampaignPage() {
     }, 2000);
     return () => clearInterval(iv);
   }, [id, watch?.running]);
+
+  const handleAttach = async (file?: File) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      await setCampaignAttachment(id, file);
+      toast.success("Image attached — it will be sent with every message");
+      await loadDetail();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not attach that image"));
+    } finally {
+      setBusy(false);
+      if (imageRef.current) imageRef.current.value = "";
+    }
+  };
+
+  const handleClearAttachment = async () => {
+    setBusy(true);
+    try {
+      await clearCampaignAttachment(id);
+      toast.success("Image removed");
+      await loadDetail();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not remove the image"));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleWatch = async () => {
     try {
@@ -327,11 +359,16 @@ export default function OutreachCampaignPage() {
             }
           />
           {watch?.sender_running && (
-            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground"
+              title={
+                watch.sender_busy
+                  ? "A browser window is open on this machine. Watch it, or step in if a verification puzzle appears."
+                  : "This machine sends by itself. A window opens when a campaign has work."
+              }
+            >
               <Eye className="h-3.5 w-3.5" />
-              {watch.sender_busy
-                ? "Sending now — the browser window is open"
-                : "Sending automatically — a window opens when there is work"}
+              {watch.sender_busy ? "Sending…" : "Auto-sending"}
             </span>
           )}
           <ActionButton
@@ -564,6 +601,61 @@ export default function OutreachCampaignPage() {
                 </li>
               ))}
             </ul>
+          </Panel>
+
+          <Panel title="Image">
+            <div className="px-4 py-3">
+              {c.has_attachment ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={campaignAttachmentUrl(id)}
+                    alt={c.attachment_name || "Campaign attachment"}
+                    className="max-h-40 w-full rounded-lg border border-border object-contain"
+                  />
+                  <p className="mt-2 truncate text-xs text-muted-foreground">
+                    {c.attachment_name}
+                  </p>
+                  <button
+                    onClick={handleClearAttachment}
+                    disabled={busy}
+                    className="mt-2 w-full rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    Remove image
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Sent with every message in this campaign. JPEG, PNG, GIF or
+                    WebP, up to 8MB.
+                    {c.platform === "tiktok" && (
+                      <>
+                        {" "}
+                        <span className="text-amber-600 dark:text-amber-500">
+                          TikTok&apos;s web composer sends text only — a campaign
+                          with an image will fail rather than send without it.
+                        </span>
+                      </>
+                    )}
+                  </p>
+                  <input
+                    ref={imageRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    className="hidden"
+                    onChange={(e) => handleAttach(e.target.files?.[0])}
+                  />
+                  <button
+                    onClick={() => imageRef.current?.click()}
+                    disabled={busy}
+                    className="mt-2 w-full rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    Add image
+                  </button>
+                </>
+              )}
+            </div>
           </Panel>
 
           <Panel title="Audit" empty={detail.audit.length === 0} emptyText="No actions yet.">

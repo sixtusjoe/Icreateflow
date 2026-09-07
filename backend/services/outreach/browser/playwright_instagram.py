@@ -87,6 +87,43 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
         "div[data-testid='message-container']",
         "div[role='listitem']",
     ),
+    # The composer's file input. Hidden behind the photo icon, which is
+    # fine — a file input can be set without being visible, and clicking the
+    # icon would only open an OS picker no automation can reach.
+    "attach_image": (
+        "div[role='dialog'] input[type='file']",
+        "form input[type='file']",
+        "input[type='file'][accept*='image']",
+        "input[type='file']",
+    ),
+    # --- discovery ---
+    # The search box on Instagram's own chrome. Results appear as you type;
+    # there is nothing to submit.
+    "search_input": (
+        "input[aria-label='Search input']",
+        "input[placeholder='Search']",
+        "input[type='text'][aria-label*='Search']",
+    ),
+    # Result rows are links to profiles: /<username>/ and nothing else.
+    "search_result": (
+        "a[role='link'][href^='/']",
+        "div[role='none'] a[href^='/']",
+    ),
+    # Post tiles on a hashtag page.
+    "post_link": (
+        "a[href*='/p/']",
+        "a[href*='/reel/']",
+    ),
+    # Who posted it, and who commented on it. Both are profile links inside
+    # the post; the author is the first one.
+    "post_author": (
+        "header a[href^='/']",
+        "article header a[href^='/']",
+    ),
+    "comment_author": (
+        "ul a[href^='/']",
+        "article ul a[href^='/']",
+    ),
     "rate_limited": (
         "text=Please wait a few minutes before you try again",
         "text=Try Again Later",
@@ -141,6 +178,15 @@ INSTAGRAM_OVERLAY_DISMISS = (
 )
 
 
+#: Instagram paths that are not profiles. A link to /explore/ or /reels/ is
+#: not a lead, and treating one as a username would put nonsense in the list.
+NOT_PROFILES = {
+    "explore", "reels", "reel", "p", "stories", "direct", "accounts", "about",
+    "legal", "privacy", "terms", "developer", "api", "your_activity",
+    "challenge", "emails", "session", "graphql", "web", "ajax", "static",
+}
+
+
 class PlaywrightInstagramMessenger(PlaywrightMessenger):
     """Instagram. The engine, plus the table above."""
 
@@ -148,4 +194,36 @@ class PlaywrightInstagramMessenger(PlaywrightMessenger):
     SELECTORS = INSTAGRAM_SELECTORS
     OVERLAY_DISMISS = INSTAGRAM_OVERLAY_DISMISS
     CHALLENGE_FRAME_HINTS = ("challenge", "checkpoint")
+    SITE_URL = "https://www.instagram.com"
+    SEARCH_URL = "https://www.instagram.com/explore/search/"
     name = "playwright_instagram"
+
+    def profile_url(self, username: str) -> str:
+        return f"{self.SITE_URL}/{username.strip().lstrip('@')}/"
+
+    def hashtag_url(self, tag: str) -> str:
+        return f"{self.SITE_URL}/explore/tags/{tag.strip().lstrip('#')}/"
+
+    def username_from_url(self, href: str) -> str:
+        """`/someone/` → `someone`. Anything else → "".
+
+        Deliberately strict. Instagram's chrome is full of links that look
+        like profiles — /explore/, /reels/, a post at /p/<id>/ — and a
+        loose match here would fill a lead list with pages, not people.
+        """
+        if not href:
+            return ""
+        path = href.split("?")[0].split("#")[0]
+        if path.startswith("http"):
+            path = path.split("//", 1)[-1]
+            path = path.split("/", 1)[1] if "/" in path else ""
+        parts = [p for p in path.split("/") if p]
+        if len(parts) != 1:
+            return ""
+        username = parts[0]
+        if username.lower() in NOT_PROFILES or username.startswith("_u/"):
+            return ""
+        # Instagram handles: letters, digits, period, underscore.
+        if not all(c.isalnum() or c in "._" for c in username):
+            return ""
+        return username

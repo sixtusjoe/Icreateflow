@@ -706,6 +706,9 @@ export type OutreachCampaign = {
   max_jobs_per_account: number | null;
   retry_limit: number | null;
   progress: number;
+  /** An image sent with every message. The path itself never leaves the API. */
+  has_attachment?: boolean;
+  attachment_name?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -760,6 +763,9 @@ export type OutreachTemplate = {
   body: string;
   defaults: string | null;
   variables?: string[];
+  /** An image inherited by campaigns made from this template. */
+  has_attachment?: boolean;
+  attachment_name?: string | null;
   created_at: string;
 };
 
@@ -921,6 +927,42 @@ export interface WatchState {
   sender_error: string | null;
 }
 /** Run one job in a browser window on the machine hosting the backend. */
+/** Attach an image to a template. New campaigns from it get a copy. */
+export const setTemplateAttachment = (
+  templateId: number,
+  file: File
+): Promise<OutreachTemplate> => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post(`/api/outreach/templates/${templateId}/attachment`, form)
+    .then((r) => r.data);
+};
+export const clearTemplateAttachment = (
+  templateId: number
+): Promise<OutreachTemplate> =>
+  api.delete(`/api/outreach/templates/${templateId}/attachment`).then((r) => r.data);
+export const templateAttachmentUrl = (templateId: number) =>
+  `${api.defaults.baseURL}/api/outreach/templates/${templateId}/attachment`;
+
+/** Attach an image to every message this campaign sends. */
+export const setCampaignAttachment = (
+  campaignId: number,
+  file: File
+): Promise<OutreachCampaign> => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post(`/api/outreach/campaigns/${campaignId}/attachment`, form)
+    .then((r) => r.data);
+};
+export const clearCampaignAttachment = (
+  campaignId: number
+): Promise<OutreachCampaign> =>
+  api.delete(`/api/outreach/campaigns/${campaignId}/attachment`).then((r) => r.data);
+/** Where to preview it. Authenticated like every other campaign route. */
+export const campaignAttachmentUrl = (campaignId: number) =>
+  `${api.defaults.baseURL}/api/outreach/campaigns/${campaignId}/attachment`;
 export const startWatchRun = (campaignId: number): Promise<WatchRun> =>
   api.post(`/api/outreach/campaigns/${campaignId}/watch`).then((r) => r.data);
 export const getWatchState = (campaignId: number): Promise<WatchState> =>

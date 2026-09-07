@@ -35,6 +35,7 @@ from services.outreach.constants import (
     ACCOUNT_ACTIVE,
     ACCOUNT_IDLE,
     ACCOUNT_PAUSED,
+    ACCOUNT_PURPOSE_SENDING,
     ACCOUNT_FAULT_RESULTS,
     AUDIT_ACCOUNT_AUTO_PAUSED,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
@@ -97,6 +98,7 @@ async def lease_account(
         "cap": per_account_cap,
         "active": ACCOUNT_ACTIVE,
         "paused": ACCOUNT_PAUSED,
+        "sending": ACCOUNT_PURPOSE_SENDING,
     }
     # Clauses are composed from a fixed vocabulary; every value is bound.
     owner_clause = ""
@@ -122,6 +124,8 @@ async def lease_account(
                 WHERE a.platform = :platform
                   AND a.enabled = TRUE
                   AND a.status <> :paused
+                  -- Never lease a harvesting account to send a message.
+                  AND COALESCE(a.purpose, :sending) = :sending
                   {owner_clause}
                   {assignment_clause}
                   -- free, or its lease has expired (worker crash)

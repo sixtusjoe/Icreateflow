@@ -44,6 +44,14 @@ ACCOUNT_PAUSED = "paused"
 ACCOUNT_ERROR = "error"
 ACCOUNT_STATUSES = (ACCOUNT_IDLE, ACCOUNT_ACTIVE, ACCOUNT_PAUSED, ACCOUNT_ERROR)
 
+#: What an account is for. Kept apart deliberately: harvesting is a great
+#: deal of browsing in a short window and is the likelier of the two to get
+#: an account restricted, so it must not be the account that took days to
+#: get sending reliably.
+ACCOUNT_PURPOSE_SENDING = "sending"
+ACCOUNT_PURPOSE_DISCOVERY = "discovery"
+ACCOUNT_PURPOSES = (ACCOUNT_PURPOSE_SENDING, ACCOUNT_PURPOSE_DISCOVERY)
+
 # --- Driver result statuses ----------------------------------------------
 # The browser layer returns one of these in `MessageResult.status`. The
 # result processor maps them to retry / skip / pause-account decisions, so
