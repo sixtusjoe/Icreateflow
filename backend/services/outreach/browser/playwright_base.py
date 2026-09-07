@@ -1272,6 +1272,15 @@ class PlaywrightMessenger:
 
         return list(found.values())
 
+    async def profile_summary(self, page, username: str) -> dict[str, Any]:
+        """Name, bio and follower count for one profile, or empty fields.
+
+        Costs a page load per lead, which is why it is optional. Without it
+        a lead is a username and nothing else, and the relevance pass has
+        nothing to read — it skips every one of them, silently.
+        """
+        return {"display_name": None, "bio": None, "followers": None}
+
     def profile_url(self, username: str) -> str:
         """Where this platform keeps a profile. Overridden per platform."""
         raise DiscoveryUnsupported(f"{self.PLATFORM} has no profile URL template.")

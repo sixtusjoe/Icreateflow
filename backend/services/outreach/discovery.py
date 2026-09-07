@@ -250,6 +250,27 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
         )
         visited = len(leads)
 
+        # --- optional: open each profile for a bio ---------------------
+        if search.get("enrich_profiles") and leads:
+            run.message = f"Reading {len(leads)} profile(s)…"
+            context = await driver._context_for(payload)
+            page = await context.new_page()
+            try:
+                for index, lead in enumerate(leads, start=1):
+                    if search_id in _CANCELLED:
+                        break
+                    lead.update(await driver.profile_summary(page, lead["username"]))
+                    visited += 1
+                    run.message = f"Read {index} of {len(leads)} profile(s)…"
+                    await asyncio.sleep(
+                        float(settings["outreach_discovery_interval_seconds"])
+                    )
+            finally:
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
         # --- score and store -------------------------------------------
         run.message = f"Scoring {len(leads)} profile(s)…"
         database = await db.get_db()

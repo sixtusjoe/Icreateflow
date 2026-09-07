@@ -40,6 +40,7 @@ export function LeadFinder({
   const [wanted, setWanted] = useState(50);
   const [commenters, setCommenters] = useState(true);
   const [likers, setLikers] = useState(false);
+  const [enrich, setEnrich] = useState(false);
   const [accountId, setAccountId] = useState<number | undefined>();
   const [run, setRun] = useState<LeadSearchRun | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -59,14 +60,12 @@ export function LeadFinder({
     try {
       const found = await listLeads(searchId);
       setLeads(found);
-      // Pre-select what the model rated well; everything when nothing was
-      // scored, since an unscored lead is unknown rather than bad.
-      const scored = found.some((l) => l.score !== null);
-      setChosen(
-        new Set(
-          found.filter((l) => (scored ? (l.score ?? 0) >= 60 : true)).map((l) => l.id)
-        )
-      );
+      // Everything, always. A score is an opinion about a bio that may be
+      // missing, in another language, or simply wrong — using it to decide
+      // what gets ticked means quietly dropping people who were worth
+      // contacting. It sorts the list and shows a number; the choosing is
+      // the operator's.
+      setChosen(new Set(found.map((l) => l.id)));
     } catch {
       /* the run's own message already says what happened */
     }
@@ -105,6 +104,7 @@ export function LeadFinder({
         account_id: accountId,
         include_commenters: commenters,
         include_likers: likers,
+        enrich_profiles: enrich,
       });
       setRun(started);
       toast.success("Searching — a browser window is open, you can watch it");
@@ -208,6 +208,20 @@ export function LeadFinder({
               <input
                 type="checkbox"
                 className="mt-0.5"
+                checked={enrich}
+                onChange={(e) => setEnrich(e.target.checked)}
+              />
+              <span>
+                Open each profile for its <strong>bio and follower count</strong>.
+                One extra page load per lead. Nothing is filtered out either way —
+                it just gives you something to judge by, and lets the relevance
+                score work at all.
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="mt-0.5"
                 checked={likers}
                 onChange={(e) => setLikers(e.target.checked)}
               />
@@ -295,7 +309,12 @@ export function LeadFinder({
                     )}
                   </p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {lead.reason || lead.bio || lead.source}
+                    {lead.followers != null && (
+                      <span className="mr-2">
+                        {lead.followers.toLocaleString()} followers
+                      </span>
+                    )}
+                    {lead.bio || lead.reason || lead.source}
                   </p>
                 </div>
               </li>

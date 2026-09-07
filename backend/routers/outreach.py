@@ -135,6 +135,9 @@ class LeadSearchCreate(BaseModel):
     #: posted, which is usually the better list.
     include_commenters: bool = False
     include_likers: bool = False
+    #: Open each profile for its bio and follower count. One page load per
+    #: lead, so off unless asked for.
+    enrich_profiles: bool = False
 
 
 class LeadImport(BaseModel):
@@ -1187,6 +1190,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 "interests": data.interests, "wanted": data.wanted,
                 "include_commenters": bool(data.include_commenters),
                 "include_likers": bool(data.include_likers),
+                "enrich_profiles": bool(data.enrich_profiles),
             }
         finally:
             await database.close()

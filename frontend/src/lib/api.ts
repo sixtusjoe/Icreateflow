@@ -956,6 +956,7 @@ export interface LeadSearchRun {
 export interface Lead {
   id: number;
   username: string;
+  followers?: number | null;
   profile_url: string;
   display_name: string | null;
   bio: string | null;
@@ -981,6 +982,7 @@ export const startLeadSearch = (
     account_id?: number;
     include_commenters: boolean;
     include_likers: boolean;
+    enrich_profiles: boolean;
   }
 ): Promise<LeadSearchRun> =>
   api

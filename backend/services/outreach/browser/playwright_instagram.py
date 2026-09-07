@@ -26,9 +26,27 @@ Instagram-specific traps worth knowing:
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from services.outreach.browser.playwright_base import PlaywrightMessenger
+from services.outreach.browser.playwright_base import SETTLE_MS, PlaywrightMessenger
+
+#: A header line that is a statistic rather than someone's name.
+_IS_STAT = re.compile(r"^[\d.,]+\s*[KkMm]?\s+(posts?|followers?|following)$")
+
+
+def _as_int(raw: str) -> int | None:
+    """"270K" -> 270000. Instagram abbreviates once the number is large."""
+    text = raw.strip().replace(",", "").replace(" ", "")
+    multiplier = 1
+    if text[-1:].lower() == "k":
+        multiplier, text = 1_000, text[:-1]
+    elif text[-1:].lower() == "m":
+        multiplier, text = 1_000_000, text[:-1]
+    try:
+        return int(float(text) * multiplier)
+    except ValueError:
+        return None
 
 #: Ordered fallbacks — the first selector that resolves wins.
 INSTAGRAM_SELECTORS: dict[str, Any] = {
@@ -216,6 +234,67 @@ class PlaywrightInstagramMessenger(PlaywrightMessenger):
     SEARCH_URL = "https://www.instagram.com/explore/search/"
     SEARCH_QUERY_URL = "https://www.instagram.com/explore/search/keyword/?q={q}"
     name = "playwright_instagram"
+
+    async def profile_summary(self, page, username: str) -> dict[str, Any]:
+        """Read a profile from the text of the page.
+
+        Deliberately not from selectors. Instagram's profile header has an
+        empty `h1`, a `h2` holding the handle, and class names that change;
+        every structured guess either missed or returned the handle twice.
+        The rendered text, though, is stable and in a fixed order:
+
+            username / display name / N posts / N followers / N following
+            category
+            bio lines…
+
+        so it is parsed rather than queried.
+        """
+        empty = {"display_name": None, "bio": None, "followers": None}
+        try:
+            await page.goto(self.profile_url(username), wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await self._dismiss_overlays(page)
+            await page.wait_for_timeout(SETTLE_MS)
+            text_content = await page.inner_text("main")
+        except Exception as exc:  # noqa: BLE001 — one bad profile is not fatal
+            print(f"[discovery] profile @{username} failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            return empty
+
+        lines = [line.strip() for line in text_content.split("\n") if line.strip()]
+        if not lines:
+            return empty
+
+        followers = None
+        match = re.search(r"([\d.,]+\s*[KkMm]?)\s+followers", text_content)
+        if match:
+            followers = _as_int(match.group(1))
+
+        display_name = None
+        if len(lines) > 1 and not _IS_STAT.match(lines[1]):
+            display_name = lines[1][:120]
+
+        # The bio is whatever follows the "N following" line, minus the
+        # buttons that sit alongside it.
+        bio_lines: list[str] = []
+        started = False
+        for line in lines:
+            if not started:
+                started = bool(re.match(r"^[\d.,]+\s*[KkMm]?\s+following$", line))
+                continue
+            if line in ("Follow", "Following", "Message", "Follow Back", "Requested"):
+                continue
+            if line.startswith("Followed by") or line.endswith("more"):
+                continue
+            bio_lines.append(line)
+            if sum(len(b) for b in bio_lines) > 400:
+                break
+
+        return {
+            "display_name": display_name,
+            "bio": " ".join(bio_lines)[:400] or None,
+            "followers": followers,
+        }
 
     def profile_url(self, username: str) -> str:
         return f"{self.SITE_URL}/{username.strip().lstrip('@')}/"
