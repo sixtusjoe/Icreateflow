@@ -29,6 +29,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote_plus
 from typing import Any, Optional
 
 from services.outreach.browser import MessageResult
@@ -138,6 +139,9 @@ class PlaywrightMessenger:
     #: these; messaging navigates to a target's own profile URL.
     SITE_URL = ""
     SEARCH_URL = ""
+    #: A search as a URL, with `{q}` for the escaped term. Preferred over
+    #: driving the search box, which is a widget with its own opinions.
+    SEARCH_QUERY_URL = ""
 
     #: The site's selector table — the whole platform-specific surface.
     SELECTORS: dict[str, Any] = {}
@@ -1167,6 +1171,7 @@ class PlaywrightMessenger:
         terms: tuple[str, ...] = (),
         limit: int = 50,
         include_commenters: bool = False,
+        include_likers: bool = False,
         interval_seconds: float = 6.0,
         should_stop: Optional[Any] = None,
         on_found: Optional[Any] = None,
@@ -1177,9 +1182,14 @@ class PlaywrightMessenger:
         Stops at `limit`, or as soon as `should_stop()` says to.
 
         Nothing here logs in, follows, likes or comments — it reads pages
-        the account can already see. `include_commenters` opens posts and
-        reads who commented, which is a lot more page loads for the same
-        number of names; the caller decides whether that is worth it.
+        the account can already see.
+
+        `include_commenters` costs nothing extra: commenters are on the
+        post page the author was read from. `include_likers` costs one more
+        page load per post, because the like list lives behind its own URL.
+        Both find people who engaged rather than merely posted, which is
+        usually the better list — and both mean opening more pages, which
+        is the thing that gets a discovery account noticed.
         """
         if not self.SELECTORS.get("search_input") and not self.SELECTORS.get("hashtag_url"):
             raise DiscoveryUnsupported(
@@ -1208,32 +1218,45 @@ class PlaywrightMessenger:
             if on_found:
                 await on_found(found[username])
 
-        try:
-            for term in terms:
-                if done():
-                    break
-                for entry in await self._search_accounts(page, term, limit - len(found)):
-                    await remember(entry["username"], f"search:{term}", entry.get("name", ""))
-                    if done():
-                        break
-                await page.wait_for_timeout(int(interval_seconds * 1000))
+        # Both surfaces answer the same way. A hashtag URL redirects into
+        # search, and search returns *posts* — not accounts. People are
+        # found by opening a post and reading who wrote it, which is why
+        # every query below costs a page load per profile.
+        queries: list[tuple[str, str]] = []
+        for term in terms:
+            if self.SEARCH_QUERY_URL:
+                queries.append((f"search:{term}", self.SEARCH_QUERY_URL.format(
+                    q=quote_plus(term))))
+        for tag in hashtags:
+            queries.append((f"#{tag}", self.hashtag_url(tag)))
 
-            for tag in hashtags:
+        try:
+            for label, url in queries:
                 if done():
                     break
-                posts = await self._hashtag_posts(page, tag, limit - len(found))
+                # A search page occasionally lists accounts directly. Cheap
+                # to take when it does.
+                posts = await self._posts_for_query(page, url, limit - len(found))
+                for entry in await self._collect_search_results(page, limit - len(found)):
+                    await remember(entry["username"], label, entry.get("name", ""))
+
                 for post_url in posts:
                     if done():
                         break
-                    if include_commenters:
-                        for name in await self._post_commenters(page, post_url):
-                            await remember(name, f"comments:#{tag}", "")
+                    people = await self._people_on_post(page, post_url)
+                    if people:
+                        # First is whoever posted it; the rest commented.
+                        await remember(people[0], label, "")
+                        if include_commenters:
+                            for name in people[1:]:
+                                await remember(name, f"comments:{label}", "")
+                                if done():
+                                    break
+                    if include_likers and not done():
+                        for name in await self._post_likers(page, post_url):
+                            await remember(name, f"likes:{label}", "")
                             if done():
                                 break
-                    else:
-                        author = await self._post_author(page, post_url)
-                        if author:
-                            await remember(author, f"#{tag}", "")
                     await page.wait_for_timeout(int(interval_seconds * 1000))
         finally:
             try:
@@ -1248,18 +1271,39 @@ class PlaywrightMessenger:
         raise DiscoveryUnsupported(f"{self.PLATFORM} has no profile URL template.")
 
     async def _search_accounts(self, page, term: str, limit: int) -> list[dict[str, str]]:
-        """Accounts the site's own search returns for this term."""
-        selectors = self.SELECTORS.get("search_input") or ()
-        if not selectors or limit <= 0:
+        """Accounts the site's own search returns for this term.
+
+        By URL where the site has one. Driving the search box means clicking
+        it, and Instagram's is a button that opens a panel with the real
+        input behind it — the input is visible and enabled and something
+        else takes the click, which is thirty seconds of retrying per term
+        for nothing. A URL asks the same question and skips the widget.
+        """
+        if limit <= 0:
             return []
         try:
+            if self.SEARCH_QUERY_URL:
+                await page.goto(
+                    self.SEARCH_QUERY_URL.format(q=quote_plus(term)),
+                    wait_until="domcontentloaded", timeout=self._timeout,
+                )
+                await self._dismiss_overlays(page)
+                await page.wait_for_timeout(SETTLE_MS)
+                return await self._collect_search_results(page, limit)
+
+            selectors = self.SELECTORS.get("search_input") or ()
+            if not selectors:
+                return []
             await page.goto(self.SEARCH_URL, wait_until="domcontentloaded",
                             timeout=self._timeout)
             await self._dismiss_overlays(page)
             box = await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
             if box is None:
                 return []
-            await box.click()
+            # Force through whatever is sitting on top, as the message
+            # button does — a covered control is the normal case here.
+            if not await self._click(page, box, "search-box", term):
+                return []
             await box.type(term, delay=40)
             # Results arrive as you type; there is nothing to submit.
             await page.wait_for_timeout(SETTLE_MS)
@@ -1286,15 +1330,21 @@ class PlaywrightMessenger:
                 continue
         return out
 
-    async def _hashtag_posts(self, page, tag: str, limit: int) -> list[str]:
-        """Post URLs from a hashtag page."""
+    async def _posts_for_query(self, page, url: str, limit: int) -> list[str]:
+        """Post URLs from a search or hashtag page.
+
+        Waits for the grid rather than sleeping at it: these pages render
+        client-side well after `domcontentloaded`, and a fixed pause is
+        either too short to see anything or too long on every page.
+        """
         if not self.SELECTORS.get("post_link") or limit <= 0:
             return []
         try:
-            await page.goto(self.hashtag_url(tag), wait_until="domcontentloaded",
-                            timeout=self._timeout)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
             await self._dismiss_overlays(page)
-            await page.wait_for_timeout(SETTLE_MS)
+            await self._first_visible(
+                page, tuple(self.SELECTORS["post_link"]), timeout_ms=COMPOSER_MS
+            )
             urls: list[str] = []
             for selector in self.SELECTORS["post_link"]:
                 try:
@@ -1309,44 +1359,60 @@ class PlaywrightMessenger:
                     continue
             return urls
         except Exception as exc:  # noqa: BLE001
-            print(f"[discovery] hashtag #{tag} failed: {type(exc).__name__}: {exc}",
-                  flush=True)
+            print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
             return []
 
-    async def _post_author(self, page, post_url: str) -> Optional[str]:
-        return await self._names_on_post(page, post_url, "post_author", first_only=True)
+    async def _people_on_post(self, page, post_url: str) -> list[str]:
+        """Everyone named on a post, in document order.
 
-    async def _post_commenters(self, page, post_url: str) -> list[str]:
-        names = await self._names_on_post(page, post_url, "comment_author")
-        return names or []
+        The author comes first and commenters follow, because that is the
+        order the page lists them in. One selector serves both: a post page
+        has no `article`, no `header` and no comment list to scope to, and
+        every attempt to be more specific than "profile links inside main"
+        matched nothing at all.
+        """
+        return await self._profile_links(
+            page, self._absolute(post_url), self.SELECTORS.get("post_people") or ()
+        )
 
-    async def _names_on_post(self, page, post_url: str, key: str,
-                             first_only: bool = False):
-        selectors = self.SELECTORS.get(key) or ()
+    async def _post_likers(self, page, post_url: str) -> list[str]:
+        """Who liked a post.
+
+        Instagram keeps this behind a dialog, but the dialog has a URL of
+        its own — asking for it directly avoids clicking a control whose
+        label is a number that changes.
+        """
+        selectors = self.SELECTORS.get("liker") or ()
         if not selectors:
-            return None if first_only else []
+            return []
+        url = self._absolute(post_url).rstrip("/") + "/liked_by/"
+        return await self._profile_links(page, url, selectors)
+
+    async def _profile_links(self, page, url: str, selectors) -> list[str]:
+        """Profile handles linked from a page, in order, deduped."""
+        if not selectors:
+            return []
         try:
-            await page.goto(self._absolute(post_url), wait_until="domcontentloaded",
-                            timeout=self._timeout)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
+            await self._dismiss_overlays(page)
             await page.wait_for_timeout(SETTLE_MS)
             names: list[str] = []
             for selector in selectors:
                 try:
                     links = page.locator(selector)
-                    for i in range(min(await links.count(), 60)):
+                    for i in range(min(await links.count(), 120)):
                         href = await links.nth(i).get_attribute("href") or ""
                         username = self.username_from_url(href)
                         if username and username not in names:
                             names.append(username)
-                            if first_only:
-                                return username
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001 — try the next shape
                     continue
-            return None if first_only else names
+                if names:
+                    break
+            return names
         except Exception as exc:  # noqa: BLE001
-            print(f"[discovery] post {post_url} failed: {type(exc).__name__}: {exc}",
-                  flush=True)
-            return None if first_only else []
+            print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
+            return []
 
     def _absolute(self, href: str) -> str:
         if href.startswith("http"):

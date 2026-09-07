@@ -129,9 +129,12 @@ class LeadSearchCreate(BaseModel):
     wanted: int = 50
     platform: str = "instagram"
     account_id: Optional[int] = None
-    #: Reading a post's commenters finds more people per hashtag and costs a
-    #: great many more page loads. Off unless asked for.
+    #: Commenters are already on the post the author came from, so they
+    #: cost nothing extra. Likers live behind their own URL — one more page
+    #: load per post. Both find people who engaged rather than merely
+    #: posted, which is usually the better list.
     include_commenters: bool = False
+    include_likers: bool = False
 
 
 class LeadImport(BaseModel):
@@ -1159,9 +1162,11 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 text(
                     "INSERT INTO outreach_lead_searches "
                     "  (user_id, campaign_id, platform, niche, location, "
-                    "   interests, wanted, include_commenters, account_id, status) "
+                    "   interests, wanted, include_commenters, include_likers, "
+                    "   account_id, status) "
                     "VALUES (:uid, :cid, :platform, :niche, :loc, :interests, "
-                    "        :wanted, :commenters, :aid, :status) RETURNING id"
+                    "        :wanted, :commenters, :likers, :aid, :status) "
+                    "RETURNING id"
                 ),
                 {
                     "uid": user["id"], "cid": campaign_id, "platform": platform,
@@ -1170,6 +1175,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     "interests": (data.interests or "").strip() or None,
                     "wanted": max(1, int(data.wanted or 50)),
                     "commenters": bool(data.include_commenters),
+                    "likers": bool(data.include_likers),
                     "aid": int(account["id"]), "status": discovery.STATUS_QUEUED,
                 },
             )).first()
@@ -1180,6 +1186,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 "niche": data.niche.strip(), "location": data.location,
                 "interests": data.interests, "wanted": data.wanted,
                 "include_commenters": bool(data.include_commenters),
+                "include_likers": bool(data.include_likers),
             }
         finally:
             await database.close()

@@ -104,25 +104,30 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
         "input[placeholder='Search']",
         "input[type='text'][aria-label*='Search']",
     ),
-    # Result rows are links to profiles: /<username>/ and nothing else.
+    # Scoped to `main` throughout, and that is the load-bearing part: the
+    # left navigation carries a link to the *signed-in* account's own
+    # profile, so an unscoped selector returns the discovery account as a
+    # lead from every page it opens. `main` starts below the nav.
     "search_result": (
-        "a[role='link'][href^='/']",
-        "div[role='none'] a[href^='/']",
+        "main a[href^='/']",
     ),
-    # Post tiles on a hashtag page.
+    # Post tiles on a search or hashtag page.
     "post_link": (
-        "a[href*='/p/']",
-        "a[href*='/reel/']",
+        "main a[href*='/p/']",
+        "main a[href*='/reel/']",
     ),
-    # Who posted it, and who commented on it. Both are profile links inside
-    # the post; the author is the first one.
-    "post_author": (
-        "header a[href^='/']",
-        "article header a[href^='/']",
+    # Everyone on a post, in document order: the author first, then whoever
+    # commented. One selector for both because that is how the page is
+    # built — there is no `article`, no `header` and no comment `ul` on a
+    # post page, which is what made every scoped guess return nothing.
+    "post_people": (
+        "main a[href^='/']",
     ),
-    "comment_author": (
-        "ul a[href^='/']",
-        "article ul a[href^='/']",
+    # Who liked it. Instagram puts this behind a dialog, but the dialog has
+    # its own URL, so it can be asked for directly.
+    "liker": (
+        "div[role='dialog'] a[href^='/']",
+        "main a[href^='/']",
     ),
     "rate_limited": (
         "text=Please wait a few minutes before you try again",
@@ -196,6 +201,7 @@ class PlaywrightInstagramMessenger(PlaywrightMessenger):
     CHALLENGE_FRAME_HINTS = ("challenge", "checkpoint")
     SITE_URL = "https://www.instagram.com"
     SEARCH_URL = "https://www.instagram.com/explore/search/"
+    SEARCH_QUERY_URL = "https://www.instagram.com/explore/search/keyword/?q={q}"
     name = "playwright_instagram"
 
     def profile_url(self, username: str) -> str:

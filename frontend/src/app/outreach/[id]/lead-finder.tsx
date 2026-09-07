@@ -38,7 +38,8 @@ export function LeadFinder({
   const [location, setLocation] = useState("");
   const [interests, setInterests] = useState("");
   const [wanted, setWanted] = useState(50);
-  const [commenters, setCommenters] = useState(false);
+  const [commenters, setCommenters] = useState(true);
+  const [likers, setLikers] = useState(false);
   const [accountId, setAccountId] = useState<number | undefined>();
   const [run, setRun] = useState<LeadSearchRun | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -103,6 +104,7 @@ export function LeadFinder({
         platform,
         account_id: accountId,
         include_commenters: commenters,
+        include_likers: likers,
       });
       setRun(started);
       toast.success("Searching — a browser window is open, you can watch it");
@@ -197,9 +199,22 @@ export function LeadFinder({
                 onChange={(e) => setCommenters(e.target.checked)}
               />
               <span>
-                Also read who commented on the posts it finds. Finds more people,
-                and opens a great many more pages — the likeliest way to get a
-                discovery account restricted.
+                Include people who <strong>commented</strong>. They are already on
+                the post, so this costs no extra page loads — and someone who
+                commented is a better lead than someone who merely posted.
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={likers}
+                onChange={(e) => setLikers(e.target.checked)}
+              />
+              <span>
+                Include people who <strong>liked</strong>. One extra page load per
+                post, so it roughly doubles the browsing — worth it for a warm
+                list, and the likeliest way to get a discovery account noticed.
               </span>
             </label>
           </div>

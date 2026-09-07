@@ -980,6 +980,7 @@ export const startLeadSearch = (
     platform: string;
     account_id?: number;
     include_commenters: boolean;
+    include_likers: boolean;
   }
 ): Promise<LeadSearchRun> =>
   api
