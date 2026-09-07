@@ -31,11 +31,12 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import text
 
 import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import config as cfg
-from services.outreach import attachments, importer, session_capture, watch_run
+from services.outreach import attachments, discovery, importer, session_capture, watch_run
 from services.outreach import runner as outreach_runner
 from services.outreach import queue as job_queue
 from services.outreach import stats
@@ -43,6 +44,8 @@ from services.outreach import templates as template_svc
 from services.outreach.browser import DRIVERS
 from services.outreach.constants import (
     ACCOUNT_IDLE,
+    ACCOUNT_PURPOSE_SENDING,
+    ACCOUNT_PURPOSES,
     ACCOUNT_PAUSED,
     AUDIT_ACCOUNT_ASSIGNED,
     AUDIT_ACCOUNT_CREATED,
@@ -104,13 +107,35 @@ class TargetsPaste(BaseModel):
 class AccountCreate(BaseModel):
     name: str
     platform: str = "tiktok"
+    #: "sending" or "discovery". Kept apart so harvesting cannot cost the
+    #: account that sends.
+    purpose: str = ACCOUNT_PURPOSE_SENDING
     session_reference: Optional[str] = None
 
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
+    purpose: Optional[str] = None
     session_reference: Optional[str] = None
+
+
+class LeadSearchCreate(BaseModel):
+    """What to look for. The model turns this into queries."""
+
+    niche: str
+    location: Optional[str] = None
+    interests: Optional[str] = None
+    wanted: int = 50
+    platform: str = "instagram"
+    account_id: Optional[int] = None
+    #: Reading a post's commenters finds more people per hashtag and costs a
+    #: great many more page loads. Off unless asked for.
+    include_commenters: bool = False
+
+
+class LeadImport(BaseModel):
+    lead_ids: list[int]
 
 
 class AccountSession(BaseModel):
@@ -812,6 +837,10 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             raise HTTPException(400, "Account name is required")
         if data.platform not in importer.PLATFORMS:
             raise HTTPException(400, f"Unsupported platform: {data.platform}")
+        if data.purpose not in ACCOUNT_PURPOSES:
+            raise HTTPException(
+                400, f"purpose must be one of: {', '.join(ACCOUNT_PURPOSES)}"
+            )
 
         database = await db.get_db()
         try:
@@ -825,6 +854,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 user_id=user["id"],
                 name=name,
                 platform=data.platform,
+                purpose=data.purpose,
                 status=ACCOUNT_IDLE,
                 session_reference=(data.session_reference or "").strip() or None,
                 enabled=True,
@@ -869,6 +899,16 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 updates["name"] = data.name.strip()
             if data.session_reference is not None:
                 updates["session_reference"] = data.session_reference.strip() or None
+            if data.purpose is not None:
+                if data.purpose not in ACCOUNT_PURPOSES:
+                    raise HTTPException(
+                        400, f"purpose must be one of: {', '.join(ACCOUNT_PURPOSES)}"
+                    )
+                # Changing this is allowed — an account moved to discovery
+                # stops being leased for sending from the next claim, and
+                # back again the same way. The session is untouched either
+                # way, so nothing has to be signed in again.
+                updates["purpose"] = data.purpose
             if data.enabled is not None:
                 updates["enabled"] = bool(data.enabled)
                 if data.enabled:
@@ -1037,6 +1077,229 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 user_id=user["id"], detail=account.get("name"),
             )
             return {"ok": True}
+        finally:
+            await database.close()
+
+    # =====================================================================
+    # Lead discovery
+    # =====================================================================
+
+    @router.get("/leads/availability")
+    async def lead_search_availability(
+        platform: str = Query("instagram"), user: dict = Depends(get_current_user)
+    ):
+        """Can a search run here, with which account, and how much is left?"""
+        database = await db.get_db()
+        try:
+            settings = await cfg.get_all(database)
+            accounts = await discovery.discovery_accounts(
+                database, platform, _scope(user)
+            )
+            budgets = []
+            for account in accounts:
+                used = await discovery.visited_today(database, int(account["id"]))
+                budgets.append({
+                    "id": account["id"],
+                    "name": account["name"],
+                    "used_today": used,
+                    "remaining_today": max(
+                        int(settings["outreach_discovery_daily_cap"]) - used, 0
+                    ),
+                })
+        finally:
+            await database.close()
+
+        reason = discovery.unavailable_reason()
+        if reason is None and not accounts:
+            reason = (
+                f"No {platform} discovery account connected. Add an account "
+                f"with its purpose set to discovery, then sign it in — "
+                f"harvesting should never run on the account you send from."
+            )
+        return {
+            "available": reason is None,
+            "unavailable_reason": reason,
+            "busy": discovery.any_running(),
+            "accounts": budgets,
+            "daily_cap": int(settings["outreach_discovery_daily_cap"]),
+            "max_per_search": int(settings["outreach_discovery_max_per_search"]),
+        }
+
+    @router.post("/campaigns/{campaign_id}/leads/search")
+    async def start_lead_search(
+        campaign_id: int, data: LeadSearchCreate,
+        user: dict = Depends(get_current_user),
+    ):
+        """Look for profiles matching a description, in a visible browser."""
+        reason = discovery.unavailable_reason()
+        if reason:
+            raise HTTPException(400, reason)
+        if not (data.niche or "").strip():
+            raise HTTPException(400, "Describe who you are looking for.")
+
+        database = await db.get_db()
+        try:
+            campaign = dict(await _own_campaign(database, campaign_id, user))
+            platform = data.platform or campaign.get("platform") or "instagram"
+            accounts = await discovery.discovery_accounts(
+                database, platform, _scope(user)
+            )
+            if not accounts:
+                raise HTTPException(
+                    400,
+                    f"No {platform} discovery account is connected. Add one "
+                    f"with purpose 'discovery' and sign it in first.",
+                )
+            account = next(
+                (a for a in accounts if a["id"] == data.account_id), accounts[0]
+            )
+            settings = await cfg.get_all(database)
+
+            row = (await database.session.execute(
+                text(
+                    "INSERT INTO outreach_lead_searches "
+                    "  (user_id, campaign_id, platform, niche, location, "
+                    "   interests, wanted, include_commenters, account_id, status) "
+                    "VALUES (:uid, :cid, :platform, :niche, :loc, :interests, "
+                    "        :wanted, :commenters, :aid, :status) RETURNING id"
+                ),
+                {
+                    "uid": user["id"], "cid": campaign_id, "platform": platform,
+                    "niche": data.niche.strip(),
+                    "loc": (data.location or "").strip() or None,
+                    "interests": (data.interests or "").strip() or None,
+                    "wanted": max(1, int(data.wanted or 50)),
+                    "commenters": bool(data.include_commenters),
+                    "aid": int(account["id"]), "status": discovery.STATUS_QUEUED,
+                },
+            )).first()
+            await database.session.commit()
+            search_id = int(row[0])
+            search = {
+                "id": search_id, "user_id": user["id"], "platform": platform,
+                "niche": data.niche.strip(), "location": data.location,
+                "interests": data.interests, "wanted": data.wanted,
+                "include_commenters": bool(data.include_commenters),
+            }
+        finally:
+            await database.close()
+
+        try:
+            run = discovery.start(search, account, settings)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return run.to_dict()
+
+    @router.get("/leads/searches/{search_id}")
+    async def lead_search_status(
+        search_id: int, user: dict = Depends(get_current_user)
+    ):
+        database = await db.get_db()
+        try:
+            row = (await database.session.execute(
+                text(
+                    "SELECT * FROM outreach_lead_searches "
+                    " WHERE id = :id AND (user_id = :uid OR :uid IS NULL)"
+                ),
+                {"id": search_id, "uid": _scope(user)},
+            )).mappings().first()
+        finally:
+            await database.close()
+        if not row:
+            raise HTTPException(404, "No such search.")
+
+        live = discovery.status_for(search_id)
+        stored = _tag_utc(dict(row))
+        return {
+            "search": stored,
+            "run": live.to_dict() if live else None,
+            "running": discovery.is_running(search_id),
+        }
+
+    @router.post("/leads/searches/{search_id}/cancel")
+    async def cancel_lead_search(
+        search_id: int, user: dict = Depends(get_current_user)
+    ):
+        database = await db.get_db()
+        try:
+            row = (await database.session.execute(
+                text(
+                    "SELECT id FROM outreach_lead_searches "
+                    " WHERE id = :id AND (user_id = :uid OR :uid IS NULL)"
+                ),
+                {"id": search_id, "uid": _scope(user)},
+            )).first()
+        finally:
+            await database.close()
+        if not row:
+            raise HTTPException(404, "No such search.")
+        return {"ok": True, "was_running": discovery.cancel(search_id)}
+
+    @router.get("/leads/searches/{search_id}/leads")
+    async def list_leads(
+        search_id: int, user: dict = Depends(get_current_user),
+        limit: int = Query(500, ge=1, le=2000),
+    ):
+        """What a search found, best first. Unscored leads sort last."""
+        database = await db.get_db()
+        try:
+            rows = (await database.session.execute(
+                text(
+                    "SELECT l.* FROM outreach_leads l "
+                    "  JOIN outreach_lead_searches s ON s.id = l.search_id "
+                    " WHERE l.search_id = :id AND (s.user_id = :uid OR :uid IS NULL) "
+                    " ORDER BY l.score DESC NULLS LAST, l.id ASC LIMIT :limit"
+                ),
+                {"id": search_id, "uid": _scope(user), "limit": limit},
+            )).mappings().all()
+            return [_tag_utc(dict(r)) for r in rows]
+        finally:
+            await database.close()
+
+    @router.post("/campaigns/{campaign_id}/leads/import")
+    async def import_leads(
+        campaign_id: int, data: LeadImport,
+        user: dict = Depends(get_current_user),
+    ):
+        """Promote chosen leads into this campaign's targets."""
+        if not data.lead_ids:
+            raise HTTPException(400, "Pick at least one lead.")
+
+        database = await db.get_db()
+        try:
+            campaign = dict(await _own_campaign(database, campaign_id, user))
+            rows = (await database.session.execute(
+                text(
+                    "SELECT l.* FROM outreach_leads l "
+                    "  JOIN outreach_lead_searches s ON s.id = l.search_id "
+                    " WHERE l.id = ANY(:ids) AND (s.user_id = :uid OR :uid IS NULL)"
+                ),
+                {"ids": list(data.lead_ids), "uid": _scope(user)},
+            )).mappings().all()
+            leads = [dict(r) for r in rows]
+            wrong = [l for l in leads if l["platform"] != campaign["platform"]]
+            if wrong:
+                raise HTTPException(
+                    400,
+                    f"{len(wrong)} lead(s) are {wrong[0]['platform']} but this "
+                    f"campaign is {campaign['platform']}.",
+                )
+
+            summary = await importer.import_targets(
+                database, campaign_id,
+                "\n".join(l["profile_url"] for l in leads),
+                campaign["platform"],
+            )
+            await database.session.execute(
+                text(
+                    "UPDATE outreach_leads SET imported_at = NOW() "
+                    " WHERE id = ANY(:ids)"
+                ),
+                {"ids": [l["id"] for l in leads]},
+            )
+            await database.session.commit()
+            await stats.refresh_campaign_totals(database, campaign_id)
+            return summary
         finally:
             await database.close()
 

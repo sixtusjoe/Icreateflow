@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Activity,
   Eye,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -45,6 +46,7 @@ import {
   type WatchState,
 } from "@/lib/api";
 import { StatusPill, ProgressBar, inputClass, relativeTime, apiErrorMessage } from "../ui";
+import { LeadFinder } from "./lead-finder";
 
 type Detail = {
   campaign: OutreachCampaign;
@@ -74,6 +76,7 @@ export default function OutreachCampaignPage() {
   const [watch, setWatch] = useState<WatchState | null>(null);
   const imageRef = useRef<HTMLInputElement>(null);
   const [showImport, setShowImport] = useState(false);
+  const [findLeads, setFindLeads] = useState(false);
   const [pasted, setPasted] = useState("");
   const [summary, setSummary] = useState<OutreachImportSummary | null>(null);
   const [lastRefresh, setLastRefresh] = useState<number>(Date.now());
@@ -691,14 +694,51 @@ export default function OutreachCampaignPage() {
             className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-semibold">Import targets</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              CSV with a <code>username</code> and/or <code>profile_url</code> column, or one
-              handle per line. Duplicates and off-platform URLs are rejected before anything
-              is saved.
-            </p>
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="text-lg font-semibold">Import targets</h2>
+              <button
+                onClick={() => setFindLeads((v) => !v)}
+                title="Find profiles instead of pasting a list you already have"
+                className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  findLeads
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Find profiles
+              </button>
+            </div>
 
-            <div className="mt-4 space-y-3">
+            {findLeads ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Describe who you want and a discovery account will look for them.
+                Nothing reaches this campaign until you choose from what it finds.
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-muted-foreground">
+                CSV with a <code>username</code> and/or <code>profile_url</code> column, or one
+                handle per line. Duplicates and off-platform URLs are rejected before anything
+                is saved.
+              </p>
+            )}
+
+            {findLeads && (
+              <div className="mt-4">
+                <LeadFinder
+                  campaignId={id}
+                  platform={c.platform}
+                  onImported={() => {
+                    setFindLeads(false);
+                    setShowImport(false);
+                    loadDetail();
+                    loadTargets();
+                  }}
+                />
+              </div>
+            )}
+
+            <div className={`mt-4 space-y-3 ${findLeads ? "hidden" : ""}`}>
               <input
                 ref={fileRef}
                 type="file"

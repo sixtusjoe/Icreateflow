@@ -729,6 +729,7 @@ export type OutreachAccount = {
   paused_reason: string | null;
   enabled: boolean;
   created_at: string;
+  purpose?: string;
 };
 
 export type OutreachTarget = {
@@ -880,6 +881,8 @@ export const listOutreachAccounts = (): Promise<OutreachAccount[]> =>
 export const createOutreachAccount = (data: {
   name: string;
   platform?: string;
+  /** "sending" or "discovery" — kept apart so harvesting cannot cost your sender. */
+  purpose?: string;
   session_reference?: string;
 }): Promise<OutreachAccount> =>
   api.post("/api/outreach/accounts", data).then((r) => r.data);
@@ -927,6 +930,77 @@ export interface WatchState {
   sender_error: string | null;
 }
 /** Run one job in a browser window on the machine hosting the backend. */
+// --- Lead discovery -------------------------------------------------------
+export interface LeadSearchAccount {
+  id: number;
+  name: string;
+  used_today: number;
+  remaining_today: number;
+}
+export interface LeadSearchAvailability {
+  available: boolean;
+  unavailable_reason: string | null;
+  busy: boolean;
+  accounts: LeadSearchAccount[];
+  daily_cap: number;
+  max_per_search: number;
+}
+export interface LeadSearchRun {
+  search_id: number;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  message: string;
+  found: number;
+  wanted: number;
+  done: boolean;
+}
+export interface Lead {
+  id: number;
+  username: string;
+  profile_url: string;
+  display_name: string | null;
+  bio: string | null;
+  source: string | null;
+  score: number | null;
+  reason: string | null;
+  imported_at: string | null;
+}
+export const getLeadSearchAvailability = (
+  platform: string
+): Promise<LeadSearchAvailability> =>
+  api
+    .get("/api/outreach/leads/availability", { params: { platform } })
+    .then((r) => r.data);
+export const startLeadSearch = (
+  campaignId: number,
+  data: {
+    niche: string;
+    location?: string;
+    interests?: string;
+    wanted: number;
+    platform: string;
+    account_id?: number;
+    include_commenters: boolean;
+  }
+): Promise<LeadSearchRun> =>
+  api
+    .post(`/api/outreach/campaigns/${campaignId}/leads/search`, data)
+    .then((r) => r.data);
+export const getLeadSearch = (
+  searchId: number
+): Promise<{ run: LeadSearchRun | null; running: boolean }> =>
+  api.get(`/api/outreach/leads/searches/${searchId}`).then((r) => r.data);
+export const cancelLeadSearch = (searchId: number) =>
+  api.post(`/api/outreach/leads/searches/${searchId}/cancel`).then((r) => r.data);
+export const listLeads = (searchId: number): Promise<Lead[]> =>
+  api.get(`/api/outreach/leads/searches/${searchId}/leads`).then((r) => r.data);
+export const importLeads = (
+  campaignId: number,
+  leadIds: number[]
+): Promise<OutreachImportSummary> =>
+  api
+    .post(`/api/outreach/campaigns/${campaignId}/leads/import`, { lead_ids: leadIds })
+    .then((r) => r.data);
+
 /** Attach an image to a template. New campaigns from it get a copy. */
 export const setTemplateAttachment = (
   templateId: number,
@@ -971,7 +1045,12 @@ export const getOutreachAccount = (id: number) =>
   api.get(`/api/outreach/accounts/${id}`).then((r) => r.data);
 export const updateOutreachAccount = (
   id: number,
-  data: { name?: string; enabled?: boolean; session_reference?: string },
+  data: {
+    name?: string;
+    enabled?: boolean;
+    purpose?: string;
+    session_reference?: string;
+  },
 ): Promise<OutreachAccount> =>
   api.put(`/api/outreach/accounts/${id}`, data).then((r) => r.data);
 export const setOutreachAccountSession = (

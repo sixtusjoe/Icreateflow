@@ -34,6 +34,7 @@ export default function OutreachAccountsPage() {
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
   const [platform, setPlatform] = useState("tiktok");
+  const [purpose, setPurpose] = useState("sending");
   const [busy, setBusy] = useState(false);
   const [sessionFor, setSessionFor] = useState<OutreachAccount | null>(null);
   const [sessionJson, setSessionJson] = useState("");
@@ -56,9 +57,10 @@ export default function OutreachAccountsPage() {
     if (!name.trim()) return toast.error("Account name is required");
     setBusy(true);
     try {
-      await createOutreachAccount({ name: name.trim(), platform });
+      await createOutreachAccount({ name: name.trim(), platform, purpose });
       setName("");
       setPlatform("tiktok");
+      setPurpose("sending");
       setShowNew(false);
       load();
       toast.success("Account added");
@@ -111,6 +113,21 @@ export default function OutreachAccountsPage() {
       toast.success("A browser window is opening — sign in there");
     } catch (e) {
       toast.error(apiErrorMessage(e, "Could not open a sign-in window"));
+    }
+  };
+
+  const handlePurpose = async (account: OutreachAccount) => {
+    const next = account.purpose === "discovery" ? "sending" : "discovery";
+    try {
+      await updateOutreachAccount(account.id, { purpose: next });
+      load();
+      toast.success(
+        next === "discovery"
+          ? "Now used for finding profiles — it will not be asked to send"
+          : "Now used for sending messages"
+      );
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not change what this account is for"));
     }
   };
 
@@ -222,7 +239,19 @@ export default function OutreachAccountsPage() {
                   <td className="px-4 py-3">
                     <p className="font-medium">{a.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {a.platform} ·{" "}
+                      {a.platform}
+                      <button
+                        onClick={() => handlePurpose(a)}
+                        title={
+                          a.purpose === "discovery"
+                            ? "Used for finding profiles. Click to use it for sending instead."
+                            : "Used for sending. Click to use it for finding profiles instead."
+                        }
+                        className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide hover:bg-border"
+                      >
+                        {a.purpose === "discovery" ? "discovery" : "sending"}
+                      </button>{" "}
+                      ·{" "}
                       {a.has_session ? (
                         <>session stored {relativeTime(a.session_updated_at)}</>
                       ) : (
@@ -308,10 +337,21 @@ export default function OutreachAccountsPage() {
             <option value="tiktok">TikTok</option>
             <option value="instagram">Instagram</option>
           </Select>
+          <label className="mb-1.5 mt-4 block text-sm font-medium">Used for</label>
+          <Select value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+            <option value="sending">Sending messages</option>
+            <option value="discovery">Finding profiles</option>
+          </Select>
           <p className="mt-2 text-xs text-muted-foreground">
             A label for you — the account is authorized separately by attaching a browser
             session. The platform cannot be changed later, and an account can only be
             assigned to campaigns on the same platform.
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Keep these apart. Finding profiles means opening a great many pages in a
+            short time and is the likelier way to get an account restricted — it should
+            not be the account you send from. A discovery account is never leased to
+            send, and a sending account is never used to search.
           </p>
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
