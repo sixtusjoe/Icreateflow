@@ -11,6 +11,7 @@ import {
   listLeads,
   importLeads,
   listOutreachCampaigns,
+  listPendingLeads,
   type OutreachCampaign,
   type Lead,
   type LeadSearchAvailability,
@@ -50,6 +51,7 @@ export function LeadFinder({
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
+  const [pending, setPending] = useState<number>(0);
   const [targets, setTargets] = useState<Set<number>>(new Set([campaignId]));
 
   useEffect(() => {
@@ -67,6 +69,24 @@ export function LeadFinder({
       .then((all) => setCampaigns(all.filter((c) => c.platform === platform)))
       .catch(() => setCampaigns([]));
   }, [platform]);
+
+  // Anything found before and never imported is stranded: searches skip
+  // it as already found, and no campaign holds it.
+  useEffect(() => {
+    listPendingLeads(platform)
+      .then((p) => setPending(p.length))
+      .catch(() => setPending(0));
+  }, [platform, leads.length]);
+
+  const showPending = async () => {
+    try {
+      const found = await listPendingLeads(platform);
+      setLeads(found);
+      setChosen(new Set(found.map((l) => l.id)));
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not load those"));
+    }
+  };
 
   const loadLeads = useCallback(async (searchId: number) => {
     try {
@@ -282,6 +302,15 @@ export function LeadFinder({
             <Sparkles className="h-4 w-4" />
             {availability?.busy ? "Another search is running" : "Find profiles"}
           </button>
+
+          {pending > 0 && (
+            <button
+              onClick={showPending}
+              className="mt-2 w-full rounded-lg border border-border px-4 py-2 text-xs font-medium hover:bg-muted"
+            >
+              {pending} already found but in no campaign — review them
+            </button>
+          )}
         </>
       )}
 

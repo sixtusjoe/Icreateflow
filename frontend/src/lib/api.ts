@@ -1001,6 +1001,11 @@ export interface LeadImportSummary extends OutreachImportSummary {
   campaigns?: { campaign_id: number; campaign_name: string; ready: number }[];
 }
 /** Import leads, optionally split evenly across several campaigns. */
+/** Leads found earlier that are in no campaign — recoverable without browsing. */
+export const listPendingLeads = (platform: string): Promise<Lead[]> =>
+  api
+    .get("/api/outreach/leads/pending", { params: { platform } })
+    .then((r) => r.data);
 export const importLeads = (
   campaignId: number,
   leadIds: number[],

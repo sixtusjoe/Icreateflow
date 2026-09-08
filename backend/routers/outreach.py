@@ -1284,6 +1284,41 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         finally:
             await database.close()
 
+    @router.get("/leads/pending")
+    async def pending_leads(
+        platform: str = Query("instagram"),
+        user: dict = Depends(get_current_user),
+        limit: int = Query(1000, ge=1, le=5000),
+    ):
+        """Leads found by past searches that never made it into a campaign.
+
+        They are excluded from new searches — already found — and they are
+        in no campaign, so without this they are stranded: discovery will
+        not return them again and nothing will ever send to them. They are
+        already in the database, so recovering them costs no browsing at
+        all.
+        """
+        database = await db.get_db()
+        try:
+            rows = (await database.session.execute(
+                text(
+                    "SELECT l.* FROM outreach_leads l "
+                    "  JOIN outreach_lead_searches s ON s.id = l.search_id "
+                    " WHERE l.platform = :platform "
+                    "   AND l.imported_at IS NULL "
+                    "   AND (s.user_id = :uid OR :uid IS NULL) "
+                    "   AND l.username NOT IN ( "
+                    "       SELECT t.username FROM outreach_targets t "
+                    "         JOIN outreach_campaigns c ON c.id = t.campaign_id "
+                    "        WHERE c.platform = :platform) "
+                    " ORDER BY l.score DESC NULLS LAST, l.id ASC LIMIT :limit"
+                ),
+                {"platform": platform, "uid": _scope(user), "limit": limit},
+            )).mappings().all()
+            return [_tag_utc(dict(r)) for r in rows]
+        finally:
+            await database.close()
+
     @router.post("/campaigns/{campaign_id}/leads/import")
     async def import_leads(
         campaign_id: int, data: LeadImport,
