@@ -1526,10 +1526,17 @@ class PlaywrightMessenger:
             for seed in seeds:
                 if done():
                     break
-                # Ask for more than the share: some of what comes back is
-                # already known, and those must not eat into the quota.
+                # Ask for more than the share, and scroll deep enough to
+                # get there. A followers list comes back in the same order
+                # every time, so everyone already known sits at the top of
+                # it: finding new people means scrolling past all of them
+                # first. Depth based on the share alone stops inside
+                # familiar territory and reports nothing new — which looks
+                # like the account having no more followers.
+                reach = share + len(skip)
                 for username in await self.account_followers(
-                    page, seed, limit=share + len(skip), scroll_rounds=scroll_rounds
+                    page, seed, limit=reach,
+                    scroll_rounds=max(scroll_rounds, reach // 10 + 20),
                 ):
                     if username in found or username in skip:
                         continue
