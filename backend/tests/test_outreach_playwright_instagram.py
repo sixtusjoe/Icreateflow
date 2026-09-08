@@ -248,6 +248,50 @@ REQUEST_REFUSED = """
 </body></html>
 """
 
+#: Not private, but only takes messages from people it follows. The Message
+#: button is genuinely absent until the follow lands, and then it appears in
+#: place — no reload, no navigation.
+FOLLOW_UNLOCKS_MESSAGE = f"""
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><div role="button" onclick="follow()">Follow</div></div>
+  {_COMPOSER}
+  <script>
+    function follow() {{
+      document.getElementById('actions').innerHTML =
+        '<button>Following</button>'
+        + '<div role="button" onclick="openChat()">Message</div>';
+    }}
+  </script>
+</body></html>
+"""
+
+#: Private. Follow turns into "Requested" and the profile stays shut — the
+#: request has to be accepted by a person before anything can be sent.
+PRIVATE_ACCOUNT = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><div role="button" onclick="request()">Follow</div></div>
+  <script>
+    function request() {
+      document.getElementById('actions').innerHTML = '<button>Requested</button>';
+    }
+  </script>
+</body></html>
+"""
+
+#: Already followed, and still no Message button. Following is not what is
+#: in the way — and the control now says "Following", so clicking it would
+#: unfollow someone the operator meant to keep.
+ALREADY_FOLLOWING = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions">
+    <button onclick="fetch('/sent', { method: 'POST', body: 'UNFOLLOWED' })">Following</button>
+  </div>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
     "/entersends": ENTER_SENDS,
@@ -256,6 +300,9 @@ PAGES = {
     "/dock": DOCK_OVER_PROFILE,
     "/navdecoy": NAV_MESSAGES_DECOY,
     "/nodm": NO_MESSAGE_BUTTON,
+    "/followunlocks": FOLLOW_UNLOCKS_MESSAGE,
+    "/private": PRIVATE_ACCOUNT,
+    "/following": ALREADY_FOLLOWING,
     "/gone": MISSING_PROFILE,
     "/loggedout": LOGIN_WALL,
     "/refused": SEND_REFUSED,
@@ -343,8 +390,14 @@ def account(account_id: int = 1) -> dict:
     }
 
 
-def target(site: str, path: str, username: str = "alice") -> dict:
-    return {"username": username, "profile_url": f"{site}{path}"}
+def target(
+    site: str, path: str, username: str = "alice", follow_to_unlock: bool = True
+) -> dict:
+    return {
+        "username": username,
+        "profile_url": f"{site}{path}",
+        "follow_to_unlock": follow_to_unlock,
+    }
 
 
 # --- the shared engine, driven by Instagram's table ------------------------
@@ -512,3 +565,80 @@ async def test_a_refusal_among_the_bubbles_is_not_a_delivery(driver, site):
     # account and pauses it. A stranger with a closed inbox is not evidence
     # of anything being wrong with the account doing the sending.
     assert result.status not in ACCOUNT_FAULT_RESULTS
+
+
+# --- following to unlock the Message button --------------------------------
+
+async def test_following_reveals_the_message_button_and_the_send_continues(
+    driver, site
+):
+    """An account with no Message button is not necessarily unreachable.
+
+    Plenty of profiles are public but only accept messages from people they
+    follow, and on those the button appears once the follow lands. Two were
+    confirmed reachable this way by hand, after the run had already written
+    them off as not accepting DMs.
+
+    The message goes out on the same visit — there is no reason to come back
+    for it once the button is there.
+    """
+    message = "Hi alice, quick question."
+
+    result = await driver.send_message(
+        account(), target(site, "/followunlocks"), message
+    )
+
+    assert result.success is True, result.error
+    assert result.status == RESULT_SENT
+    assert RECEIVED == [message]
+
+
+async def test_a_private_account_is_requested_and_left_alone(driver, site):
+    """Follow becomes "Requested" and nothing else happens.
+
+    A private account cannot be messaged until a person accepts, so there is
+    nothing to wait for on this visit and nothing to retry quickly. What
+    matters is that it is not reported as a send.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/private"), "Hi alice."
+    )
+
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE
+    assert RECEIVED == []
+
+
+async def test_an_account_already_followed_is_never_clicked_again(driver, site):
+    """The button that unfollows people says "Following".
+
+    Once the profile is already followed, following is not what is standing
+    between us and the Message button — and the control in that spot now
+    unfollows on click. Unfollowing someone the operator deliberately
+    followed, in pursuit of a message that was never going to send, is the
+    one outcome here that is worse than giving up.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/following"), "Hi alice."
+    )
+
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE
+    assert RECEIVED == [], f"the Following control was clicked: {RECEIVED!r}"
+
+
+async def test_following_is_not_attempted_when_it_is_turned_off(driver, site):
+    """Following is a public action on the operator's own account.
+
+    It is on by default because they asked for it, and it stays switchable
+    because it is the kind of thing someone may well want to stop doing.
+    """
+    result = await driver.send_message(
+        account(),
+        target(site, "/followunlocks", follow_to_unlock=False),
+        "Hi alice.",
+    )
+
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE
+    assert RECEIVED == []

@@ -90,6 +90,14 @@ PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "1200
 #: nowhere near that fast, and running out of time here is indistinguishable
 #: from the button being absent.
 MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "8000"))
+#: How long a reloaded page gets to render an existing conversation before
+#: the check moves on to reopening it. Not a budget for the send — the send
+#: has already happened — just for the thread to draw.
+CONFIRM_RENDER_MS = int(os.environ.get("ICREATE_OUTREACH_CONFIRM_RENDER_MS", "4000"))
+#: How long to wait for a Message button to appear after following. The
+#: profile re-renders in place rather than navigating, so this is a render,
+#: not a page load — but it is a render behind a network round trip.
+FOLLOW_UNLOCK_MS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_UNLOCK_MS", "5000"))
 #: What a fallback tier gets once the first has already waited out the page.
 #: Not a page-load budget — a settled-DOM query, which is instant or never.
 LATER_TIER_MS = int(os.environ.get("ICREATE_OUTREACH_LATER_TIER_MS", "1500"))
@@ -286,6 +294,12 @@ class PlaywrightMessenger:
         back in a bad state?" after navigation already settled, and there are
         eight such selectors across the checks — waiting out a per-selector
         timeout would add ~10s of dead time to every successful send.
+
+        `is_visible` does not honour that timeout by waiting — it answers
+        from the page as it stands, and six misses measured 61ms in total.
+        Worth writing down, because it looks like a per-selector budget and
+        was optimised as one: racing these concurrently saved 40ms and cost
+        a behaviour change, so it was put back.
         """
         for selector in keys:
             try:
@@ -365,6 +379,64 @@ class PlaywrightMessenger:
             if found is not None:
                 return found
         return None
+
+    async def _follow_to_unlock(self, page, target_username: str):
+        """No Message button — try following, and look again.
+
+        Plenty of accounts are not private but still only take messages from
+        people they follow. On those the button is genuinely absent until
+        the follow lands, and then it appears in place without a reload.
+        Writing the target off before trying costs a lead that was reachable
+        all along; two were confirmed reachable this way by hand.
+
+        Returns the Message button if following revealed one, else None.
+
+        Following is a public action taken on the operator's account, so it
+        happens only here — after the profile has been loaded, read, and
+        found to offer no other way through.
+        """
+        if await self._present(page, self.SELECTORS.get("follow_requested", ())):
+            print(
+                f"[outreach] @{target_username} already has a follow request "
+                f"pending — nothing to do until they accept it",
+                flush=True,
+            )
+            return None
+        if await self._present(page, self.SELECTORS.get("already_following", ())):
+            # Followed already and still no button: the follow is not what
+            # is in the way, and clicking anything here would unfollow them.
+            return None
+
+        follow_button = await self._first_visible_tiered(
+            page, self.SELECTORS.get("follow_button", ()), timeout_ms=LATER_TIER_MS
+        )
+        if follow_button is None:
+            return None
+        if not await self._click(page, follow_button, "follow-button", target_username):
+            return None
+
+        # A private account turns Follow into "Requested" and stays shut. The
+        # follow is left standing — it is what the request is — but there is
+        # nothing to wait for on this visit.
+        if await self._present(page, self.SELECTORS.get("follow_requested", ())):
+            print(
+                f"[outreach] followed @{target_username}, but the account is "
+                f"private — the request has to be accepted before a message "
+                f"can go anywhere",
+                flush=True,
+            )
+            return None
+
+        message_button = await self._first_visible_tiered(
+            page, self.SELECTORS["message_button"], timeout_ms=FOLLOW_UNLOCK_MS
+        )
+        print(
+            f"[outreach] followed @{target_username} — "
+            + ("the Message button appeared" if message_button is not None
+               else "still no Message button"),
+            flush=True,
+        )
+        return message_button
 
     async def _dismiss_overlays(self, page) -> list[str]:
         """Click away consent banners and modals covering the page.
@@ -680,8 +752,22 @@ class PlaywrightMessenger:
             )
             return False
 
+        # Give the reloaded page a moment to render its thread — but not the
+        # composer's budget, which is what this used to take.
+        #
+        # On Instagram the thread is never on a reloaded profile: the send
+        # happens in a dock, and reloading returns a bare profile. So these
+        # selectors never matched, and every successful send paid the full
+        # fifteen seconds finding that out before falling through to the
+        # step that actually works. It was the single largest fixed cost in
+        # a send, and it was pure waiting.
+        #
+        # Cutting it short is safe in a way most timeout cuts are not: if
+        # the thread genuinely needed longer, the miss falls through to
+        # reopening the conversation, which asks the server directly. The
+        # fallback is the same one that already handles this, not a failure.
         await self._first_visible(
-            page, self.SELECTORS["sent_confirmation"], timeout_ms=COMPOSER_MS
+            page, self.SELECTORS["sent_confirmation"], timeout_ms=CONFIRM_RENDER_MS
         )
         if not await self._message_in_thread(page, message):
             # A reload only proves anything if the conversation is on the
@@ -997,6 +1083,12 @@ class PlaywrightMessenger:
                             page, target_username, "site-error"
                         ),
                     )
+
+            if message_button is None and target.get("follow_to_unlock"):
+                # Before writing this target off: some accounts take messages
+                # only from people they follow, and the button appears once
+                # the follow lands.
+                message_button = await self._follow_to_unlock(page, target_username)
 
             if message_button is None:
                 # Two very different causes, indistinguishable from here: the

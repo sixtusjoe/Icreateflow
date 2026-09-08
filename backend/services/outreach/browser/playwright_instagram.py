@@ -215,8 +215,16 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
     ),
     "already_following": (
         "button:text-is('Following')",
-        "button:text-is('Requested')",
         "div[role='button']:text-is('Following')",
+    ),
+    # Kept apart from "Following" on purpose. Both mean "do not click
+    # Follow", but only this one means the account is private and the
+    # message is going nowhere until a person accepts the request — which
+    # is a different thing to tell the operator, and a different thing to
+    # do about it.
+    "follow_requested": (
+        "button:text-is('Requested')",
+        "div[role='button']:text-is('Requested')",
     ),
 }
 

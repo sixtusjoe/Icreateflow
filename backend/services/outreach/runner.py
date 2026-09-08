@@ -276,6 +276,9 @@ class OutreachWorker:
                     "follow_wait_seconds": int(
                         settings.get("outreach_follow_wait_seconds") or 0
                     ),
+                    "follow_to_unlock": bool(
+                        int(settings.get("outreach_follow_to_unlock") or 0)
+                    ),
                     # The campaign's image, as a path the driver can hand to
                     # a file input. None when the campaign has no image.
                     "attachment_path": campaign.get("attachment_path"),

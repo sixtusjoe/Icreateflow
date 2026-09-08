@@ -31,9 +31,14 @@ SPEC: dict[str, tuple[int, int, int]] = {
     # Base delay before a retried job becomes claimable again (×attempt).
     "outreach_retry_backoff_seconds": (300, 5, 86_400),
     # Minimum gap between two sends from the same account.
-    "outreach_min_send_interval_seconds": (45, 0, 3600),
+    "outreach_min_send_interval_seconds": (15, 0, 3600),
     # Follow the target, wait, then message on a later pass. 0 disables it.
     "outreach_follow_wait_seconds": (0, 0, 86400),
+    # Follow a profile that shows no Message button, then look again. Some
+    # accounts accept messages only from people they follow, and the button
+    # is genuinely absent until then. Following is a public action on the
+    # sending account, so this is worth being able to turn off — set to 0.
+    "outreach_follow_to_unlock": (1, 0, 1),
     # Seconds a worker sleeps when it finds no claimable job.
     "outreach_worker_idle_seconds": (10, 1, 300),
     # --- Lead discovery ---
