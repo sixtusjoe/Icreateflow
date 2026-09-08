@@ -77,6 +77,12 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
             "button:text-is('Message')",
             "[role='button']:text-is('Message')",
         ),
+        # Message carries its text directly today, unlike Follow. The last
+        # tier is the nested shape, in case it ever moves to match.
+        (
+            "div[role='button']:has(:text-is('Message'))",
+            "button:has(:text-is('Message'))",
+        ),
     ),
     # Instagram's composer is a contenteditable textbox, labelled for
     # accessibility rather than carrying a stable class.
@@ -206,16 +212,29 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
         "text=can't receive your message",
         "text=don't allow new message requests",
     ),
+    # `:text-is` matches the smallest element holding the text, and the
+    # label here is a bare styled div inside the button — so the button
+    # itself never matched and every Follow was missed. Measured on a live
+    # profile: all three exact-text selectors returned count=0.
+    #
+    # `:has-text('Follow')` does match the button. It is also a substring
+    # match, and on a profile we already follow it matches the *Following*
+    # button — count=1, confirmed against a real followed profile. Reaching
+    # for it would have unfollowed people, one per target, quietly.
+    #
+    # `:has(:text-is(...))` is the pair that works: ancestor-aware, so it
+    # finds the button, and exact on the label, so "Following" is not
+    # "Follow". Verified count=1/0 and 0/1 on the two states.
     "follow_button": (
-        ("button:text-is('Follow')",),
+        ("button:has(:text-is('Follow'))",),
         (
-            "div[role='button']:text-is('Follow')",
-            "[role='button']:text-is('Follow')",
+            "div[role='button']:has(:text-is('Follow'))",
+            "[role='button']:has(:text-is('Follow'))",
         ),
     ),
     "already_following": (
-        "button:text-is('Following')",
-        "div[role='button']:text-is('Following')",
+        "button:has(:text-is('Following'))",
+        "div[role='button']:has(:text-is('Following'))",
     ),
     # Kept apart from "Following" on purpose. Both mean "do not click
     # Follow", but only this one means the account is private and the
@@ -223,8 +242,8 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
     # is a different thing to tell the operator, and a different thing to
     # do about it.
     "follow_requested": (
-        "button:text-is('Requested')",
-        "div[role='button']:text-is('Requested')",
+        "button:has(:text-is('Requested'))",
+        "div[role='button']:has(:text-is('Requested'))",
     ),
 }
 

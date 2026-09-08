@@ -88,7 +88,7 @@ NAV_MESSAGES_DECOY = f"""
 NO_MESSAGE_BUTTON = """
 <html><body>
   <header><section><h2>alice</h2></section></header>
-  <div role="button">Follow</div>
+  <button type="button"><div class="_ap3a">Follow</div></button>
 </body></html>
 """
 
@@ -254,12 +254,14 @@ REQUEST_REFUSED = """
 FOLLOW_UNLOCKS_MESSAGE = f"""
 <html><body>
   <header><section><h2>alice</h2></section></header>
-  <div id="actions"><div role="button" onclick="follow()">Follow</div></div>
+  <div id="actions">
+    <button type="button" onclick="follow()"><div class="_ap3a">Follow</div></button>
+  </div>
   {_COMPOSER}
   <script>
     function follow() {{
       document.getElementById('actions').innerHTML =
-        '<button>Following</button>'
+        '<button type="button"><div class="_ap3a">Following</div></button>'
         + '<div role="button" onclick="openChat()">Message</div>';
     }}
   </script>
@@ -271,10 +273,13 @@ FOLLOW_UNLOCKS_MESSAGE = f"""
 PRIVATE_ACCOUNT = """
 <html><body>
   <header><section><h2>alice</h2></section></header>
-  <div id="actions"><div role="button" onclick="request()">Follow</div></div>
+  <div id="actions">
+    <button type="button" onclick="request()"><div class="_ap3a">Follow</div></button>
+  </div>
   <script>
     function request() {
-      document.getElementById('actions').innerHTML = '<button>Requested</button>';
+      document.getElementById('actions').innerHTML =
+        '<button type="button"><div class="_ap3a">Requested</div></button>';
     }
   </script>
 </body></html>
@@ -287,7 +292,9 @@ ALREADY_FOLLOWING = """
 <html><body>
   <header><section><h2>alice</h2></section></header>
   <div id="actions">
-    <button onclick="fetch('/sent', { method: 'POST', body: 'UNFOLLOWED' })">Following</button>
+    <button type="button" onclick="fetch('/sent', { method: 'POST', body: 'UNFOLLOWED' })">
+      <div class="_ap3a">Following</div>
+    </button>
   </div>
 </body></html>
 """
@@ -642,3 +649,46 @@ async def test_following_is_not_attempted_when_it_is_turned_off(driver, site):
     assert result.success is False
     assert result.status == RESULT_MESSAGING_UNAVAILABLE
     assert RECEIVED == []
+
+
+def test_the_follow_selector_cannot_match_a_following_button():
+    """The trap that a substring match walks straight into.
+
+    Instagram puts the label in a bare div inside the button, so the
+    obvious exact-text selectors match nothing at all — measured count=0 on
+    a live profile, which is why no Follow was ever clicked. The obvious
+    repair is `:has-text('Follow')`, and on a profile we already follow that
+    matches the *Following* button: count=1, measured on a real one. It
+    would have unfollowed one person per target, silently, while looking
+    like it was working.
+
+    This pins the distinction in the selector table itself, since it is the
+    kind of thing a later "simplification" undoes without noticing.
+    """
+    follow = " ".join(
+        selector
+        for tier in PlaywrightInstagramMessenger.SELECTORS["follow_button"]
+        for selector in tier
+    )
+    assert ":has-text(" not in follow, (
+        "a substring match here matches 'Following' and unfollows people"
+    )
+    assert ":has(:text-is('Follow'))" in follow, (
+        "the label is a div inside the button, so the match has to be "
+        "ancestor-aware and exact at the same time"
+    )
+
+
+async def test_a_following_button_is_left_alone_in_its_real_markup(driver, site):
+    """The same guard, driven through a page rather than a string.
+
+    `/following` renders the control the way Instagram does — a button
+    wrapping a styled div — and reports to the server if it is ever
+    clicked, which is what unfollowing someone would look like from here.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/following"), "Hi alice."
+    )
+
+    assert result.success is False
+    assert RECEIVED == [], f"the Following control was clicked: {RECEIVED!r}"
