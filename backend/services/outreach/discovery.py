@@ -88,6 +88,13 @@ _TASKS: dict[int, asyncio.Task] = {}
 _CANCELLED: set[int] = set()
 
 
+def _started(run: "Run") -> datetime:
+    try:
+        return datetime.fromisoformat(run.started_at)
+    except (TypeError, ValueError):
+        return datetime.now(timezone.utc)
+
+
 def _seed_list(raw: Optional[str]) -> list[str]:
     """"@one, two" -> ["one", "two"]."""
     if not raw:
@@ -369,12 +376,27 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             await _persist_status(search_id, STATUS_CANCELLED, run.message, stored, visited)
             return
 
-        finish(
-            STATUS_DONE,
-            f"Found {stored} profile(s). Review them and import the ones you want."
-            if stored else
-            "No profiles found. Try a broader niche, or different wording.",
-        )
+        # A run that stops well short of what was asked, quickly, has not
+        # found everything there was — the platform stopped feeding it.
+        # Instagram throttles sustained harvesting, and back-to-back runs
+        # on one account show it plainly: 988 profiles, then 48. Saying
+        # "found 48" without saying why invites running it again straight
+        # away, which is the one thing that makes it worse.
+        elapsed = (datetime.now(timezone.utc) - _started(run)).total_seconds()
+        throttled = stored < wanted * 0.6 and elapsed < 120
+
+        if not stored:
+            message = "No profiles found. Try a broader niche, or different wording."
+        elif throttled:
+            message = (
+                f"Found {stored} of {wanted} and then the platform stopped "
+                f"returning more — that is throttling, not the end of the list. "
+                f"Leave it an hour before running this account again; going "
+                f"straight back makes it worse."
+            )
+        else:
+            message = f"Found {stored} profile(s). Review them and import the ones you want."
+        finish(STATUS_DONE, message)
         await _persist_status(search_id, STATUS_DONE, run.message, stored, visited)
     except asyncio.CancelledError:
         finish(STATUS_CANCELLED, "The search was cancelled.")

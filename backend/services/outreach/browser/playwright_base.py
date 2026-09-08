@@ -72,6 +72,11 @@ SCROLL_PAUSE_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_PAUSE_MS", "1200")
 #: the list finished, and how often to look while waiting.
 LOAD_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_LOAD_WAIT_MS", "2500"))
 SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
+#: Quiet rounds before a list is called finished, and the longest any one
+#: list may be worked. The rounds have a growing pause between them, so
+#: this is roughly half a minute of patience before giving up.
+DIALOG_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_QUIET_ROUNDS", "6"))
+DIALOG_BUDGET_MS = int(os.environ.get("ICREATE_OUTREACH_DIALOG_BUDGET_MS", "900000"))
 CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
 CHALLENGE_WAIT_HEADFUL_MS = int(
     os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_HEADFUL_MS", "300000")
@@ -1593,24 +1598,41 @@ class PlaywrightMessenger:
                   f"{type(exc).__name__}: {exc}", flush=True)
             return []
 
+    async def _dialog_height(self, page) -> int:
+        """How tall the scrolling list is right now, in pixels.
+
+        A better progress signal than the number of names: when a fetch
+        lands the list gets taller immediately, while the names in it may
+        be ones already seen. Judging progress by names alone means a run
+        that is scrolling correctly through familiar territory looks stuck.
+        """
+        try:
+            return int(await page.evaluate(
+                """() => {
+                    const d = document.querySelector("div[role='dialog']");
+                    if (!d) return 0;
+                    const boxes = Array.from(d.querySelectorAll('*'))
+                        .filter(el => el.scrollHeight > el.clientHeight + 40);
+                    if (!boxes.length) return 0;
+                    return Math.max(...boxes.map(el => el.scrollHeight));
+                }"""
+            ) or 0)
+        except Exception:  # noqa: BLE001 — progress is a hint, not a step
+            return 0
+
     async def _links_in_open_dialog(self, page, scroll_rounds: int,
                                     wanted: int = 0) -> list[str]:
         """Read and scroll a dialog that is already open, to the end of it.
 
-        Two things make this harder than it looks, and both were got wrong
-        before.
+        The list loads a page at a time when scrolled to the bottom, and
+        that fetch is sometimes slow. Everything here is about telling a
+        slow fetch apart from a finished list, because getting that wrong
+        in either direction is what made repeat runs return a different
+        number every time: 525, then 92, on the same account.
 
-        The list is virtualised: rows leave the DOM once they scroll out of
-        view, so the page never holds more than a window. Anything that
-        reads the DOM once at the end sees only the last window — which is
-        how an account with a thousand followers reported a hundred and
-        seven. So it collects on every pass and accumulates.
-
-        And the fetch is triggered by reaching the bottom, then takes time.
-        Scrolling repeatedly does not help — one scroll at the bottom is
-        the trigger; what is needed after it is patience. So each round
-        scrolls once and then watches for the count to grow, rather than
-        scrolling four times and giving up after a fixed pause.
+        So progress means *either* new names or a taller list, and running
+        out of patience takes several quiet rounds with a growing pause
+        between them — not four fixed ones.
         """
         selectors = self.SELECTORS.get("liker") or ()
         if not selectors:
@@ -1626,28 +1648,38 @@ class PlaywrightMessenger:
             return len(seen)
 
         await harvest()
+        height = await self._dialog_height(page)
+        deadline = time.monotonic() + (DIALOG_BUDGET_MS / 1000)
 
-        barren = 0
+        quiet = 0
         for _ in range(max(scroll_rounds, 0)):
             if wanted and len(seen) >= wanted:
                 break
-            before = len(seen)
+            if time.monotonic() > deadline:
+                print(f"[discovery] stopped after {DIALOG_BUDGET_MS // 1000}s on "
+                      f"one list, with {len(seen)} name(s)", flush=True)
+                break
+
+            names_before, height_before = len(seen), height
             await self._load_more(page)
             await page.wait_for_timeout(SCROLL_PAUSE_MS)
-            if await harvest() == before:
-                # One more chance in case the fetch was slow, rather than
-                # concluding a list of a thousand had ended at two hundred.
-                await page.wait_for_timeout(LOAD_WAIT_MS)
-                await harvest()
+            await harvest()
+            height = await self._dialog_height(page)
 
-            if len(seen) > before:
-                barren = 0
-            else:
-                barren += 1
-                # A list that has genuinely ended says so by staying still
-                # several times over — one quiet round is just a slow fetch.
-                if barren >= 4:
-                    break
+            if len(seen) > names_before or height > height_before:
+                quiet = 0
+                continue
+
+            # Nothing yet. Wait longer each time before deciding the list
+            # has ended — a slow page is not a finished one.
+            quiet += 1
+            if quiet >= DIALOG_QUIET_ROUNDS:
+                break
+            await page.wait_for_timeout(SCROLL_PAUSE_MS * quiet)
+            await harvest()
+            height = await self._dialog_height(page)
+            if len(seen) > names_before or height > height_before:
+                quiet = 0
         return list(seen)
 
     async def _profile_links(self, page, url: str, selectors,
