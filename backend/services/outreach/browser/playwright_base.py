@@ -89,7 +89,10 @@ PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "1200
 #: local stub that rendered instantly; a real profile on a cold server is
 #: nowhere near that fast, and running out of time here is indistinguishable
 #: from the button being absent.
-MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "15000"))
+MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "8000"))
+#: What a fallback tier gets once the first has already waited out the page.
+#: Not a page-load budget — a settled-DOM query, which is instant or never.
+LATER_TIER_MS = int(os.environ.get("ICREATE_OUTREACH_LATER_TIER_MS", "1500"))
 #: Per-click budget. The context default (30s) is far too long to spend
 #: discovering that something is covering the button.
 CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
@@ -292,6 +295,25 @@ class PlaywrightMessenger:
                 continue
         return False
 
+    async def _type_message(self, page, editor, message: str) -> None:
+        """Type the message, keeping its line breaks inside one message.
+
+        In a chat composer Enter sends. Typing a template with a newline in
+        it therefore posts the first line, starts a new message, and posts
+        the rest — two messages where one was meant, and a delivery check
+        looking for the whole text finds it nowhere.
+
+        Shift+Enter is the line break these composers accept.
+        """
+        lines = message.split("\n")
+        for index, line in enumerate(lines):
+            if index:
+                await page.keyboard.down("Shift")
+                await page.keyboard.press("Enter")
+                await page.keyboard.up("Shift")
+            if line:
+                await editor.type(line, delay=25)
+
     @staticmethod
     async def _composer_cleared(editor, attempts: int = 20) -> bool:
         """Did the input box empty out after the send?
@@ -326,8 +348,20 @@ class PlaywrightMessenger:
         """
         if tiers and isinstance(tiers[0], str):
             tiers = (tiers,)
-        for tier in tiers:
-            found = await self._first_visible(page, tuple(tier), timeout_ms)
+        for index, tier in enumerate(tiers):
+            # Only the first tier waits for the page. If it has already spent
+            # the full budget without a match, the page is settled — every
+            # later tier is asking a finished document a question it can
+            # answer at once, so giving each of them the same generous budget
+            # just multiplies the wait by the number of guesses.
+            #
+            # Two tiers at 15s each is 30 seconds spent on every profile that
+            # has no Message button, and on a run those are common. The cost
+            # of cutting it short is a `messaging_unavailable`, which is
+            # retryable and gets another run; the cost of not cutting it is
+            # paid on every single target.
+            budget = timeout_ms if index == 0 else LATER_TIER_MS
+            found = await self._first_visible(page, tuple(tier), budget)
             if found is not None:
                 return found
         return None
@@ -573,23 +607,38 @@ class PlaywrightMessenger:
         What actually catches a phantom send is not where we look but how
         often — see `_delivery_holds`.
         """
-        needle = message[:60].strip()
+        def flatten(value: str) -> str:
+            """Compare words, not whitespace.
+
+            A message with a line break in it is one string here and a
+            `<br>`, a nested div, or a newline in the rendered thread — and
+            a literal `\n` from the template matched none of them. Every
+            multi-line template failed this check while being delivered
+            perfectly well.
+            """
+            return " ".join((value or "").split())
+
+        needle = flatten(message)[:60]
         if not needle:
             return False
         for selector in self.SELECTORS["sent_confirmation"]:
             try:
-                items = page.locator(selector)
-                for i in range(min(await items.count(), 40)):
-                    text = (await items.nth(i).inner_text(timeout=1000)) or ""
-                    if needle in text:
-                        return True
+                # One round trip for the whole selector. Asking each element
+                # for its text separately costs a call apiece and times out
+                # on threads long enough to matter.
+                texts = await page.eval_on_selector_all(
+                    selector, "els => els.slice(-40).map(e => e.innerText || '')"
+                )
             except Exception:  # noqa: BLE001 — try the next shape
                 continue
+            for text in texts:
+                if needle in flatten(text):
+                    return True
         try:
             body = (await page.locator("body").inner_text(timeout=3000)) or ""
         except Exception:  # noqa: BLE001
             return False
-        return needle in body
+        return needle in flatten(body)
 
     async def _delivery_holds(
         self, page, message: str, target: dict[str, Any], username: str
@@ -1051,7 +1100,7 @@ class PlaywrightMessenger:
             # 5. Enter the message. `type` rather than `fill` — the composer
             # is a contenteditable that ignores programmatic value sets.
             await editor.click()
-            await editor.type(message, delay=25)
+            await self._type_message(page, editor, message)
 
             # 5b. The campaign's image, if it has one. Before submitting:
             # the composer sends text and attachment together, and an image
@@ -1110,6 +1159,28 @@ class PlaywrightMessenger:
                     "The message is still sitting in the composer — the send "
                     "did not go through",
                     url=page.url,
+                )
+
+            # Refused by this recipient, not by the platform. "They don't
+            # allow new message requests from everyone" is a setting on
+            # their account and says nothing about ours — filing it as a
+            # refusal would count it against the sending account's error
+            # budget and eventually pause a perfectly healthy account
+            # because a few strangers keep their inbox closed.
+            #
+            # It is the same situation as a profile with no Message button:
+            # this person cannot be reached from here, try the next one.
+            if await self._present(page, self.SELECTORS.get("recipient_refused", ())):
+                return MessageResult.failure(
+                    RESULT_MESSAGING_UNAVAILABLE,
+                    f"@{target_username} does not accept message requests from "
+                    f"this account — the message was drawn into the thread and "
+                    f"refused. Nothing reached them, and nothing is wrong with "
+                    f"the sending account",
+                    url=page.url,
+                    screenshot=await self._save_debug_shot(
+                        page, target_username, "recipient-refused"
+                    ),
                 )
 
             # An explicit refusal is judged before anything else: TikTok

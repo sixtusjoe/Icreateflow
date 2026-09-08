@@ -27,6 +27,7 @@ from services.outreach.browser.playwright_instagram import (  # noqa: E402
     PlaywrightInstagramMessenger,
 )
 from services.outreach.constants import (  # noqa: E402
+    ACCOUNT_FAULT_RESULTS,
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_SENT,
@@ -179,8 +180,78 @@ WITH_ATTACHMENT = """
 </body></html>
 """
 
+#: A composer where Enter sends, which is what every chat box on the web
+#: does and what the earlier stubs did not. Typing a template with a line
+#: break in it into this page submits the first line on its own.
+ENTER_SENDS = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div role="button" onclick="openChat()">Message</div>
+  <div id="chat" style="display:none">
+    <div role="textbox" contenteditable="true"></div>
+    <div role="button" onclick="sendChat()">Send</div>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('div[role="textbox"]');
+      const text = ed.innerText;
+      if (!text.trim()) return;
+      const row = document.createElement('div');
+      row.setAttribute('role', 'row');
+      row.innerText = text;
+      document.getElementById('thread').appendChild(row);
+      fetch('/sent', { method: 'POST', body: text });
+      ed.innerHTML = '';
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.target.getAttribute('role') !== 'textbox') return;
+      // Enter sends. Shift+Enter is left alone, so the browser inserts the
+      // line break itself — exactly the distinction the composer relies on.
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+    });
+  </script>
+</body></html>
+"""
+
+#: What Instagram does when the recipient does not take requests: it renders
+#: the message in the thread exactly like a delivered one, and puts the
+#: refusal in among the bubbles. `nolove_lu` looked identical to three
+#: genuine deliveries in the same run — same blue bubbles, same timestamp —
+#: with one grey line of text between them saying it had not gone anywhere.
+REQUEST_REFUSED = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div role="button" onclick="openChat()">Message</div>
+  <div id="chat" style="display:none">
+    <div role="textbox" contenteditable="true"></div>
+    <div role="button" onclick="sendChat()">Send</div>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.querySelector('div[role="textbox"]');
+      const row = document.createElement('div');
+      row.setAttribute('role', 'row');
+      row.innerText = ed.innerText;
+      const thread = document.getElementById('thread');
+      thread.appendChild(row);
+      const notice = document.createElement('div');
+      notice.textContent = "This account can't receive your message because "
+        + "they don't allow new message requests from everyone.";
+      thread.appendChild(notice);
+      ed.innerHTML = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/entersends": ENTER_SENDS,
+    "/requestrefused": REQUEST_REFUSED,
     "/withimage": WITH_ATTACHMENT,
     "/dock": DOCK_OVER_PROFILE,
     "/navdecoy": NAV_MESSAGES_DECOY,
@@ -209,7 +280,7 @@ class _Handler(BaseHTTPRequestHandler):
         # `/dock` is the exception: its conversation does not exist until it
         # is opened, which is the whole point of that page. Pre-filling it
         # would hide the bug it exists to reproduce.
-        if self.path != "/dock" and '<div id="thread"></div>' in body:
+        if self.path not in ("/dock", "/requestrefused") and '<div id="thread"></div>' in body:
             rows = "".join(f'<div role="row">{m}</div>' for m in RECEIVED)
             body = body.replace('<div id="thread"></div>', f'<div id="thread">{rows}</div>')
         self.send_response(200)
@@ -397,3 +468,47 @@ async def test_a_missing_image_file_is_reported_rather_than_skipped(driver, tmp_
     real problem, not something to quietly send without."""
     problem = await driver._attach_image(None, str(tmp_path / "gone.png"), "alice")
     assert problem and "missing from disk" in problem
+
+
+async def test_a_line_break_in_the_template_stays_inside_one_message(driver, site):
+    """A two-line template was arriving as two separate messages.
+
+    Typing the text typed its newline as Enter, and Enter in a chat composer
+    sends. So "We ship to USA only! ... / ask us how to get a free sample!"
+    left as two bubbles, and the delivery check — looking for the whole
+    string in one place — found neither and called a real send a failure.
+
+    Shift+Enter is the line break these composers accept.
+    """
+    message = "We ship to USA only! t.me/wesellmuha\nask us how to get a free sample!"
+
+    result = await driver.send_message(account(), target(site, "/entersends"), message)
+
+    assert result.success is True, result.error
+    assert RECEIVED == [message], (
+        f"expected one message with a line break in it, got {RECEIVED!r}"
+    )
+
+
+async def test_a_refusal_among_the_bubbles_is_not_a_delivery(driver, site):
+    """The message can be in the thread and still have gone nowhere.
+
+    Four targets in one run reported the same failure, and the screenshots
+    showed three of them genuinely delivered. The fourth had the identical
+    blue bubbles and, between them, one grey line: the account does not
+    accept message requests. Nothing about the thread distinguished it.
+
+    So the thread is not the evidence — it never was. This is why a send is
+    confirmed by asking the platform again rather than by reading back what
+    the client drew.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/requestrefused"), "Hi alice, quick question."
+    )
+
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE, result.error
+    # And specifically not a refusal: that bucket counts against the sending
+    # account and pauses it. A stranger with a closed inbox is not evidence
+    # of anything being wrong with the account doing the sending.
+    assert result.status not in ACCOUNT_FAULT_RESULTS

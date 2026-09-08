@@ -198,6 +198,14 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
         "text=couldn't send your message",
         "text=Your message couldn't be sent",
     ),
+    # Refused by the recipient rather than by Instagram. Verbatim from a
+    # live send: the message rendered in the thread as three blue bubbles,
+    # indistinguishable from the three genuine deliveries in the same run,
+    # with this sitting quietly between them.
+    "recipient_refused": (
+        "text=can't receive your message",
+        "text=don't allow new message requests",
+    ),
     "follow_button": (
         ("button:text-is('Follow')",),
         (
