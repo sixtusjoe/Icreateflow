@@ -68,6 +68,10 @@ CHALLENGE_FRAME_HINTS = ("captcha", "verify", "secsdk")
 SETTLE_MS = int(os.environ.get("ICREATE_OUTREACH_SETTLE_MS", "2500"))
 #: How long to let a lazily-loaded list fetch its next page after a scroll.
 SCROLL_PAUSE_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_PAUSE_MS", "1200"))
+#: How long to wait for a scroll to bring in the next page before calling
+#: the list finished, and how often to look while waiting.
+LOAD_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_LOAD_WAIT_MS", "2500"))
+SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
 CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
 CHALLENGE_WAIT_HEADFUL_MS = int(
     os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_HEADFUL_MS", "300000")
@@ -1412,18 +1416,26 @@ class PlaywrightMessenger:
         return await self._profile_links(page, url, selectors, scroll_rounds)
 
     async def _collect_profile_links(self, page, selectors) -> list[str]:
-        """Profile handles currently rendered, in document order, deduped."""
+        """Profile handles currently rendered, in document order, deduped.
+
+        Every href in one call. Asking Playwright for them one at a time is
+        a round trip each, so a dialog holding a thousand rows took long
+        enough per pass to be useless — it was most of why scrolling a long
+        list crawled, and why it appeared to stop making progress.
+        """
         names: list[str] = []
         for selector in selectors:
             try:
-                links = page.locator(selector)
-                for i in range(min(await links.count(), 400)):
-                    href = await links.nth(i).get_attribute("href") or ""
-                    username = self.username_from_url(href)
-                    if username and username not in names:
-                        names.append(username)
+                hrefs = await page.eval_on_selector_all(
+                    selector,
+                    "els => els.map(e => e.getAttribute('href')).filter(Boolean)",
+                )
             except Exception:  # noqa: BLE001 — try the next shape
                 continue
+            for href in hrefs:
+                username = self.username_from_url(href)
+                if username and username not in names:
+                    names.append(username)
             if names:
                 break
         return names
@@ -1468,14 +1480,13 @@ class PlaywrightMessenger:
             if not moved:
                 size = page.viewport_size or {"width": 1280, "height": 800}
                 await page.mouse.move(size["width"] / 2, size["height"] / 2)
-            # Several smaller turns rather than one large one, so the
-            # sentinel is actually crossed rather than jumped over.
-            for _ in range(4):
-                await page.mouse.wheel(0, 900)
-                await page.wait_for_timeout(200)
+            # One turn. Reaching the bottom is what asks for the next page;
+            # scrolling again while it loads achieves nothing, and the
+            # caller waits for the result rather than guessing at a pause.
+            await page.mouse.wheel(0, 2400)
         except Exception:  # noqa: BLE001
             pass
-        await page.wait_for_timeout(SCROLL_PAUSE_MS)
+        await page.wait_for_timeout(SCROLL_POLL_MS)
 
     async def discover_followers(
         self,
@@ -1577,14 +1588,22 @@ class PlaywrightMessenger:
 
     async def _links_in_open_dialog(self, page, scroll_rounds: int,
                                     wanted: int = 0) -> list[str]:
-        """Read and scroll a dialog that is already open.
+        """Read and scroll a dialog that is already open, to the end of it.
 
-        Accumulates as it goes rather than re-reading at the end. These
-        lists are virtualised: rows are removed from the DOM once they
-        scroll out of view, so the page only ever holds a window of about a
-        hundred. Reading the DOM after scrolling therefore returns the
-        *last* window and nothing before it — an account with a thousand
-        followers gave up a hundred and seven, no matter how far it scrolled.
+        Two things make this harder than it looks, and both were got wrong
+        before.
+
+        The list is virtualised: rows leave the DOM once they scroll out of
+        view, so the page never holds more than a window. Anything that
+        reads the DOM once at the end sees only the last window — which is
+        how an account with a thousand followers reported a hundred and
+        seven. So it collects on every pass and accumulates.
+
+        And the fetch is triggered by reaching the bottom, then takes time.
+        Scrolling repeatedly does not help — one scroll at the bottom is
+        the trigger; what is needed after it is patience. So each round
+        scrolls once and then watches for the count to grow, rather than
+        scrolling four times and giving up after a fixed pause.
         """
         selectors = self.SELECTORS.get("liker") or ()
         if not selectors:
@@ -1593,22 +1612,35 @@ class PlaywrightMessenger:
         await page.wait_for_timeout(SETTLE_MS)
 
         seen: dict[str, None] = {}
-        for name in await self._collect_profile_links(page, selectors):
-            seen.setdefault(name)
 
-        # Stop after a few rounds that add nobody, rather than the first:
-        # a virtualised list can render a repeat window mid-scroll.
+        async def harvest() -> int:
+            for name in await self._collect_profile_links(page, selectors):
+                seen.setdefault(name)
+            return len(seen)
+
+        await harvest()
+
         barren = 0
         for _ in range(max(scroll_rounds, 0)):
             if wanted and len(seen) >= wanted:
                 break
             before = len(seen)
             await self._load_more(page)
-            for name in await self._collect_profile_links(page, selectors):
-                seen.setdefault(name)
-            barren = 0 if len(seen) > before else barren + 1
-            if barren >= 3:
-                break
+            await page.wait_for_timeout(SCROLL_PAUSE_MS)
+            if await harvest() == before:
+                # One more chance in case the fetch was slow, rather than
+                # concluding a list of a thousand had ended at two hundred.
+                await page.wait_for_timeout(LOAD_WAIT_MS)
+                await harvest()
+
+            if len(seen) > before:
+                barren = 0
+            else:
+                barren += 1
+                # A list that has genuinely ended says so by staying still
+                # several times over — one quiet round is just a slow fetch.
+                if barren >= 4:
+                    break
         return list(seen)
 
     async def _profile_links(self, page, url: str, selectors,

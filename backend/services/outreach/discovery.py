@@ -300,7 +300,15 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 seeds=tuple(seeds),
                 limit=wanted,
                 interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
-                scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]) * 3,
+                # Enough rounds for the number asked for, not a fixed
+                # depth. A followers list yields roughly a dozen new people
+                # per scroll, so a request for a thousand needs about ninety
+                # — and stops early anyway once it has them, or once the
+                # list genuinely ends.
+                scroll_rounds=max(
+                    int(settings["outreach_discovery_scroll_rounds"]) * 3,
+                    wanted // 10 + 20,
+                ),
                 should_stop=lambda: search_id in _CANCELLED,
                 on_found=on_found,
                 exclude=known,
