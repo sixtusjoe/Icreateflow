@@ -1178,6 +1178,7 @@ class PlaywrightMessenger:
         scroll_rounds: int = 4,
         should_stop: Optional[Any] = None,
         on_found: Optional[Any] = None,
+        exclude: Optional[set[str]] = None,
     ) -> list[dict[str, Any]]:
         """Collect public profiles matching these hashtags and search terms.
 
@@ -1208,9 +1209,13 @@ class PlaywrightMessenger:
                 return True
             return bool(should_stop and should_stop())
 
+        skip = exclude or set()
+
         async def remember(username: str, source: str, display_name: str = "") -> None:
             username = (username or "").strip().lstrip("@")
-            if not username or username in found:
+            # Someone already found, here or in an earlier search, is not a
+            # new lead — and must not consume any of the budget.
+            if not username or username in found or username in skip:
                 return
             found[username] = {
                 "username": username,
@@ -1482,6 +1487,7 @@ class PlaywrightMessenger:
         scroll_rounds: int = 12,
         should_stop: Optional[Any] = None,
         on_found: Optional[Any] = None,
+        exclude: Optional[set[str]] = None,
     ) -> list[dict[str, Any]]:
         """Collect the people following each of these accounts.
 
@@ -1505,14 +1511,20 @@ class PlaywrightMessenger:
                 return []
             # Even shares, so three seeds give three lists rather than one.
             share = max(limit // len(seeds), 1)
+            skip = exclude or set()
             for seed in seeds:
                 if done():
                     break
+                # Ask for more than the share: some of what comes back is
+                # already known, and those must not eat into the quota.
                 for username in await self.account_followers(
-                    page, seed, limit=share, scroll_rounds=scroll_rounds
+                    page, seed, limit=share + len(skip), scroll_rounds=scroll_rounds
                 ):
-                    if username in found:
+                    if username in found or username in skip:
                         continue
+                    if len([f for f in found.values()
+                            if f["source"] == f"followers:@{seed}"]) >= share:
+                        break
                     found[username] = {
                         "username": username,
                         "profile_url": self.profile_url(username),
@@ -1555,7 +1567,7 @@ class PlaywrightMessenger:
                 return []
             if not await self._click(page, link, "followers-link", username):
                 return []
-            names = await self._links_in_open_dialog(page, scroll_rounds)
+            names = await self._links_in_open_dialog(page, scroll_rounds, wanted=limit)
             # An account's own handle is in the profile behind the dialog.
             return [n for n in names if n != username][:limit]
         except Exception as exc:  # noqa: BLE001 — one bad seed is not fatal
@@ -1563,21 +1575,41 @@ class PlaywrightMessenger:
                   f"{type(exc).__name__}: {exc}", flush=True)
             return []
 
-    async def _links_in_open_dialog(self, page, scroll_rounds: int) -> list[str]:
-        """Read and scroll a dialog that is already open."""
+    async def _links_in_open_dialog(self, page, scroll_rounds: int,
+                                    wanted: int = 0) -> list[str]:
+        """Read and scroll a dialog that is already open.
+
+        Accumulates as it goes rather than re-reading at the end. These
+        lists are virtualised: rows are removed from the DOM once they
+        scroll out of view, so the page only ever holds a window of about a
+        hundred. Reading the DOM after scrolling therefore returns the
+        *last* window and nothing before it — an account with a thousand
+        followers gave up a hundred and seven, no matter how far it scrolled.
+        """
         selectors = self.SELECTORS.get("liker") or ()
         if not selectors:
             return []
         await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
         await page.wait_for_timeout(SETTLE_MS)
-        names = await self._collect_profile_links(page, selectors)
+
+        seen: dict[str, None] = {}
+        for name in await self._collect_profile_links(page, selectors):
+            seen.setdefault(name)
+
+        # Stop after a few rounds that add nobody, rather than the first:
+        # a virtualised list can render a repeat window mid-scroll.
+        barren = 0
         for _ in range(max(scroll_rounds, 0)):
-            await self._load_more(page)
-            grown = await self._collect_profile_links(page, selectors)
-            if grown and len(grown) <= len(names):
+            if wanted and len(seen) >= wanted:
                 break
-            names = grown
-        return names
+            before = len(seen)
+            await self._load_more(page)
+            for name in await self._collect_profile_links(page, selectors):
+                seen.setdefault(name)
+            barren = 0 if len(seen) > before else barren + 1
+            if barren >= 3:
+                break
+        return list(seen)
 
     async def _profile_links(self, page, url: str, selectors,
                              scroll_rounds: int = 0) -> list[str]:

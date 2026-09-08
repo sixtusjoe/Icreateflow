@@ -139,6 +139,42 @@ async def visited_today(database, account_id: int) -> int:
     return int(row[0] or 0) if row else 0
 
 
+async def already_known(database, user_id: Optional[int], platform: str) -> set[str]:
+    """Everyone this account holder has already found, or already contacted.
+
+    Both, deliberately. A username that came back in an earlier search is
+    not a new lead, and one already imported as a target has been written
+    to — turning either up again wastes the budget on somebody who is
+    already on a list.
+    """
+    known: set[str] = set()
+    try:
+        rows = (await database.session.execute(
+            text(
+                "SELECT DISTINCT l.username FROM outreach_leads l "
+                "  JOIN outreach_lead_searches s ON s.id = l.search_id "
+                " WHERE l.platform = :platform "
+                "   AND (s.user_id = :uid OR :uid IS NULL)"
+            ),
+            {"platform": platform, "uid": user_id},
+        )).all()
+        known.update(r[0] for r in rows if r[0])
+
+        rows = (await database.session.execute(
+            text(
+                "SELECT DISTINCT t.username FROM outreach_targets t "
+                "  JOIN outreach_campaigns c ON c.id = t.campaign_id "
+                " WHERE c.platform = :platform "
+                "   AND (c.user_id = :uid OR :uid IS NULL)"
+            ),
+            {"platform": platform, "uid": user_id},
+        )).all()
+        known.update(r[0] for r in rows if r[0])
+    except Exception:  # noqa: BLE001 — a failed lookup must not stop a search
+        traceback.print_exc()
+    return known
+
+
 async def discovery_accounts(database, platform: str, user_id: Optional[int]) -> list[dict]:
     """Accounts marked for discovery on this platform, with a session."""
     rows = await db.get_sending_accounts(database, user_id=user_id)
@@ -225,8 +261,13 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                     database, search.get("niche") or "", search.get("location") or "",
                     search.get("interests") or "", platform=platform, user_id=user_id,
                 )
+            known = await already_known(database, user_id, platform)
         finally:
             await database.close()
+
+        if known:
+            print(f"[discovery] skipping {len(known)} profile(s) already found "
+                  f"or already contacted", flush=True)
 
         await _persist_status(search_id, STATUS_RUNNING, run.message, 0, 0, started=True)
         await _persist_queries(search_id, plan)
@@ -262,6 +303,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]) * 3,
                 should_stop=lambda: search_id in _CANCELLED,
                 on_found=on_found,
+                exclude=known,
             )
         else:
             leads = await driver.discover_profiles(
@@ -275,6 +317,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]),
                 should_stop=lambda: search_id in _CANCELLED,
                 on_found=on_found,
+                exclude=known,
             )
         visited = len(leads)
 
