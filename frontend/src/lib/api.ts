@@ -975,6 +975,7 @@ export const startLeadSearch = (
   campaignId: number,
   data: {
     niche: string;
+    seed_accounts?: string;
     location?: string;
     interests?: string;
     wanted: number;

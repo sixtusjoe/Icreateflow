@@ -35,6 +35,7 @@ export function LeadFinder({
 }) {
   const [availability, setAvailability] = useState<LeadSearchAvailability | null>(null);
   const [niche, setNiche] = useState("");
+  const [seeds, setSeeds] = useState("");
   const [location, setLocation] = useState("");
   const [interests, setInterests] = useState("");
   const [wanted, setWanted] = useState(50);
@@ -90,13 +91,15 @@ export function LeadFinder({
   }, [run, loadLeads]);
 
   const handleStart = async () => {
-    if (!niche.trim()) return toast.error("Describe who you are looking for");
+    if (!niche.trim() && !seeds.trim())
+      return toast.error("Describe who you want, or name accounts to read");
     setBusy(true);
     setLeads([]);
     setChosen(new Set());
     try {
       const started = await startLeadSearch(campaignId, {
         niche: niche.trim(),
+        seed_accounts: seeds.trim() || undefined,
         location: location.trim() || undefined,
         interests: interests.trim() || undefined,
         wanted,
@@ -153,6 +156,20 @@ export function LeadFinder({
               value={niche}
               onChange={(e) => setNiche(e.target.value)}
             />
+            <input
+              className={inputClass}
+              placeholder="Or: accounts whose followers to read, e.g. @nike, @adidas"
+              value={seeds}
+              onChange={(e) => setSeeds(e.target.value)}
+            />
+            {seeds.trim() && (
+              <p className="text-xs text-muted-foreground">
+                Reading followers directly — the description, hashtags and post
+                options below are not used. Everyone here chose to follow those
+                accounts, which is a warmer list than a hashtag. It is also the
+                most conspicuous thing this does, so keep the numbers modest.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <input
                 className={inputClass}
@@ -242,7 +259,7 @@ export function LeadFinder({
 
           <button
             onClick={handleStart}
-            disabled={busy || !niche.trim() || availability?.busy}
+            disabled={busy || (!niche.trim() && !seeds.trim()) || availability?.busy}
             className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
           >
             <Sparkles className="h-4 w-4" />

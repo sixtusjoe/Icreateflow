@@ -784,11 +784,15 @@ class OutreachLeadSearch(Base):
     platform: Mapped[str] = mapped_column(Text, server_default="instagram")
     #: What the operator asked for, in their words.
     niche: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Accounts whose followers to harvest, comma separated. When set, the
+    #: search follows these instead of searching hashtags.
+    seed_accounts: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     location: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     interests: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     wanted: Mapped[int] = mapped_column(Integer, server_default="50")
     include_commenters: Mapped[bool] = mapped_column(Boolean, server_default="false")
     include_likers: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    enrich_profiles: Mapped[bool] = mapped_column(Boolean, server_default="false")
     #: The hashtags and search terms an LLM derived from the above.
     queries: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     account_id: Mapped[Optional[int]] = mapped_column(
@@ -1508,6 +1512,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
          "TEXT NOT NULL DEFAULT 'sending'"),
         ("outreach_lead_searches", "include_likers",
          "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("outreach_lead_searches", "enrich_profiles",
+         "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("outreach_lead_searches", "seed_accounts", "TEXT"),
 )
 
 

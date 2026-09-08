@@ -1472,6 +1472,113 @@ class PlaywrightMessenger:
             pass
         await page.wait_for_timeout(SCROLL_PAUSE_MS)
 
+    async def discover_followers(
+        self,
+        account: dict[str, Any],
+        *,
+        seeds: tuple[str, ...],
+        limit: int = 50,
+        interval_seconds: float = 6.0,
+        scroll_rounds: int = 12,
+        should_stop: Optional[Any] = None,
+        on_found: Optional[Any] = None,
+    ) -> list[dict[str, Any]]:
+        """Collect the people following each of these accounts.
+
+        A far more direct list than a hashtag: everyone here chose to follow
+        something specific. It is also the most conspicuous thing in this
+        module — one account paging through another's followers is the
+        classic shape of scraping, so the same caps and pauses apply and the
+        budget is shared evenly across the seeds rather than drained on the
+        first.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        context = await self._context_for(account)
+        page = await context.new_page()
+
+        def done() -> bool:
+            return len(found) >= limit or bool(should_stop and should_stop())
+
+        try:
+            seeds = tuple(s.strip().lstrip("@") for s in seeds if s.strip())
+            if not seeds:
+                return []
+            # Even shares, so three seeds give three lists rather than one.
+            share = max(limit // len(seeds), 1)
+            for seed in seeds:
+                if done():
+                    break
+                for username in await self.account_followers(
+                    page, seed, limit=share, scroll_rounds=scroll_rounds
+                ):
+                    if username in found:
+                        continue
+                    found[username] = {
+                        "username": username,
+                        "profile_url": self.profile_url(username),
+                        "display_name": None,
+                        "source": f"followers:@{seed}",
+                    }
+                    if on_found:
+                        await on_found(found[username])
+                    if done():
+                        break
+                await page.wait_for_timeout(int(interval_seconds * 1000))
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return list(found.values())
+
+    async def account_followers(self, page, username: str, limit: int,
+                                scroll_rounds: int = 8) -> list[str]:
+        """Who follows this account.
+
+        Not by URL. `/<user>/followers/` renders the profile and nothing
+        else — the list is a modal that only opens when the link on a
+        loaded profile is clicked, so navigating straight to it returns a
+        page with no dialog on it at all. The likes list does open by URL,
+        which is exactly why this was worth checking rather than assuming.
+        """
+        selectors = self.SELECTORS.get("followers_link") or ()
+        if not selectors or limit <= 0:
+            return []
+        try:
+            await page.goto(self.profile_url(username), wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await self._dismiss_overlays(page)
+            link = await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
+            if link is None:
+                print(f"[discovery] no followers link on @{username} — private, "
+                      f"or it does not show its followers", flush=True)
+                return []
+            if not await self._click(page, link, "followers-link", username):
+                return []
+            names = await self._links_in_open_dialog(page, scroll_rounds)
+            # An account's own handle is in the profile behind the dialog.
+            return [n for n in names if n != username][:limit]
+        except Exception as exc:  # noqa: BLE001 — one bad seed is not fatal
+            print(f"[discovery] followers of @{username} failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            return []
+
+    async def _links_in_open_dialog(self, page, scroll_rounds: int) -> list[str]:
+        """Read and scroll a dialog that is already open."""
+        selectors = self.SELECTORS.get("liker") or ()
+        if not selectors:
+            return []
+        await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
+        await page.wait_for_timeout(SETTLE_MS)
+        names = await self._collect_profile_links(page, selectors)
+        for _ in range(max(scroll_rounds, 0)):
+            await self._load_more(page)
+            grown = await self._collect_profile_links(page, selectors)
+            if grown and len(grown) <= len(names):
+                break
+            names = grown
+        return names
+
     async def _profile_links(self, page, url: str, selectors,
                              scroll_rounds: int = 0) -> list[str]:
         """Profile handles linked from a page, in order, deduped.
@@ -1496,7 +1603,13 @@ class PlaywrightMessenger:
             for _ in range(max(scroll_rounds, 0)):
                 await self._load_more(page)
                 grown = await self._collect_profile_links(page, selectors)
-                if len(grown) <= len(names):
+                if grown and len(grown) <= len(names):
+                    # Stop only once there is something and it stopped
+                    # growing. Breaking on "no growth" alone gave up on an
+                    # empty list, and a dialog that has not finished opening
+                    # is empty — a followers list read that way came back
+                    # with nobody, which reads as an account with no
+                    # followers rather than one still loading.
                     break
                 names = grown
             return names

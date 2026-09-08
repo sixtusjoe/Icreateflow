@@ -141,6 +141,17 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
     "post_people": (
         "main a[href^='/']",
     ),
+    # The "N followers" link on a profile. Clicking it is the only way to
+    # open that list — its URL renders the profile with no dialog at all.
+    # Matched by its text, because its href is literally "#". Instagram
+    # renders it as <a role="link" href="#">270K followers</a> and opens
+    # the modal in JavaScript, so anything looking for a URL finds nothing.
+    # "following" is a different control and does not contain "followers".
+    "followers_link": (
+        "main a[role='link']:has-text('followers')",
+        "main a:has-text('followers')",
+        "a[role='link']:has-text('followers')",
+    ),
     # What to put the pointer over before scrolling. The likes list lives
     # in a dialog and the page behind it does not move, so a wheel event
     # aimed at the window scrolls nothing at all.

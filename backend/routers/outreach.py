@@ -121,9 +121,15 @@ class AccountUpdate(BaseModel):
 
 
 class LeadSearchCreate(BaseModel):
-    """What to look for. The model turns this into queries."""
+    """What to look for. The model turns this into queries.
 
-    niche: str
+    `seed_accounts` short-circuits all of that: naming accounts means
+    harvesting their followers instead, since the operator has already said
+    exactly whose audience they want.
+    """
+
+    niche: str = ""
+    seed_accounts: Optional[str] = None
     location: Optional[str] = None
     interests: Optional[str] = None
     wanted: int = 50
@@ -1140,8 +1146,12 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         reason = discovery.unavailable_reason()
         if reason:
             raise HTTPException(400, reason)
-        if not (data.niche or "").strip():
-            raise HTTPException(400, "Describe who you are looking for.")
+        if not (data.niche or "").strip() and not (data.seed_accounts or "").strip():
+            raise HTTPException(
+                400,
+                "Describe who you are looking for, or name accounts whose "
+                "followers to read.",
+            )
 
         database = await db.get_db()
         try:
@@ -1166,10 +1176,10 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     "INSERT INTO outreach_lead_searches "
                     "  (user_id, campaign_id, platform, niche, location, "
                     "   interests, wanted, include_commenters, include_likers, "
-                    "   account_id, status) "
+                    "   enrich_profiles, seed_accounts, account_id, status) "
                     "VALUES (:uid, :cid, :platform, :niche, :loc, :interests, "
-                    "        :wanted, :commenters, :likers, :aid, :status) "
-                    "RETURNING id"
+                    "        :wanted, :commenters, :likers, :enrich, :seeds, "
+                    "        :aid, :status) RETURNING id"
                 ),
                 {
                     "uid": user["id"], "cid": campaign_id, "platform": platform,
@@ -1179,6 +1189,8 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     "wanted": max(1, int(data.wanted or 50)),
                     "commenters": bool(data.include_commenters),
                     "likers": bool(data.include_likers),
+                    "enrich": bool(data.enrich_profiles),
+                    "seeds": (data.seed_accounts or "").strip() or None,
                     "aid": int(account["id"]), "status": discovery.STATUS_QUEUED,
                 },
             )).first()
@@ -1186,7 +1198,9 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             search_id = int(row[0])
             search = {
                 "id": search_id, "user_id": user["id"], "platform": platform,
-                "niche": data.niche.strip(), "location": data.location,
+                "niche": (data.niche or "").strip(),
+                "seed_accounts": (data.seed_accounts or "").strip() or None,
+                "location": data.location,
                 "interests": data.interests, "wanted": data.wanted,
                 "include_commenters": bool(data.include_commenters),
                 "include_likers": bool(data.include_likers),

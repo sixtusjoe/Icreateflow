@@ -88,6 +88,14 @@ _TASKS: dict[int, asyncio.Task] = {}
 _CANCELLED: set[int] = set()
 
 
+def _seed_list(raw: Optional[str]) -> list[str]:
+    """"@one, two" -> ["one", "two"]."""
+    if not raw:
+        return []
+    parts = [p.strip().lstrip("@") for p in str(raw).replace("\n", ",").split(",")]
+    return [p for p in parts if p][:10]
+
+
 def unavailable_reason() -> Optional[str]:
     return local_browser.unavailable_reason("Lead discovery")
 
@@ -203,21 +211,30 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
 
             # --- what to search for ------------------------------------
             run.status = STATUS_RUNNING
-            run.message = "Working out what to search for…"
-            await _persist_status(search_id, STATUS_RUNNING, run.message, 0, 0,
-                                  started=True)
-            plan = await lead_ai.expand_query(
-                database, search.get("niche") or "", search.get("location") or "",
-                search.get("interests") or "", platform=platform, user_id=user_id,
-            )
+            seeds = _seed_list(search.get("seed_accounts"))
+            if seeds:
+                # Named accounts need no expansion: the operator has already
+                # said exactly whose audience they want.
+                plan = {"hashtags": [], "terms": [], "seeds": seeds}
+                run.message = f"Reading the followers of {len(seeds)} account(s)…"
+            else:
+                run.message = "Working out what to search for…"
+                await _persist_status(search_id, STATUS_RUNNING, run.message, 0, 0,
+                                      started=True)
+                plan = await lead_ai.expand_query(
+                    database, search.get("niche") or "", search.get("location") or "",
+                    search.get("interests") or "", platform=platform, user_id=user_id,
+                )
         finally:
             await database.close()
 
+        await _persist_status(search_id, STATUS_RUNNING, run.message, 0, 0, started=True)
         await _persist_queries(search_id, plan)
-        run.message = (
-            f"Searching {len(plan['hashtags'])} hashtag(s) and "
-            f"{len(plan['terms'])} term(s)…"
-        )
+        if not seeds:
+            run.message = (
+                f"Searching {len(plan['hashtags'])} hashtag(s) and "
+                f"{len(plan['terms'])} term(s)…"
+            )
 
         # --- browse ----------------------------------------------------
         payload = {
@@ -236,18 +253,29 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             run.found = len(collected)
             run.message = f"Found {len(collected)} of {wanted}…"
 
-        leads = await driver.discover_profiles(
-            payload,
-            hashtags=tuple(plan["hashtags"]),
-            terms=tuple(plan["terms"]),
-            limit=wanted,
-            include_commenters=bool(search.get("include_commenters")),
-            include_likers=bool(search.get("include_likers")),
-            interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
-            scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]),
-            should_stop=lambda: search_id in _CANCELLED,
-            on_found=on_found,
-        )
+        if seeds:
+            leads = await driver.discover_followers(
+                payload,
+                seeds=tuple(seeds),
+                limit=wanted,
+                interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
+                scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]) * 3,
+                should_stop=lambda: search_id in _CANCELLED,
+                on_found=on_found,
+            )
+        else:
+            leads = await driver.discover_profiles(
+                payload,
+                hashtags=tuple(plan["hashtags"]),
+                terms=tuple(plan["terms"]),
+                limit=wanted,
+                include_commenters=bool(search.get("include_commenters")),
+                include_likers=bool(search.get("include_likers")),
+                interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
+                scroll_rounds=int(settings["outreach_discovery_scroll_rounds"]),
+                should_stop=lambda: search_id in _CANCELLED,
+                on_found=on_found,
+            )
         visited = len(leads)
 
         # --- optional: open each profile for a bio ---------------------
