@@ -997,12 +997,20 @@ export const cancelLeadSearch = (searchId: number) =>
   api.post(`/api/outreach/leads/searches/${searchId}/cancel`).then((r) => r.data);
 export const listLeads = (searchId: number): Promise<Lead[]> =>
   api.get(`/api/outreach/leads/searches/${searchId}/leads`).then((r) => r.data);
+export interface LeadImportSummary extends OutreachImportSummary {
+  campaigns?: { campaign_id: number; campaign_name: string; ready: number }[];
+}
+/** Import leads, optionally split evenly across several campaigns. */
 export const importLeads = (
   campaignId: number,
-  leadIds: number[]
-): Promise<OutreachImportSummary> =>
+  leadIds: number[],
+  campaignIds?: number[]
+): Promise<LeadImportSummary> =>
   api
-    .post(`/api/outreach/campaigns/${campaignId}/leads/import`, { lead_ids: leadIds })
+    .post(`/api/outreach/campaigns/${campaignId}/leads/import`, {
+      lead_ids: leadIds,
+      campaign_ids: campaignIds && campaignIds.length ? campaignIds : undefined,
+    })
     .then((r) => r.data);
 
 /** Attach an image to a template. New campaigns from it get a copy. */

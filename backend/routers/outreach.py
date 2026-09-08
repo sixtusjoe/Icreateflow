@@ -148,6 +148,9 @@ class LeadSearchCreate(BaseModel):
 
 class LeadImport(BaseModel):
     lead_ids: list[int]
+    #: Split the chosen leads across these campaigns instead of putting
+    #: them all in the one the finder was opened from. Empty means the one.
+    campaign_ids: Optional[list[int]] = None
 
 
 class AccountSession(BaseModel):
@@ -1292,7 +1295,19 @@ def build_router(get_current_user, admin_required) -> APIRouter:
 
         database = await db.get_db()
         try:
-            campaign = dict(await _own_campaign(database, campaign_id, user))
+            wanted_ids = list(data.campaign_ids or [campaign_id])
+            campaigns = [
+                dict(await _own_campaign(database, cid, user)) for cid in wanted_ids
+            ]
+            platforms = {c["platform"] for c in campaigns}
+            if len(platforms) > 1:
+                raise HTTPException(
+                    400,
+                    f"Those campaigns are on different platforms "
+                    f"({', '.join(sorted(platforms))}) — leads can only be split "
+                    f"between campaigns on the same one.",
+                )
+
             rows = (await database.session.execute(
                 text(
                     "SELECT l.* FROM outreach_leads l "
@@ -1302,19 +1317,37 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 {"ids": list(data.lead_ids), "uid": _scope(user)},
             )).mappings().all()
             leads = [dict(r) for r in rows]
-            wrong = [l for l in leads if l["platform"] != campaign["platform"]]
+            wrong = [l for l in leads if l["platform"] not in platforms]
             if wrong:
                 raise HTTPException(
                     400,
-                    f"{len(wrong)} lead(s) are {wrong[0]['platform']} but this "
-                    f"campaign is {campaign['platform']}.",
+                    f"{len(wrong)} lead(s) are {wrong[0]['platform']} but these "
+                    f"campaigns are {platforms.pop()}.",
                 )
 
-            summary = await importer.import_targets(
-                database, campaign_id,
-                "\n".join(l["profile_url"] for l in leads),
-                campaign["platform"],
-            )
+            # Dealt round-robin, not in blocks. The list arrives best-first,
+            # so splitting it down the middle would hand one campaign every
+            # good lead and the other the remainder.
+            buckets: dict[int, list[dict]] = {c["id"]: [] for c in campaigns}
+            for index, lead in enumerate(leads):
+                buckets[campaigns[index % len(campaigns)]["id"]].append(lead)
+
+            per_campaign = []
+            for campaign in campaigns:
+                share = buckets[campaign["id"]]
+                if not share:
+                    continue
+                summary = await importer.import_targets(
+                    database, campaign["id"],
+                    "\n".join(l["profile_url"] for l in share),
+                    campaign["platform"],
+                )
+                per_campaign.append({
+                    "campaign_id": campaign["id"],
+                    "campaign_name": campaign["name"],
+                    **summary,
+                })
+
             await database.session.execute(
                 text(
                     "UPDATE outreach_leads SET imported_at = NOW() "
@@ -1323,8 +1356,18 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 {"ids": [l["id"] for l in leads]},
             )
             await database.session.commit()
-            await stats.refresh_campaign_totals(database, campaign_id)
-            return summary
+            for campaign in campaigns:
+                await stats.refresh_campaign_totals(database, campaign["id"])
+
+            total_ready = sum(int(c.get("ready") or 0) for c in per_campaign)
+            return {
+                "ready": total_ready,
+                "imported": sum(int(c.get("imported") or 0) for c in per_campaign),
+                "duplicates": sum(int(c.get("duplicates") or 0) for c in per_campaign),
+                "invalid": sum(int(c.get("invalid") or 0) for c in per_campaign),
+                "invalid_rows": [],
+                "campaigns": per_campaign,
+            }
         finally:
             await database.close()
 

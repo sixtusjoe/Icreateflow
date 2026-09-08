@@ -10,6 +10,8 @@ import {
   cancelLeadSearch,
   listLeads,
   importLeads,
+  listOutreachCampaigns,
+  type OutreachCampaign,
   type Lead,
   type LeadSearchAvailability,
   type LeadSearchRun,
@@ -47,6 +49,8 @@ export function LeadFinder({
   const [leads, setLeads] = useState<Lead[]>([]);
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
+  const [targets, setTargets] = useState<Set<number>>(new Set([campaignId]));
 
   useEffect(() => {
     getLeadSearchAvailability(platform)
@@ -55,6 +59,13 @@ export function LeadFinder({
         if (a.accounts[0]) setAccountId(a.accounts[0].id);
       })
       .catch(() => setAvailability(null));
+  }, [platform]);
+
+  // Which campaigns the results can be split between — same platform only.
+  useEffect(() => {
+    listOutreachCampaigns()
+      .then((all) => setCampaigns(all.filter((c) => c.platform === platform)))
+      .catch(() => setCampaigns([]));
   }, [platform]);
 
   const loadLeads = useCallback(async (searchId: number) => {
@@ -122,8 +133,14 @@ export function LeadFinder({
     if (chosen.size === 0) return toast.error("Pick at least one profile");
     setBusy(true);
     try {
-      const summary = await importLeads(campaignId, [...chosen]);
-      toast.success(`${summary.ready} target(s) added`);
+      const summary = await importLeads(campaignId, [...chosen], [...targets]);
+      toast.success(
+        summary.campaigns && summary.campaigns.length > 1
+          ? summary.campaigns
+              .map((c) => `${c.ready} to ${c.campaign_name}`)
+              .join(", ")
+          : `${summary.ready} target(s) added`
+      );
       setLeads([]);
       setRun(null);
       onImported();
@@ -337,12 +354,45 @@ export function LeadFinder({
               </li>
             ))}
           </ul>
+          {campaigns.length > 1 && (
+            <div className="mt-3 rounded-lg border border-border p-2.5">
+              <p className="text-xs font-medium">Send these to</p>
+              <div className="mt-1.5 space-y-1">
+                {campaigns.map((c) => (
+                  <label key={c.id} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={targets.has(c.id)}
+                      onChange={(e) => {
+                        const next = new Set(targets);
+                        if (e.target.checked) next.add(c.id);
+                        else next.delete(c.id);
+                        setTargets(next);
+                      }}
+                    />
+                    <span>{c.name}</span>
+                  </label>
+                ))}
+              </div>
+              {targets.size > 1 && (
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Split evenly — about {Math.floor(chosen.size / targets.size)} each,
+                  dealt one at a time rather than in blocks, so no campaign gets all
+                  the best leads.
+                </p>
+              )}
+            </div>
+          )}
           <button
             onClick={handleImport}
-            disabled={busy || chosen.size === 0}
+            disabled={busy || chosen.size === 0 || targets.size === 0}
             className="mt-3 w-full rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "Importing…" : `Import ${chosen.size} as targets`}
+            {busy
+              ? "Importing…"
+              : targets.size > 1
+                ? `Import ${chosen.size} across ${targets.size} campaigns`
+                : `Import ${chosen.size} as targets`}
           </button>
         </>
       )}
