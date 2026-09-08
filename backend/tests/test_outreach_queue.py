@@ -16,6 +16,7 @@ from services.outreach.constants import (
     JOB_QUEUED,
     JOB_SUCCEEDED,
     RESULT_MESSAGING_UNAVAILABLE,
+    RESULT_PROFILE_UNAVAILABLE,
     RESULT_NAVIGATION_TIMEOUT,
     TARGET_FAILED,
     TARGET_PAUSED,
@@ -229,6 +230,41 @@ async def test_retries_stop_at_the_limit_and_the_target_fails(
 
 
 async def test_a_terminal_result_skips_the_target_without_retrying(seeded, database):
+    """`profile_unavailable` is the one verdict reached by seeing something.
+
+    The site said the account does not exist. Retrying that is asking the
+    same question and getting the same answer, so the target is skipped and
+    the retry budget is left alone.
+    """
+    campaign, account, settings = (
+        seeded["campaign"], seeded["account"], seeded["settings"]
+    )
+    job = await job_queue.claim_job(
+        database, campaign["id"], account["id"], "w", settings
+    )
+    decision = await job_queue.fail_job(
+        database, job, campaign, RESULT_PROFILE_UNAVAILABLE,
+        "this page isn't available", settings,
+    )
+    assert decision["outcome"] == "skip"
+    assert dict(await db.get_outreach_job(database, job["id"]))["status"] == JOB_FAILED
+    target = dict(await db.get_outreach_target(database, job["target_id"]))
+    assert target["status"] == TARGET_SKIPPED
+
+
+async def test_a_missing_message_button_is_retried_not_written_off(seeded, database):
+    """The rule this test exists to hold: only a verdict reached by *seeing*
+    something may be permanent.
+
+    `messaging_unavailable` is inferred from an absence, and an absence had
+    three causes that were nothing to do with the target — a puzzle over the
+    profile, a browser killed mid-job, and the site serving its own error
+    page. Each skipped a live, reachable target for good.
+
+    It was terminal once, and this test asserted so. The behaviour was
+    changed deliberately and the test was not, because nothing here runs
+    without a database to point at and so none of it ran at all.
+    """
     campaign, account, settings = (
         seeded["campaign"], seeded["account"], seeded["settings"]
     )
@@ -238,10 +274,13 @@ async def test_a_terminal_result_skips_the_target_without_retrying(seeded, datab
     decision = await job_queue.fail_job(
         database, job, campaign, RESULT_MESSAGING_UNAVAILABLE, "DMs closed", settings
     )
-    assert decision["outcome"] == "skip"
-    assert dict(await db.get_outreach_job(database, job["id"]))["status"] == JOB_FAILED
+
+    assert decision["outcome"] == "retry"
     target = dict(await db.get_outreach_target(database, job["target_id"]))
-    assert target["status"] == TARGET_SKIPPED
+    assert target["status"] == TARGET_QUEUED, (
+        "a missing Message button must leave the target reachable"
+    )
+    assert target["status"] != TARGET_SKIPPED
 
 
 async def test_force_fail_skips_the_retry_budget(seeded, database):
@@ -405,8 +444,12 @@ async def test_retry_failed_requeues_only_failed_targets(seeded, database):
     skipped = await job_queue.claim_job(
         database, campaign["id"], account["id"], "w", settings
     )
+    # Something seen, so genuinely terminal — `retry_failed` is for failures,
+    # and a skip is not one. A missing Message button would not do here any
+    # more: it is retryable, so it would go back to queued on its own.
     await job_queue.fail_job(
-        database, skipped, campaign, RESULT_MESSAGING_UNAVAILABLE, "closed", settings
+        database, skipped, campaign, RESULT_PROFILE_UNAVAILABLE, "no such account",
+        settings,
     )
 
     assert await job_queue.retry_failed(database, campaign["id"]) == 1

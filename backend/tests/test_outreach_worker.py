@@ -19,8 +19,10 @@ from services.outreach.constants import (
     JOB_SUCCEEDED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_NAVIGATION_TIMEOUT,
+    RESULT_PROFILE_UNAVAILABLE,
     RESULT_SESSION_EXPIRED,
     TARGET_FAILED,
+    TARGET_QUEUED,
     TARGET_SENT,
     TARGET_SKIPPED,
 )
@@ -114,8 +116,48 @@ async def test_a_driver_failure_is_recorded_and_retried(seeded, database):
     assert target["status"] == TARGET_SENT
 
 
-async def test_a_closed_inbox_skips_the_target_without_retrying(seeded, database):
+async def test_a_closed_inbox_is_retried_and_does_not_blame_the_account(
+    seeded, database
+):
+    """No Message button is an absence, and an absence is not a verdict.
+
+    This asserted the opposite until the database-backed tests were first
+    run: that the target was skipped for good. Three live targets were lost
+    that way to causes that had nothing to do with them, so the result was
+    made retryable. The half of the test that still holds is the half about
+    the account — a target-side problem is not the sender's fault.
+    """
     driver = MockMessenger(outcomes=[(RESULT_MESSAGING_UNAVAILABLE, "DMs closed")])
+    await _run(driver, seeded["settings"])
+
+    jobs = [dict(j) for j in await db.get_outreach_jobs(
+        database, campaign_id=seeded["campaign"]["id"]
+    )]
+    # The campaign is seeded with three targets, so the other two are still
+    # queued and untouched. The one that ran is the one with an attempt on it.
+    attempted = [j for j in jobs if j["attempts"] > 0]
+    assert len(attempted) == 1, f"expected exactly one attempt, got {attempted!r}"
+    assert attempted[0]["status"] == JOB_QUEUED, "it should be back in the queue"
+    assert attempted[0]["result_status"] == RESULT_MESSAGING_UNAVAILABLE
+    requeued = attempted
+
+    target = dict(await db.get_outreach_target(database, requeued[0]["target_id"]))
+    assert target["status"] == TARGET_QUEUED
+    # The account is not blamed for a target-side problem.
+    account = dict(await db.get_sending_account(database, seeded["account"]["id"]))
+    assert account["consecutive_errors"] == 0
+
+
+async def test_a_profile_that_does_not_exist_is_skipped_for_good(seeded, database):
+    """The other side of the same rule, at the worker level.
+
+    The site was asked and answered: there is no such account. Nothing is
+    gained by asking again, so this one really is terminal — which is what
+    keeps "retryable" from meaning "nothing is ever finished".
+    """
+    driver = MockMessenger(
+        outcomes=[(RESULT_PROFILE_UNAVAILABLE, "this page isn't available")]
+    )
     await _run(driver, seeded["settings"])
 
     jobs = [dict(j) for j in await db.get_outreach_jobs(
@@ -125,7 +167,6 @@ async def test_a_closed_inbox_skips_the_target_without_retrying(seeded, database
     assert len(failed) == 1
     target = dict(await db.get_outreach_target(database, failed[0]["target_id"]))
     assert target["status"] == TARGET_SKIPPED
-    # The account is not blamed for a target-side problem.
     account = dict(await db.get_sending_account(database, seeded["account"]["id"]))
     assert account["consecutive_errors"] == 0
 

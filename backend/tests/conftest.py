@@ -67,9 +67,18 @@ async def schema():
         except Exception:  # noqa: BLE001 — any connection problem means "skip"
             _SCHEMA_READY = False
     if not _SCHEMA_READY:
+        # Spell out the fix. Eighty-eight tests skip on this, quietly, and
+        # three of them had been failing for days behind the skip — a
+        # deliberate behaviour change landed with "driver suite: 38 passed",
+        # because the suite that would have objected never ran.
+        database = TEST_DSN.rsplit("/", 1)[-1] or "icreateflow_test"
         pytest.skip(
-            f"No Postgres at {TEST_DSN} — set ICREATE_TEST_DB_DSN to run the "
-            "database-backed outreach tests"
+            f"No Postgres at {TEST_DSN}, so every database-backed outreach "
+            f"test is being skipped — not passed. To run them:\n"
+            f"    createdb {database}\n"
+            f'    export ICREATE_TEST_DB_DSN="postgresql+asyncpg://'
+            f'$(whoami)@127.0.0.1:5432/{database}"\n'
+            f"The schema is created automatically on the first run."
         )
     return True
 
