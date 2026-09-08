@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import time
 import traceback
 import uuid
 from typing import Any, Optional
@@ -52,6 +53,12 @@ PLATFORM_DRIVERS: dict[str, str] = {
 
 def default_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
+
+
+#: How often one campaign may report why it cannot send. It reports the
+#: same thing every cycle until someone acts on it, and a worker that logs
+#: every ten seconds is a worker nobody reads.
+EXPLAIN_IDLE_SECONDS = int(os.environ.get("ICREATE_OUTREACH_EXPLAIN_IDLE_SECONDS", "600"))
 
 
 class OutreachWorker:
@@ -87,6 +94,9 @@ class OutreachWorker:
         #: to reach a verification puzzle, whichever platform threw it.
         self._headless = headless
         self._stopping = asyncio.Event()
+        #: campaign id -> when its idleness was last explained. Keeps a
+        #: permanently stuck campaign from writing the same line every cycle.
+        self._explained: dict[int, float] = {}
 
     # --- lifecycle -------------------------------------------------------
 
@@ -182,6 +192,7 @@ class OutreachWorker:
                     # Every eligible account is busy, cooling down, capped
                     # or paused — try the next campaign rather than
                     # claiming a job nobody can run.
+                    await self._explain_idleness(database, campaign, settings)
                     continue
 
                 job = await job_queue.claim_job(
@@ -385,6 +396,36 @@ class OutreachWorker:
                 return
             if not did_work:
                 await self._sleep(settings["outreach_worker_idle_seconds"])
+
+    async def _explain_idleness(
+        self, database, campaign: dict, settings: dict[str, Any]
+    ) -> None:
+        """Say why a running campaign is not running, at most occasionally.
+
+        A campaign that cannot lease an account keeps not leasing one, so
+        this fires on every cycle — every ten seconds, forever. Logging it
+        each time would bury the run; logging it never is what made two
+        capped campaigns look like a crash. Once per campaign per interval
+        is the compromise, and the state it reports does not change quickly.
+        """
+        campaign_id = int(campaign["id"])
+        now = time.monotonic()
+        last = self._explained.get(campaign_id, 0.0)
+        if now - last < EXPLAIN_IDLE_SECONDS:
+            return
+        try:
+            why = await account_mgr.explain_no_account(database, campaign, settings)
+        except Exception:  # noqa: BLE001 — a diagnostic must not stop the worker
+            return
+        if not why:
+            return
+        self._explained[campaign_id] = now
+        print(
+            f"[outreach] campaign {campaign_id} "
+            f"({campaign.get('name') or 'unnamed'}) has nothing it can send "
+            f"with: {why}",
+            flush=True,
+        )
 
     async def _sleep(self, seconds: float) -> None:
         """Interruptible sleep — a stop signal doesn't wait out the idle."""

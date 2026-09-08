@@ -282,3 +282,69 @@ async def test_releasing_a_lease_never_unpauses_an_account(
     await account_mgr.release_account(database, account["id"])
     row = dict(await db.get_sending_account(database, account["id"]))
     assert row["status"] == ACCOUNT_PAUSED
+
+
+# --- saying why, when nothing can be leased ---------------------------------
+
+async def test_a_capped_account_explains_itself(
+    database, campaign_factory, account_factory, settings
+):
+    """A campaign that cannot run has to say so.
+
+    Both live campaigns stopped dead at exactly 100 targets and looked
+    broken: the campaign said running, the accounts said idle with no
+    errors, 862 jobs sat claimable, and nothing moved. The worker was
+    asking for an account every ten seconds, being told no, and going
+    quietly back to sleep — for over an hour, without one line of log.
+
+    The cap doing that is correct. Being unable to find out is not.
+    """
+    campaign = await campaign_factory(max_jobs_per_account=1)
+    account = await account_factory(name="Build a Brand")
+    await importer.import_targets(database, campaign["id"], "username\nalice\nbob\n")
+    await job_queue.start_campaign(database, campaign, settings)
+    campaign = dict(await db.get_outreach_campaign(database, campaign["id"]))
+
+    leased = await account_mgr.lease_account(database, campaign, settings)
+    job = await job_queue.claim_job(
+        database, campaign["id"], leased["id"], "w", settings
+    )
+    await job_queue.complete_job(database, job)
+    await account_mgr.release_account(database, leased["id"])
+    await _age_activity(database, account["id"], minutes=120)
+
+    assert await account_mgr.lease_account(database, campaign, settings) is None
+
+    why = await account_mgr.explain_no_account(database, campaign, settings)
+    assert why, "a campaign that cannot run has to be able to say why"
+    assert "Build a Brand" in why, f"which account is stuck: {why!r}"
+    assert "1 of its 1" in why, f"the numbers have to be in it: {why!r}"
+
+
+async def test_the_explanation_separates_a_pause_from_a_cap(
+    database, campaign_factory, account_factory, settings
+):
+    """Two reasons that need different things done about them.
+
+    A capped account needs the cap raised or another account. A paused one
+    needs whatever paused it fixed. Reporting either as "no account
+    available" sends the operator looking in the wrong place.
+    """
+    campaign = await campaign_factory()
+    account = await account_factory(name="Paused One")
+    await database.session.execute(
+        text(
+            "UPDATE outreach_sending_accounts "
+            "   SET status = :paused, paused_reason = :reason WHERE id = :id"
+        ),
+        {"id": account["id"], "paused": ACCOUNT_PAUSED, "reason": "session expired"},
+    )
+    await database.session.commit()
+
+    assert await account_mgr.lease_account(database, campaign, settings) is None
+
+    why = await account_mgr.explain_no_account(database, campaign, settings)
+    assert "Paused One" in why and "paused" in why.lower(), why
+    assert "of" not in why.split("paused")[-1], (
+        f"a paused account should not be reported as a cap: {why!r}"
+    )

@@ -154,6 +154,72 @@ async def lease_account(
     return dict(row) if row else None
 
 
+async def explain_no_account(
+    database, campaign: dict, settings: dict[str, Any]
+) -> str:
+    """Why can this campaign not lease an account? Empty if it is transient.
+
+    `lease_account` returning None is the normal shape of a busy system —
+    an account mid-send, or inside its cooldown — and the worker is right
+    to shrug and try the next campaign. But the same None is also what a
+    permanently stuck campaign looks like, and the two were indistinguishable
+    from outside.
+
+    Both live campaigns stopped at exactly 100 targets and looked broken
+    rather than finished: status `running`, accounts `idle` with no errors,
+    862 jobs claimable, and no explanation anywhere. The cap was doing its
+    job. Nothing said so, so it read as a crash.
+
+    Only durable reasons are reported. A busy or cooling-down account
+    resolves itself within seconds and is not worth a line in the log.
+    """
+    per_account_cap = cfg.campaign_limit(
+        campaign, settings, "max_jobs_per_account", "outreach_max_jobs_per_account"
+    )
+    assigned = await db.get_campaign_account_ids(database, campaign["id"])
+    rows = await db.get_sending_accounts(
+        database, user_id=campaign.get("user_id"), platform=campaign.get("platform")
+    )
+
+    candidates = [
+        row for row in rows
+        if (not assigned or row["id"] in assigned)
+        and row.get("enabled")
+        and (row.get("purpose") or ACCOUNT_PURPOSE_SENDING) == ACCOUNT_PURPOSE_SENDING
+    ]
+    if not candidates:
+        return (
+            f"no sending account is available to this campaign on "
+            f"{campaign.get('platform') or 'this platform'} — assign one, or "
+            f"check that the account is enabled and set to sending"
+        )
+
+    reasons = []
+    for row in candidates:
+        name = row.get("name") or f"account {row['id']}"
+        if row.get("status") == ACCOUNT_PAUSED:
+            because = row.get("paused_reason") or "no reason recorded"
+            reasons.append(f"{name} is paused ({because})")
+            continue
+        used = (await database.session.execute(
+            text(
+                "SELECT COUNT(*) FROM outreach_jobs "
+                " WHERE campaign_id = :campaign_id AND sending_account_id = :account_id "
+                "   AND status <> 'cancelled'"
+            ),
+            {"campaign_id": campaign["id"], "account_id": row["id"]},
+        )).scalar_one()
+        if used >= per_account_cap:
+            reasons.append(
+                f"{name} has run {used} of its {per_account_cap} jobs for this "
+                f"campaign"
+            )
+    if not reasons:
+        # Busy, or inside the send interval. Both clear on their own.
+        return ""
+    return "; ".join(reasons)
+
+
 async def release_account(database, account_id: int, status: str = ACCOUNT_IDLE) -> None:
     """Drop the lease. Never clears an auto-pause."""
     session = database.session
