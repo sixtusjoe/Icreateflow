@@ -6,6 +6,9 @@ returns whatever outcome the test scripts.
 """
 from __future__ import annotations
 
+import asyncio
+
+import pytest
 from sqlalchemy import text
 
 import database as db
@@ -339,3 +342,171 @@ async def test_run_once_helper_uses_the_supplied_driver(seeded, database):
     driver = MockMessenger()
     assert await runner.run_once(driver=driver) is True
     assert len(driver.sent) == 1
+
+
+# --- several accounts at once ----------------------------------------------
+
+class _Rendezvous(MockMessenger):
+    """A driver that records how many sends were ever in flight together.
+
+    Serial execution cannot get past the barrier — there is never a second
+    arrival — so it waits out the timeout and reports a peak of one. That
+    is the failure this is here to catch, and it fails on the number rather
+    than on a hang.
+    """
+
+    def __init__(self, expected: int, **kwargs):
+        super().__init__(**kwargs)
+        self._barrier = asyncio.Barrier(expected)
+        self._in_flight = 0
+        self.peak_in_flight = 0
+        self.accounts_seen: list[int] = []
+
+    async def send_message(self, account, target, message):
+        self._in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+        self.accounts_seen.append(int(account["id"]))
+        try:
+            async with asyncio.timeout(3):
+                await self._barrier.wait()
+        except (TimeoutError, asyncio.BrokenBarrierError):
+            pass
+        finally:
+            self._in_flight -= 1
+        return await super().send_message(account, target, message)
+
+
+async def test_two_accounts_can_send_at_the_same_time(
+    seeded, database, account_factory
+):
+    """Two sends overlapping, on two accounts, through one worker.
+
+    This was already true of `process_one` — it is the local worker's loop
+    that serialised everything, and that is covered separately below. What
+    this holds is the property that loop depends on: that two slots sharing
+    a worker and a browser do not tread on each other, and that a lease
+    hands them different accounts.
+
+    Overlap is measured rather than assumed, because a serial worker sends
+    both messages too and would pass any assertion about the results.
+    """
+    await account_factory(name="Sender 2")
+    driver = _Rendezvous(expected=2)
+    worker = runner.OutreachWorker(worker_id="local", driver=driver)
+    settings = seeded["settings"]
+
+    results = await asyncio.gather(
+        worker.process_one(settings), worker.process_one(settings)
+    )
+
+    assert results == [True, True]
+    assert driver.peak_in_flight == 2, (
+        f"the two sends never overlapped (peak {driver.peak_in_flight}) — "
+        f"the worker is still running them one after another"
+    )
+    assert len(set(driver.accounts_seen)) == 2, (
+        f"both slots took the same account: {driver.accounts_seen}"
+    )
+
+
+async def test_a_second_slot_idles_when_only_one_account_is_free(seeded, database):
+    """One account and two slots is not an error, it is a quiet slot.
+
+    A lease is exclusive, so the second slot finds nothing to take and says
+    so. It must not wait for the first, and it must not send from an
+    account already in use.
+    """
+    driver = MockMessenger()
+    worker = runner.OutreachWorker(worker_id="local", driver=driver)
+    settings = seeded["settings"]
+
+    results = await asyncio.gather(
+        worker.process_one(settings), worker.process_one(settings)
+    )
+
+    assert sorted(results) == [False, True], f"expected one slot to idle: {results}"
+    assert len(driver.sent) == 1
+
+
+async def test_concurrent_slots_start_only_one_browser(monkeypatch):
+    """Building the driver is check-then-await, which is a race.
+
+    Both slots look for a driver, both find none, and both launch one — the
+    second replaces the first in the registry and the first goes on running
+    with nothing left holding a reference to close it. An orphaned headed
+    Chromium is not subtle on a laptop.
+    """
+    built = []
+
+    class _Slow:
+        name = "mock"
+
+        async def startup(self):
+            # Long enough that a second caller arrives mid-launch, which is
+            # exactly the window the bug lived in.
+            await asyncio.sleep(0.05)
+            built.append(self)
+
+        async def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runner, "get_driver", lambda name, **kw: _Slow())
+    worker = runner.OutreachWorker(worker_id="local")
+    settings = {runner.cfg.DRIVER_KEY: "mock", "outreach_worker_concurrency": 4}
+
+    drivers = await asyncio.gather(*(
+        worker._get_driver(settings) for _ in range(4)
+    ))
+
+    assert len(built) == 1, f"launched {len(built)} browsers, expected 1"
+    assert len({id(d) for d in drivers}) == 1, "slots got different drivers"
+
+
+async def test_the_local_worker_opens_a_window_per_configured_slot(monkeypatch):
+    """The bug itself: the local sender ran one job at a time.
+
+    `OutreachWorker.run()` has always spread work over N slots, but the Mac
+    worker never used it — `_local_worker_loop` was its own `while True`
+    around a single `process_one`, so `outreach_worker_concurrency` did
+    nothing there and one Chromium window was open no matter how many
+    accounts were connected.
+
+    Nothing here opens a browser. What is being checked is arithmetic the
+    old loop could not do: how many slots the loop starts.
+    """
+    started = 0
+    forever = asyncio.Event()
+
+    async def _fake_slot(_worker):
+        nonlocal started
+        started += 1
+        await forever.wait()
+
+    class _StubWorker:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runner, "_local_slot", _fake_slot)
+    monkeypatch.setattr(runner, "OutreachWorker", _StubWorker)
+
+    async def _settings(_db):
+        return {"outreach_local_worker_concurrency": 3}
+
+    monkeypatch.setattr(runner.cfg, "get_all", _settings)
+
+    task = asyncio.create_task(runner._local_worker_loop())
+    try:
+        async with asyncio.timeout(3):
+            while started < 3:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert started == 3, f"started {started} slots, expected 3"
+    assert runner.local_worker_state()["running"] is False, (
+        "the loop must not leave itself marked running after it stops"
+    )

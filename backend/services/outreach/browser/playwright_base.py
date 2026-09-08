@@ -193,19 +193,32 @@ class PlaywrightMessenger:
         #: account_id → BrowserContext. The isolation guarantee.
         self._contexts: dict[int, Any] = {}
         self._lock = asyncio.Lock()
+        #: Held only while the browser is being launched. Separate from
+        #: `_lock`, which `_context_for` holds *across* a startup() call.
+        self._startup_lock = asyncio.Lock()
 
     # --- lifecycle -------------------------------------------------------
 
     async def startup(self) -> None:
+        """Launch the browser, once, however many callers ask at the same time.
+
+        The guard below is a check followed by an await, which is a race as
+        soon as anything runs two jobs at a time: both callers see no
+        browser, both launch one, and the second overwrites the first —
+        leaving a Chromium running that nothing will ever close.
+        """
         if self._browser is not None:
             return
-        from playwright.async_api import async_playwright  # imported lazily
+        async with self._startup_lock:
+            if self._browser is not None:
+                return
+            from playwright.async_api import async_playwright  # imported lazily
 
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._headless,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=self._headless,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
 
     async def shutdown(self) -> None:
         for account_id in list(self._contexts):

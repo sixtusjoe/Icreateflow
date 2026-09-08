@@ -87,6 +87,7 @@ class OutreachWorker:
         self._driver_started = driver is not None
         #: One live driver per platform in play, started on first use.
         self._drivers: dict[str, Any] = {}
+        self._driver_lock = asyncio.Lock()
         self.concurrency_override = concurrency
         self.once = once
         #: None leaves it to the driver's own default. False is how a local
@@ -148,11 +149,18 @@ class OutreachWorker:
 
         name = self._driver_name_for(settings, platform)
         driver = self._drivers.get(name)
-        if driver is None:
-            kwargs = {} if self._headless is None else {"headless": self._headless}
-            driver = get_driver(name, **kwargs)
-            await driver.startup()
-            self._drivers[name] = driver
+        if driver is not None:
+            return driver
+        # Two slots starting together both find nothing here and both build
+        # a driver, which means two browsers launched and one of them
+        # orphaned — running, invisible to shutdown, holding a profile open.
+        async with self._driver_lock:
+            driver = self._drivers.get(name)
+            if driver is None:
+                kwargs = {} if self._headless is None else {"headless": self._headless}
+                driver = get_driver(name, **kwargs)
+                await driver.startup()
+                self._drivers[name] = driver
         return driver
 
     async def shutdown(self) -> None:
@@ -548,7 +556,52 @@ def local_worker_state() -> dict[str, Any]:
 
 
 #: What the local sender is doing, for the campaign page to show.
-_LOCAL_WORKER: dict[str, Any] = {"running": False, "busy": False, "last_error": None}
+#: `busy` counts the slots mid-job rather than answering yes/no, so the
+#: dashboard can say "2 sending" instead of "sending". It stays truthy at
+#: zero-or-more, which is all `sender_busy` ever asked of it.
+_LOCAL_WORKER: dict[str, Any] = {
+    "running": False, "busy": 0, "slots": 0, "last_error": None,
+}
+
+
+async def _local_slot(worker: "OutreachWorker") -> None:
+    """One account's worth of work, running alongside the others.
+
+    Slots do not divide up a queue between them — each one leases an
+    account, and a lease is exclusive, so two slots always hold two
+    different accounts and never race for the same target. An account
+    carries its own send interval with it, so running two does not make
+    either go faster; it makes two go at once, in two windows.
+    """
+    while True:
+        try:
+            database = await db.get_db()
+            try:
+                settings = await cfg.get_all(database)
+            finally:
+                await database.close()
+
+            if not settings[cfg.WORKERS_ENABLED_KEY]:
+                await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
+                continue
+
+            _LOCAL_WORKER["busy"] += 1
+            try:
+                did_work = await worker.process_one(settings)
+            finally:
+                _LOCAL_WORKER["busy"] -= 1
+            _LOCAL_WORKER["last_error"] = None
+            if not did_work:
+                # Nothing free — most often the other slot holds the only
+                # account that can run. Idling is the whole answer.
+                await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one bad job must not end
+            # the sender; the next pass may be fine.
+            _LOCAL_WORKER["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            traceback.print_exc()
+            await asyncio.sleep(10)
 
 
 async def _local_worker_loop() -> None:
@@ -558,42 +611,40 @@ async def _local_worker_loop() -> None:
     puzzle when one appears. A headless local worker would hit the same
     challenge and simply pause the account, which is the situation this is
     meant to get out of.
+
+    Several accounts at once, each in its own window. One shared browser
+    with a context per account — contexts are what keep the sessions apart,
+    and in a headed browser each one is its own window, so a puzzle on one
+    account is reachable without stopping the others.
     """
     worker = OutreachWorker(headless=False)
-    _LOCAL_WORKER["running"] = True
-    print("[outreach] local sender started — browsers will be visible", flush=True)
+    database = await db.get_db()
     try:
-        while True:
-            try:
-                database = await db.get_db()
-                try:
-                    settings = await cfg.get_all(database)
-                finally:
-                    await database.close()
+        settings = await cfg.get_all(database)
+    finally:
+        await database.close()
+    slots = int(settings["outreach_local_worker_concurrency"])
 
-                if not settings[cfg.WORKERS_ENABLED_KEY]:
-                    await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
-                    continue
-
-                _LOCAL_WORKER["busy"] = True
-                did_work = await worker.process_one(settings)
-                _LOCAL_WORKER["busy"] = False
-                _LOCAL_WORKER["last_error"] = None
-                if not did_work:
-                    await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — one bad job must not
-                # end the sender; the next pass may be fine.
-                _LOCAL_WORKER["busy"] = False
-                _LOCAL_WORKER["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
-                traceback.print_exc()
-                await asyncio.sleep(10)
+    _LOCAL_WORKER["running"] = True
+    _LOCAL_WORKER["slots"] = slots
+    _LOCAL_WORKER["busy"] = 0
+    print(
+        f"[outreach] local sender started — {slots} "
+        f"{'window' if slots == 1 else 'windows'}, visible",
+        flush=True,
+    )
+    tasks = [asyncio.create_task(_local_slot(worker)) for _ in range(slots)]
+    try:
+        await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         raise
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         _LOCAL_WORKER["running"] = False
-        _LOCAL_WORKER["busy"] = False
+        _LOCAL_WORKER["busy"] = 0
+        _LOCAL_WORKER["slots"] = 0
         try:
             await worker.shutdown()
         except Exception:  # noqa: BLE001 — shutdown must not raise

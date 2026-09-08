@@ -39,6 +39,12 @@ SPEC: dict[str, tuple[int, int, int]] = {
     # is genuinely absent until then. Following is a public action on the
     # sending account, so this is worth being able to turn off — set to 0.
     "outreach_follow_to_unlock": (1, 0, 1),
+    # Sending accounts the local Mac worker drives at once, each in its own
+    # visible Chromium window. One account per slot — leases are exclusive,
+    # so a second slot takes the next free account rather than doubling up
+    # on one, and every account keeps its own send interval. More slots than
+    # you have accounts is harmless: the extras idle.
+    "outreach_local_worker_concurrency": (2, 1, 8),
     # Seconds a worker sleeps when it finds no claimable job.
     "outreach_worker_idle_seconds": (10, 1, 300),
     # --- Lead discovery ---

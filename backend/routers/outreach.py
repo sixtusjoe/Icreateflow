@@ -744,6 +744,10 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             # the window is already on screen — there is nothing to start.
             "sender_running": bool(sender.get("running")),
             "sender_busy": bool(sender.get("busy")),
+            # How many accounts are mid-send, and how many windows there are
+            # to be mid-send in.
+            "sender_active": int(sender.get("busy") or 0),
+            "sender_slots": int(sender.get("slots") or 0),
             "sender_error": sender.get("last_error"),
         }
 
