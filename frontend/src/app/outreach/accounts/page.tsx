@@ -8,6 +8,7 @@ import {
   Users,
   Trash2,
   KeyRound,
+  Pencil,
   PlayCircle,
   AlertTriangle,
 } from "lucide-react";
@@ -41,6 +42,11 @@ export default function OutreachAccountsPage() {
   const [login, setLogin] = useState<BrowserLoginState | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<OutreachAccount | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Which row is being renamed, and what has been typed so far. The name is
+  // stored once and read live everywhere else, so a rename here is the same
+  // rename on every campaign page.
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const load = () =>
     listOutreachAccounts()
@@ -128,6 +134,29 @@ export default function OutreachAccountsPage() {
       );
     } catch (e) {
       toast.error(apiErrorMessage(e, "Could not change what this account is for"));
+    }
+  };
+
+  const startRename = (account: OutreachAccount) => {
+    setRenamingId(account.id);
+    setRenameValue(account.name);
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameValue("");
+  };
+
+  const handleRename = async (account: OutreachAccount) => {
+    const next = renameValue.trim();
+    if (!next || next === account.name) return cancelRename();
+    try {
+      await updateOutreachAccount(account.id, { name: next });
+      cancelRename();
+      load();
+      toast.success(`Renamed to “${next}”`);
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not rename this account"));
     }
   };
 
@@ -237,7 +266,29 @@ export default function OutreachAccountsPage() {
               {accounts.map((a) => (
                 <tr key={a.id} className="border-b border-border/60 last:border-0 align-top">
                   <td className="px-4 py-3">
-                    <p className="font-medium">{a.name}</p>
+                    {renamingId === a.id ? (
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={() => handleRename(a)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRename(a);
+                          if (e.key === "Escape") cancelRename();
+                        }}
+                        aria-label={`Rename ${a.name}`}
+                        className={`${inputClass} h-8 w-44 py-1 font-medium`}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => startRename(a)}
+                        title="Click to rename"
+                        className="group flex items-center gap-1.5 rounded font-medium hover:text-primary"
+                      >
+                        <span className="truncate">{a.name}</span>
+                        <Pencil className="h-3 w-3 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
+                      </button>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       {a.platform}
                       <button
