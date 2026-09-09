@@ -34,6 +34,15 @@ PLATFORMS: dict[str, dict[str, Any]] = {
         # TikTok handles: 2-24 of letters/digits/underscore/period.
         "username_re": re.compile(r"^[A-Za-z0-9_.]{2,24}$"),
     },
+    "x": {
+        # twitter.com still resolves and people still paste it.
+        "hosts": ("x.com", "www.x.com", "twitter.com", "www.twitter.com",
+                  "mobile.twitter.com"),
+        "profile": "https://x.com/{username}",
+        # X handles: 1-15 of letters, digits and underscore. No periods,
+        # which makes this a tighter net than the other two.
+        "username_re": re.compile(r"^[A-Za-z0-9_]{1,15}$"),
+    },
     "instagram": {
         "hosts": ("instagram.com", "www.instagram.com", "m.instagram.com"),
         "profile": "https://www.instagram.com/{username}/",

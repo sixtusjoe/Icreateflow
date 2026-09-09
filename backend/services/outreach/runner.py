@@ -48,6 +48,7 @@ from services.outreach.crypto import decrypt_session
 PLATFORM_DRIVERS: dict[str, str] = {
     "tiktok": "playwright_tiktok",
     "instagram": "playwright_instagram",
+    "x": "playwright_x",
 }
 
 

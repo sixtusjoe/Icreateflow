@@ -387,6 +387,7 @@ export default function OutreachAccountsPage() {
           <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
             <option value="tiktok">TikTok</option>
             <option value="instagram">Instagram</option>
+            <option value="x">X (Twitter)</option>
           </Select>
           <label className="mb-1.5 mt-4 block text-sm font-medium">Used for</label>
           <Select value={purpose} onChange={(e) => setPurpose(e.target.value)}>

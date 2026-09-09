@@ -42,6 +42,15 @@ PLATFORMS: dict[str, dict[str, str]] = {
         "cookie": "sessionid",
         "domain": "tiktok.com",
     },
+    "x": {
+        # Verified: logged out, every x.com URL redirects into this flow.
+        "login_url": "https://x.com/i/flow/login",
+        # X's session cookie. `ct0` is the CSRF token and is set before
+        # sign-in, so it proves nothing; this one only appears once
+        # authenticated.
+        "cookie": "auth_token",
+        "domain": "x.com",
+    },
     "instagram": {
         "login_url": "https://www.instagram.com/accounts/login/",
         # Instagram's session cookie. `csrftoken` is set before sign-in, so

@@ -314,6 +314,7 @@ export default function OutreachPage() {
                 >
                   <option value="tiktok">TikTok</option>
                   <option value="instagram">Instagram</option>
+                  <option value="x">X (Twitter)</option>
                 </Select>
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   Decides how profile URLs are read and which sending accounts can be

@@ -49,7 +49,10 @@ STATUS_CANCELLED = "cancelled"
 #: Which driver discovers for which platform. TikTok's is absent on
 #: purpose: nobody has written its discovery selectors, and pretending
 #: otherwise would fail deep inside a run rather than at the start.
-PLATFORM_DRIVERS = {"instagram": "playwright_instagram"}
+PLATFORM_DRIVERS = {
+    "instagram": "playwright_instagram",
+    "x": "playwright_x",
+}
 
 
 @dataclass

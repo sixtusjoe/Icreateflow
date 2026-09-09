@@ -106,6 +106,7 @@ DRIVERS: dict[str, str] = {
     "playwright_tiktok": "services.outreach.browser.playwright_tiktok:PlaywrightTikTokMessenger",
     "playwright_instagram":
         "services.outreach.browser.playwright_instagram:PlaywrightInstagramMessenger",
+    "playwright_x": "services.outreach.browser.playwright_x:PlaywrightXMessenger",
 }
 
 
