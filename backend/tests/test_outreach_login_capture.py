@@ -144,3 +144,34 @@ async def test_an_unsupported_platform_is_reported(
     await db.update_sending_account(database, account["id"], platform="instagram")
     _point_at(monkeypatch, f"{site}/ok")
     assert await outreach_login.capture(account["id"], timeout_seconds=5) == 1
+
+
+# --- the flags every Chromium gets -----------------------------------------
+
+def test_bluetooth_is_disabled_in_every_browser_this_app_launches():
+    """A crash fix, not a preference.
+
+    macOS aborts any process that touches CoreBluetooth without an
+    NSBluetoothAlwaysUsageDescription in its Info.plist, and Playwright's
+    Chromium has none. A page asking whether Bluetooth is available takes
+    the browser down with it — TCC, SIGABRT, nine seconds after launch:
+
+        Termination Reason: Namespace TCC
+        +[CBManager authorization]
+
+    It killed a sign-in window under someone typing a password, and the app
+    called it "the window was closed before sign-in finished", because a
+    browser killed by the OS and one closed by hand look the same from here.
+
+    Verified on the machine it happened on: with the flag,
+    `navigator.bluetooth` is not defined at all, so no page can reach
+    CoreBluetooth. Nothing in this app wants Bluetooth.
+    """
+    from services.outreach.browser.playwright_base import CHROMIUM_ARGS
+    from services.outreach import session_capture
+
+    assert "--disable-features=WebBluetooth" in CHROMIUM_ARGS
+
+    # And the sign-in window uses the same list rather than its own copy —
+    # it drifted once already, which is how it kept the crash.
+    assert session_capture.CHROMIUM_ARGS is CHROMIUM_ARGS

@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 import database as db
 from services.outreach import accounts as account_mgr
-from services.outreach import config as cfg
+from services.outreach import config as cfg, session_capture
 from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
@@ -719,6 +719,30 @@ async def stop_background_tasks(tasks: list[asyncio.Task]) -> None:
     the tasks are gone and the job keeps its lease, which is exactly the
     situation the reaper already exists for.
     """
+    # A sign-in window is a task in this process holding a headed browser,
+    # so stopping now closes it under whoever is typing into it. It is not
+    # ours to cancel and not ours to wait out forever either — but going
+    # quietly is how someone loses a password entry three times in a row
+    # and cannot see why.
+    open_signins = session_capture.running_accounts()
+    if open_signins:
+        print(
+            f"[outreach] {len(open_signins)} sign-in window(s) still open "
+            f"(account(s) {', '.join(str(a) for a in open_signins)}) — waiting "
+            f"up to {DRAIN_SECONDS}s; they close when this process exits",
+            flush=True,
+        )
+        waited = 0.0
+        while session_capture.any_running() and waited < DRAIN_SECONDS:
+            await asyncio.sleep(1)
+            waited += 1
+        if session_capture.any_running():
+            print(
+                "[outreach] a sign-in is still open and is about to be closed "
+                "by this shutdown — it will have to be started again",
+                flush=True,
+            )
+
     for task in tasks:
         task.cancel()
     if not tasks:

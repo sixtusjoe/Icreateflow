@@ -649,3 +649,41 @@ async def test_a_draining_slot_does_not_claim_another_job(monkeypatch):
     assert claims == settled, (
         f"a slot claimed another job while draining ({settled} -> {claims})"
     )
+
+
+async def test_a_shutdown_waits_for_an_open_sign_in_window(monkeypatch):
+    """Stopping the API closes a sign-in window under whoever is typing.
+
+    The capture is a task in this process holding a headed browser, so a
+    restart takes the window with it — mid-password, with no explanation
+    beyond "the window was closed before sign-in finished". Waiting is the
+    least it can do, and saying so is the rest.
+    """
+    open_accounts = [9]
+
+    monkeypatch.setattr(
+        runner.session_capture, "running_accounts", lambda: list(open_accounts)
+    )
+    monkeypatch.setattr(
+        runner.session_capture, "any_running", lambda: bool(open_accounts)
+    )
+    monkeypatch.setattr(runner, "DRAIN_SECONDS", 5)
+
+    stopper = asyncio.create_task(runner.stop_background_tasks([]))
+    await asyncio.sleep(1.5)
+    assert not stopper.done(), "shutdown did not wait for the open sign-in"
+
+    open_accounts.clear()                     # the person finishes signing in
+    async with asyncio.timeout(5):
+        await stopper
+
+
+async def test_a_shutdown_is_not_delayed_when_nothing_is_signing_in(monkeypatch):
+    """The wait is for a real window, not a tax on every restart."""
+    monkeypatch.setattr(runner.session_capture, "running_accounts", lambda: [])
+    monkeypatch.setattr(runner.session_capture, "any_running", lambda: False)
+    monkeypatch.setattr(runner, "DRAIN_SECONDS", 30)
+
+    started = asyncio.get_running_loop().time()
+    await runner.stop_background_tasks([])
+    assert asyncio.get_running_loop().time() - started < 2

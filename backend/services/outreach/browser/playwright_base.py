@@ -133,6 +133,33 @@ DEFAULT_USER_AGENT = (
 )
 
 
+#: Flags every Chromium this app launches is given.
+#:
+#: `--disable-features=WebBluetooth` is not a preference, it is a crash fix.
+#: macOS aborts any process that touches CoreBluetooth without an
+#: `NSBluetoothAlwaysUsageDescription` in its Info.plist, and Playwright's
+#: bundled Chromium has none. A page that so much as asks whether Bluetooth
+#: is available gets the whole browser killed by TCC:
+#:
+#:     Termination Reason: Namespace TCC
+#:     This app has crashed because it attempted to access privacy-sensitive
+#:     data without a usage description.
+#:     +[CBManager authorization]
+#:
+#: It killed a sign-in window nine seconds after it opened, repeatedly,
+#: while someone was typing a password into it — and the app reported it as
+#: "the window was closed before sign-in finished", because from this side
+#: a browser killed by the OS and one closed by hand look identical.
+#:
+#: The flag removes `navigator.bluetooth` outright, so no page can reach
+#: CoreBluetooth at all. Nothing here wants Bluetooth.
+CHROMIUM_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-features=WebBluetooth",
+]
+
+
 class DiscoveryUnsupported(RuntimeError):
     """This driver cannot find profiles — only message them."""
 
@@ -216,8 +243,7 @@ class PlaywrightMessenger:
 
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
-                headless=self._headless,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                headless=self._headless, args=list(CHROMIUM_ARGS),
             )
 
     async def shutdown(self) -> None:

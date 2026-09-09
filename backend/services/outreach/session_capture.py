@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import database as db
 from services.outreach import local_browser
+from services.outreach.browser.playwright_base import CHROMIUM_ARGS
 from services.outreach.constants import ACCOUNT_IDLE
 from services.outreach.crypto import crypto_available, encrypt_session
 
@@ -51,6 +52,9 @@ PLATFORMS: dict[str, dict[str, str]] = {
 }
 
 POLL_SECONDS = 2
+#: Consecutive failed cookie reads tolerated before calling the window gone.
+#: The read races navigation, and signing in is all navigation.
+COOKIE_BLIPS_ALLOWED = 3
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("ICREATE_LOGIN_TIMEOUT", "600"))
 
 # --- states the caller can see -------------------------------------------
@@ -120,6 +124,24 @@ def status_for(account_id: int) -> Optional[Capture]:
     return _CAPTURES.get(int(account_id))
 
 
+def running_accounts() -> list[int]:
+    """Accounts with a sign-in window open right now.
+
+    Shutting the API down closes those windows — the capture is a task in
+    this process, and its browser goes with it. Whoever is stopping the
+    process needs to be able to find that out before doing it, because on
+    the other side of it is a person halfway through typing a password.
+    """
+    return [
+        account_id for account_id, task in _TASKS.items()
+        if task is not None and not task.done()
+    ]
+
+
+def any_running() -> bool:
+    return bool(running_accounts())
+
+
 def is_running(account_id: int) -> bool:
     task = _TASKS.get(int(account_id))
     return task is not None and not task.done()
@@ -168,9 +190,11 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         headless = os.environ.get("ICREATE_LOGIN_HEADLESS", "0") not in ("0", "false", "")
 
         async with async_playwright() as p:
+            # Same flags as the sender, from one list — the Bluetooth one in
+            # particular is a crash fix, and this is the window it was
+            # crashing. See CHROMIUM_ARGS.
             browser = await p.chromium.launch(
-                headless=headless,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                headless=headless, args=list(CHROMIUM_ARGS),
             )
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 860}, locale="en-US"
@@ -185,14 +209,60 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
             )
 
             waited = 0
+            blips = 0
+            print(
+                f"[outreach] sign-in window open for {name} ({capture.platform}) "
+                f"— waiting up to {timeout_seconds // 60} minutes",
+                flush=True,
+            )
             while waited < timeout_seconds:
                 if not browser.is_connected():
-                    finish(STATUS_FAILED, "The window was closed before sign-in finished.")
+                    print(
+                        f"[outreach] sign-in window for {name} disconnected after "
+                        f"{waited}s — the browser process is gone",
+                        flush=True,
+                    )
+                    finish(
+                        STATUS_FAILED,
+                        f"The sign-in window closed after {waited}s, before "
+                        f"sign-in finished.",
+                    )
                     return
                 try:
                     cookies = await context.cookies()
-                except Exception:  # noqa: BLE001 — context torn down under us
-                    finish(STATUS_FAILED, "The window was closed before sign-in finished.")
+                    blips = 0
+                except Exception as exc:  # noqa: BLE001 — see below
+                    # One failed read is not a closed window. The call goes
+                    # over a pipe to the browser process and can lose a race
+                    # with a navigation — and signing in is nothing but
+                    # navigations. Giving up on the first one ends the
+                    # sign-in under someone who is still typing.
+                    blips += 1
+                    if blips <= COOKIE_BLIPS_ALLOWED and browser.is_connected():
+                        print(
+                            f"[outreach] sign-in window for {name}: cookie read "
+                            f"{blips} of {COOKIE_BLIPS_ALLOWED} failed "
+                            f"({type(exc).__name__}) — still connected, retrying",
+                            flush=True,
+                        )
+                        await asyncio.sleep(POLL_SECONDS)
+                        waited += POLL_SECONDS
+                        continue
+                    # This used to report "the window was closed" for any
+                    # failure at all, which is a guess dressed as a fact: a
+                    # window that died on its own and one the operator shut
+                    # produced the same sentence, and the actual exception
+                    # was thrown away. Debugging it meant reproducing it.
+                    print(
+                        f"[outreach] sign-in window for {name} failed after "
+                        f"{waited}s: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                    finish(
+                        STATUS_FAILED,
+                        f"The sign-in window stopped responding after {waited}s "
+                        f"({type(exc).__name__}). Nothing was saved.",
+                    )
                     return
 
                 if any(
