@@ -24,6 +24,8 @@ the database server's local time.
 """
 from __future__ import annotations
 
+import os
+import socket
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -154,6 +156,37 @@ async def lease_account(
     return dict(row) if row else None
 
 
+def worker_is_gone(worker_id: Optional[str]) -> bool:
+    """Is the process that claimed this job definitely no longer running?
+
+    Worker ids are `host:pid:random`, so for a worker on this machine the
+    question is answerable exactly: signal 0 checks a pid without touching
+    it. `PermissionError` means the pid exists and belongs to someone else,
+    which is still alive.
+
+    Only ever returns True for a worker on this host. A lease held by
+    another machine is not this machine's business to second-guess — that
+    is what lease expiry is for, and guessing wrong would hand the same
+    target to two senders at once.
+    """
+    if not worker_id:
+        return False
+    parts = str(worker_id).split(":")
+    if len(parts) < 2 or parts[0] != socket.gethostname():
+        return False
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        return False
+    return False
+
+
 async def explain_no_account(
     database, campaign: dict, settings: dict[str, Any]
 ) -> str:
@@ -213,6 +246,35 @@ async def explain_no_account(
             reasons.append(
                 f"{name} has run {used} of its {per_account_cap} jobs for this "
                 f"campaign"
+            )
+            continue
+
+        if row.get("status") != ACCOUNT_ACTIVE:
+            continue
+
+        # Leased. Usually that means another slot is mid-send and there is
+        # nothing to say — but it also looks exactly like this when the
+        # process holding the lease is dead. Restarting the API to deploy a
+        # change killed a worker mid-job, and the account stayed `active`
+        # with a ten-minute lease while the campaign sat there looking
+        # broken. The lease does expire and the reaper does recover it, so
+        # nothing was lost; ten silent minutes were, and the log said only
+        # that some *other* account was paused.
+        held = (await database.session.execute(
+            text(
+                "SELECT worker_id, lease_expires_at FROM outreach_jobs "
+                " WHERE sending_account_id = :account_id AND status = 'processing' "
+                " ORDER BY started_at DESC LIMIT 1"
+            ),
+            {"account_id": row["id"]},
+        )).mappings().first()
+        if not held:
+            continue
+        if worker_is_gone(held["worker_id"]):
+            reasons.append(
+                f"{name} is held by a worker that is no longer running "
+                f"({held['worker_id']}) — the lease expires at "
+                f"{held['lease_expires_at']} and the reaper will free it then"
             )
     if not reasons:
         # Busy, or inside the send interval. Both clear on their own.

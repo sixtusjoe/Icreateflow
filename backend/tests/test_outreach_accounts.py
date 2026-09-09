@@ -1,6 +1,9 @@
 """Sending-account manager: leasing, caps, health and auto-pause."""
 from __future__ import annotations
 
+import os
+import socket
+
 from sqlalchemy import text
 
 import database as db
@@ -348,3 +351,87 @@ async def test_the_explanation_separates_a_pause_from_a_cap(
     assert "of" not in why.split("paused")[-1], (
         f"a paused account should not be reported as a cap: {why!r}"
     )
+
+
+async def test_a_lease_held_by_a_dead_worker_is_named(
+    database, campaign_factory, account_factory, settings
+):
+    """The silence that cost ten minutes.
+
+    Restarting the API killed a worker mid-job. Its account stayed `active`
+    holding a ten-minute lease, so nothing could be leased and the campaign
+    stopped — while the only thing logged was that a *different* account
+    was paused. A busy account is not worth a line in the log; an account
+    held by a process that no longer exists is the whole answer.
+
+    The pid is checked rather than guessed, so this is exact for a worker
+    on this machine and declines to speculate about any other.
+    """
+    campaign = await campaign_factory()
+    account = await account_factory(name="Miahealth")
+    await importer.import_targets(database, campaign["id"], "username\nalice\n")
+    await job_queue.start_campaign(database, campaign, settings)
+    campaign = dict(await db.get_outreach_campaign(database, campaign["id"]))
+
+    leased = await account_mgr.lease_account(database, campaign, settings)
+    job = await job_queue.claim_job(
+        database, campaign["id"], leased["id"], "w", settings
+    )
+    # A worker on this host whose pid is long gone. 2**22 is above every
+    # configured pid_max, so it cannot collide with a live process.
+    dead = f"{socket.gethostname()}:{2 ** 22}:abc123"
+    await database.session.execute(
+        text("UPDATE outreach_jobs SET worker_id = :w WHERE id = :i"),
+        {"w": dead, "i": job["id"]},
+    )
+    await database.session.commit()
+
+    assert await account_mgr.lease_account(database, campaign, settings) is None
+
+    why = await account_mgr.explain_no_account(database, campaign, settings)
+    assert "Miahealth" in why, why
+    assert "no longer running" in why, why
+
+
+async def test_an_account_genuinely_mid_send_is_not_reported(
+    database, campaign_factory, account_factory, settings
+):
+    """Busy is the normal shape of a working system.
+
+    The same query, the same `active` status, the same held lease — and
+    nothing to tell anyone, because it clears itself in seconds. Reporting
+    it would put a line in the log every ten minutes of every healthy run,
+    which is how a useful message becomes one nobody reads.
+    """
+    campaign = await campaign_factory()
+    account = await account_factory(name="Busy One")
+    await importer.import_targets(database, campaign["id"], "username\nalice\n")
+    await job_queue.start_campaign(database, campaign, settings)
+    campaign = dict(await db.get_outreach_campaign(database, campaign["id"]))
+
+    leased = await account_mgr.lease_account(database, campaign, settings)
+    job = await job_queue.claim_job(
+        database, campaign["id"], leased["id"], "w", settings
+    )
+    # This process, which is very much alive.
+    alive = f"{socket.gethostname()}:{os.getpid()}:abc123"
+    await database.session.execute(
+        text("UPDATE outreach_jobs SET worker_id = :w WHERE id = :i"),
+        {"w": alive, "i": job["id"]},
+    )
+    await database.session.commit()
+
+    why = await account_mgr.explain_no_account(database, campaign, settings)
+    assert why == "", f"a working send should say nothing, got {why!r}"
+
+
+def test_a_lease_from_another_machine_is_never_declared_dead():
+    """A pid on another host means nothing here.
+
+    Two senders handed the same target is a worse outcome than a slow
+    recovery, and lease expiry already covers the remote case.
+    """
+    assert account_mgr.worker_is_gone(f"some-other-host:{2 ** 22}:abc") is False
+    assert account_mgr.worker_is_gone(None) is False
+    assert account_mgr.worker_is_gone("malformed") is False
+    assert account_mgr.worker_is_gone(f"{socket.gethostname()}:notapid:x") is False

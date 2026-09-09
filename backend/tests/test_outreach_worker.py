@@ -477,7 +477,7 @@ async def test_the_local_worker_opens_a_window_per_configured_slot(monkeypatch):
     started = 0
     forever = asyncio.Event()
 
-    async def _fake_slot(_worker):
+    async def _fake_slot(_worker, _stopping):
         nonlocal started
         started += 1
         await forever.wait()
@@ -509,4 +509,143 @@ async def test_the_local_worker_opens_a_window_per_configured_slot(monkeypatch):
     assert started == 3, f"started {started} slots, expected 3"
     assert runner.local_worker_state()["running"] is False, (
         "the loop must not leave itself marked running after it stops"
+    )
+
+
+# --- stopping without killing a send ---------------------------------------
+
+async def test_a_shutdown_waits_for_a_send_already_in_flight(monkeypatch):
+    """Cancelling the sender must not abandon a job halfway through.
+
+    Restarting the API to deploy a change killed the worker between
+    clicking Send and confirming it. The job stayed `processing` on a
+    ten-minute lease, the account stayed `active` and unleasable for the
+    same ten minutes, and the campaign stopped dead without saying why.
+    The reaper does recover it — but the requeued target then had to be
+    sent again with no way to know whether the first attempt had landed.
+
+    So cancellation now means "finish this one, then stop".
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = False
+
+    async def _slow_slot(_worker, stopping):
+        nonlocal finished
+        started.set()
+        await release.wait()          # the send, mid-flight
+        finished = True               # the confirmation it must reach
+
+    class _StubWorker:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runner, "_local_slot", _slow_slot)
+    monkeypatch.setattr(runner, "OutreachWorker", _StubWorker)
+
+    async def _settings(_db):
+        return {"outreach_local_worker_concurrency": 1}
+
+    monkeypatch.setattr(runner.cfg, "get_all", _settings)
+
+    task = asyncio.create_task(runner._local_worker_loop())
+    async with asyncio.timeout(3):
+        await started.wait()
+
+    # The shutdown, exactly as the lifespan delivers it.
+    stopper = asyncio.create_task(runner.stop_background_tasks([task]))
+    await asyncio.sleep(0.05)
+    assert not finished, "the send should still be running"
+    assert not stopper.done(), "shutdown returned while a send was in flight"
+
+    release.set()                      # the send completes
+    async with asyncio.timeout(5):
+        await stopper
+
+    assert finished, "the shutdown abandoned a send instead of waiting for it"
+
+
+async def test_a_send_that_never_finishes_does_not_hold_the_shutdown_open(
+    monkeypatch
+):
+    """The wait is bounded. A deploy cannot hang on a stuck page.
+
+    Past the bound the slot is cancelled and its job keeps its lease, which
+    is the case the reaper already exists for — the same outcome as before,
+    reached deliberately instead of by accident.
+    """
+    started = asyncio.Event()
+
+    async def _stuck_slot(_worker, stopping):
+        started.set()
+        await asyncio.Event().wait()   # never returns
+
+    class _StubWorker:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runner, "_local_slot", _stuck_slot)
+    monkeypatch.setattr(runner, "OutreachWorker", _StubWorker)
+    monkeypatch.setattr(runner, "DRAIN_SECONDS", 1)
+
+    async def _settings(_db):
+        return {"outreach_local_worker_concurrency": 1}
+
+    monkeypatch.setattr(runner.cfg, "get_all", _settings)
+
+    task = asyncio.create_task(runner._local_worker_loop())
+    async with asyncio.timeout(3):
+        await started.wait()
+
+    async with asyncio.timeout(20):
+        await runner.stop_background_tasks([task])
+
+    assert task.done(), "the stuck slot was left running after shutdown"
+
+
+async def test_a_draining_slot_does_not_claim_another_job(monkeypatch):
+    """Draining means finishing, not squeezing one more in."""
+    claims = 0
+    first_claim = asyncio.Event()
+
+    class _CountingWorker:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def process_one(self, settings):
+            nonlocal claims
+            claims += 1
+            first_claim.set()
+            await asyncio.sleep(0.05)
+            return True
+
+        async def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runner, "OutreachWorker", _CountingWorker)
+
+    async def _settings(_db):
+        return {
+            "outreach_local_worker_concurrency": 1,
+            runner.cfg.WORKERS_ENABLED_KEY: True,
+            "outreach_worker_idle_seconds": 1,
+        }
+
+    monkeypatch.setattr(runner.cfg, "get_all", _settings)
+
+    task = asyncio.create_task(runner._local_worker_loop())
+    async with asyncio.timeout(3):
+        await first_claim.wait()
+
+    await runner.stop_background_tasks([task])
+    settled = claims
+    await asyncio.sleep(0.2)
+    assert claims == settled, (
+        f"a slot claimed another job while draining ({settled} -> {claims})"
     )

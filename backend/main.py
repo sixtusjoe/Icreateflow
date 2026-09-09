@@ -48,8 +48,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for t in clip_tasks + outreach_tasks:
+        for t in clip_tasks:
             t.cancel()
+        # Not just cancelled: the outreach sender treats cancellation as
+        # "finish the send you are on, then stop", and that only means
+        # anything if something waits for it.
+        await outreach_runner.stop_background_tasks(outreach_tasks)
 
 app = FastAPI(title="ICREATEFLOW API", lifespan=lifespan)
 

@@ -60,6 +60,20 @@ def default_worker_id() -> str:
 #: every ten seconds is a worker nobody reads.
 EXPLAIN_IDLE_SECONDS = int(os.environ.get("ICREATE_OUTREACH_EXPLAIN_IDLE_SECONDS", "600"))
 
+#: How long a shutdown waits for sends already in flight to finish.
+#:
+#: Restarting the API used to kill the worker mid-job: the browser died
+#: between clicking Send and confirming it, the job stayed `processing`
+#: holding a ten-minute lease, and the account stayed `active` and
+#: unleasable for the same ten minutes. Nothing was lost — the reaper
+#: requeues it — but the campaign stopped dead and said nothing, and the
+#: requeued target had to be sent again without knowing whether the first
+#: attempt had landed.
+#:
+#: Long enough for a send to finish (~40s, and a slow profile longer),
+#: short enough that a deploy is not held hostage by a stuck page.
+DRAIN_SECONDS = int(os.environ.get("ICREATE_OUTREACH_DRAIN_SECONDS", "90"))
+
 
 class OutreachWorker:
     """Runs jobs until stopped.
@@ -564,7 +578,7 @@ _LOCAL_WORKER: dict[str, Any] = {
 }
 
 
-async def _local_slot(worker: "OutreachWorker") -> None:
+async def _local_slot(worker: "OutreachWorker", stopping: asyncio.Event) -> None:
     """One account's worth of work, running alongside the others.
 
     Slots do not divide up a queue between them — each one leases an
@@ -573,7 +587,7 @@ async def _local_slot(worker: "OutreachWorker") -> None:
     carries its own send interval with it, so running two does not make
     either go faster; it makes two go at once, in two windows.
     """
-    while True:
+    while not stopping.is_set():
         try:
             database = await db.get_db()
             try:
@@ -584,6 +598,12 @@ async def _local_slot(worker: "OutreachWorker") -> None:
             if not settings[cfg.WORKERS_ENABLED_KEY]:
                 await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
                 continue
+
+            # Checked again here: the wait above is where a slot spends most
+            # of its life, and claiming a job on the way out is the one
+            # thing a draining worker must not do.
+            if stopping.is_set():
+                return
 
             _LOCAL_WORKER["busy"] += 1
             try:
@@ -633,10 +653,37 @@ async def _local_worker_loop() -> None:
         f"{'window' if slots == 1 else 'windows'}, visible",
         flush=True,
     )
-    tasks = [asyncio.create_task(_local_slot(worker)) for _ in range(slots)]
+    stopping = asyncio.Event()
+    tasks = [asyncio.create_task(_local_slot(worker, stopping)) for _ in range(slots)]
+    running = asyncio.gather(*tasks)
     try:
-        await asyncio.gather(*tasks)
+        # Shielded so that being cancelled does not tear the slots down with
+        # it. Cancellation here means "the API is stopping", and a send that
+        # is halfway through deserves to finish: the alternative is a job
+        # abandoned between Send and the confirmation, which nobody can
+        # later tell apart from one that never sent.
+        await asyncio.shield(running)
     except asyncio.CancelledError:
+        stopping.set()
+        if _LOCAL_WORKER["busy"]:
+            print(
+                f"[outreach] shutting down — waiting up to {DRAIN_SECONDS}s for "
+                f"{_LOCAL_WORKER['busy']} send(s) already in flight",
+                flush=True,
+            )
+        try:
+            async with asyncio.timeout(DRAIN_SECONDS):
+                await running
+        except (TimeoutError, asyncio.CancelledError):
+            print(
+                "[outreach] a send did not finish in time — its job keeps its "
+                "lease and the reaper will requeue it",
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001 — a failing slot must not mask the stop
+            traceback.print_exc()
+        else:
+            print("[outreach] all sends finished; stopping cleanly", flush=True)
         raise
     finally:
         for task in tasks:
@@ -657,3 +704,30 @@ async def start_background_tasks() -> list[asyncio.Task]:
     if local_worker_enabled():
         tasks.append(asyncio.create_task(_local_worker_loop()))
     return tasks
+
+
+async def stop_background_tasks(tasks: list[asyncio.Task]) -> None:
+    """Ask the loops to stop, and wait while they finish what they started.
+
+    Cancelling without awaiting is what made a restart destructive: the
+    cancellation was delivered, the process exited, and a send in flight
+    died between clicking Send and confirming it. The sender interprets
+    cancellation as "drain", so the wait here is the half that gives it
+    somewhere to drain into.
+
+    Bounded, because a deploy cannot hang on a stuck page. Past the bound
+    the tasks are gone and the job keeps its lease, which is exactly the
+    situation the reaper already exists for.
+    """
+    for task in tasks:
+        task.cancel()
+    if not tasks:
+        return
+    try:
+        async with asyncio.timeout(DRAIN_SECONDS + 15):
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except TimeoutError:
+        print(
+            "[outreach] background tasks did not stop in time — exiting anyway",
+            flush=True,
+        )
