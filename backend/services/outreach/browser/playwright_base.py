@@ -184,6 +184,14 @@ class PlaywrightMessenger:
     #: Which platform's accounts this driver serves.
     PLATFORM = "tiktok"
 
+    #: How long this platform's composer gets to appear, when it needs
+    #: more than the shared budget. X's chat UI renders the whole
+    #: conversation client-side after the click: measured absent seven
+    #: seconds in and present some seconds later, against a shared budget
+    #: of fifteen. That margin is what "the composer never opened" was on
+    #: the first live send.
+    COMPOSER_TIMEOUT_MS: Optional[int] = None
+
     #: Is the followers list a modal that has to be clicked open?
     #:
     #: True on Instagram, where `/<user>/followers/` renders the profile and
@@ -945,12 +953,14 @@ class PlaywrightMessenger:
             return None
 
         editor = await self._first_visible(
-            page, self.SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+            page, self.SELECTORS["message_input"],
+                timeout_ms=self.COMPOSER_TIMEOUT_MS or COMPOSER_MS
         )
         if editor is None and await self._present(page, self.SELECTORS["messages_view"]):
             if await self._open_thread(page, target):
                 editor = await self._first_visible(
-                    page, self.SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+                    page, self.SELECTORS["message_input"],
+                timeout_ms=self.COMPOSER_TIMEOUT_MS or COMPOSER_MS
                 )
         if editor is not None:
             print("[outreach] composer opened on the retry after the puzzle", flush=True)
@@ -1169,7 +1179,8 @@ class PlaywrightMessenger:
                 )
 
             editor = await self._first_visible(
-                page, self.SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+                page, self.SELECTORS["message_input"],
+                timeout_ms=self.COMPOSER_TIMEOUT_MS or COMPOSER_MS
             )
 
             # Clicking Message can hand off to the messages app instead of
@@ -1179,7 +1190,8 @@ class PlaywrightMessenger:
             if editor is None and await self._present(page, self.SELECTORS["messages_view"]):
                 if await self._open_thread(page, target):
                     editor = await self._first_visible(
-                        page, self.SELECTORS["message_input"], timeout_ms=COMPOSER_MS
+                        page, self.SELECTORS["message_input"],
+                timeout_ms=self.COMPOSER_TIMEOUT_MS or COMPOSER_MS
                     )
 
             if editor is None and self._page_is_gone(page):

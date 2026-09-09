@@ -72,31 +72,55 @@ X_SELECTORS: dict[str, Any] = {
             "div[role='button'][aria-label^='Message']",
         ),
     ),
-    # The DM composer. X wraps a contenteditable in a labelled container;
-    # the inner editable is what accepts typing.
+    # The DM composer.
+    #
+    # Measured against the live site: X's current chat UI names everything
+    # `dm-*` in kebab-case, and the input is a real <textarea> — not the
+    # camelCase `dmComposerTextInput` contenteditable the older interface
+    # used. The old names are kept behind the new ones because not every
+    # account is on the new UI yet.
+    #
+    # It is also slow: the composer was absent seven seconds after the
+    # click and present a few seconds later, which is what "the composer
+    # never opened" meant on the first live send.
     "message_input": (
+        "textarea[data-testid='dm-composer-textarea']",
+        "[data-testid='dm-composer-input-container'] textarea",
+        "[data-testid='dm-composer-form'] textarea",
         "[data-testid='dmComposerTextInput'] div[contenteditable='true']",
         "[data-testid='dmComposerTextInput']",
-        "div[data-testid='dmComposerTextInput'][contenteditable='true']",
         "div[role='textbox'][contenteditable='true']",
     ),
     # The inbox with no conversation open — clicking Message landed on the
     # messages app instead of opening a thread, so there is nothing to type
     # into and the engine goes looking for the target's own conversation.
     "messages_view": (
+        "[data-testid='dm-inbox-panel']",
+        "[data-testid='dm-empty-conversation-state']",
         "[data-testid='DmActivityViewport']",
         "[aria-label='Timeline: Messages']",
-        "[data-testid='conversation']",
     ),
+    # Not seen on an empty composer — X appears to reveal it once there is
+    # something to send. The engine presses Enter when it cannot find a
+    # send control, which is what a person does here anyway, and the
+    # delivery check decides whether that worked.
     "send_button": (
+        "[data-testid='dm-composer-send-button']",
+        "[data-testid='dm-composer-form'] button[type='submit']",
         "[data-testid='dmComposerSendButton']",
         "div[role='button'][aria-label='Send']",
     ),
     # A message that is in the thread. `messageEntry` is the row X gives
     # each one; the scroller is the fallback for reading the whole thread.
+    # A message that is in the thread. `dm-message-list` is confirmed
+    # present in the new UI; the row inside it could not be read, because
+    # every existing conversation on the test account sits behind the chat
+    # PIN. So the list itself is matched and its text searched, which is
+    # what the delivery check does with whatever it is given.
     "sent_confirmation": (
+        "[data-testid='dm-message-list']",
+        "[data-testid='dm-message-scroller']",
         "[data-testid='messageEntry']",
-        "[data-testid='DmScrollerContainer'] [data-testid='tweetText']",
         "[data-testid='DmScrollerContainer'] div[role='row']",
     ),
     # X's Follow control carries the account's numeric id in its test id —
@@ -159,6 +183,13 @@ X_SELECTORS: dict[str, Any] = {
     # browser open while it is on screen rather than blaming the target.
     # The Arkose puzzle arrives in an iframe, so the frame is matched too.
     "verification_challenge": (
+        # X Chat's PIN. Not a puzzle, but the same situation as far as the
+        # engine is concerned: a person has to type something before
+        # anything can proceed, and no amount of retrying substitutes.
+        # Without this, the PIN screen reads as "this profile has no
+        # Message button" and writes off a reachable target.
+        "[data-testid='pin-code-input-container']",
+        "[data-testid='pin-title']",
         "iframe[src*='arkoselabs']",
         "iframe[title*='challenge']",
         "text=Verify your identity",
@@ -175,7 +206,7 @@ X_SELECTORS: dict[str, Any] = {
     # image icon. Clicking the icon opens an OS picker no automation can
     # reach; setting the input is the only route in.
     "attach_image": (
-        "[data-testid='dmComposerTextInput'] ~ * input[type='file']",
+        "input[data-testid='dm-composer-file-input']",
         "input[data-testid='fileInput']",
         "input[type='file'][accept*='image']",
     ),
@@ -266,6 +297,11 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     # dialog at all. Instagram's is a modal, and the engine assumed every
     # platform's was, so the harvest clicked a link, found no dialog and
     # scrolled nothing while reporting zero found and no error.
+    # The chat UI builds the whole conversation client-side after the
+    # click. Measured: no composer seven seconds in, one a few seconds
+    # later. The shared fifteen-second budget was the difference between
+    # a send and "the composer never opened".
+    COMPOSER_TIMEOUT_MS = 30000
     FOLLOWERS_IN_DIALOG = False
     SITE_URL = "https://x.com"
     SEARCH_URL = "https://x.com/explore"
