@@ -184,6 +184,19 @@ class PlaywrightMessenger:
     #: Which platform's accounts this driver serves.
     PLATFORM = "tiktok"
 
+    #: Is the followers list a modal that has to be clicked open?
+    #:
+    #: True on Instagram, where `/<user>/followers/` renders the profile and
+    #: nothing else — the list only exists once the link is clicked. False
+    #: on X, where it is an ordinary page with its own URL, no dialog
+    #: anywhere in it, and clicking a link to reach it just adds a step
+    #: that can fail.
+    #:
+    #: Getting this wrong is silent: the click lands, no dialog appears, and
+    #: the harvest scrolls a modal that does not exist for as long as you
+    #: let it, reporting nothing found and no error.
+    FOLLOWERS_IN_DIALOG = True
+
     #: Where the site lives, and where its search is. Only discovery uses
     #: these; messaging navigates to a target's own profile URL.
     SITE_URL = ""
@@ -1768,6 +1781,20 @@ class PlaywrightMessenger:
                 pass
         return list(found.values())
 
+    def followers_urls(self, username: str) -> tuple[str, ...]:
+        """Every page that lists this account's followers, in order.
+
+        A tuple rather than one URL because X splits the list across tabs —
+        Verified Followers and Followers are separate pages, and reading
+        only the second one silently drops everyone in the first. They are
+        harvested in sequence and merged; the overlap between them costs
+        nothing, since names are deduped.
+
+        Only consulted when `FOLLOWERS_IN_DIALOG` is false — a platform
+        whose list is a modal never reaches this.
+        """
+        return (f"{self.profile_url(username)}/followers",)
+
     async def account_followers(self, page, username: str, limit: int,
                                 scroll_rounds: int = 8) -> list[str]:
         """Who follows this account.
@@ -1778,20 +1805,51 @@ class PlaywrightMessenger:
         page with no dialog on it at all. The likes list does open by URL,
         which is exactly why this was worth checking rather than assuming.
         """
-        selectors = self.SELECTORS.get("followers_link") or ()
-        if not selectors or limit <= 0:
+        if limit <= 0:
             return []
         try:
-            await page.goto(self.profile_url(username), wait_until="domcontentloaded",
-                            timeout=self._timeout)
-            await self._dismiss_overlays(page)
-            link = await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
-            if link is None:
-                print(f"[discovery] no followers link on @{username} — private, "
-                      f"or it does not show its followers", flush=True)
-                return []
-            if not await self._click(page, link, "followers-link", username):
-                return []
+            if not self.FOLLOWERS_IN_DIALOG:
+                # Ordinary pages. Ask for each directly rather than loading
+                # the profile and hunting for a link to click, and merge
+                # them — one account's followers can be split across
+                # several tabs, and reading one drops the rest.
+                merged: dict[str, None] = {}
+                for url in self.followers_urls(username):
+                    if len(merged) >= limit:
+                        break
+                    await page.goto(url, wait_until="domcontentloaded",
+                                    timeout=self._timeout)
+                    await self._dismiss_overlays(page)
+                    if await self._present(page, self.SELECTORS["profile_missing"]):
+                        print(f"[discovery] @{username} does not exist, or shows "
+                              f"no followers", flush=True)
+                        return []
+                    before = len(merged)
+                    for name in await self._links_in_open_dialog(
+                        page, scroll_rounds, wanted=limit - len(merged)
+                    ):
+                        if name != username:
+                            merged.setdefault(name)
+                    tab = url.rstrip("/").rsplit("/", 1)[-1]
+                    print(f"[discovery] {tab}: {len(merged) - before} new "
+                          f"({len(merged)} so far)", flush=True)
+                return list(merged)[:limit]
+            else:
+                selectors = self.SELECTORS.get("followers_link") or ()
+                if not selectors:
+                    return []
+                await page.goto(self.profile_url(username),
+                                wait_until="domcontentloaded", timeout=self._timeout)
+                await self._dismiss_overlays(page)
+                link = await self._first_visible(
+                    page, tuple(selectors), timeout_ms=COMPOSER_MS
+                )
+                if link is None:
+                    print(f"[discovery] no followers link on @{username} — private, "
+                          f"or it does not show its followers", flush=True)
+                    return []
+                if not await self._click(page, link, "followers-link", username):
+                    return []
             names = await self._links_in_open_dialog(page, scroll_rounds, wanted=limit)
             # An account's own handle is in the profile behind the dialog.
             return [n for n in names if n != username][:limit]
@@ -1809,15 +1867,25 @@ class PlaywrightMessenger:
         that is scrolling correctly through familiar territory looks stuck.
         """
         try:
+            container = (self.SELECTORS.get("scroll_container") or ("body",))[0]
             return int(await page.evaluate(
-                """() => {
-                    const d = document.querySelector("div[role='dialog']");
-                    if (!d) return 0;
+                """(sel) => {
+                    const d = document.querySelector(sel);
+                    if (!d) return document.body.scrollHeight || 0;
                     const boxes = Array.from(d.querySelectorAll('*'))
                         .filter(el => el.scrollHeight > el.clientHeight + 40);
-                    if (!boxes.length) return 0;
+                    // A modal scrolls inside itself; a page scrolls itself.
+                    // Falling through to the document is what makes this
+                    // mean the same thing on both, instead of reporting no
+                    // progress forever on a list that is loading fine.
+                    if (!boxes.length) {
+                        return Math.max(
+                            d.scrollHeight || 0, document.body.scrollHeight || 0
+                        );
+                    }
                     return Math.max(...boxes.map(el => el.scrollHeight));
-                }"""
+                }""",
+                container,
             ) or 0)
         except Exception:  # noqa: BLE001 — progress is a hint, not a step
             return 0

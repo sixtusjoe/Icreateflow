@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -53,6 +55,14 @@ PLATFORM_DRIVERS = {
     "instagram": "playwright_instagram",
     "x": "playwright_x",
 }
+
+
+#: How often a running search writes its progress. Reporting, not work —
+#: often enough that the dashboard moves, rarely enough that it costs
+#: nothing next to a page load per profile.
+PROGRESS_EVERY_SECONDS = float(
+    os.environ.get("ICREATE_DISCOVERY_PROGRESS_SECONDS", "5")
+)
 
 
 @dataclass
@@ -298,11 +308,34 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
         await driver.startup()
 
         collected: list[dict[str, Any]] = []
+        #: When progress was last written to the row the dashboard reads.
+        last_written = [time.monotonic()]
+
+        async def show_progress(visited_now: int = 0, force: bool = False) -> None:
+            """Write what has been found so far, occasionally.
+
+            The row used to be written once at the start with zeros and not
+            again until the run ended, so a search that was working looked
+            identical to one that was doing nothing — for as long as it ran.
+            A harvest of 94 profiles reported `0 found, 0 visited` the whole
+            way through and only told the truth when it was cancelled.
+
+            Throttled because this is reporting, not the work: a write per
+            profile would be hundreds of round trips to make a number move.
+            """
+            now = time.monotonic()
+            if not force and now - last_written[0] < PROGRESS_EVERY_SECONDS:
+                return
+            last_written[0] = now
+            await _persist_status(
+                search_id, STATUS_RUNNING, run.message, len(collected), visited_now
+            )
 
         async def on_found(lead: dict[str, Any]) -> None:
             collected.append(lead)
             run.found = len(collected)
             run.message = f"Found {len(collected)} of {wanted}…"
+            await show_progress()
 
         if seeds:
             leads = await driver.discover_followers(
@@ -342,6 +375,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
         # --- optional: open each profile for a bio ---------------------
         if search.get("enrich_profiles") and leads:
             run.message = f"Reading {len(leads)} profile(s)…"
+            await show_progress(visited, force=True)
             context = await driver._context_for(payload)
             page = await context.new_page()
             try:
@@ -351,6 +385,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                     lead.update(await driver.profile_summary(page, lead["username"]))
                     visited += 1
                     run.message = f"Read {index} of {len(leads)} profile(s)…"
+                    await show_progress(visited)
                     await asyncio.sleep(
                         float(settings["outreach_discovery_interval_seconds"])
                     )

@@ -253,6 +253,12 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     SELECTORS = X_SELECTORS
     OVERLAY_DISMISS = X_OVERLAY_DISMISS
     CHALLENGE_FRAME_HINTS = ("arkoselabs", "challenge", "funcaptcha")
+    # X's followers list is an ordinary page with its own URL — verified
+    # live: x.com/<handle>/followers rendered 35 UserCells and contained no
+    # dialog at all. Instagram's is a modal, and the engine assumed every
+    # platform's was, so the harvest clicked a link, found no dialog and
+    # scrolled nothing while reporting zero found and no error.
+    FOLLOWERS_IN_DIALOG = False
     SITE_URL = "https://x.com"
     SEARCH_URL = "https://x.com/explore"
     SEARCH_QUERY_URL = "https://x.com/search?q={q}&f=user"
@@ -323,6 +329,22 @@ class PlaywrightXMessenger(PlaywrightMessenger):
 
     def profile_url(self, username: str) -> str:
         return f"{self.SITE_URL}/{username.strip().lstrip('@')}"
+
+    def followers_urls(self, username: str) -> tuple[str, ...]:
+        """Verified Followers first, then Followers.
+
+        X splits a profile's followers across tabs, and they are separate
+        pages rather than a filter over one list — so harvesting only
+        `/followers` drops every verified account that follows them.
+        Verified first because it is the shorter list and the one more
+        likely to be worth reading if a run is cut short.
+
+        `/following` is deliberately not here: those are accounts this
+        person follows, which is a different audience and not what was
+        asked for.
+        """
+        base = self.profile_url(username)
+        return (f"{base}/verified_followers", f"{base}/followers")
 
     def hashtag_url(self, tag: str) -> str:
         return f"{self.SITE_URL}/hashtag/{tag.strip().lstrip('#')}"
