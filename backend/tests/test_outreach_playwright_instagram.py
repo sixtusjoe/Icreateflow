@@ -692,3 +692,51 @@ async def test_a_following_button_is_left_alone_in_its_real_markup(driver, site)
 
     assert result.success is False
     assert RECEIVED == [], f"the Following control was clicked: {RECEIVED!r}"
+
+
+# --- one tab, many targets -------------------------------------------------
+
+async def test_one_tab_is_reused_across_targets(driver, site):
+    """Sending opened a tab per target and closed it again.
+
+    A browser launch's worth of setup several hundred times a run, and on
+    a visible worker a window flickering open and shut beside whatever the
+    operator was doing. The session lives in the context, not the tab, so
+    navigating the same tab to the next profile is the same thing without
+    the churn.
+    """
+    message = "Hi alice, quick question."
+    context = await driver._context_for(account())
+
+    first = await driver.send_message(account(), target(site, "/alice"), message)
+    assert first.success is True, first.error
+    tab = driver._pages[1]
+    assert len(context.pages) == 1
+
+    second = await driver.send_message(account(), target(site, "/alice"), message)
+    assert second.success is True, second.error
+
+    assert driver._pages[1] is tab, "a second tab was opened for the second target"
+    assert len(context.pages) == 1, f"{len(context.pages)} tabs open, expected 1"
+    assert len(RECEIVED) == 2
+
+
+async def test_a_tab_that_dies_is_replaced_not_reused(driver, site):
+    """Reuse must not mean handing out a corpse.
+
+    A worker killed mid-job, or an operator closing the window, leaves a
+    tab that cannot be navigated. The next send has to notice and build a
+    fresh one rather than failing every target from then on.
+    """
+    message = "Hi alice, quick question."
+    assert (await driver.send_message(
+        account(), target(site, "/alice"), message
+    )).success is True
+
+    dead = driver._pages[1]
+    await dead.close()          # as if the window had been shut
+
+    result = await driver.send_message(account(), target(site, "/alice"), message)
+
+    assert result.success is True, result.error
+    assert driver._pages[1] is not dead, "the closed tab was handed out again"

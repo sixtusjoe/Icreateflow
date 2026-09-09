@@ -933,11 +933,23 @@ async def test_the_context_survives_between_jobs(driver, site):
     assert driver._contexts[1] is first
 
 
-async def test_pages_are_closed_after_every_job(driver, site):
-    """Leaked pages are how a long-running worker ends up out of memory."""
+async def test_tabs_do_not_accumulate_across_jobs(driver, site):
+    """Leaked pages are how a long-running worker ends up out of memory.
+
+    This asserted zero tabs after every job, because sending used to open
+    one per target and close it again. It now keeps one per account and
+    navigates it, which is the same guarantee expressed differently: the
+    count does not grow with the number of targets. Three sends, one tab —
+    and none once the account is released.
+    """
     for _ in range(3):
         await driver.send_message(account(), target(site, "/alice"), "Hi.")
-    assert driver._contexts[1].pages == []
+
+    pages = driver._contexts[1].pages
+    assert len(pages) == 1, f"{len(pages)} tabs after three jobs, expected 1"
+
+    await driver.release_account(1)
+    assert 1 not in driver._pages, "the tab outlived the account that owned it"
 
 
 async def test_release_account_drops_the_context(driver, site):

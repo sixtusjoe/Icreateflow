@@ -240,6 +240,13 @@ class PlaywrightMessenger:
         self._browser = None
         #: account_id → BrowserContext. The isolation guarantee.
         self._contexts: dict[int, Any] = {}
+        #: One reusable tab per account. Sending used to open a tab per
+        #: target and close it again — a browser launch's worth of work
+        #: several hundred times a run, and a visible window flickering
+        #: open and shut. The session lives in the context, not the tab, so
+        #: navigating the same tab to the next profile is the same thing
+        #: with none of the churn.
+        self._pages: dict[int, Any] = {}
         self._lock = asyncio.Lock()
         #: Held only while the browser is being launched. Separate from
         #: `_lock`, which `_context_for` holds *across* a startup() call.
@@ -279,6 +286,12 @@ class PlaywrightMessenger:
 
     async def release_account(self, account_id: int) -> None:
         """Close this account's context without discarding its session."""
+        page = self._pages.pop(int(account_id), None)
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001 — closing a dead tab is fine
+                pass
         context = self._contexts.pop(int(account_id), None)
         if context is not None:
             try:
@@ -311,6 +324,31 @@ class PlaywrightMessenger:
             context.set_default_timeout(self._timeout)
             self._contexts[account_id] = context
             return context
+
+    async def _page_for(self, account: dict[str, Any]):
+        """The tab for this account, reused across targets.
+
+        Safe to share because an account is leased exclusively — two slots
+        never hold the same one — and because every send navigates before
+        it looks at anything, so nothing survives from the last target.
+
+        A tab that has crashed or been closed by hand is replaced rather
+        than handed out broken.
+        """
+        account_id = int(account["id"])
+        page = self._pages.get(account_id)
+        if page is not None:
+            try:
+                if not page.is_closed():
+                    return page
+            except Exception:  # noqa: BLE001 — treat an unusable tab as gone
+                pass
+            self._pages.pop(account_id, None)
+
+        context = await self._context_for(account)
+        page = await context.new_page()
+        self._pages[account_id] = page
+        return page
 
     # --- helpers ---------------------------------------------------------
 
@@ -1016,8 +1054,7 @@ class PlaywrightMessenger:
         try:
             from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-            context = await self._context_for(account)
-            page = await context.new_page()
+            page = await self._page_for(account)
 
             # 1-2. Navigate to the target profile.
             try:
@@ -1382,12 +1419,15 @@ class PlaywrightMessenger:
                 status = RESULT_BROWSER_ERROR
             return MessageResult.failure(status, f"{name}: {exc}"[:500], url=url)
         finally:
-            # 9. Clean up the page — never the context, which holds the session.
-            if page is not None:
-                try:
-                    await page.close()
-                except Exception:  # noqa: BLE001
-                    pass
+            # 9. The tab stays open for the next target — closing it and
+            # opening another is what this used to do, and it bought
+            # nothing: the session is in the context, and the next send
+            # navigates before it reads anything.
+            #
+            # A tab that died mid-job is dropped, so the next send builds a
+            # fresh one instead of inheriting the corpse.
+            if page is not None and self._page_is_gone(page):
+                self._pages.pop(int(account.get("id") or 0), None)
 
     # --- session capture -------------------------------------------------
 
