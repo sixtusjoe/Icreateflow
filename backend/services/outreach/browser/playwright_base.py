@@ -1872,18 +1872,27 @@ class PlaywrightMessenger:
                 """(sel) => {
                     const d = document.querySelector(sel);
                     if (!d) return document.body.scrollHeight || 0;
-                    const boxes = Array.from(d.querySelectorAll('*'))
-                        .filter(el => el.scrollHeight > el.clientHeight + 40);
-                    // A modal scrolls inside itself; a page scrolls itself.
-                    // Falling through to the document is what makes this
-                    // mean the same thing on both, instead of reporting no
-                    // progress forever on a list that is loading fine.
-                    if (!boxes.length) {
-                        return Math.max(
-                            d.scrollHeight || 0, document.body.scrollHeight || 0
-                        );
-                    }
-                    return Math.max(...boxes.map(el => el.scrollHeight));
+                    // Every candidate, and the tallest wins — rather than
+                    // preferring the inner ones.
+                    //
+                    // Instagram's list scrolls inside the modal, so an
+                    // inner box is the thing that grows. X's grows the
+                    // container itself, and the only inner box that
+                    // qualifies is a 166px decoration that never changes —
+                    // so preferring inner boxes returned 166 every round,
+                    // for ever, and the harvest had no progress signal at
+                    // all. It still collected; it just could not tell a
+                    // list still loading from one that had ended, and gave
+                    // up at 297 of 400.
+                    //
+                    // Deliberately not the document: behind Instagram's
+                    // modal sits a page of roughly fixed height, and
+                    // including it would mask the growth it is here to see.
+                    const heights = Array.from(d.querySelectorAll('*'))
+                        .filter(el => el.scrollHeight > el.clientHeight + 40)
+                        .map(el => el.scrollHeight);
+                    heights.push(d.scrollHeight || 0);
+                    return Math.max(...heights, 0);
                 }""",
                 container,
             ) or 0)

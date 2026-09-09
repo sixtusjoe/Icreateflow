@@ -195,10 +195,18 @@ X_SELECTORS: dict[str, Any] = {
         "[data-testid='primaryColumn']",
         "main",
     ),
-    # People, in a list of people: X's user cell.
+    # People, in a list of people: X's user cell — but only the ones in
+    # the column being read.
+    #
+    # X puts a "Who to follow" module in the right sidebar, built from the
+    # same UserCell, so an unscoped match harvests strangers X is
+    # recommending alongside the followers actually asked for. Measured: an
+    # account with 281 followers yielded 298 names, and the surplus was the
+    # sidebar.
     "liker": (
-        "[data-testid='UserCell'] a[href^='/']",
-        "[data-testid='cellInnerDiv'] a[role='link'][href^='/']",
+        "[data-testid='primaryColumn'] [data-testid='UserCell'] a[href^='/']",
+        "[data-testid='primaryColumn'] [data-testid='cellInnerDiv'] "
+        "a[role='link'][href^='/']",
     ),
     "post_link": (
         "a[href*='/status/']",
