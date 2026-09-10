@@ -212,6 +212,14 @@ class PlaywrightMessenger:
     #: undelivered nine times out of ten.
     CONFIRM_BY_RELOAD = True
 
+    #: Put the whole message in with one input event instead of typing it.
+    #:
+    #: For platforms where a line break cannot be typed without sending.
+    #: It costs the typing rhythm — which is worth having, since a composer
+    #: filled instantly looks like automation — so it is off unless a
+    #: platform needs it.
+    TYPE_AS_ONE_INSERT = False
+
     #: Follow every target before messaging it, not only the ones that
     #: turn out to be unreachable without it.
     #:
@@ -464,8 +472,20 @@ class PlaywrightMessenger:
         the rest — two messages where one was meant, and a delivery check
         looking for the whole text finds it nowhere.
 
-        Shift+Enter is the line break these composers accept.
+        Shift+Enter is the line break these composers accept — on most
+        platforms. Where it is not, `TYPE_AS_ONE_INSERT` puts the whole
+        message in with a single input event and presses no keys at all.
         """
+        if self.TYPE_AS_ONE_INSERT:
+            # No key events, so nothing can be read as "send". TikTok split
+            # a two-line template into separate messages even with
+            # Shift+Enter, and it only allows one message before the
+            # recipient accepts the request — so the second and third were
+            # refused outright and the first was all that landed.
+            await editor.click(timeout=CLICK_MS)
+            await page.keyboard.insert_text(message)
+            return
+
         lines = message.split("\n")
         for index, line in enumerate(lines):
             if index:
@@ -584,6 +604,21 @@ class PlaywrightMessenger:
             if time.monotonic() >= deadline:
                 return None, None
 
+    async def _profile_follow_control(self, page):
+        """The profile's *own* follow control, when a selector cannot say.
+
+        Returns `(state, locator)` where state is "following", "pending" or
+        "can_follow" — or `(None, None)` to fall back to the selector table.
+
+        A hook because on some platforms the page carries several follow
+        buttons that are identical to a selector: X puts three to six of
+        them in its "Who to follow" module on every profile, built from the
+        same markup as the real one. A flat selector matches whichever
+        comes first in the DOM, which is a stranger, and clicking it
+        follows a stranger.
+        """
+        return None, None
+
     async def _follow_first(self, page, target_username: str) -> bool:
         """Follow this profile before messaging it, if it is not followed yet.
 
@@ -596,14 +631,20 @@ class PlaywrightMessenger:
         pending: that control unfollows or withdraws, and doing either
         would undo the thing this exists to do.
         """
-        if await self._present(page, self.SELECTORS.get("already_following", ())):
-            return False
-        if await self._present(page, self.SELECTORS.get("follow_requested", ())):
+        state, button = await self._profile_follow_control(page)
+        if state is None:
+            # No platform-specific answer — read it from the table.
+            if await self._present(page, self.SELECTORS.get("already_following", ())):
+                return False
+            if await self._present(page, self.SELECTORS.get("follow_requested", ())):
+                return False
+            button = await self._first_visible_tiered(
+                page, self.SELECTORS.get("follow_button", ()),
+                timeout_ms=LATER_TIER_MS,
+            )
+        elif state in ("following", "pending"):
             return False
 
-        button = await self._first_visible_tiered(
-            page, self.SELECTORS.get("follow_button", ()), timeout_ms=LATER_TIER_MS
-        )
         if button is None:
             return False
         if not await self._click(page, button, "follow-button", target_username):
@@ -1626,6 +1667,59 @@ class PlaywrightMessenger:
     # but a great deal of it, which is what makes it the likelier way to
     # lose an account. The caller enforces the caps; what is here refuses to
     # go faster than it is told and stops the moment it is asked to.
+
+    async def discover_from_posts(
+        self,
+        account: dict[str, Any],
+        *,
+        post_urls: tuple[str, ...],
+        limit: int = 200,
+        interval_seconds: float = 6.0,
+        should_stop: Optional[Any] = None,
+        on_found: Optional[Any] = None,
+        exclude: Optional[set[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Everyone who engaged with these specific posts.
+
+        Named posts rather than a search: the operator has already decided
+        whose audience they want, which is a better list than any hashtag
+        and a great deal less browsing to reach it.
+
+        Reads only — nothing is followed, liked or commented on.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        skip = {u.lower() for u in (exclude or set())}
+        context = await self._context_for(account)
+        page = await context.new_page()
+        try:
+            for url in post_urls:
+                if should_stop and should_stop():
+                    break
+                if len(found) >= limit:
+                    break
+                print(f"[discovery] reading {url}", flush=True)
+                for username in await self._people_on_post(page, url):
+                    if len(found) >= limit:
+                        break
+                    if not username or username.lower() in skip:
+                        continue
+                    if username in found:
+                        continue
+                    found[username] = {
+                        "username": username,
+                        "profile_url": self.profile_url(username),
+                        "display_name": None,
+                        "source": f"post:{url}",
+                    }
+                    if on_found:
+                        await on_found(found[username])
+                await asyncio.sleep(interval_seconds)
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return list(found.values())
 
     async def discover_profiles(
         self,

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -54,7 +55,17 @@ STATUS_CANCELLED = "cancelled"
 PLATFORM_DRIVERS = {
     "instagram": "playwright_instagram",
     "x": "playwright_x",
+    "tiktok": "playwright_tiktok",
 }
+
+#: A seed that is a link to a post rather than an account. Handing the
+#: search specific videos is a different job from searching for them.
+_POST_URL = re.compile(r"https?://\S*/(video|reel|p|status)/|tiktok\.com/t/", re.I)
+
+
+def post_urls_in(seeds: list[str]) -> list[str]:
+    """The seeds that are links to posts, not account names."""
+    return [s.strip() for s in seeds if _POST_URL.search(s or "")]
 
 
 #: How often a running search writes its progress. Reporting, not work —
@@ -337,7 +348,19 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             run.message = f"Found {len(collected)} of {wanted}…"
             await show_progress()
 
-        if seeds:
+        posts = post_urls_in(list(seeds))
+        if posts:
+            run.message = f"Reading the comments on {len(posts)} post(s)…"
+            leads = await driver.discover_from_posts(
+                payload,
+                post_urls=tuple(posts),
+                limit=wanted,
+                interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
+                should_stop=lambda: search_id in _CANCELLED,
+                on_found=on_found,
+                exclude=known,
+            )
+        elif seeds:
             leads = await driver.discover_followers(
                 payload,
                 seeds=tuple(seeds),

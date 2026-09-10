@@ -467,6 +467,57 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     def profile_url(self, username: str) -> str:
         return f"{self.SITE_URL}/{username.strip().lstrip('@')}"
 
+    async def _profile_follow_control(self, page):
+        """The profile's own Follow button — never a suggestion's.
+
+        Every X profile carries three to six *other* follow buttons, built
+        from the same markup as the real one: the "Who to follow" module in
+        the sidebar and inline in the timeline. Measured on three profiles:
+        3, 6 and 6 buttons, every one of them a suggestion.
+
+        A selector cannot tell them apart, because the difference is an
+        ancestor — suggestions sit inside a `UserCell`, the profile's own
+        control sits in the header wrapped in `placementTracking`. So the
+        page is asked directly, and the answer is tagged with an attribute
+        so the ordinary click path can use it.
+
+        This was not academic. Unscoped, the driver clicked whichever came
+        first in the DOM — a stranger from the sidebar — on every target.
+        The account followed about seventy accounts that were never on the
+        list, and every real target came back "refused" because its button
+        never changed. It looked exactly like a rate limit, and was
+        explained away as one twice.
+        """
+        testid = await page.evaluate("""() => {
+            document.querySelectorAll('[data-icf-own-follow]').forEach(
+                el => el.removeAttribute('data-icf-own-follow'));
+            const all = Array.from(document.querySelectorAll(
+                "[data-testid$='-follow'], [data-testid$='-unfollow']"));
+            const own = all.filter(el =>
+                !el.closest("[data-testid='UserCell']") &&
+                !el.closest("[data-testid='sidebarColumn']"));
+            if (!own.length) return null;
+            // The header sits above everything else on the page.
+            own.sort((a, b) =>
+                a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+            const el = own[0];
+            el.setAttribute('data-icf-own-follow', '1');
+            return el.getAttribute('data-testid') || '';
+        }""")
+        if not testid:
+            return None, None
+
+        locator = page.locator("[data-icf-own-follow='1']").first
+        if testid.endswith("-unfollow"):
+            return "following", locator
+        try:
+            label = ((await locator.inner_text(timeout=1000)) or "").strip().lower()
+        except Exception:  # noqa: BLE001 — the label is a refinement, not the answer
+            label = ""
+        if "pending" in label or "requested" in label:
+            return "pending", locator
+        return "can_follow", locator
+
     def followers_urls(self, username: str) -> tuple[str, ...]:
         """Verified Followers first, then Followers.
 

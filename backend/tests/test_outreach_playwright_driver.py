@@ -1293,3 +1293,36 @@ async def test_a_genuinely_delivered_message_still_passes(driver, site):
     message = "Hello alice, we loved your latest post."
     result = await driver.send_message(account(), target(site, "/alice"), message)
     assert result.success is True, result.error
+
+
+async def test_a_multi_line_template_arrives_as_one_message(driver, site):
+    """TikTok gets one attempt, so the whole template has to fit in it.
+
+    "You can only send up to 1 message before this user accepts your
+    message request" — so a template that splits spends that attempt on
+    its first line and has the rest refused. It happened: three bubbles to
+    @yzy678, the first line twice and the URL alone, two marked failed.
+
+    Typed with key events, a newline sends. This platform therefore puts
+    the whole message in with one input event and presses nothing.
+    """
+    message = "visit our menu. free samples for new customers.\naceultra.club"
+
+    result = await driver.send_message(account(), target(site, "/alice"), message)
+
+    assert result.success is True, result.error
+    assert RECEIVED == [message], (
+        f"expected one message carrying both lines, got {RECEIVED!r}"
+    )
+
+
+def test_only_the_platform_that_needs_it_types_in_one_go():
+    """The typing rhythm is worth keeping where it can be kept.
+
+    A composer filled instantly looks like automation, so this is off
+    unless the platform leaves no choice.
+    """
+    from services.outreach.browser import get_driver
+    assert get_driver("playwright_tiktok").TYPE_AS_ONE_INSERT is True
+    assert get_driver("playwright_instagram").TYPE_AS_ONE_INSERT is False
+    assert get_driver("playwright_x").TYPE_AS_ONE_INSERT is False
