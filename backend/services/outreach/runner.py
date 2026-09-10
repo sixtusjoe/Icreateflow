@@ -36,10 +36,25 @@ from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
 from services.outreach.constants import (
+    IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
+    RESULT_ABORTED,
+    RESULT_BROWSER_ERROR,
     RESULT_DB_ERROR,
     RESULT_FOLLOW_PENDING,
     RESULT_TEMPLATE_ERROR,
     RESULT_UNKNOWN,
+)
+
+#: After these, the account's browser is thrown away and rebuilt on the
+#: next job. Everything else keeps it.
+#:
+#: An expired session or a challenge means the logged-in browser is no
+#: longer trustworthy, and both pause the account anyway — whatever comes
+#: next should start from the stored session rather than from whatever
+#: state the last job left behind. A browser error or an abort means the
+#: browser itself is broken or gone.
+CONTEXT_RESET_RESULTS = frozenset(
+    IMMEDIATE_ACCOUNT_PAUSE_RESULTS | {RESULT_BROWSER_ERROR, RESULT_ABORTED}
 )
 from services.outreach.crypto import decrypt_session
 
@@ -301,6 +316,9 @@ class OutreachWorker:
             "session_state": decrypt_session(account.get("session_state_encrypted")),
             "session_reference": account.get("session_reference"),
         }
+        # Bound before the try: the `finally` reads it, and a cancellation
+        # can reach that block without the assignment having run.
+        result: Optional[MessageResult] = None
         try:
             result = await driver.send_message(
                 payload,
@@ -329,11 +347,23 @@ class OutreachWorker:
                 RESULT_UNKNOWN, f"{type(exc).__name__}: {exc}"[:500]
             )
         finally:
-            # Drop the per-account browser context but keep its session.
-            try:
-                await driver.release_account(int(account["id"]))
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
+            # Keep the browser context between jobs.
+            #
+            # This used to drop it after every single one, which meant a
+            # fresh context and a fresh tab per target: the logged-in
+            # browser torn down and rebuilt several hundred times a run,
+            # with a window opening and closing each time on the visible
+            # worker. Nothing depended on it — no session is exported
+            # here, so the teardown preserved nothing and only cost.
+            #
+            # It is dropped when the session or the browser is in question,
+            # so the next attempt starts from the stored session instead of
+            # inheriting whatever went wrong.
+            if result is not None and result.status in CONTEXT_RESET_RESULTS:
+                try:
+                    await driver.release_account(int(account["id"]))
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
 
         await self._record_result(database, campaign, account, job, target, result, settings)
 

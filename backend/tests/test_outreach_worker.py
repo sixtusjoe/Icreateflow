@@ -687,3 +687,64 @@ async def test_a_shutdown_is_not_delayed_when_nothing_is_signing_in(monkeypatch)
     started = asyncio.get_running_loop().time()
     await runner.stop_background_tasks([])
     assert asyncio.get_running_loop().time() - started < 2
+
+
+# --- the browser survives between jobs -------------------------------------
+
+class _CountingDriver(MockMessenger):
+    """Records every release, so a test can see the churn."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.released: list[int] = []
+
+    async def release_account(self, account_id):
+        self.released.append(int(account_id))
+
+
+async def test_the_browser_is_kept_between_jobs(seeded, database):
+    """The logged-in browser used to be torn down after every target.
+
+    A fresh context and a fresh tab per profile — several hundred times a
+    run — with a window opening and closing each time on the visible
+    worker. Nothing depended on it: no session is exported here, so the
+    teardown preserved nothing and only cost.
+    """
+    driver = _CountingDriver()
+    settings = seeded["settings"]
+
+    await _run(driver, settings)
+    await _clear_backoff(database)
+    await _run(driver, settings)
+
+    assert len(driver.sent) == 2, "both jobs should have run"
+    assert driver.released == [], (
+        f"the browser was thrown away between jobs: {driver.released}"
+    )
+
+
+async def test_the_browser_is_dropped_when_the_session_is_in_question(
+    seeded, database
+):
+    """Kept is not the same as kept forever.
+
+    An expired session means the logged-in browser is no longer worth
+    trusting, and the account is paused anyway — whatever runs next should
+    start from the stored session rather than inherit this one.
+    """
+    driver = _CountingDriver(outcomes=[(RESULT_SESSION_EXPIRED, "login wall")])
+    await _run(driver, seeded["settings"])
+
+    assert driver.released == [seeded["account"]["id"]], (
+        f"expected the context to be dropped, got {driver.released}"
+    )
+
+
+async def test_an_ordinary_failure_keeps_the_browser(seeded, database):
+    """A target with no Message button says nothing about our session."""
+    driver = _CountingDriver(outcomes=[(RESULT_MESSAGING_UNAVAILABLE, "no DMs")])
+    await _run(driver, seeded["settings"])
+
+    assert driver.released == [], (
+        f"a target-side failure threw the browser away: {driver.released}"
+    )
