@@ -222,8 +222,72 @@ RECIPIENT_REFUSED = f"""
 </body></html>
 """
 
+#: X's own words, from a live send. The message is in the thread; what X
+#: is saying is that it will not land in their inbox.
+NEEDS_X_NUMBER = f"""
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <div data-testid="sendDMFromProfile" role="button" onclick="openChat()">
+      <span>Message</span>
+    </div>
+    {_COMPOSER.replace("fetch('/sent'", "document.getElementById('nx').style.display='block'; fetch('/sent'")}
+    <div id="nx" style="display:none">
+      @alice doesn't follow you. If you know their X Number you can reach
+      their inbox directly.
+      <div role="button">Enter X Number</div>
+    </div>
+  </div>
+</body></html>
+"""
+
+#: The passcode screen, as the reload after a send lands on it. The
+#: message went; the conversation is simply not shown to a browser that
+#: has not been unlocked.
+LOCKED_AFTER_SEND = """
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <div data-testid="sendDMFromProfile" role="button" onclick="openChat()">
+      <span>Message</span>
+    </div>
+    <div id="chat" style="display:none">
+      <div data-testid="dm-composer-textarea-wrap">
+        <textarea data-testid="dm-composer-textarea"></textarea>
+      </div>
+      <div data-testid="dm-composer-send-button" role="button" onclick="sendChat()">Send</div>
+      <div data-testid="dm-message-list"><div id="thread"></div></div>
+    </div>
+    <script>
+      function openChat() { document.getElementById('chat').style.display = 'block'; }
+      function sendChat() {
+        const ed = document.querySelector("[data-testid='dm-composer-textarea']");
+        const row = document.createElement('div');
+        row.innerText = ed.value;
+        document.getElementById('thread').appendChild(row);
+        fetch('/sent', { method: 'POST', body: ed.value });
+        ed.value = '';
+        // The reload lands on the passcode screen, so mark the server.
+        fetch('/lock', { method: 'POST', body: 'locked' });
+      }
+    </script>
+  </div>
+</body></html>
+"""
+
+PASSCODE_SCREEN = """
+<html><body>
+  <div data-testid="pin-code-input-container"></div>
+  <div data-testid="pin-title">Enter Passcode</div>
+  <p>Your passcode is required to recover your encryption keys so we can
+     decrypt your previous messages.</p>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/needsxnumber": NEEDS_X_NUMBER,
+    "/locked": LOCKED_AFTER_SEND,
     "/navdecoy": NAV_MESSAGES_DECOY,
     "/nodm": NO_DM_BUTTON,
     "/followunlocks": FOLLOW_UNLOCKS_DM,
@@ -236,10 +300,21 @@ PAGES = {
 }
 
 RECEIVED: list[str] = []
+#: Set once a send has happened on `/locked`, so the reload behaves as X does.
+LOCKED: list[bool] = []
 
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's interface
+        if self.path == "/locked" and LOCKED:
+            # The reload after a send: X shows the passcode prompt, not the
+            # conversation.
+            body = PASSCODE_SCREEN
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
         body = PAGES.get(self.path, "<html><body>not found</body></html>")
         # Serve back what was submitted: the engine confirms a send by
         # reloading, so a stub that stores nothing would fail every send.
@@ -255,7 +330,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
-        RECEIVED.append(self.rfile.read(length).decode())
+        payload = self.rfile.read(length).decode()
+        if self.path == "/lock":
+            LOCKED.append(True)
+            self.send_response(204)
+            self.end_headers()
+            return
+        RECEIVED.append(payload)
         self.send_response(204)
         self.end_headers()
 
@@ -278,6 +359,7 @@ def site():
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch):
     RECEIVED.clear()
+    LOCKED.clear()
     monkeypatch.setattr("services.outreach.browser.playwright_base.DEBUG_DIR", "")
     for name, value in (
         ("PROFILE_READY_MS", 800), ("MESSAGE_BUTTON_MS", 2000), ("CLICK_MS", 2000),
@@ -471,3 +553,56 @@ def test_a_handle_is_one_segment_of_the_right_shape():
     for junk in ("/home", "/i/flow/login", "/nasa/status/123", "/explore",
                  "/hashtag/space", "/messages", "", "/wayyyytoolongahandle"):
         assert d.username_from_url(d, junk) == "", junk
+
+
+# --- telling the failures apart --------------------------------------------
+
+async def test_needing_an_x_number_is_its_own_answer(driver, site):
+    """"Doesn't follow you" is not "doesn't accept messages".
+
+    X puts the message in the thread and then says it will not reach their
+    inbox without their X Number — a handshake, not a restriction the
+    recipient set. Reporting it as a refusal sends someone looking at the
+    target's settings for something that is not there.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/needsxnumber"), "Hello"
+    )
+
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE
+    assert result.status not in ACCOUNT_FAULT_RESULTS
+    assert "X Number" in (result.error or ""), result.error
+    assert "does not follow" in (result.error or ""), result.error
+
+
+async def test_a_locked_thread_is_not_a_lost_message(driver, site):
+    """The eight identical errors that were not identical.
+
+    X asks for its encryption passcode once per browser, and a worker
+    starting from a stored session has not given it — so the reload after a
+    send lands on "Enter Passcode" and the conversation is shown to nobody.
+    Reading that as "the platform did not keep it" turned messages that had
+    demonstrably arrived into failures, and queued them to be sent again.
+    """
+    message = "Hello"
+
+    result = await driver.send_message(account(), target(site, "/locked"), message)
+
+    assert RECEIVED == [message], f"the send itself should have happened: {RECEIVED!r}"
+    assert result.success is True, result.error
+    assert result.status == RESULT_SENT
+
+
+def test_the_recipient_blocks_are_ordered_most_specific_first():
+    """Both mean "cannot be reached"; only one of them is the target's doing.
+
+    If the generic refusal were checked first it would match nothing here,
+    but the ordering is the thing that keeps the specific answer from being
+    swallowed by the general one as more are added.
+    """
+    keys = [key for key, _ in PlaywrightXMessenger.RECIPIENT_BLOCKS]
+    assert keys.index("x_number_required") < keys.index("recipient_refused")
+    for key, reason in PlaywrightXMessenger.RECIPIENT_BLOCKS:
+        assert PlaywrightXMessenger.SELECTORS.get(key), f"{key} has no selectors"
+        assert reason and not reason.endswith("."), reason

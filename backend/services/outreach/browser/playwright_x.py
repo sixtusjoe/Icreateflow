@@ -157,6 +157,35 @@ X_SELECTORS: dict[str, Any] = {
     # Refused by the recipient rather than by X: their settings, not our
     # account's standing. Filed as `messaging_unavailable` so it does not
     # count against the sending account's error budget.
+    # A closed inbox: nothing was sent, and nothing will be.
+    #
+    # X's words, from a live send: "@trend_bullish has a closed inbox. If
+    # you know their X Number you can still message them", with "Not Now"
+    # and "Use X Number" in place of the composer. The thread was empty —
+    # this one blocks the send outright, unlike the notice below, where the
+    # message goes into the thread and only its routing is in question.
+    "x_inbox_closed": (
+        "text=has a closed inbox",
+        "div[role='button']:has-text('Use X Number')",
+    ),
+    # X's own words, from a live send: "@name doesn't follow you. If you
+    # know their X Number you can reach their inbox directly", beside an
+    # "Enter X Number" button.
+    #
+    # Kept apart from an outright refusal because it is a different thing
+    # and needs a different answer. The message is in the thread; what X is
+    # saying is that it will not land in their inbox, because they do not
+    # follow this account and the handshake X wants is a number the worker
+    # does not have. Reporting it as "does not accept messages" would send
+    # someone looking at the target's settings for a restriction that isn't
+    # there.
+    "x_number_required": (
+        "text=If you know their X Number",
+        "text=doesn’t follow you",
+        "text=doesn't follow you",
+        "[data-testid='dm-x-number-button']",
+        "div[role='button']:has-text('Enter X Number')",
+    ),
     "recipient_refused": (
         "text=You can’t send messages to this account",
         "text=You can't send messages to this account",
@@ -183,13 +212,18 @@ X_SELECTORS: dict[str, Any] = {
     # browser open while it is on screen rather than blaming the target.
     # The Arkose puzzle arrives in an iframe, so the frame is matched too.
     "verification_challenge": (
-        # X Chat's PIN. Not a puzzle, but the same situation as far as the
-        # engine is concerned: a person has to type something before
-        # anything can proceed, and no amount of retrying substitutes.
-        # Without this, the PIN screen reads as "this profile has no
-        # Message button" and writes off a reachable target.
+        # X Chat's encryption passcode. Not a puzzle, but the same
+        # situation as far as the engine is concerned: a person has to type
+        # something before anything can proceed, and no amount of retrying
+        # substitutes. Seen live on the reload after a send — the thread is
+        # not shown to anyone who cannot supply the code.
+        #
+        # Without this the passcode screen reads as "this profile has no
+        # Message button", and writes off a reachable target.
         "[data-testid='pin-code-input-container']",
         "[data-testid='pin-title']",
+        "text=Enter Passcode",
+        "text=Your passcode is required to recover your encryption keys",
         "iframe[src*='arkoselabs']",
         "iframe[title*='challenge']",
         "text=Verify your identity",
@@ -302,6 +336,30 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     # later. The shared fifteen-second budget was the difference between
     # a send and "the composer never opened".
     COMPOSER_TIMEOUT_MS = 30000
+    # X routes a stranger's DM away from the inbox, so every target is
+    # followed before it is messaged rather than only the ones that turn
+    # out to have no Message button.
+    FOLLOW_BEFORE_MESSAGE = True
+    # Most specific first — "doesn't follow you" is a handshake X wants,
+    # not a restriction the recipient set.
+    RECIPIENT_BLOCKS = (
+        (
+            "x_inbox_closed",
+            "has a closed inbox on X, so the message was never sent — only "
+            "their X Number would reach them, and this worker does not have "
+            "it",
+        ),
+        (
+            "x_number_required",
+            "does not follow this account, so X will not put the message in "
+            "their inbox without their X Number — which is a handshake this "
+            "worker cannot supply",
+        ),
+        (
+            "recipient_refused",
+            "does not accept message requests from this account",
+        ),
+    )
     FOLLOWERS_IN_DIALOG = False
     SITE_URL = "https://x.com"
     SEARCH_URL = "https://x.com/explore"

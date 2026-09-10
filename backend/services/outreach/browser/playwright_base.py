@@ -184,6 +184,27 @@ class PlaywrightMessenger:
     #: Which platform's accounts this driver serves.
     PLATFORM = "tiktok"
 
+    #: Follow every target before messaging it, not only the ones that
+    #: turn out to be unreachable without it.
+    #:
+    #: Off by default: following is a public action on the operator's
+    #: account, and on Instagram the Message button is usually there
+    #: already, so following first would spend the account's follow budget
+    #: to no purpose. On X it is asked for deliberately.
+    FOLLOW_BEFORE_MESSAGE = False
+
+    #: Recipient-side blocks, most specific first: (selector key, message).
+    #:
+    #: All of these mean "this person cannot be reached", which is the
+    #: target's business and not the sending account's — so none of them
+    #: count against the account's error budget. They are kept apart
+    #: because they need different things done about them, and one generic
+    #: "unavailable" hides which.
+    RECIPIENT_BLOCKS: tuple[tuple[str, str], ...] = ((
+        "recipient_refused",
+        "does not accept message requests from this account",
+    ),)
+
     #: How long this platform's composer gets to appear, when it needs
     #: more than the shared budget. X's chat UI renders the whole
     #: conversation client-side after the click: measured absent seven
@@ -477,6 +498,37 @@ class PlaywrightMessenger:
             if found is not None:
                 return found
         return None
+
+    async def _follow_first(self, page, target_username: str) -> bool:
+        """Follow this profile before messaging it, if it is not followed yet.
+
+        Distinct from `_follow_to_unlock`, which follows only after a
+        Message button turns out to be missing. This is the platform saying
+        every target should be followed regardless — on X, because a DM
+        from a stranger lands somewhere other than the inbox.
+
+        Never clicks when the profile is already followed or a request is
+        pending: that control unfollows or withdraws, and doing either
+        would undo the thing this exists to do.
+        """
+        if await self._present(page, self.SELECTORS.get("already_following", ())):
+            return False
+        if await self._present(page, self.SELECTORS.get("follow_requested", ())):
+            return False
+
+        button = await self._first_visible_tiered(
+            page, self.SELECTORS.get("follow_button", ()), timeout_ms=LATER_TIER_MS
+        )
+        if button is None:
+            return False
+        if not await self._click(page, button, "follow-button", target_username):
+            return False
+
+        print(f"[outreach] followed @{target_username} before messaging", flush=True)
+        # Let the button settle before anything reads the profile again —
+        # the message control is often re-rendered alongside it.
+        await page.wait_for_timeout(SETTLE_MS)
+        return True
 
     async def _follow_to_unlock(self, page, target_username: str):
         """No Message button — try following, and look again.
@@ -868,6 +920,28 @@ class PlaywrightMessenger:
             page, self.SELECTORS["sent_confirmation"], timeout_ms=CONFIRM_RENDER_MS
         )
         if not await self._message_in_thread(page, message):
+            # A locked thread is not an absent message.
+            #
+            # X asks for its encryption passcode once per browser, and a
+            # worker starting from a stored session has not given it — so
+            # the reload lands on "Enter Passcode" and the conversation is
+            # not shown to anyone. Reading that as "the platform did not
+            # keep it" turned delivered messages into failures and queued
+            # them to be sent again.
+            #
+            # The evidence from before the reload still stands: the
+            # composer cleared, the message was in the thread, it was still
+            # there after a pause, and no refusal was on the page. Weaker
+            # than a reload — and the alternative is calling a delivered
+            # message undelivered every time.
+            if await self._present(page, self.SELECTORS["verification_challenge"]):
+                print(
+                    "[outreach] the conversation is locked behind a challenge "
+                    "after the reload — accepting what was seen before it",
+                    flush=True,
+                )
+                return True
+
             # A reload only proves anything if the conversation is on the
             # page it reloaded. Instagram sends from a chat dock over the
             # profile, so reloading returns a bare profile with no thread on
@@ -1151,6 +1225,10 @@ class PlaywrightMessenger:
                     flush=True,
                 )
 
+            # 2c. Follow first, where the platform asks for it.
+            if self.FOLLOW_BEFORE_MESSAGE:
+                await self._follow_first(page, target_username)
+
             # 3-4. Is the messaging interface available, and open it.
             message_button = await self._first_visible_tiered(
                 page, self.SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
@@ -1363,16 +1441,16 @@ class PlaywrightMessenger:
             #
             # It is the same situation as a profile with no Message button:
             # this person cannot be reached from here, try the next one.
-            if await self._present(page, self.SELECTORS.get("recipient_refused", ())):
+            for key, reason in self.RECIPIENT_BLOCKS:
+                if not await self._present(page, self.SELECTORS.get(key, ())):
+                    continue
                 return MessageResult.failure(
                     RESULT_MESSAGING_UNAVAILABLE,
-                    f"@{target_username} does not accept message requests from "
-                    f"this account — the message was drawn into the thread and "
-                    f"refused. Nothing reached them, and nothing is wrong with "
-                    f"the sending account",
+                    f"@{target_username} {reason}. Nothing reached them, and "
+                    f"nothing is wrong with the sending account",
                     url=page.url,
                     screenshot=await self._save_debug_shot(
-                        page, target_username, "recipient-refused"
+                        page, target_username, key.replace("_", "-")
                     ),
                 )
 
