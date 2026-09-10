@@ -168,17 +168,24 @@ X_SELECTORS: dict[str, Any] = {
         "text=has a closed inbox",
         "div[role='button']:has-text('Use X Number')",
     ),
-    # X's own words, from a live send: "@name doesn't follow you. If you
-    # know their X Number you can reach their inbox directly", beside an
-    # "Enter X Number" button.
+    # NOT a block, despite how it reads. X shows this beside a message it
+    # has already delivered: "@name doesn't follow you. If you know their X
+    # Number you can reach their inbox directly", with an "Enter X Number"
+    # button — and the composer still there beneath it.
     #
-    # Kept apart from an outright refusal because it is a different thing
-    # and needs a different answer. The message is in the thread; what X is
-    # saying is that it will not land in their inbox, because they do not
-    # follow this account and the handshake X wants is a number the worker
-    # does not have. Reporting it as "does not accept messages" would send
-    # someone looking at the target's settings for a restriction that isn't
-    # there.
+    # Verified on a live send to @cherykang: the message was in the thread
+    # at 8:03, the conversation list read "You: Hello", and this notice was
+    # on screen the whole time. It is X offering an *additional* route to
+    # the inbox, not refusing the one that was used — the message goes to
+    # their requests.
+    #
+    # It was briefly treated as a recipient block, which marked delivered
+    # messages as failures and left them queued to be sent again. Kept as a
+    # selector so the send can say where the message landed, and
+    # deliberately absent from RECIPIENT_BLOCKS.
+    "delivered_note": (
+        "text=If you know their X Number",
+    ),
     "x_number_required": (
         "text=If you know their X Number",
         "text=doesn’t follow you",
@@ -348,12 +355,6 @@ class PlaywrightXMessenger(PlaywrightMessenger):
             "has a closed inbox on X, so the message was never sent — only "
             "their X Number would reach them, and this worker does not have "
             "it",
-        ),
-        (
-            "x_number_required",
-            "does not follow this account, so X will not put the message in "
-            "their inbox without their X Number — which is a handshake this "
-            "worker cannot supply",
         ),
         (
             "recipient_refused",

@@ -579,23 +579,43 @@ def test_a_handle_is_one_segment_of_the_right_shape():
 
 # --- telling the failures apart --------------------------------------------
 
-async def test_needing_an_x_number_is_its_own_answer(driver, site):
-    """"Doesn't follow you" is not "doesn't accept messages".
+async def test_the_x_number_notice_is_a_delivery_not_a_refusal(driver, site):
+    """"Doesn't follow you" reads like a block and is not one.
 
-    X puts the message in the thread and then says it will not reach their
-    inbox without their X Number — a handshake, not a restriction the
-    recipient set. Reporting it as a refusal sends someone looking at the
-    target's settings for something that is not there.
+    X shows it beside a message it has already delivered, with the composer
+    still underneath: the message goes to their requests rather than their
+    inbox, and X is offering a second route to the inbox on top.
+
+    Verified live on @cherykang — the message was in the thread at 8:03,
+    the conversation list read "You: Hello", and this notice was on screen
+    throughout. It was briefly filed as a recipient block, which marked
+    delivered messages as failures and left them queued to be sent a second
+    time.
     """
+    message = "Hello"
     result = await driver.send_message(
-        account(), target(site, "/needsxnumber"), "Hello"
+        account(), target(site, "/needsxnumber"), message
     )
 
-    assert result.success is False
-    assert result.status == RESULT_MESSAGING_UNAVAILABLE
-    assert result.status not in ACCOUNT_FAULT_RESULTS
-    assert "X Number" in (result.error or ""), result.error
-    assert "does not follow" in (result.error or ""), result.error
+    assert RECEIVED == [message], f"the message should have gone: {RECEIVED!r}"
+    assert result.success is True, result.error
+    assert result.status == RESULT_SENT
+
+
+def test_the_x_number_notice_is_not_in_the_block_table():
+    """The distinction, pinned where it would be undone.
+
+    A closed inbox replaces the composer and nothing is sent. This notice
+    sits beside a working composer and a delivered message. They look
+    similar enough in X's wording that grouping them is the obvious
+    mistake — it is the one that was made.
+    """
+    keys = [key for key, _ in PlaywrightXMessenger.RECIPIENT_BLOCKS]
+    assert "x_inbox_closed" in keys
+    assert "x_number_required" not in keys, (
+        "this notice appears on delivered messages; blocking on it fails "
+        "sends that worked"
+    )
 
 
 async def test_a_locked_thread_is_not_a_lost_message(driver, site):
@@ -624,7 +644,7 @@ def test_the_recipient_blocks_are_ordered_most_specific_first():
     swallowed by the general one as more are added.
     """
     keys = [key for key, _ in PlaywrightXMessenger.RECIPIENT_BLOCKS]
-    assert keys.index("x_number_required") < keys.index("recipient_refused")
+    assert keys.index("x_inbox_closed") < keys.index("recipient_refused")
     for key, reason in PlaywrightXMessenger.RECIPIENT_BLOCKS:
         assert PlaywrightXMessenger.SELECTORS.get(key), f"{key} has no selectors"
         assert reason and not reason.endswith("."), reason

@@ -104,8 +104,11 @@ LATER_TIER_MS = int(os.environ.get("ICREATE_OUTREACH_LATER_TIER_MS", "1500"))
 #: One turn of the composer-versus-blocked race. Short, because its only
 #: job is to hand control back so the blocking notices can be looked at.
 COMPOSER_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_POLL_MS", "500"))
-#: Per-click budget. The context default (30s) is far too long to spend
-#: discovering that something is covering the button.
+#: Per-click budget, and per-typing budget. The context default (30s) is
+#: far too long to spend discovering that something is covering the button
+#: — or that the composer went stale between being found and being typed
+#: into, which showed up in production as three separate half-minute
+#: stalls on one run.
 CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
 #: Budget for the composer to appear after clicking Message. Clicking it can
 #: navigate to a whole separate messages app rather than opening an inline
@@ -448,7 +451,7 @@ class PlaywrightMessenger:
                 await page.keyboard.press("Enter")
                 await page.keyboard.up("Shift")
             if line:
-                await editor.type(line, delay=25)
+                await editor.type(line, delay=25, timeout=CLICK_MS)
 
     @staticmethod
     async def _composer_cleared(editor, attempts: int = 20) -> bool:
@@ -1432,7 +1435,12 @@ class PlaywrightMessenger:
 
             # 5. Enter the message. `type` rather than `fill` — the composer
             # is a contenteditable that ignores programmatic value sets.
-            await editor.click()
+            # Explicit budget: without one this falls through to the
+            # context default of thirty seconds, and a composer that went
+            # stale between being found and being clicked then costs half a
+            # minute per target. Seen in production as
+            # "TimeoutError: Locator.click: Timeout 30000ms".
+            await editor.click(timeout=CLICK_MS)
             await self._type_message(page, editor, message)
 
             # 5b. The campaign's image, if it has one. Before submitting:
@@ -1533,6 +1541,17 @@ class PlaywrightMessenger:
                     url=page.url,
                 )
 
+            # Delivered — but say where it landed, when the platform has
+            # told us. X routes a message to someone who does not follow
+            # you into their requests rather than their inbox, which is
+            # worth knowing and is not a failure.
+            if await self._present(page, self.SELECTORS.get("delivered_note", ())):
+                print(
+                    f"[outreach] delivered to @{target_username}, though the "
+                    f"platform says it will not land in their inbox — they do "
+                    f"not follow this account",
+                    flush=True,
+                )
             await self._save_debug_shot(page, target_username, "sent")
             return MessageResult.sent(url=page.url)
 
@@ -1731,7 +1750,7 @@ class PlaywrightMessenger:
             # button does — a covered control is the normal case here.
             if not await self._click(page, box, "search-box", term):
                 return []
-            await box.type(term, delay=40)
+            await box.type(term, delay=40, timeout=CLICK_MS)
             # Results arrive as you type; there is nothing to submit.
             await page.wait_for_timeout(SETTLE_MS)
             return await self._collect_search_results(page, limit)
