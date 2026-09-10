@@ -569,7 +569,39 @@ CAPTCHA_FRAME_INNER = """
 """
 
 
+#: A composer that is a wrapper around the editable, holding placeholder
+#: text — which is what TikTok's `message-input-area` is.
+PLACEHOLDER_COMPOSER = """
+<html><body>
+  <h2 data-e2e="user-title">alice</h2>
+  <div data-e2e="message-button" onclick="openChat()">Message</div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area">
+      <div id="ed" contenteditable="true" role="textbox"></div>
+      <span id="ph">Send a message...</span>
+    </div>
+    <div data-e2e="message-send" onclick="sendChat()">Send</div>
+    <div data-e2e="chat-item"><div id="thread"></div></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.getElementById('ed');
+      const text = ed.innerText;
+      if (!text.trim()) return;
+      const row = document.createElement('div');
+      row.innerText = text;
+      document.getElementById('thread').appendChild(row);
+      fetch('/sent', { method: 'POST', body: text });
+      ed.innerHTML = '';           // the message goes…
+      // …and the placeholder stays, so the wrapper is never "empty".
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
+    "/placeholder": PLACEHOLDER_COMPOSER,
     "/alice": SENDABLE,
     "/captcha": CAPTCHA_OVER_PROFILE,
     "/captchaonly": CAPTCHA_INSTEAD_OF_CONTROLS,
@@ -1326,3 +1358,46 @@ def test_only_the_platform_that_needs_it_types_in_one_go():
     assert get_driver("playwright_tiktok").TYPE_AS_ONE_INSERT is True
     assert get_driver("playwright_instagram").TYPE_AS_ONE_INSERT is False
     assert get_driver("playwright_x").TYPE_AS_ONE_INSERT is False
+
+
+async def test_a_placeholder_does_not_read_as_an_unsent_message(driver, site):
+    """"The message is still sitting in the composer" — on a send that worked.
+
+    The check asked whether the input box was empty. TikTok's composer
+    selector resolved to a wrapper holding the placeholder "Send a
+    message...", so an emptied composer still read as non-empty text and
+    twenty-four delivered messages were recorded as failures.
+
+    The selector now targets the editable, which is the real fix. This pins
+    the check itself, so a table that ever resolves to a container again
+    cannot quietly bring the false failures back.
+    """
+    context = await driver._context_for(account())
+    page = await context.new_page()
+    await page.goto(f"{site}/placeholder", wait_until="domcontentloaded")
+    wrapper = page.locator("[data-e2e='message-input-area']").first
+
+    # The message has gone; only the placeholder is left.
+    assert await driver._composer_cleared(wrapper, "Hi alice, quick question.")
+
+    # The message is still there: that is a real failure to send.
+    await page.evaluate(
+        "() => { document.getElementById('ed').innerText = "
+        "'Hi alice, quick question.'; }")
+    assert not await driver._composer_cleared(
+        wrapper, "Hi alice, quick question.", attempts=2)
+    await page.close()
+
+
+def test_only_the_platform_that_needs_it_types_in_one_go():
+    """The typing rhythm is worth keeping where it can be kept.
+
+    A composer filled instantly looks like automation, so this is off
+    unless the platform leaves no choice.
+    """
+    from services.outreach.browser import get_driver
+    assert get_driver("playwright_tiktok").TYPE_AS_ONE_INSERT is True
+    assert get_driver("playwright_instagram").TYPE_AS_ONE_INSERT is False
+    assert get_driver("playwright_x").TYPE_AS_ONE_INSERT is False
+
+

@@ -80,10 +80,18 @@ TIKTOK_SELECTORS: dict[str, Any] = {
         "button:text-is('Following')",
         "div[role='button']:text-is('Following')",
     ),
+    # The editable itself, before the wrapper around it.
+    #
+    # `message-input-area` is a container: it holds the editable *and*
+    # TikTok's "Send a message..." placeholder. Typing into a container
+    # is not typing into the box, and reading its text after a send finds
+    # the placeholder — which is what made every delivered message report
+    # "the message is still sitting in the composer".
     "message_input": (
-        "[data-e2e='message-input-area']",
+        "[data-e2e='message-input-area'] div[contenteditable='true']",
         "div[contenteditable='true'][role='textbox']",
         "div[contenteditable='true']",
+        "[data-e2e='message-input-area']",
     ),
     # The DM inbox: a list of conversations with none of them open. Landing
     # here after clicking Message means no thread was started, so there is

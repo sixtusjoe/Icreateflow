@@ -496,20 +496,32 @@ class PlaywrightMessenger:
                 await editor.type(line, delay=25, timeout=CLICK_MS)
 
     @staticmethod
-    async def _composer_cleared(editor, attempts: int = 20) -> bool:
-        """Did the input box empty out after the send?
+    async def _composer_cleared(editor, message: str = "",
+                                attempts: int = 20) -> bool:
+        """Did the message leave the input box after the send?
 
         The app clearing the composer is the one signal that it accepted the
         submission. Polls rather than waiting a fixed beat, because the clear
         happens on the network round-trip. A composer that has been detached
         entirely also counts — the view moved on.
+
+        The test is that *the message* is gone, not that the box is empty.
+        Those are the same thing only when the selector resolves to the
+        editable element itself. TikTok's `message-input-area` is a wrapper
+        that holds the placeholder — "Send a message..." — so an empty
+        composer still reads as non-empty text, and every delivered message
+        was reported as "still sitting in the composer".
         """
+        needle = " ".join((message or "").split())[:40]
         for _ in range(attempts):
             try:
                 remaining = (await editor.inner_text(timeout=1000)) or ""
             except Exception:  # noqa: BLE001 — element gone: the view moved on
                 return True
-            if not remaining.strip():
+            flat = " ".join(remaining.split())
+            if not flat:
+                return True
+            if needle and needle not in flat:
                 return True
             await asyncio.sleep(0.25)
         return False
@@ -1560,7 +1572,7 @@ class PlaywrightMessenger:
                     RESULT_RATE_LIMITED, "Rate limited while sending", url=page.url
                 )
 
-            composer_cleared = await self._composer_cleared(editor)
+            composer_cleared = await self._composer_cleared(editor, message)
             if not composer_cleared:
                 await self._save_debug_shot(page, target_username, "composer-not-cleared")
                 return MessageResult.failure(
