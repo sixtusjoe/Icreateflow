@@ -157,6 +157,15 @@ X_SELECTORS: dict[str, Any] = {
     # Refused by the recipient rather than by X: their settings, not our
     # account's standing. Filed as `messaging_unavailable` so it does not
     # count against the sending account's error budget.
+    # Read-only. X puts a banner where the composer goes: "This
+    # conversation is currently in read-only mode." Seen live on
+    # @joshyoung — the send button had nothing to click, and the job spent
+    # ninety-five seconds finding that out and then trying to confirm a
+    # delivery that never happened.
+    "x_read_only": (
+        "text=currently in read-only mode",
+        "text=read-only mode",
+    ),
     # A closed inbox: nothing was sent, and nothing will be.
     #
     # X's words, from a live send: "@trend_bullish has a closed inbox. If
@@ -204,6 +213,20 @@ X_SELECTORS: dict[str, Any] = {
     # delivered while this says otherwise — which is why it is judged
     # before the delivery check, not after.
     "message_refused": (
+        # The one that matters most now that the reload check is gone.
+        #
+        # X draws the message into the thread, lists it in the sidebar as
+        # "You: Hello", and then marks the bubble "Failed, Try Again" in
+        # red. Every other signal says delivered; only this says otherwise.
+        # Seen live on @gugo907 at 8:36.
+        #
+        # Without it, confirming a send from the thread alone would report
+        # a failed message as delivered — which is the exact class of lie
+        # the delivery check exists to prevent, arrived at from the
+        # opposite direction.
+        "text=Failed, Try Again",
+        "text=Failed, try again",
+        "[data-testid='dm-message-failed']",
         "text=Your message wasn’t sent",
         "text=Your message wasn't sent",
         "text=Message not sent",
@@ -347,9 +370,20 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     # followed before it is messaged rather than only the ones that turn
     # out to have no Message button.
     FOLLOW_BEFORE_MESSAGE = True
+    # Reloading an X chat does not show the conversation again. Measured
+    # across a live run: ten targets whose message was in the thread and
+    # whose conversation list read "You: Hello" were all recorded as
+    # failures by the reload check. The recipient blocks above are what
+    # separate a real non-send from a delivery here.
+    CONFIRM_BY_RELOAD = False
     # Most specific first — "doesn't follow you" is a handshake X wants,
     # not a restriction the recipient set.
     RECIPIENT_BLOCKS = (
+        (
+            "x_read_only",
+            "has a read-only conversation on X — the composer is replaced by "
+            "a banner, so nothing was sent and nothing can be",
+        ),
         (
             "x_inbox_closed",
             "has a closed inbox on X, so the message was never sent — only "

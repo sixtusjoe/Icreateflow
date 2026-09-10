@@ -190,6 +190,28 @@ class PlaywrightMessenger:
     #: Which platform's accounts this driver serves.
     PLATFORM = "tiktok"
 
+    #: Can a send be confirmed by reloading and looking again?
+    #:
+    #: True where the conversation comes back. False on X, where it does
+    #: not: reloading a chat lands on a closed-inbox prompt, a read-only
+    #: banner, the encryption passcode, or a thread that simply re-renders
+    #: without the message — almost anything except the conversation just
+    #: written to.
+    #:
+    #: This was tried, removed, and put back. Removed because the passcode
+    #: is a one-time unlock and a locked thread could be detected on its
+    #: own; put back because the passcode turned out to be one of several
+    #: things the reload lands on, and ten targets that had demonstrably
+    #: been delivered were recorded as failures before the pattern was
+    #: clear enough to act on.
+    #:
+    #: What confirms a send without it: the composer cleared, the message
+    #: appeared in the thread, it was still there after a pause, and none
+    #: of the platform's refusals or recipient blocks were on the page.
+    #: Weaker than a reload. Stronger than calling a delivered message
+    #: undelivered nine times out of ten.
+    CONFIRM_BY_RELOAD = True
+
     #: Follow every target before messaging it, not only the ones that
     #: turn out to be unreachable without it.
     #:
@@ -947,6 +969,11 @@ class PlaywrightMessenger:
             )
             return False
 
+        if not self.CONFIRM_BY_RELOAD:
+            print("[outreach] delivery confirmed in the thread "
+                  "(this platform does not show it again on reload)", flush=True)
+            return True
+
         # The only check that cannot be satisfied by the page alone.
         #
         # Two "sent" results were recorded against a conversation that was
@@ -1532,6 +1559,15 @@ class PlaywrightMessenger:
                 )
 
             if not await self._delivery_holds(page, message, target, target_username):
+                # Ask again why, now that the reload has happened. X puts
+                # its closed-inbox prompt up only once the conversation is
+                # re-opened, so the block that explains the whole job is
+                # not on screen at the point the send was attempted — and
+                # every one of them was being reported as the generic "the
+                # message is not in the conversation".
+                blocked = await self._recipient_block(page, target_username)
+                if blocked is not None:
+                    return blocked
                 await self._save_debug_shot(page, target_username, "not-in-thread")
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,
