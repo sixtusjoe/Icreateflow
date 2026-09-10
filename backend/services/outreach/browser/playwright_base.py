@@ -101,6 +101,9 @@ FOLLOW_UNLOCK_MS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_UNLOCK_MS", "5000
 #: What a fallback tier gets once the first has already waited out the page.
 #: Not a page-load budget — a settled-DOM query, which is instant or never.
 LATER_TIER_MS = int(os.environ.get("ICREATE_OUTREACH_LATER_TIER_MS", "1500"))
+#: One turn of the composer-versus-blocked race. Short, because its only
+#: job is to hand control back so the blocking notices can be looked at.
+COMPOSER_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_POLL_MS", "500"))
 #: Per-click budget. The context default (30s) is far too long to spend
 #: discovering that something is covering the button.
 CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
@@ -498,6 +501,63 @@ class PlaywrightMessenger:
             if found is not None:
                 return found
         return None
+
+    async def _recipient_block(self, page, target_username: str):
+        """The first recipient-side block on this page, as a result, or None.
+
+        Used twice: while waiting for the composer, and again after the
+        send. The same notices mean the same thing in both places — this
+        person cannot be reached, which is their business and not the
+        sending account's — so neither counts against the account.
+        """
+        for key, reason in self.RECIPIENT_BLOCKS:
+            if not await self._present(page, self.SELECTORS.get(key, ())):
+                continue
+            return MessageResult.failure(
+                RESULT_MESSAGING_UNAVAILABLE,
+                f"@{target_username} {reason}. Nothing reached them, and "
+                f"nothing is wrong with the sending account",
+                url=page.url,
+                screenshot=await self._save_debug_shot(
+                    page, target_username, key.replace("_", "-")
+                ),
+            )
+        return None
+
+    async def _composer_or_block(self, page, target_username: str, timeout_ms: int):
+        """Wait for the composer, but stop the moment it cannot come.
+
+        Returns `(editor, blocked)` — exactly one of them set.
+
+        Waiting the full budget for a composer that will never appear is
+        pure delay, and on a locked DM it is the whole cost of the job: X
+        replaces the composer with "has a closed inbox" straight away and
+        the wait then sat there for thirty seconds with the answer already
+        on screen.
+
+        So the two are raced. A short poll rather than a single long wait,
+        because the question is "which of these appeared first" and the
+        blocking notices are static text that `_present` answers without
+        waiting at all.
+        """
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        while True:
+            editor = await self._first_visible(
+                page, self.SELECTORS["message_input"], timeout_ms=COMPOSER_POLL_MS
+            )
+            if editor is not None:
+                return editor, None
+
+            blocked = await self._recipient_block(page, target_username)
+            if blocked is not None:
+                print(
+                    f"[outreach] @{target_username}: the composer will not open "
+                    f"— {blocked.error}", flush=True,
+                )
+                return None, blocked
+
+            if time.monotonic() >= deadline:
+                return None, None
 
     async def _follow_first(self, page, target_username: str) -> bool:
         """Follow this profile before messaging it, if it is not followed yet.
@@ -1293,10 +1353,12 @@ class PlaywrightMessenger:
                     url=page.url,
                 )
 
-            editor = await self._first_visible(
-                page, self.SELECTORS["message_input"],
-                timeout_ms=self.COMPOSER_TIMEOUT_MS or COMPOSER_MS
+            editor, blocked = await self._composer_or_block(
+                page, target_username,
+                timeout_ms=self.COMPOSER_TIMEOUT_MS or COMPOSER_MS,
             )
+            if blocked is not None:
+                return blocked
 
             # Clicking Message can hand off to the messages app instead of
             # opening a box in place. When the thread does not come with it
@@ -1441,18 +1503,9 @@ class PlaywrightMessenger:
             #
             # It is the same situation as a profile with no Message button:
             # this person cannot be reached from here, try the next one.
-            for key, reason in self.RECIPIENT_BLOCKS:
-                if not await self._present(page, self.SELECTORS.get(key, ())):
-                    continue
-                return MessageResult.failure(
-                    RESULT_MESSAGING_UNAVAILABLE,
-                    f"@{target_username} {reason}. Nothing reached them, and "
-                    f"nothing is wrong with the sending account",
-                    url=page.url,
-                    screenshot=await self._save_debug_shot(
-                        page, target_username, key.replace("_", "-")
-                    ),
-                )
+            blocked = await self._recipient_block(page, target_username)
+            if blocked is not None:
+                return blocked
 
             # An explicit refusal is judged before anything else: TikTok
             # has already said it did not send this, so there is nothing

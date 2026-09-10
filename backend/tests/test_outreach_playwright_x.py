@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -284,8 +285,29 @@ PASSCODE_SCREEN = """
 </body></html>
 """
 
+#: A locked DM: the Message control is there, clicking it opens nothing,
+#: and X says why straight away. The composer never appears at all.
+LOCKED_DM = """
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <div data-testid="sendDMFromProfile" role="button" onclick="block()">
+      <span>Message</span>
+    </div>
+    <div id="why" style="display:none">
+      @alice has a closed inbox. If you know their X Number you can still
+      message them.
+    </div>
+  </div>
+  <script>
+    function block() { document.getElementById('why').style.display = 'block'; }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
+    "/lockeddm": LOCKED_DM,
     "/needsxnumber": NEEDS_X_NUMBER,
     "/locked": LOCKED_AFTER_SEND,
     "/navdecoy": NAV_MESSAGES_DECOY,
@@ -606,3 +628,30 @@ def test_the_recipient_blocks_are_ordered_most_specific_first():
     for key, reason in PlaywrightXMessenger.RECIPIENT_BLOCKS:
         assert PlaywrightXMessenger.SELECTORS.get(key), f"{key} has no selectors"
         assert reason and not reason.endswith("."), reason
+
+
+async def test_a_locked_dm_does_not_wait_out_the_composer_budget(driver, site):
+    """The answer is on screen; waiting thirty seconds for it is not free.
+
+    X replaces the composer with "has a closed inbox" the moment Message is
+    clicked, and the wait then sat there for the full composer budget with
+    the reason already rendered. On a run where most profiles are locked
+    that is nearly all of the time spent.
+
+    The budget here is deliberately left at its real value rather than
+    monkeypatched down: the point is that it is not spent.
+    """
+    driver.COMPOSER_TIMEOUT_MS = 20000
+
+    started = time.monotonic()
+    result = await driver.send_message(account(), target(site, "/lockeddm"), "Hello")
+    took = time.monotonic() - started
+
+    assert result.success is False
+    assert result.status == RESULT_MESSAGING_UNAVAILABLE
+    assert "closed inbox" in (result.error or ""), result.error
+    assert RECEIVED == []
+    assert took < 12, (
+        f"took {took:.0f}s against a 20s composer budget — the wait is still "
+        f"being paid in full"
+    )
