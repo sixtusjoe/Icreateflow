@@ -55,3 +55,4 @@ backend/music/
 
 # Local dev env (secrets, never commit)
 local-env.sh
+backend/outreach-debug/

@@ -75,6 +75,11 @@ SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
 #: Quiet rounds before a list is called finished, and the longest any one
 #: list may be worked. The rounds have a growing pause between them, so
 #: this is roughly half a minute of patience before giving up.
+#: How many times to try to get the message into the composer before
+#: giving up on the profile. A box that takes the click but not the
+#: keystrokes is the failure this exists for, and it is intermittent —
+#: the same profile usually accepts the text on the next go.
+TYPE_ATTEMPTS = int(os.environ.get("ICREATE_OUTREACH_TYPE_ATTEMPTS", "3"))
 DIALOG_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_QUIET_ROUNDS", "6"))
 DIALOG_BUDGET_MS = int(os.environ.get("ICREATE_OUTREACH_DIALOG_BUDGET_MS", "900000"))
 CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
@@ -514,17 +519,60 @@ class PlaywrightMessenger:
         """
         needle = " ".join((message or "").split())[:40]
         for _ in range(attempts):
-            try:
-                remaining = (await editor.inner_text(timeout=1000)) or ""
-            except Exception:  # noqa: BLE001 — element gone: the view moved on
+            flat = await PlaywrightMessenger._composer_text(editor)
+            if flat is None:  # element gone: the view moved on
                 return True
-            flat = " ".join(remaining.split())
             if not flat:
                 return True
             if needle and needle not in flat:
                 return True
             await asyncio.sleep(0.25)
         return False
+
+    @staticmethod
+    async def _composer_text(editor) -> Optional[str]:
+        """What is in the input box right now, whitespace-collapsed.
+
+        `None` when the box has gone from the page.
+
+        Read through the element rather than with `inner_text`, because the
+        composer is not the same kind of element on every platform. X's is a
+        `<textarea>`, whose live content is its `value` — `innerText` on one
+        returns the markup's default text, which is empty no matter what has
+        been typed. Instagram's and TikTok's are contenteditable `<div>`s,
+        which have no `value` at all.
+        """
+        try:
+            raw = await editor.evaluate(
+                "el => el.value !== undefined && el.value !== null "
+                "     ? el.value : el.innerText",
+                timeout=1000,
+            )
+        except Exception:  # noqa: BLE001 — detached, navigated, closed
+            return None
+        return " ".join((raw or "").split())
+
+    @staticmethod
+    async def _message_in_composer(editor, message: str) -> bool:
+        """Is the message in the box, ready to be sent?
+
+        Clicking a composer and inserting text does not prove the text
+        arrived. When focus does not land in the editable the insert goes
+        nowhere and says nothing, and every downstream signal then agrees
+        that the send worked: Send is pressed on an empty box, the box is
+        still empty afterwards, and an empty box is what a successful send
+        leaves behind.
+
+        So the run reported "the composer emptied but the message is not in
+        the conversation" — a message that half-arrived — for profiles where
+        nothing had been typed at all. Watching it happen is unmistakable:
+        the composer opens, stays blank, and the worker moves on.
+        """
+        needle = " ".join((message or "").split())[:40]
+        if not needle:
+            return True
+        typed = await PlaywrightMessenger._composer_text(editor)
+        return typed is not None and needle in typed
 
     async def _first_visible_tiered(self, page, tiers, timeout_ms: int = 2500):
         """Try groups of selectors in order, racing within each group.
@@ -1520,8 +1568,32 @@ class PlaywrightMessenger:
             # stale between being found and being clicked then costs half a
             # minute per target. Seen in production as
             # "TimeoutError: Locator.click: Timeout 30000ms".
-            await editor.click(timeout=CLICK_MS)
-            await self._type_message(page, editor, message)
+            for attempt in range(TYPE_ATTEMPTS):
+                if attempt:
+                    # Clear whatever landed first. Without this a retry
+                    # appends to a half-typed message and sends both.
+                    try:
+                        await editor.click(timeout=CLICK_MS)
+                        await page.keyboard.press("ControlOrMeta+A")
+                        await page.keyboard.press("Backspace")
+                    except Exception:  # noqa: BLE001 — best effort
+                        pass
+                await editor.click(timeout=CLICK_MS)
+                await self._type_message(page, editor, message)
+                if await self._message_in_composer(editor, message):
+                    break
+            else:
+                # Nothing was typed, so there is nothing to submit. Pressing
+                # Send here is what turned this into a delivery report.
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    "The message never reached the composer — the box took "
+                    "the click but not the text, so nothing was sent",
+                    url=page.url,
+                    screenshot=await self._save_debug_shot(
+                        page, target_username, "message-not-typed"
+                    ),
+                )
 
             # 5b. The campaign's image, if it has one. Before submitting:
             # the composer sends text and attachment together, and an image

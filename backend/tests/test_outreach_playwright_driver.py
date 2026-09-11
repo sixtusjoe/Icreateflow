@@ -600,7 +600,36 @@ PLACEHOLDER_COMPOSER = """
 </body></html>
 """
 
+#: A composer that takes the click but refuses every input event — the shape
+#: of a box that never actually receives focus. Nothing types into it.
+TYPING_GOES_NOWHERE = """
+<html><body>
+  <h2 data-e2e="user-title">alice</h2>
+  <div data-e2e="message-button" onclick="openChat()">Message</div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area">
+      <div id="ed" contenteditable="true" role="textbox"></div>
+    </div>
+    <div data-e2e="message-send" onclick="sendChat()">Send</div>
+    <div data-e2e="chat-item"><div id="thread"></div></div>
+  </div>
+  <script>
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    document.getElementById('ed').addEventListener(
+      'beforeinput', e => e.preventDefault());
+    function sendChat() {
+      const ed = document.getElementById('ed');
+      const text = ed.innerText;
+      if (!text.trim()) return;   // an empty message is not sendable
+      fetch('/sent', { method: 'POST', body: text });
+      ed.innerHTML = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
+    "/nevertyped": TYPING_GOES_NOWHERE,
     "/placeholder": PLACEHOLDER_COMPOSER,
     "/alice": SENDABLE,
     "/captcha": CAPTCHA_OVER_PROFILE,
@@ -1401,3 +1430,25 @@ def test_only_the_platform_that_needs_it_types_in_one_go():
     assert get_driver("playwright_x").TYPE_AS_ONE_INSERT is False
 
 
+async def test_a_message_that_never_reached_the_composer_is_not_called_sent(driver, site):
+    """An empty composer means "sent" only if the message was in it first.
+
+    The driver clicked the editable, inserted the text, and submitted
+    without ever checking the text arrived. When focus did not land — which
+    on TikTok happens on a minority of profiles — nothing was typed, Send
+    was pressed on an empty box, and the empty box then read as "the
+    composer cleared, so it went". The target was filed under "the composer
+    emptied but the message is not in the conversation", which describes a
+    delivery that half-happened rather than a message that was never typed.
+
+    Nothing may be submitted in that state, and the report has to say which
+    of the two it was.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/nevertyped"), "Hello alice, quick question."
+    )
+    assert result.success is False
+    assert result.status == RESULT_UNEXPECTED_PAGE
+    assert "never reached the composer" in (result.error or "").lower()
+    # And crucially: Send was not pressed on an empty box.
+    assert RECEIVED == []
