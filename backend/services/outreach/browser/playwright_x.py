@@ -33,10 +33,11 @@ X_SELECTORS: dict[str, Any] = {
     # Something proving the profile rendered, so the button checks below do
     # not run against a shell that has not hydrated. X renders the whole
     # page client-side, so this matters more here than elsewhere.
+    # `primaryColumn` is the shell container and is there before the
+    # profile is, so it is not proof of anything.
     "profile_loaded": (
         "[data-testid='UserName']",
         "[data-testid='UserProfileHeader_Items']",
-        "[data-testid='primaryColumn']",
     ),
     "profile_missing": (
         "[data-testid='emptyState']",

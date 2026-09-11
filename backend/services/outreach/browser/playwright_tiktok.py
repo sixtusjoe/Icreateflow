@@ -8,6 +8,7 @@ entries exist because a looser version of them cost a live target.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from services.outreach.browser.playwright_base import (
@@ -18,17 +19,26 @@ from services.outreach.browser.playwright_base import (
 )
 
 #: "View 3 replies" — the control hiding most of a video's commenters.
-_REPLY_LABEL = re.compile(r"^View \d[\d,.]* repl(y|ies)$", re.I)
+#: Both halves of a thread. TikTok opens a reply thread a page at a time:
+#: "View 34 replies" reveals three and relabels itself "View 31 more", so
+#: matching only the opening label reads the first page of every thread and
+#: leaves the rest — on one video the abandoned controls read "View 31
+#: more", "View 27 more", "View 15 more".
+_REPLY_LABEL = re.compile(r"^View \d[\d,.]* (?:repl(?:y|ies)|more)$", re.I)
 
 #: Ordered fallbacks — the first selector that resolves wins.
 TIKTOK_SELECTORS: dict[str, Any] = {
     # Something proving the profile actually rendered, so the button checks
     # don't run against a shell that has not hydrated yet.
+    # Only things that exist once THIS profile's data has rendered. A bare
+    # "h1" was in here, and `_first_visible` races its selectors: the shell
+    # paints a heading before any profile data arrives, so the gate passed
+    # on an empty page every time and the Message-button search then ran
+    # against markup that did not exist yet.
     "profile_loaded": (
         "[data-e2e='user-title']",
         "[data-e2e='user-subtitle']",
         "[data-e2e='followers-count']",
-        "h1",
     ),
     "profile_missing": (
         "text=Couldn't find this account",
@@ -228,6 +238,15 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
     #: comments load, which brings more threads — one pass of each finds
     #: about a third of the people.
     COMMENT_PHASES = 6
+    #: How long to wait for the comment control. Generous on purpose: the
+    #: page hydrates well after it starts playing the video.
+    COMMENT_PANEL_MS = 30000
+    #: How many reloads to spend on a page that came up as a skeleton.
+    HYDRATE_RELOADS = 2
+    #: A thread opens a page at a time, so one with 34 replies costs a
+    #: dozen clicks on its own. 400 was not enough for a video's worth.
+    REPLY_CLICKS = 2000
+    REPLY_BUDGET_MS = 600000
 
     # One message, always.
     #
@@ -283,7 +302,36 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                 await page.wait_for_timeout(600)
 
             toggle = await self._first_visible(
-                page, self.SELECTORS["comment_toggle"], timeout_ms=COMPOSER_MS)
+                page, self.SELECTORS["comment_toggle"],
+                timeout_ms=self.COMMENT_PANEL_MS)
+            if toggle is None:
+                # TikTok serves the player and hydrates its chrome
+                # separately, and when that second half does not arrive the
+                # video plays over a page of grey placeholders with no
+                # comment control anywhere on it. That is indistinguishable
+                # from a video with comments turned off, and it was
+                # reported with the same words. Reloading is what shifts
+                # it; two videos in a row came back empty without this.
+                print(f"[discovery] no comment control yet on {post_url} — "
+                      f"the page may not have hydrated; reloading", flush=True)
+                for attempt in range(self.HYDRATE_RELOADS):
+                    try:
+                        await page.reload(wait_until="domcontentloaded",
+                                          timeout=self._timeout)
+                    except Exception:  # noqa: BLE001 — report below
+                        break
+                    await page.wait_for_timeout(SETTLE_MS * 2)
+                    await self._dismiss_overlays(page)
+                    for _ in range(2):
+                        await page.keyboard.press("Escape")
+                        await page.wait_for_timeout(400)
+                    toggle = await self._first_visible(
+                        page, self.SELECTORS["comment_toggle"],
+                        timeout_ms=self.COMMENT_PANEL_MS)
+                    if toggle is not None:
+                        print(f"[discovery] comment control appeared after "
+                              f"reload {attempt + 1}", flush=True)
+                        break
             if toggle is None:
                 print(f"[discovery] no comment control on {post_url}", flush=True)
                 return []
@@ -292,18 +340,34 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
             await page.wait_for_timeout(SETTLE_MS * 2)
 
             await self._mark_comment_scroller(page)
+
+            async def collect() -> None:
+                for name in await self._collect_profile_links(
+                        page, self.SELECTORS["post_people"]):
+                    seen.setdefault(name)
+
             for phase in range(1, self.COMMENT_PHASES + 1):
-                await self._scroll_comments(page)
-                for name in await self._collect_profile_links(
-                        page, self.SELECTORS["post_people"]):
-                    seen.setdefault(name)
-                opened = await self._open_reply_threads(page)
-                for name in await self._collect_profile_links(
-                        page, self.SELECTORS["post_people"]):
-                    seen.setdefault(name)
+                before = len(seen)
+                # Back to the top first, so each phase re-walks the whole
+                # list — the replies opened last time are inline now, and
+                # the rows they sit between were recycled away long ago.
+                if phase > 1:
+                    await page.evaluate("""() => {
+                        const el = document.querySelector("[data-icf-comments='1']");
+                        if (el) el.scrollTop = 0;
+                    }""")
+                    await page.wait_for_timeout(SETTLE_MS)
+                    await collect()
+                await self._scroll_comments(page, collect)
+                await collect()
+                opened = await self._open_reply_threads(page, collect)
+                await collect()
                 print(f"[discovery] comments phase {phase}: {len(seen)} people "
                       f"(opened {opened} thread(s))", flush=True)
-                if opened == 0 and phase > 1:
+                # Stop only when a full pass found nobody new AND opened
+                # nothing. Breaking on "opened nothing" alone ended the
+                # read while scrolling was still turning up people.
+                if opened == 0 and len(seen) == before and phase > 1:
                     break
         except Exception as exc:  # noqa: BLE001 — one bad video is not fatal
             print(f"[discovery] comments on {post_url} failed: "
@@ -323,20 +387,44 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
             }
         }""")
 
-    async def _scroll_comments(self, page) -> int:
-        """Scroll the comment panel until it stops growing."""
+    async def _scroll_comments(self, page, collect=None) -> int:
+        """Scroll the comment panel until it stops growing.
+
+        `collect` is called after every step, and has to be: TikTok recycles
+        the rows, so a comment scrolled past is removed from the page.
+        Reading once at the end returned the last screenful — five people
+        out of sixty in the test, 184 out of a 499-comment video in
+        production — and nothing distinguishes that from a short list.
+
+        One screen at a time rather than jumping to the bottom, for the
+        same reason: a jump skips every row in between and they are never
+        rendered again.
+        """
         quiet, tallest = 0, 0
         for _ in range(240):
             await page.evaluate("""() => {
                 const el = document.querySelector("[data-icf-comments='1']");
-                if (el) el.scrollTop = el.scrollHeight;
+                if (!el) return;
+                const step = Math.max(el.clientHeight - 60, 80);
+                const next = el.scrollTop + step;
+                // Past the end, sit at the bottom so more can load.
+                el.scrollTop = next >= el.scrollHeight ? el.scrollHeight : next;
             }""")
             await page.wait_for_timeout(1400)
+            if collect is not None:
+                await collect()
             height = await page.evaluate("""() => {
                 const el = document.querySelector("[data-icf-comments='1']");
                 return el ? el.scrollHeight : 0;
             }""")
-            quiet = 0 if height > tallest else quiet + 1
+            at_end = await page.evaluate("""() => {
+                const el = document.querySelector("[data-icf-comments='1']");
+                if (!el) return true;
+                return el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+            }""")
+            # Quiet means the list stopped growing *and* there is nothing
+            # below — still working down a loaded list is not being stuck.
+            quiet = 0 if (height > tallest or not at_end) else quiet + 1
             tallest = max(tallest, height)
             # Patient on purpose: a short fuse stopped this at a third of
             # the list, which looked like a video with few comments.
@@ -344,10 +432,20 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                 break
         return tallest
 
-    async def _open_reply_threads(self, page) -> int:
-        """Open every visible "View N replies". Real clicks only."""
+    async def _open_reply_threads(self, page, collect=None) -> int:
+        """Open every visible "View N replies". Real clicks only.
+
+        Collects as it goes for the same reason the scroll does: scrolling
+        a control into view recycles away whatever it scrolled past.
+        """
         opened = 0
-        for _ in range(400):
+        deadline = time.monotonic() + (self.REPLY_BUDGET_MS / 1000)
+        for _ in range(self.REPLY_CLICKS):
+            if time.monotonic() > deadline:
+                print(f"[discovery] stopped expanding threads after "
+                      f"{self.REPLY_BUDGET_MS // 1000}s with {opened} opened",
+                      flush=True)
+                break
             try:
                 one = page.get_by_text(_REPLY_LABEL).nth(0)
                 if not await one.count():
@@ -356,6 +454,8 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                 await one.click(timeout=CLICK_MS)
                 opened += 1
                 await page.wait_for_timeout(400)
+                if collect is not None:
+                    await collect()
             except Exception:  # noqa: BLE001 — nothing left that will open
                 break
         return opened

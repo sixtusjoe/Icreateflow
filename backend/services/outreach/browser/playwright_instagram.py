@@ -52,11 +52,13 @@ def _as_int(raw: str) -> int | None:
 INSTAGRAM_SELECTORS: dict[str, Any] = {
     # Something proving the profile rendered, so the checks below are not
     # racing an empty shell.
+    # No bare headings: they are in the shell before the profile is, and
+    # racing selectors means the loosest one decides. 317 targets in one
+    # campaign were filed as "no Message button" — the page had not
+    # rendered when we looked.
     "profile_loaded": (
         "header section",
         "main header",
-        "h2",
-        "h1",
     ),
     "profile_missing": (
         "text=Sorry, this page isn't available.",

@@ -628,7 +628,41 @@ TYPING_GOES_NOWHERE = """
 </body></html>
 """
 
+#: The shell TikTok serves before the profile data arrives: an <h1> is on
+#: the page immediately, everything that identifies the account — and the
+#: action row with the Message button — comes later.
+SLOW_SHELL = """
+<html><body>
+  <h1>For You</h1>
+  <div id="late"></div>
+  <script>
+    setTimeout(() => {
+      document.getElementById('late').innerHTML =
+        '<h2 data-e2e="user-title">alice</h2>'
+      + '<div data-e2e="message-button" onclick="openChat()">Message</div>'
+      + '<div id="chat" style="display:none">'
+      + '<div data-e2e="message-input-area">'
+      + '<div id="ed" contenteditable="true" role="textbox"></div></div>'
+      + '<div data-e2e="message-send" onclick="sendChat()">Send</div>'
+      + '<div data-e2e="chat-item"><div id="thread"></div></div></div>';
+    }, 2500);
+    function openChat() { document.getElementById('chat').style.display = 'block'; }
+    function sendChat() {
+      const ed = document.getElementById('ed');
+      const text = ed.innerText;
+      if (!text.trim()) return;
+      const row = document.createElement('div');
+      row.innerText = text;
+      document.getElementById('thread').appendChild(row);
+      fetch('/sent', { method: 'POST', body: text });
+      ed.innerHTML = '';
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
+    "/slowshell": SLOW_SHELL,
     "/nevertyped": TYPING_GOES_NOWHERE,
     "/placeholder": PLACEHOLDER_COMPOSER,
     "/alice": SENDABLE,
@@ -1452,3 +1486,53 @@ async def test_a_message_that_never_reached_the_composer_is_not_called_sent(driv
     assert "never reached the composer" in (result.error or "").lower()
     # And crucially: Send was not pressed on an empty box.
     assert RECEIVED == []
+
+
+async def test_a_profile_still_rendering_is_not_a_profile_without_dms(driver, site, monkeypatch):
+    """The readiness gate has to mean the profile rendered.
+
+    `profile_loaded` ended with a bare `h1`, and `_first_visible` races its
+    selectors — so the shell's empty `h1`, which is on the page before any
+    profile data arrives, won every time. The gate passed instantly, the
+    Message-button search then ran against markup that did not exist yet,
+    and eight seconds later the profile was written off as one that does
+    not accept DMs. The worker moved to the next person while the page it
+    had just given up on was still loading.
+
+    That verdict is sticky in a way a timeout is not: "no Message button"
+    reads as a fact about the recipient rather than about our patience.
+    """
+    for name, value in (("PROFILE_READY_MS", 8000), ("MESSAGE_BUTTON_MS", 1500)):
+        monkeypatch.setattr(
+            f"services.outreach.browser.playwright_base.{name}", value
+        )
+    message = "Hello alice, quick question."
+    result = await driver.send_message(
+        account(), target(site, "/slowshell"), message
+    )
+    assert result.status != RESULT_MESSAGING_UNAVAILABLE, (
+        "a slow profile was reported as one that does not accept DMs"
+    )
+    assert result.success is True, result.error
+    assert RECEIVED == [message]
+
+
+def test_no_readiness_gate_accepts_a_bare_tag():
+    """"The page is ready" cannot be answered by a tag every page has.
+
+    `_first_visible` races its selectors, so the loosest one decides. A
+    bare `h1`/`h2` — or a shell container like X's `primaryColumn` — is
+    painted before the profile data arrives, which makes the gate a no-op
+    and hands every later check an empty page to judge.
+    """
+    from services.outreach.browser import get_driver
+
+    bare = {"h1", "h2", "h3", "header", "main", "section", "body", "div"}
+    for platform in ("playwright_tiktok", "playwright_instagram", "playwright_x"):
+        for selector in get_driver(platform).SELECTORS["profile_loaded"]:
+            assert selector.strip() not in bare, (
+                f"{platform}: {selector!r} is on the page before the profile is"
+            )
+            assert "primaryColumn" not in selector, (
+                f"{platform}: {selector!r} is the shell, not the profile"
+            )
