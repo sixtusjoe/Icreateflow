@@ -81,6 +81,12 @@ SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
 #: the same profile usually accepts the text on the next go.
 TYPE_ATTEMPTS = int(os.environ.get("ICREATE_OUTREACH_TYPE_ATTEMPTS", "3"))
 DIALOG_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_QUIET_ROUNDS", "6"))
+#: Quiet rounds tolerated when reading an ordinary paged list (likers,
+#: repliers) before calling it finished.
+LIST_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS", "4"))
+#: Pixels of the previous screen to keep in view when scrolling a list, so
+#: a recycled row is never destroyed before it has been read.
+SCROLL_OVERLAP_PX = int(os.environ.get("ICREATE_OUTREACH_SCROLL_OVERLAP_PX", "120"))
 DIALOG_BUDGET_MS = int(os.environ.get("ICREATE_OUTREACH_DIALOG_BUDGET_MS", "900000"))
 CHALLENGE_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_CHALLENGE_WAIT_MS", "0"))
 CHALLENGE_WAIT_HEADFUL_MS = int(
@@ -2048,8 +2054,18 @@ class PlaywrightMessenger:
         selectors = self.SELECTORS.get("liker") or ()
         if not selectors:
             return []
-        url = self._absolute(post_url).rstrip("/") + "/liked_by/"
+        url = self._likers_url(post_url)
         return await self._profile_links(page, url, selectors, scroll_rounds)
+
+    def _likers_url(self, post_url: str) -> str:
+        """Where this platform lists the people who liked a post.
+
+        Instagram's form. Platforms that name it differently override this
+        — X's is `/likes`, and asking x.com for `/liked_by/` returns the
+        post itself, whose markup yields the author and repliers. That
+        reads as a post with few likers rather than as the wrong question.
+        """
+        return self._absolute(post_url).rstrip("/") + "/liked_by/"
 
     async def _collect_profile_links(self, page, selectors) -> list[str]:
         """Profile handles currently rendered, in document order, deduped.
@@ -2101,6 +2117,7 @@ class PlaywrightMessenger:
         # the observer: a post with 718 likes gave up 99 and stopped, no
         # matter how many times it was "scrolled".
         moved = False
+        step = 0
         for selector in self.SELECTORS.get("scroll_container") or ():
             try:
                 box = await page.locator(selector).first.bounding_box(timeout=400)
@@ -2110,16 +2127,20 @@ class PlaywrightMessenger:
                 await page.mouse.move(
                     box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
                 )
+                step = int(box["height"])
                 moved = True
                 break
         try:
+            size = page.viewport_size or {"width": 1280, "height": 800}
             if not moved:
-                size = page.viewport_size or {"width": 1280, "height": 800}
                 await page.mouse.move(size["width"] / 2, size["height"] / 2)
-            # One turn. Reaching the bottom is what asks for the next page;
-            # scrolling again while it loads achieves nothing, and the
-            # caller waits for the result rather than guessing at a pause.
-            await page.mouse.wheel(0, 2400)
+                step = int(size["height"])
+            # Less than one screen, so nothing is skipped. These lists
+            # recycle their rows: a row scrolled past is destroyed, and a
+            # fixed 2400px turn jumped clean over whole screenfuls that
+            # were never read. Against a stub of fifty likers it skipped
+            # twenty, in windows — liker10-14, liker20-24, and so on.
+            await page.mouse.wheel(0, max(step - SCROLL_OVERLAP_PX, 120))
         except Exception:  # noqa: BLE001
             pass
         await page.wait_for_timeout(SCROLL_POLL_MS)
@@ -2381,9 +2402,18 @@ class PlaywrightMessenger:
                              scroll_rounds: int = 0) -> list[str]:
         """Profile handles linked from a page, in order, deduped.
 
-        Scrolls up to `scroll_rounds` times, stopping early the moment a
-        round adds nobody — a post with nine comments should not sit through
-        ten scrolls to prove it.
+        Accumulates across rounds and keeps scrolling through quiet ones.
+
+        Both matter because these lists recycle their rows: scrolling past a
+        name destroys it. Keeping only what is rendered right now meant a
+        scroll could return *fewer* names than the round before — which also
+        tripped the old exit, since it fired on the first round that did not
+        grow. Measured against a stub of fifty: five came back. Measured on
+        live posts by a 180.7K-follower account: five to fifteen engaged
+        people per post.
+
+        Quiet rounds are tolerated rather than fatal, because a page of
+        names still in flight looks exactly like the end of the list.
         """
         if not selectors:
             return []
@@ -2397,20 +2427,28 @@ class PlaywrightMessenger:
             await self._first_visible(page, tuple(selectors), timeout_ms=COMPOSER_MS)
             await page.wait_for_timeout(SETTLE_MS)
 
-            names = await self._collect_profile_links(page, selectors)
+            seen: dict[str, None] = {}
+            for name in await self._collect_profile_links(page, selectors):
+                seen.setdefault(name)
+            quiet = 0
             for _ in range(max(scroll_rounds, 0)):
+                before = len(seen)
                 await self._load_more(page)
-                grown = await self._collect_profile_links(page, selectors)
-                if grown and len(grown) <= len(names):
-                    # Stop only once there is something and it stopped
-                    # growing. Breaking on "no growth" alone gave up on an
-                    # empty list, and a dialog that has not finished opening
-                    # is empty — a followers list read that way came back
-                    # with nobody, which reads as an account with no
-                    # followers rather than one still loading.
+                for name in await self._collect_profile_links(page, selectors):
+                    seen.setdefault(name)
+                if len(seen) > before:
+                    quiet = 0
+                    continue
+                quiet += 1
+                if quiet >= LIST_QUIET_ROUNDS:
                     break
-                names = grown
-            return names
+                # Wait longer each time: a slow page is not a finished one.
+                await page.wait_for_timeout(SCROLL_PAUSE_MS * quiet)
+                for name in await self._collect_profile_links(page, selectors):
+                    seen.setdefault(name)
+                if len(seen) > before:
+                    quiet = 0
+            return list(seen)
         except Exception as exc:  # noqa: BLE001
             print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
             return []

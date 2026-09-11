@@ -468,6 +468,10 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     def profile_url(self, username: str) -> str:
         return f"{self.SITE_URL}/{username.strip().lstrip('@')}"
 
+    def _likers_url(self, post_url: str) -> str:
+        """X lists a post's likers at /likes."""
+        return self._absolute(post_url).rstrip("/") + "/likes"
+
     async def _profile_follow_control(self, page):
         """The profile's own Follow button — never a suggestion's.
 

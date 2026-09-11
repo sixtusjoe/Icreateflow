@@ -321,7 +321,75 @@ LOCKED_DM = """
 </body></html>
 """
 
+#: A likes list the way X serves one: it recycles its rows, so scrolling
+#: past a name destroys it, and each page of names arrives a beat after the
+#: scroll that asked for it.
+RECYCLING_LIKES = """
+<html><body>
+  <div data-testid="primaryColumn" style="height:200px;overflow:auto"
+       onscroll="render()">
+    <div id="spacer" style="position:relative"><div id="rows"></div></div>
+  </div>
+  <script>
+    const ROW_H = 40, WINDOW = 5, TOTAL = 50;
+    let loaded = 10;                       // how many the server has sent
+    const NAMES = [];
+    for (let i = 0; i < TOTAL; i++) NAMES.push('liker' + i);
+    function render() {
+      const box = document.querySelector("[data-testid='primaryColumn']");
+      document.getElementById('spacer').style.height = (loaded * ROW_H) + 'px';
+      const first = Math.floor(box.scrollTop / ROW_H);
+      const last = Math.min(first + WINDOW, loaded);
+      let html = '';
+      for (let i = first; i < last; i++) {
+        html += '<div data-testid="UserCell" style="position:absolute;top:'
+             + (i * ROW_H) + 'px"><a href="/' + NAMES[i] + '">'
+             + NAMES[i] + '</a></div>';
+      }
+      document.getElementById('rows').innerHTML = html;
+      // Near the bottom? Fetch the next page — after a delay, as a real
+      // one does.
+      if (last >= loaded && loaded < TOTAL) {
+        setTimeout(() => { loaded = Math.min(loaded + 10, TOTAL); render(); }, 900);
+      }
+    }
+    render();
+  </script>
+</body></html>
+"""
+
+#: A profile whose header re-renders shortly after load, the way X's does
+#: while it hydrates. The re-render replaces the button node, so anything
+#: written onto the old node by script is gone.
+RERENDERING_HEADER = """
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <div id="slot">
+      <button data-testid="99887766-follow" onclick="fetch('/sent',{method:'POST',body:'FOLLOWED'})">
+        <span>Follow</span></button>
+    </div>
+    <div data-testid="UserCell">
+      <button data-testid="11110000-follow"><span>Follow</span></button>
+    </div>
+  </div>
+  <script>
+    // React-style: throw the node away and build a fresh one.
+    setTimeout(() => {
+      document.getElementById('slot').innerHTML =
+        '<button data-testid="99887766-follow" '
+        + "onclick=\"fetch('/sent',{method:'POST',body:'FOLLOWED'})\">"
+        + '<span>Follow</span></button>';
+    }, 700);
+  </script>
+</body></html>
+"""
+
 PAGES = {
+    "/rerender": RERENDERING_HEADER,
+
+    "/recyclinglikes": RECYCLING_LIKES,
+
     "/alice": SENDABLE,
     "/lockeddm": LOCKED_DM,
     "/needsxnumber": NEEDS_X_NUMBER,
@@ -718,3 +786,75 @@ async def test_a_follow_request_already_in_reads_as_pending(driver, site):
     assert locator is not None
     await page.close()
     assert RECEIVED == [], "the pending control was clicked — that cancels it"
+
+
+def test_the_likes_list_is_asked_for_the_way_x_names_it():
+    """X's likers live at /likes, not Instagram's /liked_by/.
+
+    The base builds the Instagram form, so X inherited a URL that is not a
+    page on x.com — asking for it returns the post, whose own markup then
+    yields the author and the repliers rather than the likers. That reads
+    as "this post has few likers" instead of "we asked the wrong question".
+    """
+    # No browser is started: the constructor only records settings.
+    d = PlaywrightXMessenger(headless=True)
+    url = d._likers_url("https://x.com/kuppy/status/123")
+    assert url.endswith("/likes"), url
+    assert "liked_by" not in url
+    # And it must not double up when the caller already passed the slash.
+    assert d._likers_url("https://x.com/kuppy/status/123/") == url
+    # A bare path is made absolute against x.com.
+    assert d._likers_url("/kuppy/status/123").startswith("http")
+
+
+async def test_a_recycling_list_is_read_all_the_way_down(driver, site):
+    """Everyone on the list, not whoever survived the last scroll.
+
+    `_profile_links` kept only what was rendered at that moment and
+    replaced it each round, so a list that recycles its rows — X's does —
+    could come back *smaller* after a scroll. That also tripped the exit,
+    which fired on the first round that did not grow, with no allowance for
+    a page of names still in flight.
+
+    Measured on live posts by an account with 180.7K followers: five to
+    fifteen engaged people per post.
+    """
+    context = await driver._context_for(account())
+    page = await context.new_page()
+    names = await driver._profile_links(
+        page, f"{site}/recyclinglikes",
+        ("[data-testid='primaryColumn'] [data-testid='UserCell'] a[href^='/']",),
+        scroll_rounds=40,
+    )
+    await page.close()
+    found = {n for n in names if n.startswith("liker")}
+    missing = {f"liker{i}" for i in range(50)} - found
+    assert not missing, f"{len(missing)} of 50 were never read: {sorted(missing)[:6]}"
+
+
+async def test_the_follow_control_survives_a_header_re_render(driver, site):
+    """The handle on the button must outlive X rebuilding the header.
+
+    The control was found by writing `data-icf-own-follow` onto the element
+    and then clicking that attribute. X re-renders the profile header while
+    it hydrates, and a re-render replaces the node — taking the attribute
+    with it. The locator then matched nothing and the click sat waiting for
+    an element that no longer existed, for its whole eight-second budget.
+
+    Live, that was roughly half of every attempt: 6, 9 and 9 TimeoutErrors
+    against 9, 6 and 5 follows across three accounts. Indistinguishable
+    from a rate limit, and it was read as one.
+    """
+    context = await driver._context_for(account())
+    page = await context.new_page()
+    await page.goto(f"{site}/rerender", wait_until="domcontentloaded")
+    state, locator = await driver._profile_follow_control(page)
+    assert state == "can_follow", state
+    # The header is rebuilt underneath us, exactly as X does.
+    await page.wait_for_timeout(1400)
+    await locator.click(timeout=3000)
+    await page.wait_for_timeout(400)
+    await page.close()
+    assert RECEIVED == ["FOLLOWED"], (
+        f"the click never reached the button: {RECEIVED!r}"
+    )
