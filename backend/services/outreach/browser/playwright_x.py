@@ -492,7 +492,8 @@ class PlaywrightXMessenger(PlaywrightMessenger):
             document.querySelectorAll('[data-icf-own-follow]').forEach(
                 el => el.removeAttribute('data-icf-own-follow'));
             const all = Array.from(document.querySelectorAll(
-                "[data-testid$='-follow'], [data-testid$='-unfollow']"));
+                "[data-testid$='-follow'], [data-testid$='-unfollow'], "
+                + "[data-testid$='-cancel']"));
             const own = all.filter(el =>
                 !el.closest("[data-testid='UserCell']") &&
                 !el.closest("[data-testid='sidebarColumn']"));
@@ -510,6 +511,15 @@ class PlaywrightXMessenger(PlaywrightMessenger):
         locator = page.locator("[data-icf-own-follow='1']").first
         if testid.endswith("-unfollow"):
             return "following", locator
+        # A follow request that is already in. X does not keep the profile
+        # on `-follow` for this — the control becomes `<userid>-cancel`,
+        # which withdraws the request. Matching only follow/unfollow made
+        # every protected account we had already asked look like a profile
+        # with no follow control at all, which reads as a dead end rather
+        # than as waiting on a person. Returning it also keeps it from
+        # being clicked: clicking here cancels the request.
+        if testid.endswith("-cancel"):
+            return "pending", locator
         try:
             label = ((await locator.inner_text(timeout=1000)) or "").strip().lower()
         except Exception:  # noqa: BLE001 — the label is a refinement, not the answer

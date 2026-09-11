@@ -169,6 +169,22 @@ PROTECTED_ACCOUNT = """
 </body></html>
 """
 
+#: Revisiting a protected account whose follow request is already in. X
+#: does not reuse the `-follow` testid for this: the control becomes
+#: `<userid>-cancel`, which cancels the request.
+PENDING_REQUEST = """
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <div data-testid="99887766-cancel" role="button"
+         onclick="fetch('/sent', { method: 'POST', body: 'CANCELLED' })">
+      <span>Pending</span>
+    </div>
+    <p>These posts are protected</p>
+  </div>
+</body></html>
+"""
+
 #: Already followed, still no DM control. The control in that spot now
 #: unfollows, and clicking it reports itself so a test can catch it.
 ALREADY_FOLLOWING = """
@@ -314,6 +330,7 @@ PAGES = {
     "/nodm": NO_DM_BUTTON,
     "/followunlocks": FOLLOW_UNLOCKS_DM,
     "/protected": PROTECTED_ACCOUNT,
+    "/pending": PENDING_REQUEST,
     "/following": ALREADY_FOLLOWING,
     "/gone": MISSING_PROFILE,
     "/loggedout": LOGIN_WALL,
@@ -675,3 +692,29 @@ async def test_a_locked_dm_does_not_wait_out_the_composer_budget(driver, site):
         f"took {took:.0f}s against a 20s composer budget — the wait is still "
         f"being paid in full"
     )
+
+
+async def test_a_follow_request_already_in_reads_as_pending(driver, site):
+    """A sent follow request is not "this profile has no follow button".
+
+    X gives the pending control its own testid — `<userid>-cancel`, the
+    one that withdraws the request — and the probe matched only `-follow`
+    and `-unfollow`. So every protected account we had already requested
+    came back as having no follow control at all.
+
+    That reads as a profile that cannot be followed, which is the opposite
+    of the truth: the request went in and is waiting on a person. Sixteen
+    accounts were logged that way across one run, and re-running could not
+    tell them from genuine dead ends.
+
+    Matching `-cancel` is also what stops it being clicked: the control
+    under the cursor cancels the request we just made.
+    """
+    context = await driver._context_for(account())
+    page = await context.new_page()
+    await page.goto(f"{site}/pending", wait_until="domcontentloaded")
+    state, locator = await driver._profile_follow_control(page)
+    assert state == "pending", f"read as {state!r}"
+    assert locator is not None
+    await page.close()
+    assert RECEIVED == [], "the pending control was clicked — that cancels it"
