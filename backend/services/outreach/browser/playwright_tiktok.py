@@ -237,7 +237,14 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
     #: Opening threads makes the panel taller, which lets more top-level
     #: comments load, which brings more threads — one pass of each finds
     #: about a third of the people.
-    COMMENT_PHASES = 6
+    #: An upper bound, not a target: the loop stops when passes stop
+    #: producing people. Six was a target, and it cut a video off while it
+    #: was still gaining thirty a pass.
+    COMMENT_PHASES = 60
+    #: Consecutive passes that must find nobody new and open nothing.
+    QUIET_PHASES = 2
+    #: The longest any one video may be worked.
+    PANEL_BUDGET_MS = 2700000
     #: How long to wait for the comment control. Generous on purpose: the
     #: page hydrates well after it starts playing the video.
     COMMENT_PANEL_MS = 30000
@@ -346,7 +353,15 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                         page, self.SELECTORS["post_people"]):
                     seen.setdefault(name)
 
-            for phase in range(1, self.COMMENT_PHASES + 1):
+            quiet_phases, phase = 0, 0
+            panel_deadline = time.monotonic() + (self.PANEL_BUDGET_MS / 1000)
+            while phase < self.COMMENT_PHASES:
+                phase += 1
+                if time.monotonic() > panel_deadline:
+                    print(f"[discovery] stopped after "
+                          f"{self.PANEL_BUDGET_MS // 1000}s on this video with "
+                          f"{len(seen)} people", flush=True)
+                    break
                 before = len(seen)
                 # Back to the top first, so each phase re-walks the whole
                 # list — the replies opened last time are inline now, and
@@ -364,11 +379,16 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                 await collect()
                 print(f"[discovery] comments phase {phase}: {len(seen)} people "
                       f"(opened {opened} thread(s))", flush=True)
-                # Stop only when a full pass found nobody new AND opened
-                # nothing. Breaking on "opened nothing" alone ended the
-                # read while scrolling was still turning up people.
-                if opened == 0 and len(seen) == before and phase > 1:
-                    break
+                # Stop when passes stop producing, not after a fixed
+                # count. A cap of six ended a run that was still finding
+                # fifteen to thirty new people per pass — the same mistake
+                # as judging a scroll by rounds instead of by growth.
+                if opened == 0 and len(seen) == before:
+                    quiet_phases += 1
+                    if quiet_phases >= self.QUIET_PHASES and phase > 1:
+                        break
+                else:
+                    quiet_phases = 0
         except Exception as exc:  # noqa: BLE001 — one bad video is not fatal
             print(f"[discovery] comments on {post_url} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
