@@ -47,6 +47,7 @@ import {
   type WatchState,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { SessionViewer } from "@/components/outreach/SessionViewer";
 import { StatusPill, ProgressBar, inputClass, relativeTime, apiErrorMessage } from "../ui";
 import { LeadFinder } from "./lead-finder";
 
@@ -295,6 +296,25 @@ export default function OutreachCampaignPage() {
       >
         <ArrowLeft className="h-4 w-4" /> All campaigns
       </Link>
+
+      {/* The watched run's own screen.
+          The browser runs wherever the backend does, so on a server there
+          was no way to see it — which left a verification puzzle solvable
+          by someone with an SSH tunnel and by nobody else. */}
+      {watch?.running && !watch.watch?.done && (
+        <div className="mb-6">
+          <div className="mb-2 flex items-center gap-2">
+            <Eye className="h-4 w-4 text-muted-foreground" />
+            <p className="text-sm font-medium">Watching this run</p>
+            <p className="text-xs text-muted-foreground">
+              {watch.watch?.message ?? "Opening…"}
+            </p>
+          </div>
+          <div className="flex h-[min(60vh,540px)] flex-col">
+            <SessionViewer campaignId={id} />
+          </div>
+        </div>
+      )}
 
       {/* Header + actions */}
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

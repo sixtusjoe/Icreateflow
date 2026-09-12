@@ -9,7 +9,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Maximize2, Minimize2, Keyboard as KeyboardIcon } from "lucide-react";
-import { issueViewerTicket, viewerSocketUrl } from "@/lib/api";
+import {
+  issueViewerTicket,
+  issueWatchViewerTicket,
+  viewerSocketUrl,
+} from "@/lib/api";
 
 /** X11 keysyms for the keys a login form actually needs. */
 const NAMED_KEYS: Record<string, number> = {
@@ -36,9 +40,13 @@ function keysymFor(ch: string): number {
 
 export function SessionViewer({
   accountId,
+  campaignId,
   onError,
 }: {
-  accountId: number;
+  /** Watch an account being signed in. */
+  accountId?: number;
+  /** Or watch a campaign run work. Exactly one of the two. */
+  campaignId?: number;
   onError?: (message: string) => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
@@ -61,7 +69,10 @@ export function SessionViewer({
         // Imported here rather than at module scope: noVNC touches window on
         // load, which breaks a server-rendered page.
         const { default: RFB } = await import("@novnc/novnc");
-        const ticket = await issueViewerTicket(accountId);
+        const ticket =
+          campaignId !== undefined
+            ? await issueWatchViewerTicket(campaignId)
+            : await issueViewerTicket(accountId as number);
         if (cancelled || !holder.current) return;
 
         const client = new RFB(holder.current, viewerSocketUrl(ticket));
@@ -96,7 +107,7 @@ export function SessionViewer({
         /* already gone */
       }
     };
-  }, [accountId, onError]);
+  }, [accountId, campaignId, onError]);
 
   // Escape leaves the expanded view, which is the only way out on a phone
   // where there is no visible chrome.

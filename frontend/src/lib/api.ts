@@ -922,6 +922,14 @@ export const issueViewerTicket = (id: number): Promise<ViewerTicket> =>
     .post(`/api/outreach/accounts/${id}/session/viewer-ticket`)
     .then((r) => r.data);
 
+/** The same, for the browser a watched campaign run is driving. */
+export const issueWatchViewerTicket = (
+  campaignId: number,
+): Promise<ViewerTicket> =>
+  api
+    .post(`/api/outreach/campaigns/${campaignId}/watch/viewer-ticket`)
+    .then((r) => r.data);
+
 /** Where the viewer's websocket goes. Same origin, so it inherits the
  *  page's TLS and cookies rather than needing a host of its own. */
 export const viewerSocketUrl = (t: ViewerTicket): string => {
