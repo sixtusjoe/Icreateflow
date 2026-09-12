@@ -25,6 +25,7 @@ from __future__ import annotations
 import csv
 import io
 import asyncio
+import socket
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -1160,6 +1161,18 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                   f"{session_viewer.VNC_PORT}: {exc}", flush=True)
             await websocket.close(code=1011)
             return
+
+        # Nagle's algorithm holds a small write back until the previous one
+        # is acknowledged, and every pointer event is six bytes. Combined
+        # with delayed acknowledgements that is tens of milliseconds added to
+        # each one, which is felt as a mouse that arrives late and clicks
+        # that land after the fact.
+        try:
+            sock = writer.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:  # noqa: BLE001 — an optimisation, not a step
+            pass
 
         # Answer the password step here, so the page never needs the VNC
         # password and the port keeps its protection from anything else
