@@ -99,10 +99,18 @@ async def negotiate(reader, writer, send, receive) -> Optional[str]:
     return None
 
 
+#: What a ticket can be issued against. A sign-in belongs to an account; a
+#: watched run belongs to a campaign. Keeping them apart in the ticket is
+#: what stops a pass for one being spent on the other.
+KIND_ACCOUNT = "account"
+KIND_CAMPAIGN = "campaign"
+
+
 @dataclass(frozen=True)
 class Ticket:
     value: str
-    account_id: int
+    kind: str
+    subject_id: int
     user_id: Optional[int]
     expires_at: float
     #: Which VNC server this ticket opens. Each session gets a screen of its
@@ -117,13 +125,14 @@ class Ticket:
 _TICKETS: dict[str, Ticket] = {}
 
 
-def issue(account_id: int, user_id: Optional[int],
+def issue(kind: str, subject_id: int, user_id: Optional[int],
           vnc_port: Optional[int] = None) -> Ticket:
-    """Mint a ticket for this user to watch this account's screen."""
+    """Mint a ticket for this user to watch one screen."""
     _sweep()
     ticket = Ticket(
         value=secrets.token_urlsafe(32),
-        account_id=int(account_id),
+        kind=kind,
+        subject_id=int(subject_id),
         user_id=None if user_id is None else int(user_id),
         expires_at=time.time() + TICKET_TTL_SECONDS,
         vnc_port=int(vnc_port) if vnc_port else VNC_PORT,
@@ -132,7 +141,7 @@ def issue(account_id: int, user_id: Optional[int],
     return ticket
 
 
-def redeem(value: str, account_id: int) -> Optional[Ticket]:
+def redeem(value: str, kind: str, subject_id: int) -> Optional[Ticket]:
     """Spend a ticket, or return None if it cannot be spent.
 
     Single use: redeeming removes it whether or not it turns out to match,
@@ -143,7 +152,7 @@ def redeem(value: str, account_id: int) -> Optional[Ticket]:
         return None
     if ticket.expired():
         return None
-    if ticket.account_id != int(account_id):
+    if ticket.kind != kind or ticket.subject_id != int(subject_id):
         return None
     return ticket
 

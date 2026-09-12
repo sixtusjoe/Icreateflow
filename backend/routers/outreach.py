@@ -1132,7 +1132,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         # is every session running on it.
         capture = session_capture.status_for(account_id)
         ticket = session_viewer.issue(
-            account_id, user.get("id"),
+            session_viewer.KIND_ACCOUNT, account_id, user.get("id"),
             vnc_port=getattr(capture, "vnc_port", None) if capture else None,
         )
         return {
@@ -1141,27 +1141,13 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             "path": f"/api/outreach/accounts/{account_id}/session/stream",
         }
 
-    @router.websocket("/accounts/{account_id}/session/stream")
-    async def stream_session_browser(websocket: WebSocket, account_id: int):
-        """Pipe the sign-in browser's screen to the page, both ways.
+    async def _relay_vnc(websocket: WebSocket, ticket) -> None:
+        """Pipe one screen to one page, both ways, until either goes.
 
-        A plain byte relay between the customer's websocket and the local VNC
-        server: their keystrokes and clicks go one way, the screen comes back
-        the other. Nothing is interpreted here.
-
-        Authentication is the ticket in the query string, because a browser
-        cannot put an Authorization header on a websocket. It is spent the
-        moment it is read, so the URL being written to a log is not a way in.
+        Shared by signing an account in and watching a campaign run: the
+        only difference between them is which screen the ticket names, and
+        duplicating this is how the two drift apart.
         """
-        # Keep what redeeming returns: it carries which screen this ticket
-        # opens, and the whole isolation rests on connecting to that one.
-        ticket = session_viewer.redeem(
-            websocket.query_params.get("ticket", ""), account_id)
-        if ticket is None:
-            # 1008 = policy violation. Closed before the VNC socket is even
-            # opened, so an unauthenticated caller never reaches it.
-            await websocket.close(code=1008)
-            return
         await websocket.accept()
         try:
             reader, writer = await asyncio.open_connection(
@@ -1229,6 +1215,74 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 await writer.wait_closed()
             except Exception:  # noqa: BLE001 — the peer went first
                 pass
+
+    @router.post("/campaigns/{campaign_id}/watch/viewer-ticket")
+    async def campaign_viewer_ticket(
+        campaign_id: int, user: dict = Depends(get_current_user)
+    ):
+        """A one-time pass to watch this campaign's browser work.
+
+        The same mechanism as signing an account in, pointed at the run
+        instead — which is what makes a verification puzzle solvable by the
+        person whose campaign it is, rather than only by someone with an
+        SSH tunnel.
+        """
+        reason = watch_run.unavailable_reason()
+        if reason:
+            raise HTTPException(400, reason)
+        database = await db.get_db()
+        try:
+            await _own_campaign(database, campaign_id, user)
+        finally:
+            await database.close()
+        watch = watch_run.status_for(campaign_id)
+        if watch is None or watch.done:
+            raise HTTPException(400, "No watched run is open for this campaign")
+        ticket = session_viewer.issue(
+            session_viewer.KIND_CAMPAIGN, campaign_id, user.get("id"),
+            vnc_port=getattr(watch, "vnc_port", None),
+        )
+        return {
+            "ticket": ticket.value,
+            "expires_in": session_viewer.TICKET_TTL_SECONDS,
+            "path": f"/api/outreach/campaigns/{campaign_id}/watch/stream",
+        }
+
+    @router.websocket("/campaigns/{campaign_id}/watch/stream")
+    async def stream_campaign_browser(websocket: WebSocket, campaign_id: int):
+        """The watched run's screen, both ways. See the account version."""
+        ticket = session_viewer.redeem(
+            websocket.query_params.get("ticket", ""),
+            session_viewer.KIND_CAMPAIGN, campaign_id)
+        if ticket is None:
+            await websocket.close(code=1008)
+            return
+        await _relay_vnc(websocket, ticket)
+
+    @router.websocket("/accounts/{account_id}/session/stream")
+    async def stream_session_browser(websocket: WebSocket, account_id: int):
+        """Pipe the sign-in browser's screen to the page, both ways.
+
+        A plain byte relay between the customer's websocket and the local VNC
+        server: their keystrokes and clicks go one way, the screen comes back
+        the other. Nothing is interpreted here.
+
+        Authentication is the ticket in the query string, because a browser
+        cannot put an Authorization header on a websocket. It is spent the
+        moment it is read, so the URL being written to a log is not a way in.
+        """
+        # Keep what redeeming returns: it carries which screen this ticket
+        # opens, and the whole isolation rests on connecting to that one.
+        ticket = session_viewer.redeem(
+            websocket.query_params.get("ticket", ""),
+            session_viewer.KIND_ACCOUNT, account_id)
+        if ticket is None:
+            # 1008 = policy violation. Closed before the VNC socket is even
+            # opened, so an unauthenticated caller never reaches it.
+            await websocket.close(code=1008)
+            return
+        await _relay_vnc(websocket, ticket)
+
 
     @router.post("/accounts/{account_id}/resume")
     async def resume_account(account_id: int, user: dict = Depends(get_current_user)):

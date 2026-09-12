@@ -696,6 +696,8 @@ export type OutreachCampaign = {
   template_id: number | null;
   template_vars: string | null;
   platform: string;
+  /** What the campaign does to each target: send a message, or follow. */
+  activity: "message" | "follow";
   status: "draft" | "running" | "paused" | "completed" | "stopped";
   total_targets: number;
   queued_count: number;
@@ -813,6 +815,7 @@ export const updateOutreachCampaign = (
     name: string;
     description: string;
     message_template: string;
+    activity: "message" | "follow";
     template_vars: Record<string, string>;
     max_jobs: number | null;
     max_jobs_per_account: number | null;

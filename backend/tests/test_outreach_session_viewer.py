@@ -21,8 +21,8 @@ def _clean():
 
 
 def test_a_ticket_opens_the_account_it_was_issued_for():
-    t = viewer.issue(account_id=7, user_id=1)
-    assert viewer.redeem(t.value, account_id=7) is not None
+    t = viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1)
+    assert viewer.redeem(t.value, viewer.KIND_ACCOUNT, 7) is not None
 
 
 def test_a_ticket_is_single_use():
@@ -32,34 +32,34 @@ def test_a_ticket_is_single_use():
     ticket has to go in the query string — where it reaches history, access
     logs and referrers. Spending it once is what makes that survivable.
     """
-    t = viewer.issue(account_id=7, user_id=1)
-    assert viewer.redeem(t.value, account_id=7) is not None
-    assert viewer.redeem(t.value, account_id=7) is None, "a ticket was reusable"
+    t = viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1)
+    assert viewer.redeem(t.value, viewer.KIND_ACCOUNT, 7) is not None
+    assert viewer.redeem(t.value, viewer.KIND_ACCOUNT, 7) is None, "a ticket was reusable"
 
 
 def test_a_ticket_will_not_open_a_different_account():
     """Otherwise any customer could watch any other customer sign in."""
-    t = viewer.issue(account_id=7, user_id=1)
-    assert viewer.redeem(t.value, account_id=8) is None
+    t = viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1)
+    assert viewer.redeem(t.value, viewer.KIND_ACCOUNT, 8) is None
 
 
 def test_a_wrong_value_is_spent_not_merely_refused():
     """A near miss must not leave the real ticket sitting there to guess at."""
-    viewer.issue(account_id=7, user_id=1)
-    assert viewer.redeem("not-a-real-ticket", account_id=7) is None
+    viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1)
+    assert viewer.redeem("not-a-real-ticket", viewer.KIND_ACCOUNT, 7) is None
 
 
 def test_an_expired_ticket_is_refused(monkeypatch):
-    t = viewer.issue(account_id=7, user_id=1)
+    t = viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1)
     monkeypatch.setattr(time, "time", lambda: t.expires_at + 1)
-    assert viewer.redeem(t.value, account_id=7) is None
+    assert viewer.redeem(t.value, viewer.KIND_ACCOUNT, 7) is None
 
 
 def test_expired_tickets_do_not_pile_up(monkeypatch):
     """Nobody spends most of these — the page opens one socket and stops."""
-    first = viewer.issue(account_id=1, user_id=1)
+    first = viewer.issue(viewer.KIND_ACCOUNT, 1, user_id=1)
     for n in range(2, 6):
-        viewer.issue(account_id=n, user_id=1)
+        viewer.issue(viewer.KIND_ACCOUNT, n, user_id=1)
     assert viewer.outstanding() == 5
     monkeypatch.setattr(time, "time", lambda: first.expires_at + 1)
     assert viewer.outstanding() == 0
@@ -71,7 +71,7 @@ def test_the_vnc_target_is_localhost():
 
 
 def test_a_ticket_is_not_guessable():
-    values = {viewer.issue(account_id=1, user_id=1).value for _ in range(50)}
+    values = {viewer.issue(viewer.KIND_ACCOUNT, 1, user_id=1).value for _ in range(50)}
     assert len(values) == 50
     assert all(len(v) >= 32 for v in values)
 
@@ -84,15 +84,32 @@ def test_a_ticket_opens_only_its_own_screen():
     session running on it, including someone else's login and their typing.
     A screen per session is only worth having if the ticket is bound to one.
     """
-    mine = viewer.issue(account_id=7, user_id=1, vnc_port=5911)
-    theirs = viewer.issue(account_id=8, user_id=2, vnc_port=5912)
+    mine = viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1, vnc_port=5911)
+    theirs = viewer.issue(viewer.KIND_ACCOUNT, 8, user_id=2, vnc_port=5912)
     assert mine.vnc_port == 5911
     assert theirs.vnc_port == 5912
-    redeemed = viewer.redeem(mine.value, account_id=7)
+    redeemed = viewer.redeem(mine.value, viewer.KIND_ACCOUNT, 7)
     assert redeemed is not None and redeemed.vnc_port == 5911
 
 
 def test_a_ticket_without_a_screen_falls_back_to_the_shared_port():
     """A host with no Xvfb still has one browser on one display."""
-    t = viewer.issue(account_id=7, user_id=1)
+    t = viewer.issue(viewer.KIND_ACCOUNT, 7, user_id=1)
     assert t.vnc_port == viewer.VNC_PORT
+
+
+def test_an_account_ticket_cannot_open_a_campaign_screen():
+    """A sign-in pass and a watched-run pass are not interchangeable.
+
+    Both are integers in a URL. Without the kind, a ticket for account 8
+    would open the screen of campaign 8 — a different browser, doing
+    different work, belonging to whoever owns that campaign.
+    """
+    t = viewer.issue(viewer.KIND_ACCOUNT, 8, user_id=1, vnc_port=5921)
+    assert viewer.redeem(t.value, viewer.KIND_CAMPAIGN, 8) is None
+
+
+def test_a_campaign_ticket_opens_its_own_run():
+    t = viewer.issue(viewer.KIND_CAMPAIGN, 8, user_id=1, vnc_port=5922)
+    spent = viewer.redeem(t.value, viewer.KIND_CAMPAIGN, 8)
+    assert spent is not None and spent.vnc_port == 5922

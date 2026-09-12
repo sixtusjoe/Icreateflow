@@ -25,6 +25,7 @@ import {
   importOutreachTargetsFile,
   importOutreachTargetsText,
   startOutreachCampaign,
+  updateOutreachCampaign,
   pauseOutreachCampaign,
   resumeOutreachCampaign,
   stopOutreachCampaign,
@@ -45,6 +46,7 @@ import {
   campaignAttachmentUrl,
   type WatchState,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { StatusPill, ProgressBar, inputClass, relativeTime, apiErrorMessage } from "../ui";
 import { LeadFinder } from "./lead-finder";
 
@@ -304,6 +306,51 @@ export default function OutreachCampaignPage() {
           {c.description && (
             <p className="mt-1 text-sm text-muted-foreground">{c.description}</p>
           )}
+          {/* What this campaign does to each target. A two-state segment
+              rather than a form control: it belongs with the metadata
+              below, not in a dialog, and a full-width dropdown for two
+              options reads as far more consequential than it is.
+
+              Locked while running — switching mid-flight would leave some
+              targets messaged and some followed, with nothing recording
+              which was which. */}
+          <div className="mt-2 inline-flex rounded-lg border border-border p-0.5 text-[11px]">
+            {(
+              [
+                ["message", "Message"],
+                ["follow", "Follow"],
+              ] as const
+            ).map(([value, label]) => {
+              const on = (c.activity ?? "message") === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={busy || status === "running" || on}
+                  title={
+                    status === "running"
+                      ? "Pause the campaign to change this"
+                      : undefined
+                  }
+                  onClick={() =>
+                    act(
+                      () => updateOutreachCampaign(id, { activity: value }),
+                      value === "follow" ? "Now following" : "Now messaging",
+                    )
+                  }
+                  className={cn(
+                    "rounded-md px-2.5 py-1 font-medium transition-colors",
+                    on
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
+                    status === "running" && !on && "opacity-40",
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {c.platform} · retry limit {detail.limits.retry_limit} · max{" "}
             {detail.limits.max_jobs_per_account} jobs per account · driver{" "}
