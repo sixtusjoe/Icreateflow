@@ -18,6 +18,13 @@ CAMPAIGN_STATUSES = (
 )
 
 # --- Target ---------------------------------------------------------------
+#: What a campaign does to each target. Messaging is the original and
+#: stays the default; following is its own campaign — warming an account,
+#: or building an audience before a word is written.
+ACTIVITY_MESSAGE = "message"
+ACTIVITY_FOLLOW = "follow"
+CAMPAIGN_ACTIVITIES = (ACTIVITY_MESSAGE, ACTIVITY_FOLLOW)
+
 TARGET_QUEUED = "queued"
 TARGET_PROCESSING = "processing"
 TARGET_SENT = "sent"
@@ -84,6 +91,10 @@ RESULT_CHALLENGE_REQUIRED = "challenge_required"
 #: looks like, and TikTok gates who may message whom on the follow
 #: relationship in the first place.
 RESULT_FOLLOW_PENDING = "follow_pending"
+#: The platform is still showing a Follow button and quietly ignoring
+#: presses. Not a fault of ours and not of the target — the account
+#: has followed too many people too quickly and must wait.
+RESULT_FOLLOW_LIMITED = "follow_limited"
 RESULT_MESSAGE_REFUSED = "message_refused"
 RESULT_ABORTED = "aborted"
 RESULT_UNKNOWN = "unknown_error"
@@ -119,6 +130,7 @@ TERMINAL_RESULTS = frozenset({
 ACCOUNT_FAULT_RESULTS = frozenset({
     RESULT_SESSION_EXPIRED,
     RESULT_RATE_LIMITED,
+    RESULT_FOLLOW_LIMITED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
     RESULT_MESSAGE_REFUSED,

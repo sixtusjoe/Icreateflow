@@ -385,7 +385,59 @@ RERENDERING_HEADER = """
 </body></html>
 """
 
+#: A profile whose Follow button never settles — X animates it while the
+#: header hydrates. Playwright's actionability check waits for the element
+#: to hold still, so an ordinary click can never fire on one of these.
+RESTLESS_FOLLOW = """
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <button id="f" data-testid="99887766-follow" style="position:relative"
+            onclick="took()"><span>Follow</span></button>
+  </div>
+  <script>
+    // Never stops moving: the stability check cannot pass.
+    let n = 0;
+    setInterval(() => { n = (n + 1) % 8;
+      document.getElementById('f').style.left = n + 'px'; }, 30);
+    function took() {
+      const b = document.getElementById('f');
+      b.setAttribute('data-testid', '99887766-unfollow');
+      b.innerHTML = '<span>Following</span>';
+      fetch('/sent', { method: 'POST', body: 'FOLLOWED' });
+    }
+  </script>
+</body></html>
+"""
+
+#: An ordinary profile that can be followed, in X's markup: the button
+#: carries `<userid>-follow` and flips to `-unfollow` once pressed.
+X_FOLLOWABLE = """
+<html><body>
+  <div data-testid="primaryColumn">
+    <div data-testid="UserName"><span>Alice</span><span>@alice</span></div>
+    <button id="f" data-testid="99887766-follow" onclick="took()">
+      <span>Follow</span></button>
+    <div data-testid="UserCell">
+      <button data-testid="11110000-follow"><span>Follow</span></button>
+    </div>
+  </div>
+  <script>
+    function took() {
+      const b = document.getElementById('f');
+      b.setAttribute('data-testid', '99887766-unfollow');
+      b.innerHTML = '<span>Following</span>';
+      fetch('/sent', { method: 'POST', body: 'FOLLOWED' });
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
+    "/xfollowable": X_FOLLOWABLE,
+
+    "/restless": RESTLESS_FOLLOW,
+
     "/rerender": RERENDERING_HEADER,
 
     "/recyclinglikes": RECYCLING_LIKES,
@@ -857,4 +909,37 @@ async def test_the_follow_control_survives_a_header_re_render(driver, site):
     await page.close()
     assert RECEIVED == ["FOLLOWED"], (
         f"the click never reached the button: {RECEIVED!r}"
+    )
+
+
+async def test_follow_target_reports_a_follow_it_actually_made(driver, site):
+    """A follow is only a follow once the button says so."""
+    result = await driver.follow_target(account(), target(site, "/xfollowable"))
+    assert result.success is True, result.error
+    assert result.status == RESULT_SENT
+
+
+async def test_follow_target_does_not_touch_an_account_already_followed(driver, site):
+    """The control that unfollows people looks just like the one that follows.
+
+    Clicking it here would undo a follow rather than make one.
+    """
+    result = await driver.follow_target(account(), target(site, "/following"))
+    assert result.success is True
+    assert "already" in (result.error or "").lower() or result.status == RESULT_SENT
+    assert RECEIVED == [], f"the Following control was clicked: {RECEIVED!r}"
+
+
+async def test_follow_target_clicks_a_button_that_will_not_hold_still(driver, site):
+    """X animates the button while the header hydrates.
+
+    Playwright refuses to click until an element is stable, so the ordinary
+    path can never fire on these — live, that was the profiles the operator
+    had to click by hand. A real mouse press at its coordinates asks for no
+    such guarantee.
+    """
+    result = await driver.follow_target(account(), target(site, "/restless"))
+    assert result.success is True, result.error
+    assert RECEIVED == ["FOLLOWED"], (
+        f"the restless button was never actually pressed: {RECEIVED!r}"
     )

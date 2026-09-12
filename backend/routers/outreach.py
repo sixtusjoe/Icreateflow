@@ -43,6 +43,9 @@ from services.outreach import stats
 from services.outreach import templates as template_svc
 from services.outreach.browser import DRIVERS
 from services.outreach.constants import (
+    ACTIVITY_FOLLOW,
+    ACTIVITY_MESSAGE,
+    CAMPAIGN_ACTIVITIES,
     ACCOUNT_IDLE,
     ACCOUNT_PURPOSE_SENDING,
     ACCOUNT_PURPOSES,
@@ -84,6 +87,8 @@ class CampaignCreate(BaseModel):
     template_id: Optional[int] = None
     template_vars: Optional[dict[str, Any]] = None
     platform: str = "tiktok"
+    #: "message" (default) or "follow".
+    activity: str = ACTIVITY_MESSAGE
     max_jobs: Optional[int] = None
     max_jobs_per_account: Optional[int] = None
     retry_limit: Optional[int] = None
@@ -91,6 +96,7 @@ class CampaignCreate(BaseModel):
 
 class CampaignUpdate(BaseModel):
     name: Optional[str] = None
+    activity: Optional[str] = None
     description: Optional[str] = None
     message_template: Optional[str] = None
     template_id: Optional[int] = None
@@ -297,6 +303,9 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             raise HTTPException(400, "Campaign name is required")
         if data.platform not in importer.PLATFORMS:
             raise HTTPException(400, f"Unsupported platform: {data.platform}")
+        if data.activity not in CAMPAIGN_ACTIVITIES:
+            raise HTTPException(
+                400, f"activity must be one of: {', '.join(CAMPAIGN_ACTIVITIES)}")
 
         database = await db.get_db()
         try:
@@ -307,9 +316,12 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 body = body or template["body"]
             # Validated now so a broken template can't reach the worker.
             try:
-                template_svc.validate_template(
-                    body or "", known_variables=(data.template_vars or {}).keys()
-                )
+                # A follow campaign sends nothing, so it needs no template
+                # and must not be rejected for lacking one.
+                if data.activity != ACTIVITY_FOLLOW:
+                    template_svc.validate_template(
+                        body or "", known_variables=(data.template_vars or {}).keys()
+                    )
             except template_svc.TemplateError as exc:
                 raise HTTPException(400, str(exc)) from exc
 
@@ -322,6 +334,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 template_id=data.template_id,
                 template_vars=template_svc.dump_vars(data.template_vars),
                 platform=data.platform,
+                activity=data.activity,
                 status=CAMPAIGN_DRAFT,
                 max_jobs=data.max_jobs,
                 max_jobs_per_account=data.max_jobs_per_account,
@@ -442,6 +455,12 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 except template_svc.TemplateError as exc:
                     raise HTTPException(400, str(exc)) from exc
                 updates["message_template"] = data.message_template
+            if data.activity is not None:
+                if data.activity not in CAMPAIGN_ACTIVITIES:
+                    raise HTTPException(
+                        400,
+                        f"activity must be one of: {', '.join(CAMPAIGN_ACTIVITIES)}")
+                updates["activity"] = data.activity
             if updates:
                 await db.update_outreach_campaign(database, campaign_id, **updates)
             row = await db.get_outreach_campaign(database, campaign_id)

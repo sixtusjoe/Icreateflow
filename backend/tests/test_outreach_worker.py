@@ -748,3 +748,49 @@ async def test_an_ordinary_failure_keeps_the_browser(seeded, database):
     assert driver.released == [], (
         f"a target-side failure threw the browser away: {driver.released}"
     )
+
+
+# --- following as a campaign of its own ------------------------------------
+
+async def test_a_follow_campaign_follows_and_never_messages(seeded, database):
+    """A follow campaign is not a message campaign with an empty body.
+
+    Following existed only as a step inside sending, so an account could be
+    warmed up only by messaging someone. This is the whole activity on its
+    own: the driver is asked to follow, nothing is typed, and the target is
+    recorded exactly as a completed piece of work.
+    """
+    await db.update_outreach_campaign(
+        database, seeded["campaign"]["id"], activity="follow")
+    await database.session.commit()
+
+    driver = MockMessenger()
+    assert await _run(driver, seeded["settings"]) is True
+
+    assert driver.sent == [], f"a follow campaign sent a message: {driver.sent!r}"
+    assert len(driver.followed) == 1
+    account_id, username = driver.followed[0]
+    assert account_id == seeded["account"]["id"]
+
+    target = next(
+        t for t in await db.get_outreach_targets(database, seeded["campaign"]["id"])
+        if t["username"] == username
+    )
+    assert target["status"] == TARGET_SENT
+
+
+async def test_a_follow_campaign_does_not_need_a_message_template(seeded, database):
+    """No template, no variables, nothing to render — and no failure.
+
+    Rendering ran before the driver was chosen, so a campaign with an empty
+    body would have failed every job on a template error before it ever got
+    as far as following anybody.
+    """
+    await db.update_outreach_campaign(
+        database, seeded["campaign"]["id"], activity="follow", message_template="")
+    await database.session.commit()
+
+    driver = MockMessenger()
+    assert await _run(driver, seeded["settings"]) is True
+    assert len(driver.followed) == 1
+    assert driver.sent == []

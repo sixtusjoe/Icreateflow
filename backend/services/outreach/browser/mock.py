@@ -49,6 +49,7 @@ class MockMessenger:
         self._outcomes = list(outcomes or [])
         self._handler = handler
         self._default = default
+        self.followed: list = []
         self._delay = delay_seconds
         self.started = False
         #: Every (account_id, username, message) this driver was asked to
@@ -73,6 +74,12 @@ class MockMessenger:
         if isinstance(outcome, BaseException):
             raise outcome
         return MessageResult.failure(RESULT_UNKNOWN, f"Unrecognised mock outcome: {outcome!r}")
+
+    async def follow_target(self, account: dict, target: dict):
+        """Follow, without a browser. Same shape as a real driver's."""
+        await asyncio.sleep(self._delay)
+        self.followed.append((int(account.get("id") or 0), target["username"]))
+        return MessageResult.sent(url=target.get("profile_url"))
 
     async def send_message(
         self, account: dict[str, Any], target: dict[str, Any], message: str

@@ -37,6 +37,7 @@ from services.outreach.constants import (
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_FOLLOW_LIMITED,
     RESULT_FOLLOW_PENDING,
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
@@ -80,6 +81,13 @@ SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
 #: keystrokes is the failure this exists for, and it is intermittent —
 #: the same profile usually accepts the text on the next go.
 TYPE_ATTEMPTS = int(os.environ.get("ICREATE_OUTREACH_TYPE_ATTEMPTS", "3"))
+#: Following: how long to wait for the profile's own control, and how long
+#: to let a press take effect. A single look two seconds after the click
+#: called confirmed follows "unchanged", and enough of those in a row reads
+#: as a limit that is not there.
+FOLLOW_CONTROL_POLLS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_POLLS", "18"))
+FOLLOW_CONFIRM_POLLS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_CONFIRM", "18"))
+FOLLOW_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_POLL_MS", "500"))
 DIALOG_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_QUIET_ROUNDS", "6"))
 #: Quiet rounds tolerated when reading an ordinary paged list (likers,
 #: repliers) before calling it finished.
@@ -1757,6 +1765,128 @@ class PlaywrightMessenger:
     # but a great deal of it, which is what makes it the likelier way to
     # lose an account. The caller enforces the caps; what is here refuses to
     # go faster than it is told and stops the moment it is asked to.
+
+    async def follow_target(self, account: dict[str, Any],
+                            target: dict[str, Any]) -> MessageResult:
+        """Follow one profile. Sends nothing.
+
+        Separate from `send_message` because following is a campaign of its
+        own: warming an account, or building an audience before any message
+        is written. Nothing here types, and nothing here opens a composer.
+
+        The button's own state is the only evidence accepted. A click that
+        Playwright reports as delivered is not proof — the platform can show
+        a Follow button and ignore presses once the account has followed too
+        many people too quickly, which is indistinguishable from a click
+        that missed. So the control is re-read afterwards, and only a
+        genuine change counts.
+        """
+        url = target.get("profile_url") or self.profile_url(target["username"])
+        username = target["username"]
+        try:
+            from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+            page = await self._page_for(account)
+            try:
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=self._timeout)
+            except PlaywrightTimeout:
+                return MessageResult.failure(
+                    RESULT_NAVIGATION_TIMEOUT, f"Timed out loading {url}", url=url)
+
+            await self._dismiss_overlays(page)
+            state = control = None
+            for _ in range(FOLLOW_CONTROL_POLLS):
+                state, control = await self._profile_follow_control(page)
+                if state:
+                    break
+                await page.wait_for_timeout(FOLLOW_POLL_MS)
+
+            if state is None:
+                if await self._present(page, self.SELECTORS["profile_missing"]):
+                    return MessageResult.failure(
+                        RESULT_PROFILE_UNAVAILABLE,
+                        "Profile not found or private", url=url)
+                if await self._present(page, self.SELECTORS["login_wall"]):
+                    return MessageResult.failure(
+                        RESULT_SESSION_EXPIRED,
+                        "Session expired — the site is showing its login wall",
+                        url=url)
+                return MessageResult.failure(
+                    RESULT_MESSAGING_UNAVAILABLE,
+                    "No follow control on this profile — it may not exist, or "
+                    "it does not accept followers from this account",
+                    url=url)
+            if state in ("following", "pending"):
+                # Already done, and the control here is the one that undoes
+                # it. Reporting success is right: the campaign wanted this
+                # account followed and it is.
+                return MessageResult.sent(url=url, already=state)
+
+            if not await self._press_follow(page, control):
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    "The follow control could not be pressed",
+                    url=url,
+                    screenshot=await self._save_debug_shot(
+                        page, username, "follow-unclickable"))
+
+            after = None
+            for _ in range(FOLLOW_CONFIRM_POLLS):
+                await page.wait_for_timeout(FOLLOW_POLL_MS)
+                after, _ctl = await self._profile_follow_control(page)
+                if after in ("following", "pending"):
+                    break
+            if after in ("following", "pending"):
+                return MessageResult.sent(url=url)
+            return MessageResult.failure(
+                RESULT_FOLLOW_LIMITED,
+                f"The Follow button on @{username} did not change after being "
+                f"pressed — the account has most likely hit its follow limit",
+                url=url)
+        except Exception as exc:  # noqa: BLE001 — a driver fault is a job failure
+            return MessageResult.failure(
+                RESULT_BROWSER_ERROR, f"{type(exc).__name__}: {exc}", url=url)
+
+    async def _press_follow(self, page, control) -> bool:
+        """Press the follow control, and say whether a press happened.
+
+        Two things defeat an ordinary click here.
+
+        Playwright waits for scheduled navigations after clicking, and a
+        single-page app that keeps requests open never finishes them: the
+        call log read "click action done - waiting for scheduled navigations
+        to finish" and then raised, so a follow that had already happened
+        was recorded as a failure. `no_wait_after` drops that wait.
+
+        And it refuses to click until the element holds still, which a
+        button being animated during hydration never does. A real mouse
+        press at its coordinates asks for no such guarantee, so that is the
+        fallback — after re-reading the control, because a header that moved
+        on in the meantime could otherwise put Unfollow under the cursor.
+        """
+        try:
+            await control.click(timeout=CLICK_MS, no_wait_after=True)
+            return True
+        except Exception:  # noqa: BLE001 — fall through to the mouse
+            pass
+        try:
+            state, fresh = await self._profile_follow_control(page)
+            if state != "can_follow" or fresh is None:
+                return False
+            await fresh.scroll_into_view_if_needed(timeout=CLICK_MS)
+            box = await fresh.bounding_box(timeout=CLICK_MS)
+            if not box:
+                return False
+            await page.mouse.move(box["x"] + box["width"] / 2,
+                                  box["y"] + box["height"] / 2)
+            await page.wait_for_timeout(120)
+            await page.mouse.down()
+            await page.wait_for_timeout(80)
+            await page.mouse.up()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     async def discover_from_posts(
         self,

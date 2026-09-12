@@ -653,6 +653,8 @@ class OutreachCampaign(Base):
     # per-target ones at render time).
     template_vars: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     platform: Mapped[str] = mapped_column(Text, server_default="tiktok")
+    #: "message" or "follow" — what this campaign does to each target.
+    activity: Mapped[str] = mapped_column(Text, server_default="message")
     status: Mapped[str] = mapped_column(Text, server_default="draft")
     total_targets: Mapped[int] = mapped_column(Integer, server_default="0")
     queued_count: Mapped[int] = mapped_column(Integer, server_default="0")
@@ -1498,6 +1500,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         # An image sent alongside the message. Path on disk, not the bytes —
         # these are a few hundred KB each and the row is read on every claim.
         ("outreach_campaigns", "attachment_path", "TEXT"),
+        ("outreach_campaigns", "activity", "TEXT NOT NULL DEFAULT 'message'"),
         ("outreach_campaigns", "attachment_name", "TEXT"),
         # A template's image is the default for campaigns made from it —
         # copied at creation, not referenced, so editing the template later

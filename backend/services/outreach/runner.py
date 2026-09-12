@@ -36,6 +36,8 @@ from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
 from services.outreach.constants import (
+    ACTIVITY_FOLLOW,
+    ACTIVITY_MESSAGE,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
@@ -294,12 +296,18 @@ class OutreachWorker:
             return
         target = dict(target_row)
 
+        following = (campaign.get("activity") or ACTIVITY_MESSAGE) == ACTIVITY_FOLLOW
+
         # --- render (never send a half-substituted message) --------------
+        # A follow campaign has no message, so a blank or broken template is
+        # not a reason to fail the job.
+        message = ""
         try:
-            message = template_svc.render(
-                campaign.get("message_template") or "",
-                template_svc.build_variables(target, campaign, account),
-            )
+            if not following:
+                message = template_svc.render(
+                    campaign.get("message_template") or "",
+                    template_svc.build_variables(target, campaign, account),
+                )
         except template_svc.TemplateError as exc:
             await job_queue.fail_job(
                 database, job, campaign, RESULT_TEMPLATE_ERROR, str(exc),
@@ -320,23 +328,29 @@ class OutreachWorker:
         # can reach that block without the assignment having run.
         result: Optional[MessageResult] = None
         try:
-            result = await driver.send_message(
-                payload,
-                {
+            if following:
+                result = await driver.follow_target(payload, {
                     "username": target["username"],
                     "profile_url": target["profile_url"],
-                    "follow_wait_seconds": int(
-                        settings.get("outreach_follow_wait_seconds") or 0
-                    ),
-                    "follow_to_unlock": bool(
-                        int(settings.get("outreach_follow_to_unlock") or 0)
-                    ),
-                    # The campaign's image, as a path the driver can hand to
-                    # a file input. None when the campaign has no image.
-                    "attachment_path": campaign.get("attachment_path"),
-                },
-                message,
-            )
+                })
+            else:
+                result = await driver.send_message(
+                    payload,
+                    {
+                        "username": target["username"],
+                        "profile_url": target["profile_url"],
+                        "follow_wait_seconds": int(
+                            settings.get("outreach_follow_wait_seconds") or 0
+                        ),
+                        "follow_to_unlock": bool(
+                            int(settings.get("outreach_follow_to_unlock") or 0)
+                        ),
+                        # The campaign's image, as a path the driver can hand
+                        # to a file input. None when there is no image.
+                        "attachment_path": campaign.get("attachment_path"),
+                    },
+                    message,
+                )
             if not isinstance(result, MessageResult):
                 result = MessageResult.failure(
                     RESULT_UNKNOWN, f"Driver returned {type(result).__name__}, not MessageResult"
