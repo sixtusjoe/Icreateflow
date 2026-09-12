@@ -405,7 +405,7 @@ export default function OutreachAccountsPage() {
             not be the account you send from. A discovery account is never leased to
             send, and a sending account is never used to search.
           </p>
-          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <div className="mt-6 flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
               onClick={() => setShowNew(false)}
               className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted"
@@ -430,11 +430,11 @@ export default function OutreachAccountsPage() {
           title={`Attach a session to “${sessionFor.name}”`}
         >
           {login?.available && (
-            <div className="mb-4">
+            <div className="mb-4 flex min-h-0 flex-1 flex-col">
               {login.capture && !login.capture.done ? (
                 <>
                   <SessionViewer accountId={sessionFor.id} />
-                  <p className="mt-2 text-xs text-muted-foreground">
+                  <p className="mt-2 shrink-0 text-xs text-muted-foreground">
                     Sign in above. Closes on its own when done.
                   </p>
                 </>
@@ -452,7 +452,7 @@ export default function OutreachAccountsPage() {
             </div>
           )}
 
-          <details className="mb-3">
+          <details className="mb-3 shrink-0">
             <summary className="cursor-pointer text-xs text-muted-foreground">
               Paste a session instead
             </summary>
@@ -515,10 +515,10 @@ function Modal({
       onClick={onClose}
     >
       <div
-        className={`w-full ${wide ? "max-w-4xl" : "max-w-lg"} max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl`}
+        className={`flex w-full flex-col ${wide ? "max-w-4xl" : "max-w-lg"} max-h-[90vh] ${wide ? "overflow-hidden" : "overflow-y-auto"} rounded-2xl bg-card p-5 md:p-6 shadow-xl`}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="mb-5 text-lg font-semibold">{title}</h2>
+        <h2 className="mb-5 shrink-0 text-lg font-semibold">{title}</h2>
         {children}
       </div>
     </div>
