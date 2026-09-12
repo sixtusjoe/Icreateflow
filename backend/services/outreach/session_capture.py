@@ -66,6 +66,80 @@ POLL_SECONDS = 2
 COOKIE_BLIPS_ALLOWED = 3
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("ICREATE_LOGIN_TIMEOUT", "600"))
 
+#: How many times to ask for the login page before giving up.
+#:
+#: A datacenter IP requesting a login page is precisely the traffic these
+#: platforms throttle, and the refusal is a transient 4xx — Chromium
+#: surfaces it as `net::ERR_HTTP_RESPONSE_CODE_FAILURE`, which reads like a
+#: broken app rather than "come back in a minute". One bad response used to
+#: end a sign-in the operator was waiting on, so ask again.
+GOTO_ATTEMPTS = 3
+#: Waits between those attempts; there is one fewer wait than attempt.
+GOTO_BACKOFF_SECONDS = (2, 5)
+
+
+class LoginUnreachable(Exception):
+    """The platform would not serve its login page."""
+
+
+async def open_login_page(page: Any, url: str, label: str) -> None:
+    """Navigate to a login page, tolerating a refusal or two.
+
+    Both callers that open a sign-in window come through here, so the
+    retry — and the log line that makes a failure diagnosable afterwards —
+    cannot drift between them.
+    """
+    last: Optional[BaseException] = None
+    trouble = ""
+    for attempt in range(1, GOTO_ATTEMPTS + 1):
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded")
+            # A refusal arrives in one of two shapes and both have to be
+            # caught. Chromium raises ERR_HTTP_RESPONSE_CODE_FAILURE for
+            # some error responses, but hands others back as an ordinary
+            # response carrying a 4xx/5xx and an empty body — a blank
+            # window the operator would sit in front of, waiting to sign
+            # in to a page that never arrived.
+            status = response.status if response is not None else 0
+            if status >= 400:
+                trouble = f"HTTP {status}"
+                raise LoginUnreachable(f"{url} answered {status}")
+            if attempt > 1:
+                print(
+                    f"[outreach] sign-in for {label}: {url} opened on attempt "
+                    f"{attempt} of {GOTO_ATTEMPTS}",
+                    flush=True,
+                )
+            return
+        except LoginUnreachable as exc:
+            last = exc
+            print(
+                f"[outreach] sign-in for {label}: {url} refused on attempt "
+                f"{attempt} of {GOTO_ATTEMPTS} — {trouble}",
+                flush=True,
+            )
+            if attempt < GOTO_ATTEMPTS:
+                await asyncio.sleep(GOTO_BACKOFF_SECONDS[attempt - 1])
+            continue
+        except Exception as exc:  # noqa: BLE001 — reported below either way
+            last = exc
+            # Logged per attempt: the old code swallowed this entirely, so a
+            # failure the operator saw on their phone left no trace on the
+            # server at all.
+            print(
+                f"[outreach] sign-in for {label}: {url} refused on attempt "
+                f"{attempt} of {GOTO_ATTEMPTS} — {type(exc).__name__}: "
+                f"{str(exc).splitlines()[0][:160]}",
+                flush=True,
+            )
+            if attempt < GOTO_ATTEMPTS:
+                await asyncio.sleep(GOTO_BACKOFF_SECONDS[attempt - 1])
+    raise LoginUnreachable(
+        f"{label} would not open its sign-in page after {GOTO_ATTEMPTS} "
+        f"tries — the site refused the request from this server. That is "
+        f"usually temporary; try again in a minute."
+    ) from last
+
 # --- states the caller can see -------------------------------------------
 STATUS_OPENING = "opening"
 STATUS_WAITING = "waiting"
@@ -221,7 +295,7 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
                 viewport={"width": 1280, "height": 860}, locale="en-US"
             )
             page = await context.new_page()
-            await page.goto(spec["login_url"], wait_until="domcontentloaded")
+            await open_login_page(page, spec["login_url"], capture.platform)
 
             capture.status = STATUS_WAITING
             capture.message = (
@@ -306,7 +380,19 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
     except asyncio.CancelledError:
         finish(STATUS_FAILED, "Sign-in was cancelled.")
         raise
+    except LoginUnreachable as exc:
+        # Already logged per attempt by open_login_page; the operator gets
+        # the sentence, not Chromium's error code.
+        finish(STATUS_FAILED, str(exc)[:300])
+        return
     except Exception as exc:  # noqa: BLE001 — the UI has to hear about it
+        # This used to be the one path that told the UI something and the
+        # server nothing, which made a reported failure unreproducible.
+        print(
+            f"[outreach] sign-in window for {name} ({capture.platform}) "
+            f"failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
         finish(STATUS_FAILED, f"{type(exc).__name__}: {exc}"[:300])
         return
     finally:

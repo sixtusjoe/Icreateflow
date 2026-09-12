@@ -48,10 +48,28 @@ LOGIN_NEVER_COMPLETES = "<html><body><h1>Sign in</h1></body></html>"
 
 PAGES = {"/ok": LOGIN_THEN_SUCCEED, "/never": LOGIN_NEVER_COMPLETES}
 
+#: How many times `/flaky` refuses before it serves. Chromium turns a 503
+#: with no body into net::ERR_HTTP_RESPONSE_CODE_FAILURE — the exact error
+#: a live sign-in hit from the server's IP.
+FLAKY_REFUSALS = 2
+_flaky_hits = {"n": 0}
+
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        body = PAGES.get(self.path, "<html><body>?</body></html>")
+        if self.path == "/flaky":
+            _flaky_hits["n"] += 1
+            if _flaky_hits["n"] <= FLAKY_REFUSALS:
+                self.send_response(503)
+                self.end_headers()
+                return
+            body = LOGIN_THEN_SUCCEED
+        elif self.path == "/refuses":
+            self.send_response(429)
+            self.end_headers()
+            return
+        else:
+            body = PAGES.get(self.path, "<html><body>?</body></html>")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -175,3 +193,52 @@ def test_bluetooth_is_disabled_in_every_browser_this_app_launches():
     # And the sign-in window uses the same list rather than its own copy —
     # it drifted once already, which is how it kept the crash.
     assert session_capture.CHROMIUM_ARGS is CHROMIUM_ARGS
+
+
+async def test_a_refused_login_page_is_retried_not_surrendered(site):
+    """One transient refusal must not end a sign-in someone is waiting on.
+
+    Instagram answered a live attempt with an error status; Chromium raised
+    net::ERR_HTTP_RESPONSE_CODE_FAILURE and the whole capture died on the
+    spot. The page is served on the third ask here, so a helper that does
+    not retry cannot pass.
+    """
+    from playwright.async_api import async_playwright
+
+    from services.outreach.session_capture import open_login_page
+
+    _flaky_hits["n"] = 0
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            page = await (await browser.new_context()).new_page()
+            await open_login_page(page, f"{site}/flaky", "tiktok")
+            assert "Sign in" in await page.content()
+        finally:
+            await browser.close()
+    assert _flaky_hits["n"] == FLAKY_REFUSALS + 1
+
+
+async def test_a_login_page_that_keeps_refusing_says_so_in_english(site):
+    """The operator gets a sentence, not Chromium's error code."""
+    from playwright.async_api import async_playwright
+
+    from services.outreach.session_capture import (
+        GOTO_ATTEMPTS,
+        LoginUnreachable,
+        open_login_page,
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            page = await (await browser.new_context()).new_page()
+            with pytest.raises(LoginUnreachable) as caught:
+                await open_login_page(page, f"{site}/refuses", "instagram")
+        finally:
+            await browser.close()
+
+    message = str(caught.value)
+    assert "net::" not in message and "ERR_" not in message
+    assert "try again in a minute" in message.lower()
+    assert str(GOTO_ATTEMPTS) in message

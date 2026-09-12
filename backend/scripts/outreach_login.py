@@ -37,7 +37,10 @@ from services.outreach.crypto import crypto_available, encrypt_session  # noqa: 
 #: Where to send the operator to sign in, and the cookie that proves they
 #: did. Defined once, in the service the app's own "Sign in" button uses —
 #: a second copy here would drift the moment a platform changed.
-from services.outreach.session_capture import PLATFORMS  # noqa: E402
+from services.outreach.session_capture import (  # noqa: E402
+    PLATFORMS,
+    open_login_page,
+)
 
 POLL_SECONDS = 2
 
@@ -107,7 +110,7 @@ async def capture(account_id: int, timeout_seconds: int) -> int:
             viewport={"width": 1280, "height": 860}, locale="en-US"
         )
         page = await context.new_page()
-        await page.goto(spec["login_url"], wait_until="domcontentloaded")
+        await open_login_page(page, spec["login_url"], account["platform"])
 
         print()
         print("    A browser window is open on the server's display.")
