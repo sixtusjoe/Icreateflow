@@ -515,7 +515,14 @@ function Modal({
       onClick={onClose}
     >
       <div
-        className={`flex w-full flex-col ${wide ? "max-w-4xl" : "max-w-lg"} max-h-[90vh] ${wide ? "overflow-hidden" : "overflow-y-auto"} rounded-2xl bg-card p-5 md:p-6 shadow-xl`}
+        // A definite height when the viewer is in it, not just a max: flex-1
+        // divides available space, and a container sized by its content has
+        // none to divide — which collapsed the canvas to nothing.
+        className={`flex w-full flex-col ${
+          wide
+            ? "max-w-4xl h-[90vh] overflow-hidden"
+            : "max-w-lg max-h-[90vh] overflow-y-auto"
+        } rounded-2xl bg-card p-5 md:p-6 shadow-xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="mb-5 shrink-0 text-lg font-semibold">{title}</h2>
