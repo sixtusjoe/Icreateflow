@@ -10,7 +10,6 @@ import {
   KeyRound,
   Pencil,
   PlayCircle,
-  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -26,6 +25,7 @@ import {
   type BrowserLoginState,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { SessionViewer } from "@/components/outreach/SessionViewer";
 import { StatusPill, PageIcon, Toggle, Select, inputClass, relativeTime, apiErrorMessage } from "../ui";
 
 const MAX_ACCOUNTS = 20;
@@ -429,25 +429,20 @@ export default function OutreachAccountsPage() {
           title={`Attach a session to “${sessionFor.name}”`}
         >
           {login?.available && (
-            <div className="mb-4 rounded-lg border border-border p-3">
-              <p className="text-sm font-medium">
-                Sign in to {sessionFor.platform} in a browser
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Opens a real {sessionFor.platform} login window on this machine. Sign in
-                by hand and the session is captured automatically — no copy-paste, and no
-                password ever reaches this app.
-              </p>
+            <div className="mb-4">
               {login.capture && !login.capture.done ? (
-                <p className="mt-3 text-xs font-medium text-amber-600 dark:text-amber-500">
-                  {login.capture.message}
-                </p>
+                <>
+                  <SessionViewer accountId={sessionFor.id} />
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Sign in above. Closes on its own when done.
+                  </p>
+                </>
               ) : (
                 <button
                   onClick={handleBrowserLogin}
-                  className="mt-3 min-h-[40px] rounded-lg bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
+                  className="min-h-[44px] w-full rounded-lg bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
                 >
-                  Open {sessionFor.platform} sign-in
+                  Sign in to {sessionFor.platform}
                 </button>
               )}
               {login.capture?.status === "failed" && (
@@ -456,22 +451,18 @@ export default function OutreachAccountsPage() {
             </div>
           )}
 
-          <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
-            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
-            <p>
-              {login?.available ? "Or paste" : "Paste"} the Playwright{" "}
-              <code>storage_state</code> JSON for an account you are authorized to send
-              from. It is encrypted before storage and never returned by the API. Never
-              paste a password here — this system does not accept one.
-            </p>
-          </div>
-          <textarea
-            rows={8}
-            className={`${inputClass} font-mono text-xs`}
-            placeholder='{"cookies": [...], "origins": [...]}'
-            value={sessionJson}
-            onChange={(e) => setSessionJson(e.target.value)}
-          />
+          <details className="mb-3">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              Paste a session instead
+            </summary>
+            <textarea
+              rows={6}
+              className={`${inputClass} mt-2 font-mono text-xs`}
+              placeholder='{"cookies": [...], "origins": [...]}'
+              value={sessionJson}
+              onChange={(e) => setSessionJson(e.target.value)}
+            />
+          </details>
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
               onClick={() => setSessionFor(null)}

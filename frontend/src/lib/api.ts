@@ -908,6 +908,24 @@ export const startBrowserLogin = (id: number): Promise<BrowserLoginCapture> =>
 /** Poll a sign-in in progress — it takes minutes, so it is not a request. */
 export const getBrowserLoginState = (id: number): Promise<BrowserLoginState> =>
   api.get(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);
+export interface ViewerTicket {
+  ticket: string;
+  expires_in: number;
+  path: string;
+}
+/** A one-time pass to watch the sign-in browser. Spent on first use. */
+export const issueViewerTicket = (id: number): Promise<ViewerTicket> =>
+  api
+    .post(`/api/outreach/accounts/${id}/session/viewer-ticket`)
+    .then((r) => r.data);
+
+/** Where the viewer's websocket goes. Same origin, so it inherits the
+ *  page's TLS and cookies rather than needing a host of its own. */
+export const viewerSocketUrl = (t: ViewerTicket): string => {
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${scheme}://${window.location.host}${t.path}?ticket=${encodeURIComponent(t.ticket)}`;
+};
+
 export interface WatchRun {
   campaign_id: number;
   platform: string;
