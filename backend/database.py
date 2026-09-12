@@ -690,6 +690,9 @@ class SendingAccount(Base):
     # Harvesting is many page loads in a short window and is the likelier
     # way to lose an account, so the two are never the same account.
     purpose: Mapped[str] = mapped_column(Text, server_default="sending")
+    #: An outbound proxy for this account, encrypted at rest — it
+    #: carries credentials. Never returned by the API.
+    proxy_url_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, server_default="idle")
     # Opaque human-readable pointer to the stored browser session, e.g.
     # "outreach_sessions/acct-7.enc". NEVER a credential.
@@ -1501,6 +1504,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         # these are a few hundred KB each and the row is read on every claim.
         ("outreach_campaigns", "attachment_path", "TEXT"),
         ("outreach_campaigns", "activity", "TEXT NOT NULL DEFAULT 'message'"),
+        ("outreach_sending_accounts", "proxy_url_encrypted", "TEXT"),
         ("outreach_campaigns", "attachment_name", "TEXT"),
         # A template's image is the default for campaigns made from it —
         # copied at creation, not referenced, so editing the template later

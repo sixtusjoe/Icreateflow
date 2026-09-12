@@ -33,6 +33,7 @@ from urllib.parse import quote_plus
 from typing import Any, Optional
 
 from services.outreach.browser import MessageResult
+from services.outreach import proxies
 from services.outreach.constants import (
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
@@ -395,8 +396,13 @@ class PlaywrightMessenger:
                 "viewport": {"width": 1280, "height": 900},
                 "locale": "en-US",
             }
-            if account.get("proxy_url"):
-                options["proxy"] = {"server": account["proxy_url"]}
+            # Playwright wants the credentials apart from the host. Passed
+            # whole they are ignored, every request goes out
+            # unauthenticated, and the proxy's 407 surfaces as a page that
+            # would not load.
+            proxy = proxies.parse(account.get("proxy_url"))
+            if proxy is not None:
+                options["proxy"] = proxy.playwright()
             state = account.get("session_state")
             if state:
                 options["storage_state"] = (

@@ -323,6 +323,10 @@ class OutreachWorker:
             "platform": account.get("platform"),
             "session_state": decrypt_session(account.get("session_state_encrypted")),
             "session_reference": account.get("session_reference"),
+            # Decrypted here rather than stored in the clear: a proxy URL
+            # carries a password, and this one is bought per account so
+            # that four accounts do not all send from one address.
+            "proxy_url": decrypt_session(account.get("proxy_url_encrypted")),
         }
         # Bound before the try: the `finally` reads it, and a cancellation
         # can reach that block without the assignment having run.

@@ -51,6 +51,7 @@ from services.outreach import (
     attachments,
     discovery,
     importer,
+    proxies,
     session_capture,
     session_viewer,
     watch_run,
@@ -89,7 +90,12 @@ from services.outreach.constants import (
     CAMPAIGN_PAUSED,
     CAMPAIGN_RUNNING,
 )
-from services.outreach.crypto import crypto_available, encrypt_session
+from services.outreach.crypto import (
+    SessionCryptoUnavailable,
+    crypto_available,
+    decrypt_session,
+    encrypt_session,
+)
 
 MAX_IMPORT_BYTES = importer.MAX_BYTES
 
@@ -138,6 +144,9 @@ class AccountCreate(BaseModel):
 
 
 class AccountUpdate(BaseModel):
+    #: An outbound proxy for this account, as scheme://user:pass@host:port.
+    #: Blank clears it. Stored encrypted and never returned.
+    proxy_url: Optional[str] = None
     name: Optional[str] = None
     enabled: Optional[bool] = None
     purpose: Optional[str] = None
@@ -222,7 +231,9 @@ def _tag_utc(row: dict) -> dict:
 
 
 #: Columns that must never reach a client.
-_ACCOUNT_SECRET_FIELDS = ("session_state_encrypted",)
+_ACCOUNT_SECRET_FIELDS = ("session_state_encrypted",
+    "proxy_url_encrypted",
+)
 
 
 def _account_public(row: dict) -> dict:
@@ -236,6 +247,19 @@ def _account_public(row: dict) -> dict:
     for field in _ACCOUNT_SECRET_FIELDS:
         out.pop(field, None)
     out["has_session"] = has_session
+    # The host, never the password — enough for the page to show which
+    # address an account goes out through.
+    stored = row.get("proxy_url_encrypted")
+    if not stored:
+        out["proxy"] = None
+    else:
+        try:
+            proxy = proxies.parse(decrypt_session(stored))
+            out["proxy"] = proxy.safe if proxy else None
+        except (proxies.ProxyInvalid, SessionCryptoUnavailable, ValueError):
+            # A stored value that cannot be read is worth showing as such;
+            # anything else is a bug and should not be swallowed here.
+            out["proxy"] = "(unreadable)"
     return out
 
 
@@ -955,6 +979,16 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 updates["name"] = data.name.strip()
             if data.session_reference is not None:
                 updates["session_reference"] = data.session_reference.strip() or None
+            if data.proxy_url is not None:
+                # Blank clears it, which is how an account goes back to
+                # this server's own address.
+                try:
+                    proxy = proxies.parse(data.proxy_url)
+                except proxies.ProxyInvalid as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                updates["proxy_url_encrypted"] = (
+                    encrypt_session(data.proxy_url.strip()) if proxy else None
+                )
             if data.purpose is not None:
                 if data.purpose not in ACCOUNT_PURPOSES:
                     raise HTTPException(

@@ -471,3 +471,63 @@ async def test_no_viewer_ticket_where_browser_sign_in_is_switched_off(client):
     assert r.status_code == 400
     assert "switched off" in r.json()["detail"].lower()
     assert session_viewer.outstanding() == 0
+
+
+async def test_a_proxy_is_stored_encrypted_and_its_password_never_returned(
+    client, database
+):
+    """Four accounts on one server share one IP, which is the most obvious
+    thing about them. A proxy each is the fix, and it carries a password.
+    """
+    account = (await client.post(
+        "/api/outreach/accounts", json={"name": "Proxied"}
+    )).json()
+    assert account["proxy"] is None
+
+    updated = (await client.put(
+        f"/api/outreach/accounts/{account['id']}",
+        json={"proxy_url": "http://user123:s3cret@gate.example.net:7000"},
+    )).json()
+
+    # The host comes back so the page can show where an account goes out
+    # through. The password does not, anywhere.
+    assert updated["proxy"] == "http://user123@gate.example.net:7000"
+    assert "s3cret" not in json.dumps(updated)
+    assert "proxy_url_encrypted" not in updated
+
+    row = dict(await db.get_sending_account(database, account["id"]))
+    assert "s3cret" not in (row["proxy_url_encrypted"] or "")
+    assert decrypt_session(row["proxy_url_encrypted"]) == (
+        "http://user123:s3cret@gate.example.net:7000")
+
+    listed = (await client.get("/api/outreach/accounts")).json()
+    assert "s3cret" not in json.dumps(listed)
+
+
+async def test_a_proxy_a_browser_cannot_use_is_refused(client):
+    """Chromium cannot authenticate to SOCKS5. Accepting it would mean the
+    account quietly sends from the server's own address — the exact thing
+    the proxy was bought to prevent."""
+    account = (await client.post(
+        "/api/outreach/accounts", json={"name": "Bad proxy"}
+    )).json()
+    bad = await client.put(
+        f"/api/outreach/accounts/{account['id']}",
+        json={"proxy_url": "socks5://user:pass@gate.example.net:1080"},
+    )
+    assert bad.status_code == 400
+    assert "socks5" in bad.json()["detail"].lower()
+
+
+async def test_clearing_a_proxy_returns_the_account_to_this_server(client, database):
+    account = (await client.post(
+        "/api/outreach/accounts", json={"name": "Cleared"}
+    )).json()
+    await client.put(f"/api/outreach/accounts/{account['id']}",
+                     json={"proxy_url": "http://gate.example.net:7000"})
+    cleared = (await client.put(
+        f"/api/outreach/accounts/{account['id']}", json={"proxy_url": ""}
+    )).json()
+    assert cleared["proxy"] is None
+    row = dict(await db.get_sending_account(database, account["id"]))
+    assert row["proxy_url_encrypted"] is None
