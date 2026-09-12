@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 import database as db
 from services.outreach import config as cfg
-from services.outreach import local_browser
+from services.outreach import display_pool, local_browser
 from services.outreach.browser import DriverUnavailable, get_driver
 
 STATUS_STARTING = "starting"
@@ -48,6 +48,8 @@ class Watch:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     finished_at: Optional[str] = None
+    #: The VNC port of this run's own screen, when the host can give one.
+    vnc_port: Optional[int] = None
 
     @property
     def done(self) -> bool:
@@ -136,11 +138,19 @@ async def _run(campaign: dict[str, Any], watch: Watch) -> None:
         return
 
     worker = None
+    screen = None
     try:
         # Headful for this run only. Setting the environment variable would
         # follow every other worker in this process, which is not what
         # "watch this one" means.
-        driver = get_driver(driver_name, headless=False)
+        # A screen of this run's own. x11vnc streams a display, not a
+        # window, so sharing one would show this campaign's browser to
+        # anyone watching any other.
+        screen = await display_pool.acquire()
+        if screen is not None:
+            watch.vnc_port = screen.vnc_port
+        driver = get_driver(driver_name, headless=False,
+                            launch_env=screen.env if screen else None)
         # Passing the driver pins it, which is right here: this run is for
         # one campaign, on one platform, in one window.
         worker = OutreachWorker(once=True, driver=driver)
@@ -174,6 +184,9 @@ async def _run(campaign: dict[str, Any], watch: Watch) -> None:
                 await worker.shutdown()
             except Exception:  # noqa: BLE001 — shutdown must not raise
                 traceback.print_exc()
+        # After the browser, not before: releasing the screen kills the X
+        # server the browser is still drawing on.
+        await display_pool.release(screen)
 
     if did_work:
         finish(

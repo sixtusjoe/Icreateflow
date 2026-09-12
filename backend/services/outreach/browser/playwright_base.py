@@ -305,11 +305,16 @@ class PlaywrightMessenger:
         headless: Optional[bool] = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         user_agent: str = DEFAULT_USER_AGENT,
+        #: Extra environment for the browser process. A watched run uses it
+        #: to put this browser on a screen of its own, rather than on the
+        #: one display every visible browser used to share.
+        launch_env: Optional[dict[str, str]] = None,
         **_ignored: Any,
     ):
         if headless is None:
             headless = os.environ.get("ICREATE_OUTREACH_HEADLESS", "1") not in ("0", "false")
         self._headless = headless
+        self._launch_env = dict(launch_env or {})
         self._timeout = timeout_ms
         self._user_agent = user_agent
         self._playwright = None
@@ -348,6 +353,7 @@ class PlaywrightMessenger:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=self._headless, args=list(CHROMIUM_ARGS),
+                env={**os.environ, **self._launch_env} if self._launch_env else None,
             )
 
     async def shutdown(self) -> None:

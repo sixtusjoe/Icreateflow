@@ -105,6 +105,10 @@ class Ticket:
     account_id: int
     user_id: Optional[int]
     expires_at: float
+    #: Which VNC server this ticket opens. Each session gets a screen of its
+    #: own, so the port is what confines a viewer to it — a single shared
+    #: display would show every session to everyone holding any ticket.
+    vnc_port: int = VNC_PORT
 
     def expired(self, now: Optional[float] = None) -> bool:
         return (now if now is not None else time.time()) >= self.expires_at
@@ -113,14 +117,16 @@ class Ticket:
 _TICKETS: dict[str, Ticket] = {}
 
 
-def issue(account_id: int, user_id: Optional[int]) -> Ticket:
-    """Mint a ticket for this user to watch this account's sign-in."""
+def issue(account_id: int, user_id: Optional[int],
+          vnc_port: Optional[int] = None) -> Ticket:
+    """Mint a ticket for this user to watch this account's screen."""
     _sweep()
     ticket = Ticket(
         value=secrets.token_urlsafe(32),
         account_id=int(account_id),
         user_id=None if user_id is None else int(user_id),
         expires_at=time.time() + TICKET_TTL_SECONDS,
+        vnc_port=int(vnc_port) if vnc_port else VNC_PORT,
     )
     _TICKETS[ticket.value] = ticket
     return ticket

@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import database as db
-from services.outreach import local_browser
+from services.outreach import display_pool, local_browser
 from services.outreach.browser.playwright_base import CHROMIUM_ARGS
 from services.outreach.constants import ACCOUNT_IDLE
 from services.outreach.crypto import crypto_available, encrypt_session
@@ -86,6 +86,9 @@ class Capture:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     finished_at: Optional[str] = None
+    #: The VNC port of this capture's own screen, when it has one. A shared
+    #: display showed every session to anyone holding any ticket.
+    vnc_port: Optional[int] = None
 
     @property
     def done(self) -> bool:
@@ -191,6 +194,7 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         capture.finished_at = datetime.now(timezone.utc).isoformat()
 
     state = None
+    screen = None
     try:
         from playwright.async_api import async_playwright
 
@@ -198,12 +202,20 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         # exists so this can be exercised without a display.
         headless = os.environ.get("ICREATE_LOGIN_HEADLESS", "0") not in ("0", "false", "")
 
+        # A screen of this session's own, where the host can give one. The
+        # alternative is every visible browser sharing one display, which
+        # x11vnc streams whole — so two people signing in at once would
+        # watch each other type.
+        screen = None if headless else await display_pool.acquire()
+        if screen is not None:
+            capture.vnc_port = screen.vnc_port
         async with async_playwright() as p:
             # Same flags as the sender, from one list — the Bluetooth one in
             # particular is a crash fix, and this is the window it was
             # crashing. See CHROMIUM_ARGS.
             browser = await p.chromium.launch(
                 headless=headless, args=list(CHROMIUM_ARGS),
+                env={**os.environ, **(screen.env if screen else {})},
             )
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 860}, locale="en-US"
@@ -297,6 +309,11 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
     except Exception as exc:  # noqa: BLE001 — the UI has to hear about it
         finish(STATUS_FAILED, f"{type(exc).__name__}: {exc}"[:300])
         return
+    finally:
+        # Hand the screen back on every exit — success, timeout, failure and
+        # cancellation alike. A leaked Xvfb keeps a display number and a
+        # port for the life of the process.
+        await display_pool.release(screen)
 
     if state is None:
         finish(

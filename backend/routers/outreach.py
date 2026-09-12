@@ -1127,7 +1127,14 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             await _own_account(database, account_id, user)
         finally:
             await database.close()
-        ticket = session_viewer.issue(account_id, user.get("id"))
+        # The screen this capture took, so the ticket opens that one and
+        # no other. Without it every ticket reached the same display, which
+        # is every session running on it.
+        capture = session_capture.status_for(account_id)
+        ticket = session_viewer.issue(
+            account_id, user.get("id"),
+            vnc_port=getattr(capture, "vnc_port", None) if capture else None,
+        )
         return {
             "ticket": ticket.value,
             "expires_in": session_viewer.TICKET_TTL_SECONDS,
@@ -1146,8 +1153,11 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         cannot put an Authorization header on a websocket. It is spent the
         moment it is read, so the URL being written to a log is not a way in.
         """
-        ticket = websocket.query_params.get("ticket", "")
-        if session_viewer.redeem(ticket, account_id) is None:
+        # Keep what redeeming returns: it carries which screen this ticket
+        # opens, and the whole isolation rests on connecting to that one.
+        ticket = session_viewer.redeem(
+            websocket.query_params.get("ticket", ""), account_id)
+        if ticket is None:
             # 1008 = policy violation. Closed before the VNC socket is even
             # opened, so an unauthenticated caller never reaches it.
             await websocket.close(code=1008)
@@ -1155,10 +1165,10 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         await websocket.accept()
         try:
             reader, writer = await asyncio.open_connection(
-                session_viewer.VNC_HOST, session_viewer.VNC_PORT)
+                session_viewer.VNC_HOST, ticket.vnc_port)
         except OSError as exc:
             print(f"[viewer] no VNC at {session_viewer.VNC_HOST}:"
-                  f"{session_viewer.VNC_PORT}: {exc}", flush=True)
+                  f"{ticket.vnc_port}: {exc}", flush=True)
             await websocket.close(code=1011)
             return
 

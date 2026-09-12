@@ -74,3 +74,25 @@ def test_a_ticket_is_not_guessable():
     values = {viewer.issue(account_id=1, user_id=1).value for _ in range(50)}
     assert len(values) == 50
     assert all(len(v) >= 32 for v in values)
+
+
+def test_a_ticket_opens_only_its_own_screen():
+    """The isolation is the port, not the password.
+
+    Every visible browser used to draw on one shared display, and x11vnc
+    streams a display rather than a window — so any ticket showed every
+    session running on it, including someone else's login and their typing.
+    A screen per session is only worth having if the ticket is bound to one.
+    """
+    mine = viewer.issue(account_id=7, user_id=1, vnc_port=5911)
+    theirs = viewer.issue(account_id=8, user_id=2, vnc_port=5912)
+    assert mine.vnc_port == 5911
+    assert theirs.vnc_port == 5912
+    redeemed = viewer.redeem(mine.value, account_id=7)
+    assert redeemed is not None and redeemed.vnc_port == 5911
+
+
+def test_a_ticket_without_a_screen_falls_back_to_the_shared_port():
+    """A host with no Xvfb still has one browser on one display."""
+    t = viewer.issue(account_id=7, user_id=1)
+    assert t.vnc_port == viewer.VNC_PORT
