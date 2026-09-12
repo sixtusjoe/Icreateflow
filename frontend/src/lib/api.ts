@@ -732,6 +732,8 @@ export type OutreachAccount = {
   enabled: boolean;
   created_at: string;
   purpose?: string;
+  /** Host and user of this account's proxy — never the password. */
+  proxy: string | null;
 };
 
 export type OutreachTarget = {
@@ -911,6 +913,17 @@ export const startBrowserLogin = (id: number): Promise<BrowserLoginCapture> =>
 /** Poll a sign-in in progress — it takes minutes, so it is not a request. */
 export const getBrowserLoginState = (id: number): Promise<BrowserLoginState> =>
   api.get(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);
+export interface ProxyCheck {
+  proxy: string;
+  egress_ip: string;
+  server_ip: string;
+  ok: boolean;
+  detail: string;
+}
+/** Prove the proxy carries traffic and changes the address. */
+export const testAccountProxy = (id: number): Promise<ProxyCheck> =>
+  api.post(`/api/outreach/accounts/${id}/proxy/test`).then((r) => r.data);
+
 export interface ViewerTicket {
   ticket: string;
   expires_in: number;
@@ -1096,6 +1109,8 @@ export const updateOutreachAccount = (
     enabled?: boolean;
     purpose?: string;
     session_reference?: string;
+    /** scheme://user:pass@host:port. Blank clears it. Never returned. */
+    proxy_url?: string;
   },
 ): Promise<OutreachAccount> =>
   api.put(`/api/outreach/accounts/${id}`, data).then((r) => r.data);

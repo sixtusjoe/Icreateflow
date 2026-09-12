@@ -1025,6 +1025,52 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         finally:
             await database.close()
 
+    @router.post("/accounts/{account_id}/proxy/test")
+    async def test_account_proxy(
+        account_id: int, user: dict = Depends(get_current_user)
+    ):
+        """Prove the proxy carries traffic, and that it changes the address.
+
+        A dead or mistyped proxy does not announce itself: Chromium falls
+        back to the host's own connection and everything looks healthy,
+        which is the failure this feature exists to prevent. So the answer
+        is the address the world actually sees, next to this server's, and
+        the two being equal is reported as a problem rather than a pass.
+        """
+        database = await db.get_db()
+        try:
+            row = dict(await _own_account(database, account_id, user))
+        finally:
+            await database.close()
+
+        try:
+            proxy = proxies.parse(decrypt_session(row.get("proxy_url_encrypted")))
+        except proxies.ProxyInvalid as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if proxy is None:
+            raise HTTPException(400, "This account has no proxy set")
+
+        try:
+            through = await proxies.egress_ip(proxy)
+            direct = await proxies.egress_ip(None)
+        except Exception as exc:  # noqa: BLE001 — the operator needs the reason
+            raise HTTPException(
+                400, f"The proxy did not carry a page: {type(exc).__name__}: "
+                     f"{str(exc)[:200]}") from exc
+
+        return {
+            "proxy": proxy.safe,
+            "egress_ip": through,
+            "server_ip": direct,
+            "ok": bool(through) and through != direct,
+            "detail": (
+                "Traffic is going out through the proxy."
+                if through and through != direct
+                else "The proxy is not changing the address — this account "
+                     "is still sending from the server itself."
+            ),
+        }
+
     @router.post("/accounts/{account_id}/session")
     async def set_account_session(
         account_id: int, data: AccountSession, user: dict = Depends(get_current_user)

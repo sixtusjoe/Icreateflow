@@ -16,6 +16,8 @@ import {
   listOutreachAccounts,
   createOutreachAccount,
   updateOutreachAccount,
+  testAccountProxy,
+  type ProxyCheck,
   deleteOutreachAccount,
   setOutreachAccountSession,
   resumeOutreachAccount,
@@ -38,6 +40,10 @@ export default function OutreachAccountsPage() {
   const [purpose, setPurpose] = useState("sending");
   const [busy, setBusy] = useState(false);
   const [sessionFor, setSessionFor] = useState<OutreachAccount | null>(null);
+  const [proxyFor, setProxyFor] = useState<OutreachAccount | null>(null);
+  const [proxyUrl, setProxyUrl] = useState("");
+  const [proxyCheck, setProxyCheck] = useState<ProxyCheck | null>(null);
+  const [checking, setChecking] = useState(false);
   const [sessionJson, setSessionJson] = useState("");
   const [login, setLogin] = useState<BrowserLoginState | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<OutreachAccount | null>(null);
@@ -307,7 +313,25 @@ export default function OutreachAccountsPage() {
                         <>session stored {relativeTime(a.session_updated_at)}</>
                       ) : (
                         <span className="text-amber-600 dark:text-amber-400">no session</span>
-                      )}
+                      )}{" "}
+                      ·{" "}
+                      <button
+                        onClick={() => setProxyFor(a)}
+                        title={
+                          a.proxy
+                            ? `Sends through ${a.proxy}. Click to change.`
+                            : "Sends from this server's own address. Click to set a proxy."
+                        }
+                        className="rounded hover:text-foreground"
+                      >
+                        {a.proxy ? (
+                          <span className="text-muted-foreground">{a.proxy}</span>
+                        ) : (
+                          <span className="text-muted-foreground underline decoration-dotted">
+                            no proxy
+                          </span>
+                        )}
+                      </button>
                     </p>
                   </td>
                   <td className="px-4 py-3">
@@ -477,6 +501,107 @@ export default function OutreachAccountsPage() {
               className="min-h-[44px] rounded-lg bg-foreground px-5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
             >
               {busy ? "Saving…" : "Store session"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {proxyFor && (
+        <Modal
+          onClose={() => {
+            setProxyFor(null);
+            setProxyUrl("");
+            setProxyCheck(null);
+          }}
+          title={`Proxy for “${proxyFor.name}”`}
+        >
+          <p className="mb-3 text-xs text-muted-foreground">
+            Accounts without one all send from this server&rsquo;s address.
+          </p>
+          <input
+            className={`${inputClass} font-mono text-xs`}
+            placeholder="http://user:pass@host:port"
+            value={proxyUrl}
+            onChange={(e) => setProxyUrl(e.target.value)}
+          />
+          {proxyFor.proxy && !proxyUrl && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Currently <span className="font-mono">{proxyFor.proxy}</span>.
+              Leave blank and save to remove it.
+            </p>
+          )}
+          {proxyCheck && (
+            <div
+              className={`mt-3 rounded-lg border p-3 text-xs ${
+                proxyCheck.ok
+                  ? "border-emerald-500/40 bg-emerald-500/10"
+                  : "border-amber-500/40 bg-amber-500/10"
+              }`}
+            >
+              <p className="font-medium">{proxyCheck.detail}</p>
+              <p className="mt-1 text-muted-foreground">
+                Seen as <span className="font-mono">{proxyCheck.egress_ip}</span>
+                {" · this server is "}
+                <span className="font-mono">{proxyCheck.server_ip}</span>
+              </p>
+            </div>
+          )}
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button
+              onClick={() => {
+                setProxyFor(null);
+                setProxyUrl("");
+                setProxyCheck(null);
+              }}
+              className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted"
+            >
+              Cancel
+            </button>
+            {/* Only worth offering once something is stored: it asks the
+                live proxy for the address the world sees. */}
+            {proxyFor.proxy && (
+              <button
+                onClick={async () => {
+                  setChecking(true);
+                  setProxyCheck(null);
+                  try {
+                    setProxyCheck(await testAccountProxy(proxyFor.id));
+                  } catch (e) {
+                    toast.error(apiErrorMessage(e, "The proxy did not answer"));
+                  } finally {
+                    setChecking(false);
+                  }
+                }}
+                disabled={checking}
+                className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {checking ? "Checking…" : "Test"}
+              </button>
+            )}
+            <button
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await updateOutreachAccount(proxyFor.id, {
+                    proxy_url: proxyUrl.trim(),
+                  });
+                  toast.success(
+                    proxyUrl.trim() ? "Proxy saved" : "Proxy removed",
+                  );
+                  setProxyFor(null);
+                  setProxyUrl("");
+                  setProxyCheck(null);
+                  await load();
+                } catch (e) {
+                  toast.error(apiErrorMessage(e, "Could not save that proxy"));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              disabled={busy}
+              className="min-h-[44px] rounded-lg bg-foreground px-5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
+            >
+              {busy ? "Saving…" : "Save"}
             </button>
           </div>
         </Modal>

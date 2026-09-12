@@ -77,3 +77,28 @@ def parse(url: Optional[str]) -> Optional[Proxy]:
         username=unquote(parts.username) if parts.username else None,
         password=unquote(parts.password) if parts.password else None,
     )
+
+
+async def egress_ip(proxy: Optional["Proxy"], timeout_ms: int = 25000) -> str:
+    """The address the world sees when this proxy is used.
+
+    Opens a real browser context through it and asks. Anything cheaper —
+    checking the host resolves, opening a socket — proves the proxy exists,
+    not that a page loads through it, and a proxy that accepts connections
+    and then refuses to forward is a common enough way to waste a day.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            context = await browser.new_context(
+                **({"proxy": proxy.playwright()} if proxy else {})
+            )
+            page = await context.new_page()
+            # Plain text, one line, no JSON to parse or markup to change.
+            await page.goto("https://api.ipify.org", wait_until="domcontentloaded",
+                            timeout=timeout_ms)
+            return ((await page.inner_text("body")) or "").strip()[:64]
+        finally:
+            await browser.close()
