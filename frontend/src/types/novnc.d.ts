@@ -5,6 +5,8 @@ declare module "@novnc/novnc" {
   export default class RFB {
     constructor(target: HTMLElement, url: string, options?: Record<string, unknown>);
     scaleViewport: boolean;
+    compressionLevel: number;
+    qualityLevel: number;
     resizeSession: boolean;
     disconnect(): void;
     addEventListener(type: string, listener: (event: unknown) => void): void;

@@ -69,6 +69,13 @@ export function SessionViewer({
         // panel on a phone.
         client.scaleViewport = true;
         client.resizeSession = false;
+        // Tuned for distance, not for a LAN. The server is ~340ms away, so
+        // the win is in sending fewer bytes per update rather than in
+        // fidelity: heavier compression and a lower JPEG quality make what
+        // does come back arrive sooner. A login form is text on flat
+        // colour, which survives this easily.
+        client.compressionLevel = 9;
+        client.qualityLevel = 5;
         client.addEventListener("connect", () => setState("live"));
         client.addEventListener("disconnect", () => setState("lost"));
         rfb = client;
