@@ -468,6 +468,50 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     def profile_url(self, username: str) -> str:
         return f"{self.SITE_URL}/{username.strip().lstrip('@')}"
 
+    #: `/<handle>/status/<id>`, and nothing deeper — a profile links to
+    #: photos and analytics under the same prefix, and those are not posts.
+    _OWN_POST = re.compile(r"^/([A-Za-z0-9_]{1,15})/status/(\d+)$")
+
+    async def _before_profile_posts(self, page) -> None:
+        """Get past the interstitial X shows for an account you blocked.
+
+        The timeline is replaced by "Are you sure you want to view these
+        posts" and a button that shows them anyway. Pressing it leaves the
+        block in place — nothing about the relationship changes — and it is
+        the whole difference between a seed that yields its audience and one
+        that reports no posts at all.
+
+        Tried on a delay rather than immediately: the interstitial renders
+        after the page does, and looking for the button first found nothing
+        and moved on.
+        """
+        for attempt in range(12):
+            await page.wait_for_timeout(1500)
+            ready = await page.evaluate(
+                """() => !!document.querySelector(
+                    "[data-testid='primaryColumn'] a[href*='/status/']")"""
+            )
+            if ready:
+                return
+            try:
+                button = page.get_by_role("button", name=re.compile(
+                    r"^(View|View posts|Yes, view profile|Yes, view)$", re.I)).first
+                if await button.count() and await button.is_visible(timeout=1200):
+                    await button.click(timeout=5000)
+                    await page.wait_for_timeout(2000)
+                    continue
+            except Exception:  # noqa: BLE001 — no interstitial is the normal case
+                pass
+            if attempt == 6:
+                await page.reload(wait_until="domcontentloaded",
+                                  timeout=self._timeout)
+
+    def _own_post_url(self, href: str, username: str) -> str:
+        match = self._OWN_POST.match(href or "")
+        if not match or match.group(1).lower() != username.lower():
+            return ""
+        return f"https://x.com/{match.group(1)}/status/{match.group(2)}"
+
     def _likers_url(self, post_url: str) -> str:
         """X lists a post's likers at /likes."""
         return self._absolute(post_url).rstrip("/") + "/likes"

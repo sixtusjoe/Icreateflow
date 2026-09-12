@@ -361,24 +361,51 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 exclude=known,
             )
         elif seeds:
-            leads = await driver.discover_followers(
-                payload,
-                seeds=tuple(seeds),
-                limit=wanted,
-                interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
-                # Enough rounds for the number asked for, not a fixed
-                # depth. A followers list yields roughly a dozen new people
-                # per scroll, so a request for a thousand needs about ninety
-                # — and stops early anyway once it has them, or once the
-                # list genuinely ends.
-                scroll_rounds=max(
-                    int(settings["outreach_discovery_scroll_rounds"]) * 3,
-                    wanted // 10 + 20,
-                ),
-                should_stop=lambda: search_id in _CANCELLED,
-                on_found=on_found,
-                exclude=known,
-            )
+            # Engagement first. A follower list is truncated hard — the same
+            # seventy to a hundred names whether the account has 17,300
+            # followers or 180,700 — while the people who liked and replied
+            # to recent posts are the same audience without that ceiling.
+            # Measured across four seeds: 108 from the follower lists, 776
+            # from the posts.
+            leads = []
+            if hasattr(driver, "discover_from_engagement"):
+                run.message = f"Reading recent posts by {len(seeds)} account(s)…"
+                leads = await driver.discover_from_engagement(
+                    payload,
+                    seeds=tuple(seeds),
+                    limit=wanted,
+                    interval_seconds=float(
+                        settings["outreach_discovery_interval_seconds"]),
+                    should_stop=lambda: search_id in _CANCELLED,
+                    on_found=on_found,
+                    exclude=known,
+                )
+            # Short, or the platform has no engagement reader: fall back to
+            # the follower list rather than returning what little there was.
+            if len(leads) < wanted and search_id not in _CANCELLED:
+                run.message = f"Reading the followers of {len(seeds)} account(s)…"
+                already = {lead["username"].lower() for lead in leads}
+                leads = leads + await driver.discover_followers(
+                    payload,
+                    seeds=tuple(seeds),
+                    limit=wanted,
+                    interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
+                    # Enough rounds for the number asked for, not a fixed
+                    # depth. A followers list yields roughly a dozen new people
+                    # per scroll, so a request for a thousand needs about ninety
+                    # — and stops early anyway once it has them, or once the
+                    # list genuinely ends.
+                    scroll_rounds=max(
+                        int(settings["outreach_discovery_scroll_rounds"]) * 3,
+                        wanted // 10 + 20,
+                    ),
+                    should_stop=lambda: search_id in _CANCELLED,
+                    on_found=on_found,
+                    # Everyone engagement already returned, as well as everyone
+                    # known before — otherwise the follower pass offers the same
+                    # people again and the count stalls without saying why.
+                    exclude=known | already,
+                    )
         else:
             leads = await driver.discover_profiles(
                 payload,
