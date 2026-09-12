@@ -426,6 +426,7 @@ export default function OutreachAccountsPage() {
       {sessionFor && (
         <Modal
           onClose={() => setSessionFor(null)}
+          wide={Boolean(login?.capture && !login.capture.done)}
           title={`Attach a session to “${sessionFor.name}”`}
         >
           {login?.available && (
@@ -499,10 +500,14 @@ function Modal({
   title,
   children,
   onClose,
+  wide = false,
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  /** Room for a remote desktop. A 1440px screen inside max-w-lg is a
+   *  postage stamp, and the overflow put a scrollbar down the side. */
+  wide?: boolean;
 }) {
   return (
     <div
@@ -510,7 +515,7 @@ function Modal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl"
+        className={`w-full ${wide ? "max-w-4xl" : "max-w-lg"} max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="mb-5 text-lg font-semibold">{title}</h2>

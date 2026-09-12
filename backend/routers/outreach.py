@@ -1161,6 +1161,20 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             await websocket.close(code=1011)
             return
 
+        # Answer the password step here, so the page never needs the VNC
+        # password and the port keeps its protection from anything else
+        # local on this host.
+        problem = await session_viewer.negotiate(
+            reader, writer,
+            send=websocket.send_bytes,
+            receive=websocket.receive_bytes,
+        )
+        if problem:
+            print(f"[viewer] handshake failed: {problem}", flush=True)
+            writer.close()
+            await websocket.close(code=1011)
+            return
+
         async def to_vnc() -> None:
             try:
                 while True:

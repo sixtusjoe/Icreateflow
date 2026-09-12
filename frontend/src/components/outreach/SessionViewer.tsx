@@ -60,7 +60,7 @@ export function SessionViewer({
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-black">
-      <div ref={holder} className="h-[420px] w-full" />
+      <div ref={holder} className="h-[min(62vh,560px)] w-full" />
       {state !== "live" && (
         <p className="border-t border-border bg-background px-3 py-2 text-xs text-muted-foreground">
           {state === "connecting" ? "Opening…" : "Disconnected."}
