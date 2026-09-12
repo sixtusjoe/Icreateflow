@@ -419,3 +419,55 @@ async def test_campaign_actions_are_audited(client, account_factory):
     assert "campaign.targets_imported" in actions
     assert "campaign.started" in actions
     assert "campaign.paused" in actions
+
+
+# --- watching the sign-in browser from the page ----------------------------
+
+async def test_a_viewer_ticket_is_only_issued_for_your_own_account(
+    client, database, user
+):
+    """Otherwise a ticket is a way to watch someone else sign in."""
+    from services.outreach import local_browser, session_viewer
+
+    account_id = (await client.post("/api/outreach/accounts", json={
+        "name": "Watched", "platform": "instagram",
+    })).json()["id"]
+
+    session_viewer.clear()
+    import os
+    os.environ["ICREATE_OUTREACH_LOCAL_BROWSER"] = "1"
+    try:
+        assert local_browser.is_enabled()
+        mine = await client.post(
+            f"/api/outreach/accounts/{account_id}/session/viewer-ticket")
+        assert mine.status_code == 200, mine.text
+        body = mine.json()
+        assert body["ticket"] and len(body["ticket"]) >= 32
+        assert body["path"].endswith(f"/accounts/{account_id}/session/stream")
+
+        _as({"id": user["id"] + 999, "role": "user", "name": "Someone else"})
+        theirs = await client.post(
+            f"/api/outreach/accounts/{account_id}/session/viewer-ticket")
+        assert theirs.status_code in (403, 404), theirs.status_code
+    finally:
+        os.environ.pop("ICREATE_OUTREACH_LOCAL_BROWSER", None)
+        session_viewer.clear()
+
+
+async def test_no_viewer_ticket_where_browser_sign_in_is_switched_off(client):
+    """A host with no display must not hand out passes to a browser it
+    cannot open — the live server ran that way for months."""
+    import os
+    from services.outreach import session_viewer
+
+    account_id = (await client.post("/api/outreach/accounts", json={
+        "name": "Unwatched", "platform": "instagram",
+    })).json()["id"]
+    os.environ.pop("ICREATE_OUTREACH_LOCAL_BROWSER", None)
+    os.environ.pop("ICREATE_OUTREACH_BROWSER_LOGIN", None)
+    session_viewer.clear()
+    r = await client.post(
+        f"/api/outreach/accounts/{account_id}/session/viewer-ticket")
+    assert r.status_code == 400
+    assert "switched off" in r.json()["detail"].lower()
+    assert session_viewer.outstanding() == 0

@@ -24,11 +24,21 @@ from __future__ import annotations
 
 import csv
 import io
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -36,7 +46,14 @@ from sqlalchemy import text
 import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import config as cfg
-from services.outreach import attachments, discovery, importer, session_capture, watch_run
+from services.outreach import (
+    attachments,
+    discovery,
+    importer,
+    session_capture,
+    session_viewer,
+    watch_run,
+)
 from services.outreach import runner as outreach_runner
 from services.outreach import queue as job_queue
 from services.outreach import stats
@@ -315,9 +332,9 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 template = await _own_template(database, data.template_id, user)
                 body = body or template["body"]
             # Validated now so a broken template can't reach the worker.
+            # A follow campaign sends nothing, so it needs no template and
+            # must not be rejected for lacking one.
             try:
-                # A follow campaign sends nothing, so it needs no template
-                # and must not be rejected for lacking one.
                 if data.activity != ACTIVITY_FOLLOW:
                     template_svc.validate_template(
                         body or "", known_variables=(data.template_vars or {}).keys()
@@ -1085,6 +1102,96 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return capture.to_dict()
+
+    @router.post("/accounts/{account_id}/session/viewer-ticket")
+    async def issue_viewer_ticket(
+        account_id: int, user: dict = Depends(get_current_user)
+    ):
+        """A short-lived pass to watch this account's sign-in from the page.
+
+        The sign-in browser runs on the server. Rather than asking a customer
+        to paste a Playwright session — which nobody outside this team can
+        produce — the page shows them that browser and lets them log in as
+        they normally would.
+
+        The ticket is what makes that safe to expose: minted only for the
+        signed-in owner of this account, good for one socket, and expiring in
+        under a minute.
+        """
+        reason = session_capture.unavailable_reason()
+        if reason:
+            raise HTTPException(400, reason)
+        database = await db.get_db()
+        try:
+            await _own_account(database, account_id, user)
+        finally:
+            await database.close()
+        ticket = session_viewer.issue(account_id, user.get("id"))
+        return {
+            "ticket": ticket.value,
+            "expires_in": session_viewer.TICKET_TTL_SECONDS,
+            "path": f"/api/outreach/accounts/{account_id}/session/stream",
+        }
+
+    @router.websocket("/accounts/{account_id}/session/stream")
+    async def stream_session_browser(websocket: WebSocket, account_id: int):
+        """Pipe the sign-in browser's screen to the page, both ways.
+
+        A plain byte relay between the customer's websocket and the local VNC
+        server: their keystrokes and clicks go one way, the screen comes back
+        the other. Nothing is interpreted here.
+
+        Authentication is the ticket in the query string, because a browser
+        cannot put an Authorization header on a websocket. It is spent the
+        moment it is read, so the URL being written to a log is not a way in.
+        """
+        ticket = websocket.query_params.get("ticket", "")
+        if session_viewer.redeem(ticket, account_id) is None:
+            # 1008 = policy violation. Closed before the VNC socket is even
+            # opened, so an unauthenticated caller never reaches it.
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        try:
+            reader, writer = await asyncio.open_connection(
+                session_viewer.VNC_HOST, session_viewer.VNC_PORT)
+        except OSError as exc:
+            print(f"[viewer] no VNC at {session_viewer.VNC_HOST}:"
+                  f"{session_viewer.VNC_PORT}: {exc}", flush=True)
+            await websocket.close(code=1011)
+            return
+
+        async def to_vnc() -> None:
+            try:
+                while True:
+                    writer.write(await websocket.receive_bytes())
+                    await writer.drain()
+            except (WebSocketDisconnect, RuntimeError, ConnectionError):
+                pass
+
+        async def to_browser() -> None:
+            try:
+                while True:
+                    chunk = await reader.read(65536)
+                    if not chunk:
+                        return
+                    await websocket.send_bytes(chunk)
+            except (WebSocketDisconnect, RuntimeError, ConnectionError):
+                pass
+
+        try:
+            done, pending = await asyncio.wait(
+                {asyncio.create_task(to_vnc()), asyncio.create_task(to_browser())},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001 — the peer went first
+                pass
 
     @router.post("/accounts/{account_id}/resume")
     async def resume_account(account_id: int, user: dict = Depends(get_current_user)):
