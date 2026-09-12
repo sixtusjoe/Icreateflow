@@ -39,6 +39,7 @@ from sqlalchemy import text
 import database as db
 from services.outreach import config as cfg
 from services.outreach import lead_ai, local_browser
+from services.outreach import display_pool
 from services.outreach.browser import get_driver
 from services.outreach.constants import ACCOUNT_PURPOSE_DISCOVERY
 from services.outreach.crypto import decrypt_session
@@ -248,6 +249,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
         run.finished_at = datetime.now(timezone.utc).isoformat()
 
     driver = None
+    screen = None
     visited = 0
     try:
         driver_name = PLATFORM_DRIVERS.get(platform)
@@ -314,8 +316,17 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             "name": account.get("name"),
             "platform": platform,
             "session_state": decrypt_session(account.get("session_state_encrypted")),
+            # Reads go out through this account's own address too. Four
+            # accounts sharing one IP is the most obvious thing about them,
+            # and a harvest is the most visible thing they do.
+            "proxy_url": decrypt_session(account.get("proxy_url_encrypted")),
         }
-        driver = get_driver(driver_name, headless=False)
+        # Headed, because X serves no timeline to a headless browser — and on
+        # a screen of its own, because the shared one is what a viewer
+        # ticket falls back to when the pool has nothing left.
+        screen = await display_pool.acquire()
+        driver = get_driver(driver_name, headless=False,
+                            launch_env=screen.env if screen else None)
         await driver.startup()
 
         collected: list[dict[str, Any]] = []
@@ -501,6 +512,9 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 await driver.shutdown()
             except Exception:  # noqa: BLE001 — shutdown must not raise
                 traceback.print_exc()
+        # After the browser, not before: releasing the screen kills the X
+        # server the browser is still drawing on.
+        await display_pool.release(screen)
 
 
 async def _persist_status(search_id: int, status: str, message: str,
