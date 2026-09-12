@@ -30,10 +30,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import database as db
-from services.outreach import display_pool, local_browser
+from services.outreach import display_pool, local_browser, proxies
 from services.outreach.browser.playwright_base import CHROMIUM_ARGS
 from services.outreach.constants import ACCOUNT_IDLE
-from services.outreach.crypto import crypto_available, encrypt_session
+from services.outreach.crypto import (
+    crypto_available,
+    decrypt_session,
+    encrypt_session,
+)
 
 #: Where to send the operator to sign in, and the cookie that proves they did.
 PLATFORMS: dict[str, dict[str, str]] = {
@@ -80,6 +84,22 @@ GOTO_BACKOFF_SECONDS = (2, 5)
 
 class LoginUnreachable(Exception):
     """The platform would not serve its login page."""
+
+
+def context_options(proxy: Optional[proxies.Proxy]) -> dict[str, Any]:
+    """Everything the sign-in window's context needs, the proxy included.
+
+    Shared with the tests so that what they exercise is what runs: an
+    options dict assembled twice is an options dict that can lose its
+    proxy in one of the two places.
+    """
+    options: dict[str, Any] = {
+        "viewport": {"width": 1280, "height": 860},
+        "locale": "en-US",
+    }
+    if proxy is not None:
+        options["proxy"] = proxy.playwright()
+    return options
 
 
 async def open_login_page(page: Any, url: str, label: str) -> None:
@@ -267,6 +287,39 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         capture.cookies = cookies
         capture.finished_at = datetime.now(timezone.utc).isoformat()
 
+    # A session has to be created from the address it will later send
+    # from. Minted on the server's own IP and then used through a
+    # residential proxy, it is an established session that jumps country
+    # on its first use — which is the single most common reason a fresh
+    # session gets challenged. See scripts/outreach_login.py.
+    #
+    # A proxy that is set but unusable therefore fails the sign-in rather
+    # than quietly falling back to the server's address: the fallback
+    # produces a session that looks fine here and is challenged later,
+    # which is the harder failure to trace.
+    try:
+        proxy_url = decrypt_session(account.get("proxy_url_encrypted"))
+    except Exception as exc:  # noqa: BLE001 — narrow scope, reported as-is
+        # Unreadable ciphertext raised out of this task before, which left
+        # the capture sitting on "opening" for ever with nothing to show.
+        print(
+            f"[outreach] sign-in for {name}: stored proxy could not be "
+            f"decrypted — {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        finish(
+            STATUS_FAILED,
+            f"This account's stored proxy could not be read "
+            f"({type(exc).__name__}). Set it again on the account.",
+        )
+        return
+
+    try:
+        proxy = proxies.parse(proxy_url)
+    except proxies.ProxyInvalid as exc:
+        finish(STATUS_FAILED, f"This account's proxy cannot be used: {exc}")
+        return
+
     state = None
     screen = None
     try:
@@ -291,9 +344,7 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
                 headless=headless, args=list(CHROMIUM_ARGS),
                 env={**os.environ, **(screen.env if screen else {})},
             )
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 860}, locale="en-US"
-            )
+            context = await browser.new_context(**context_options(proxy))
             page = await context.new_page()
             await open_login_page(page, spec["login_url"], capture.platform)
 
@@ -307,6 +358,7 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
             blips = 0
             print(
                 f"[outreach] sign-in window open for {name} ({capture.platform}) "
+                f"via {proxy.safe if proxy else 'this server’s own address'} "
                 f"— waiting up to {timeout_seconds // 60} minutes",
                 flush=True,
             )
@@ -382,8 +434,16 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         raise
     except LoginUnreachable as exc:
         # Already logged per attempt by open_login_page; the operator gets
-        # the sentence, not Chromium's error code.
-        finish(STATUS_FAILED, str(exc)[:300])
+        # the sentence, not Chromium's error code. A proxy in the path is
+        # the likelier culprit than the site, and saying so beats sending
+        # someone to look at the wrong thing.
+        note = (
+            f" The account's proxy ({proxy.safe}) is in the path — test it "
+            f"from the account's settings."
+            if proxy is not None
+            else ""
+        )
+        finish(STATUS_FAILED, (str(exc) + note)[:300])
         return
     except Exception as exc:  # noqa: BLE001 — the UI has to hear about it
         # This used to be the one path that told the UI something and the

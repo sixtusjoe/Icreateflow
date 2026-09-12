@@ -32,13 +32,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import database as db  # noqa: E402
 from services.outreach.constants import ACCOUNT_IDLE  # noqa: E402
-from services.outreach.crypto import crypto_available, encrypt_session  # noqa: E402
+from services.outreach import proxies  # noqa: E402
+from services.outreach.crypto import (  # noqa: E402
+    crypto_available,
+    decrypt_session,
+    encrypt_session,
+)
 
 #: Where to send the operator to sign in, and the cookie that proves they
 #: did. Defined once, in the service the app's own "Sign in" button uses —
 #: a second copy here would drift the moment a platform changed.
 from services.outreach.session_capture import (  # noqa: E402
     PLATFORMS,
+    context_options,
     open_login_page,
 )
 
@@ -96,7 +102,15 @@ async def capture(account_id: int, timeout_seconds: int) -> int:
     # exists so the capture flow can be tested without a display.
     headless = os.environ.get("ICREATE_LOGIN_HEADLESS", "0") not in ("0", "false", "")
 
+    # Same address to sign in as to send from — see the module docstring.
+    try:
+        proxy = proxies.parse(decrypt_session(account.get("proxy_url_encrypted")))
+    except proxies.ProxyInvalid as exc:
+        print(f"ERROR: this account's proxy cannot be used: {exc}")
+        return 1
+
     print(f"==> Signing in as “{account['name']}” ({account['platform']})")
+    print(f"    via {proxy.safe if proxy else 'this server’s own address'}")
     if account.get("session_state_encrypted"):
         print("    This account already has a session — finishing the login "
               "will replace it.")
@@ -106,9 +120,7 @@ async def capture(account_id: int, timeout_seconds: int) -> int:
             headless=headless,
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
         )
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 860}, locale="en-US"
-        )
+        context = await browser.new_context(**context_options(proxy))
         page = await context.new_page()
         await open_login_page(page, spec["login_url"], account["platform"])
 

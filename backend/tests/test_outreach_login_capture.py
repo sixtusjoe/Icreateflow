@@ -242,3 +242,101 @@ async def test_a_login_page_that_keeps_refusing_says_so_in_english(site):
     assert "net::" not in message and "ERR_" not in message
     assert "try again in a minute" in message.lower()
     assert str(GOTO_ATTEMPTS) in message
+
+
+# --- the sign-in has to go out over the account's proxy -------------------
+#
+# A session minted on the server's own IP and then used through a
+# residential proxy is an established session that changes country on its
+# first use, which is what gets an account challenged.
+
+
+class _RecordingProxy(BaseHTTPRequestHandler):
+    """A real HTTP proxy, so Chromium's egress can be observed."""
+
+    seen: list = []
+
+    def do_GET(self):  # noqa: N802
+        # Through a proxy, Chromium asks for the absolute URL.
+        _RecordingProxy.seen.append(self.path)
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(self.path, timeout=5) as upstream:
+                body = upstream.read()
+        except Exception:  # noqa: BLE001
+            self.send_response(502)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def recording_proxy():
+    _RecordingProxy.seen = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RecordingProxy)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", _RecordingProxy
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+async def test_the_sign_in_window_goes_out_over_the_accounts_proxy(
+    site, recording_proxy
+):
+    """Whatever the account sends through, it signs in through."""
+    from playwright.async_api import async_playwright
+
+    from services.outreach import proxies
+
+    proxy_url, recorder = recording_proxy
+    proxy = proxies.parse(proxy_url)
+    assert proxy is not None
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            # The real thing, not a copy of it.
+            from services.outreach.session_capture import context_options
+
+            page = await (
+                await browser.new_context(**context_options(proxy))
+            ).new_page()
+            await page.goto(f"{site}/ok", wait_until="domcontentloaded")
+            assert "Sign in" in await page.content()
+        finally:
+            await browser.close()
+
+    assert any("/ok" in hit for hit in recorder.seen), (
+        f"the proxy saw {recorder.seen!r} — the sign-in did not go through it"
+    )
+
+
+async def test_an_unusable_proxy_fails_the_sign_in_rather_than_bypassing_it():
+    """Falling back to the server's address hides the problem until later."""
+    from services.outreach import session_capture
+    from services.outreach.crypto import encrypt_session
+
+    capture = session_capture.Capture(account_id=999, platform="instagram")
+    account = {
+        "id": 999,
+        "name": "proxied",
+        "platform": "instagram",
+        # Chromium cannot authenticate to SOCKS5, so this cannot be honoured.
+        "proxy_url_encrypted": encrypt_session("socks5://user:pass@10.0.0.1:1080"),
+    }
+
+    await session_capture._run(account, capture, timeout_seconds=5)
+
+    assert capture.status == session_capture.STATUS_FAILED
+    assert "proxy" in capture.message.lower()
+    # It must not have reached the point of opening anything.
+    assert capture.vnc_port is None
