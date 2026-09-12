@@ -3,6 +3,11 @@
   "configurations": [
     {
       "name": "icreateflow-backend",
+      "url": "http://localhost:8000",
+      "port": 8000
+    },
+    {
+      "name": "icreateflow-backend-boot",
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
