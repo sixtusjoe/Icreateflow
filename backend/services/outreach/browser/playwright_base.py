@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -310,12 +311,18 @@ class PlaywrightMessenger:
         #: to put this browser on a screen of its own, rather than on the
         #: one display every visible browser used to share.
         launch_env: Optional[dict[str, str]] = None,
+        #: Called when the browser goes away without being asked to — the
+        #: operator closed the visible window, or Chromium died. The local
+        #: sender uses it to stop rather than fail every remaining job
+        #: against a browser that is not there.
+        on_disconnect: Optional[Any] = None,
         **_ignored: Any,
     ):
         if headless is None:
             headless = os.environ.get("ICREATE_OUTREACH_HEADLESS", "1") not in ("0", "false")
         self._headless = headless
         self._launch_env = dict(launch_env or {})
+        self._on_disconnect = on_disconnect
         self._timeout = timeout_ms
         self._user_agent = user_agent
         self._playwright = None
@@ -351,11 +358,39 @@ class PlaywrightMessenger:
                 return
             from playwright.async_api import async_playwright  # imported lazily
 
-            self._playwright = await async_playwright().start()
+            # Only once. Relaunching after a closed window used to
+            # overwrite this, stranding the node driver process it names —
+            # one leaked per reopen.
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=self._headless, args=list(CHROMIUM_ARGS),
                 env={**os.environ, **self._launch_env} if self._launch_env else None,
             )
+            # A browser can go away without this process asking: the
+            # operator closes the visible window, or Chromium dies. The
+            # object stays behind either way, and the early return above
+            # accepted it for ever — so every later send failed against a
+            # browser that was not there, until the API was restarted.
+            # Forgetting it here is what lets the next job open a fresh one.
+            self._browser.on("disconnected", self._browser_gone)
+
+    def _browser_gone(self, _browser: Any = None) -> None:
+        """Forget a browser that has gone, and say so once.
+
+        Clearing the handles is what lets `startup` launch a replacement,
+        so the next job that needs a browser opens one. Nothing is
+        relaunched here: a window closed while there is no work should
+        stay closed until there is.
+        """
+        self._browser = None
+        self._contexts.clear()
+        self._pages.clear()
+        if self._on_disconnect is not None:
+            try:
+                self._on_disconnect()
+            except Exception:  # noqa: BLE001 — a notification must not raise
+                traceback.print_exc()
 
     async def shutdown(self) -> None:
         for account_id in list(self._contexts):

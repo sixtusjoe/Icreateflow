@@ -112,6 +112,10 @@ class OutreachWorker:
         concurrency: Optional[int] = None,
         once: bool = False,
         headless: Optional[bool] = None,
+        #: Called when a browser this worker started goes away on its own.
+        #: The visible local sender stops rather than failing every job it
+        #: has left against a window the operator has closed.
+        on_browser_lost: Optional[Any] = None,
     ):
         self.worker_id = worker_id or default_worker_id()
         self.driver_name = driver_name
@@ -126,6 +130,7 @@ class OutreachWorker:
         #: worker keeps every window on screen — the operator has to be able
         #: to reach a verification puzzle, whichever platform threw it.
         self._headless = headless
+        self._on_browser_lost = on_browser_lost
         self._stopping = asyncio.Event()
         #: campaign id -> when its idleness was last explained. Keeps a
         #: permanently stuck campaign from writing the same line every cycle.
@@ -190,6 +195,8 @@ class OutreachWorker:
             driver = self._drivers.get(name)
             if driver is None:
                 kwargs = {} if self._headless is None else {"headless": self._headless}
+                if self._on_browser_lost is not None:
+                    kwargs["on_disconnect"] = self._on_browser_lost
                 driver = get_driver(name, **kwargs)
                 await driver.startup()
                 self._drivers[name] = driver
@@ -627,6 +634,19 @@ _LOCAL_WORKER: dict[str, Any] = {
 }
 
 
+async def _idle(stopping: asyncio.Event, seconds: int) -> None:
+    """Wait, but wake the moment the sender is told to stop.
+
+    A plain sleep here meant closing the browser was not noticed until the
+    idle interval ran out — ten seconds by default and up to five minutes
+    if configured that way, which looks like nothing happened.
+    """
+    try:
+        await asyncio.wait_for(stopping.wait(), timeout=seconds)
+    except (TimeoutError, asyncio.TimeoutError):
+        pass
+
+
 async def _local_slot(worker: "OutreachWorker", stopping: asyncio.Event) -> None:
     """One account's worth of work, running alongside the others.
 
@@ -645,7 +665,7 @@ async def _local_slot(worker: "OutreachWorker", stopping: asyncio.Event) -> None
                 await database.close()
 
             if not settings[cfg.WORKERS_ENABLED_KEY]:
-                await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
+                await _idle(stopping, int(settings["outreach_worker_idle_seconds"]))
                 continue
 
             # Checked again here: the wait above is where a slot spends most
@@ -663,7 +683,7 @@ async def _local_slot(worker: "OutreachWorker", stopping: asyncio.Event) -> None
             if not did_work:
                 # Nothing free — most often the other slot holds the only
                 # account that can run. Idling is the whole answer.
-                await asyncio.sleep(int(settings["outreach_worker_idle_seconds"]))
+                await _idle(stopping, int(settings["outreach_worker_idle_seconds"]))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — one bad job must not end
@@ -686,7 +706,23 @@ async def _local_worker_loop() -> None:
     and in a headed browser each one is its own window, so a puzzle on one
     account is reachable without stopping the others.
     """
-    worker = OutreachWorker(headless=False)
+    stopping = asyncio.Event()
+
+    def browser_closed() -> None:
+        # Fired by Playwright on the event loop when the window goes: the
+        # operator closed it, or Chromium died. The sender keeps running
+        # and simply has no browser for the moment — the next job opens a
+        # fresh one. Nothing is relaunched here, so a window closed while
+        # there is no work stays closed until there is.
+        if stopping.is_set():
+            return
+        print(
+            "[outreach] the local sender's browser was closed — it will open "
+            "again on the next job.",
+            flush=True,
+        )
+
+    worker = OutreachWorker(headless=False, on_browser_lost=browser_closed)
     database = await db.get_db()
     try:
         settings = await cfg.get_all(database)
@@ -702,7 +738,6 @@ async def _local_worker_loop() -> None:
         f"{'window' if slots == 1 else 'windows'}, visible",
         flush=True,
     )
-    stopping = asyncio.Event()
     tasks = [asyncio.create_task(_local_slot(worker, stopping)) for _ in range(slots)]
     running = asyncio.gather(*tasks)
     try:

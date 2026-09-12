@@ -794,3 +794,60 @@ async def test_a_follow_campaign_does_not_need_a_message_template(seeded, databa
     assert await _run(driver, seeded["settings"]) is True
     assert len(driver.followed) == 1
     assert driver.sent == []
+
+
+async def test_closing_the_browser_does_not_stop_the_local_sender(monkeypatch):
+    """Closing the window is not an off switch — the next job reopens it.
+
+    The sender keeps claiming work; the driver simply has no browser for
+    the moment, and opens one when something needs it. Requiring an API
+    restart to send again is the behaviour this guards against.
+    """
+    lost: list = []
+    claims = 0
+
+    class _Worker:
+        def __init__(self, *a, on_browser_lost=None, **kw):
+            lost.append(on_browser_lost)
+
+        async def process_one(self, settings):
+            nonlocal claims
+            claims += 1
+            return False  # nothing to claim, so the slot idles
+
+        async def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runner, "OutreachWorker", _Worker)
+
+    async def _settings(_db):
+        return {
+            "outreach_local_worker_concurrency": 1,
+            runner.cfg.WORKERS_ENABLED_KEY: True,
+            "outreach_worker_idle_seconds": 1,
+        }
+
+    monkeypatch.setattr(runner.cfg, "get_all", _settings)
+
+    task = asyncio.create_task(runner._local_worker_loop())
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if lost and lost[0] is not None:
+            break
+    assert lost and lost[0] is not None, "no disconnect hook was given to the driver"
+
+    lost[0]()  # exactly what Playwright does when the window is closed
+    before = claims
+    for _ in range(300):
+        await asyncio.sleep(0.01)
+        if claims > before:
+            break
+
+    assert claims > before, (
+        "the sender stopped claiming work after the browser was closed — "
+        "it should carry on and open a new one for the next job"
+    )
+    assert not task.done(), "the local sender exited when the window was closed"
+    assert runner._LOCAL_WORKER["running"] is True
+
+    await runner.stop_background_tasks([task])

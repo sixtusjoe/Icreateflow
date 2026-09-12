@@ -1536,3 +1536,71 @@ def test_no_readiness_gate_accepts_a_bare_tag():
             assert "primaryColumn" not in selector, (
                 f"{platform}: {selector!r} is the shell, not the profile"
             )
+
+
+# --- a browser that goes away on its own ----------------------------------
+#
+# The operator closes the visible window. Before this, the Browser object
+# stayed behind disconnected and `startup` accepted it for ever, so every
+# later send failed against a browser that was not there.
+
+
+async def test_a_closed_browser_is_not_handed_out_again(site):
+    """A browser that has gone must not be reused as if it were there."""
+    closed = []
+    messenger = PlaywrightTikTokMessenger(
+        headless=True, timeout_ms=8000, on_disconnect=lambda: closed.append(True)
+    )
+    await messenger.startup()
+    first = messenger._browser
+    assert first is not None
+
+    # Exactly what closing the window does to this process.
+    await first.close()
+    await _settle()
+
+    assert closed == [True], "the disconnect went unnoticed"
+    assert messenger._browser is None, "the dead browser is still held"
+    assert messenger._contexts == {} and messenger._pages == {}
+
+    # And the next job gets a working browser, not the corpse.
+    await messenger.startup()
+    assert messenger._browser is not None and messenger._browser is not first
+    assert messenger._browser.is_connected(), "the reopened browser is not usable"
+    await messenger.shutdown()
+
+
+async def test_reopening_does_not_strand_a_playwright_driver():
+    """One node driver, however many times the window is closed.
+
+    `startup` used to overwrite the playwright handle on every relaunch,
+    leaking the process it named — one per reopen, for the life of the API.
+    """
+    messenger = PlaywrightTikTokMessenger(headless=True, timeout_ms=8000)
+    await messenger.startup()
+    driver = messenger._playwright
+
+    for _ in range(2):
+        await messenger._browser.close()
+        await _settle()
+        await messenger.startup()
+
+    assert messenger._playwright is driver, "a second playwright driver was started"
+    await messenger.shutdown()
+
+
+async def test_shutdown_is_quiet_when_the_browser_already_went():
+    """Tearing down after a hand-closed window must not raise."""
+    messenger = PlaywrightTikTokMessenger(headless=True, timeout_ms=8000)
+    await messenger.startup()
+    await messenger._browser.close()
+    await _settle()
+    await messenger.shutdown()  # must not raise
+
+
+async def _settle():
+    """Let Playwright deliver the disconnected event."""
+    import asyncio
+
+    for _ in range(50):
+        await asyncio.sleep(0.02)
