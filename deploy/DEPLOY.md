@@ -187,3 +187,36 @@ ssh root@95.111.228.80 'cd /srv/icreateflow/src && git log --oneline -1'
 journalctl -u icreateflow-backend | grep "quota exhausted"
 systemctl restart icreateflow-backend   # clears process-level flag immediately
 ```
+
+## The sign-in browser stream (websocket)
+
+Connecting an account shows the server's sign-in browser in the page, over a
+websocket at `/api/outreach/accounts/<id>/session/stream`. Apache has to
+carry that, and the obvious way does not work:
+
+    # WRONG — <Location /api/> takes precedence, so the request arrives at
+    # uvicorn as ordinary HTTP and Starlette answers 404, because a
+    # websocket route is invisible to an http request.
+    ProxyPassMatch "^/api/outreach/accounts/([0-9]+)/session/stream$" "ws://..."
+
+Use a rewrite instead. It runs before the proxy, and the `Upgrade`
+condition means only the handshake is diverted — every other `/api/` call
+still proxies normally:
+
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteCond %{HTTP:Connection} upgrade [NC]
+    RewriteRule ^/?api/(outreach/accounts/[0-9]+/session/stream)$ \
+        ws://127.0.0.1:8100/api/$1 [P,L]
+
+Needs `a2enmod proxy_wstunnel rewrite`. Place it above `<Location /api/>`.
+
+To check it: a handshake with no ticket should answer **403**, not 404.
+404 means the rewrite is not firing and the request is being proxied as
+HTTP; 403 means it reached the websocket route and was properly refused.
+
+The display and VNC it renders are `icreateflow-xvfb.service` and
+`icreateflow-x11vnc.service`. VNC binds `127.0.0.1` only — a ticket from the
+API is the sole route in, and it is single-use with a 60-second life.
+`ICREATE_OUTREACH_LOCAL_BROWSER=1` and `DISPLAY=:99` must be set for the
+backend, or the feature reports itself switched off.
