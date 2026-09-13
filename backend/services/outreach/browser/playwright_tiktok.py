@@ -172,10 +172,19 @@ TIKTOK_SELECTORS: dict[str, Any] = {
     # --- leaving a comment --------------------------------------------
     # The box is a DraftJS editor, not an <input>: it has no value, and
     # setting one does nothing. It has to be clicked and typed into.
+    # Verified against the live panel, not guessed: the editor is
+    # `comment-input`, and it is a DraftJS contenteditable — it has no
+    # value, so setting one does nothing. It has to be typed into.
     "comment_box": (
-        "[data-e2e='comment-text-input']",
+        "[data-e2e='comment-input']",
         "div[contenteditable='true'][role='textbox']",
-        "div[class*='DivCommentInput'] div[contenteditable='true']",
+    ),
+    #: One person's top-level comment, and the parts of it worth having.
+    "comment_thread": (
+        "[data-e2e='comment-level-1']",
+    ),
+    "comment_body": (
+        "[data-e2e='comment-text']",
     ),
     # Disabled until the box has text, so it cannot be pressed first.
     "comment_post": (

@@ -662,47 +662,79 @@ SLOW_SHELL = """
 """
 
 
-# --- video pages, for commenting ------------------------------------------
+# --- video pages, for replying to comments --------------------------------
 #
-# The comment box is a contenteditable, like the real one: it has no value
-# to set, so a driver that assigns instead of typing finds it empty.
+# Shaped from the live panel, not guessed: the editor is `comment-input`
+# and is a contenteditable, each comment is `comment-level-1`, and the
+# Reply control shares its data-e2e with "View 3 replies" — so the label
+# is what tells them apart.
 
-VIDEO_COMMENTABLE = """
+VIDEO_WITH_COMMENTS = """
 <html><body>
   <h1>A video</h1>
-  <div id="list"></div>
-  <div data-e2e="comment-text-input" contenteditable="true" role="textbox"></div>
-  <button data-e2e="comment-post">Post</button>
+  <button data-e2e="comment-icon">Comments</button>
+  <div id="threads">
+    <div data-e2e="comment-level-1">
+      <p data-e2e="comment-text">first person said this</p>
+      <p data-e2e="comment-reply-1" class="reply">Reply</p>
+      <p data-e2e="comment-reply-1">View 3 replies</p>
+    </div>
+    <div data-e2e="comment-level-1">
+      <p data-e2e="comment-text">second person said this</p>
+      <p data-e2e="comment-reply-1" class="reply">Reply</p>
+    </div>
+    <div data-e2e="comment-level-1">
+      <p data-e2e="comment-text">third person said this</p>
+      <p data-e2e="comment-reply-1" class="reply">Reply</p>
+    </div>
+  </div>
+  <div id="editor" style="display:none">
+    <div data-e2e="comment-input" contenteditable="true" role="textbox"></div>
+    <button data-e2e="comment-post">Post</button>
+  </div>
   <script>
+    var answering = null;
+    document.querySelectorAll('[data-e2e="comment-reply-1"]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        if ((el.textContent || '').trim() !== 'Reply') { return; }
+        answering = el.closest('[data-e2e="comment-level-1"]');
+        document.getElementById('editor').style.display = 'block';
+      });
+    });
     document.querySelector('[data-e2e="comment-post"]').addEventListener('click', function () {
-      var box = document.querySelector('[data-e2e="comment-text-input"]');
+      var box = document.querySelector('[data-e2e="comment-input"]');
       var written = (box.innerText || '').trim();
-      if (!written) { return; }
-      var item = document.createElement('div');
-      item.setAttribute('data-e2e', 'comment-level-1');
-      item.textContent = written;
-      document.getElementById('list').appendChild(item);
+      if (!written || !answering) { return; }
+      var reply = document.createElement('p');
+      reply.setAttribute('data-e2e', 'comment-text');
+      reply.textContent = written;
+      answering.appendChild(reply);
       box.innerHTML = '';
     });
   </script>
 </body></html>
 """
 
-#: Takes the text, empties the box, and shows nothing. A comment the
-#: platform swallowed looks exactly like one that posted — until the list
-#: is read back.
-VIDEO_SWALLOWS_COMMENT = """
+#: Takes the reply, empties the box, shows nothing. Indistinguishable from
+#: a reply that posted until the thread is read back.
+VIDEO_SWALLOWS_REPLY = VIDEO_WITH_COMMENTS.replace(
+    "answering.appendChild(reply);", "/* dropped */"
+)
+
+#: Hydrated, and nobody has commented. There is nothing to reply to, which
+#: is not the same as comments being off.
+VIDEO_NO_COMMENTS_YET = """
 <html><body>
   <h1>A video</h1>
-  <div id="list"></div>
-  <div data-e2e="comment-text-input" contenteditable="true" role="textbox"></div>
-  <button data-e2e="comment-post">Post</button>
-  <script>
-    document.querySelector('[data-e2e="comment-post"]').addEventListener('click', function () {
-      document.querySelector('[data-e2e="comment-text-input"]').innerHTML = '';
-    });
-  </script>
+  <button data-e2e="comment-icon">Comments</button>
+  <div id="threads"></div>
 </body></html>
+"""
+
+#: The skeleton: player up, chrome never hydrated, no comment control at
+#: all. This must not be called "comments are off" — that is terminal.
+VIDEO_SKELETON = """
+<html><body><h1>A video</h1><div class="placeholder"></div></body></html>
 """
 
 VIDEO_COMMENTS_OFF = """
@@ -713,8 +745,10 @@ VIDEO_COMMENTS_OFF = """
 """
 
 PAGES = {
-    "/video/ok": VIDEO_COMMENTABLE,
-    "/video/swallowed": VIDEO_SWALLOWS_COMMENT,
+    "/video/ok": VIDEO_WITH_COMMENTS,
+    "/video/swallowed": VIDEO_SWALLOWS_REPLY,
+    "/video/empty": VIDEO_NO_COMMENTS_YET,
+    "/video/skeleton": VIDEO_SKELETON,
     "/video/closed": VIDEO_COMMENTS_OFF,
     "/slowshell": SLOW_SHELL,
     "/nevertyped": TYPING_GOES_NOWHERE,
@@ -1660,18 +1694,23 @@ async def _settle():
         await asyncio.sleep(0.02)
 
 
-# --- commenting ------------------------------------------------------------
+# --- replying to comments -------------------------------------------------
 #
-# A comment campaign posts on one video from many accounts. The click is
-# never the proof: a box that empties looks the same whether the comment
-# reached the page or the platform dropped it.
+# A comment campaign answers people under a video rather than posting at
+# the top of it. The click is never the proof: a reply box that empties
+# looks the same whether the reply reached the page or was dropped.
 
 
-def comment_slot(site: str, path: str, text: str, slot: str = "comment 1") -> dict:
-    return {"username": slot, "profile_url": f"{site}{path}", "comment": text}
+def comment_slot(site: str, path: str, text: str, index: int = 0) -> dict:
+    return {
+        "username": f"comment {index + 1}",
+        "profile_url": f"{site}{path}",
+        "comment": text,
+        "slot_index": index,
+    }
 
 
-async def test_a_comment_is_typed_and_confirmed_on_the_page(driver, site):
+async def test_a_reply_lands_under_somebody_elses_comment(driver, site):
     result = await driver.comment_on_video(
         account(), comment_slot(site, "/video/ok", "love this one")
     )
@@ -1679,13 +1718,66 @@ async def test_a_comment_is_typed_and_confirmed_on_the_page(driver, site):
     assert result.detail.get("comment") == "love this one"
 
 
-async def test_a_swallowed_comment_is_not_reported_as_posted(driver, site):
-    """The box emptying is not evidence anyone will see the comment."""
+async def test_each_slot_answers_a_different_comment(driver, site):
+    """Otherwise every account piles onto whichever comment is first."""
+    first = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/ok", "reply to the first", index=0)
+    )
+    second = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/ok", "reply to the third", index=2)
+    )
+    assert first.status == RESULT_SENT and second.status == RESULT_SENT
+
+    page = await driver._page_for(account())
+    under_first = await page.eval_on_selector_all(
+        '[data-e2e="comment-level-1"]',
+        "els => els.map(e => (e.innerText || '').trim())",
+    )
+    assert "reply to the third" in under_first[2], under_first
+    assert "reply to the third" not in under_first[0], under_first
+
+
+async def test_a_swallowed_reply_is_not_reported_as_posted(driver, site):
     result = await driver.comment_on_video(
         account(), comment_slot(site, "/video/swallowed", "nice")
     )
     assert result.status != RESULT_SENT
     assert "did not appear" in (result.error or "").lower()
+
+
+async def test_a_video_nobody_has_commented_on_is_not_called_closed(driver, site):
+    """Nothing to reply to is not the same as comments being turned off."""
+    from services.outreach.constants import RESULT_COMMENTS_CLOSED
+
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/empty", "hello")
+    )
+    assert result.status != RESULT_SENT
+    assert result.status != RESULT_COMMENTS_CLOSED
+    assert "nothing to reply to" in (result.error or "").lower()
+
+
+async def test_a_page_that_never_hydrated_is_not_called_closed(driver, site):
+    """The bug this cost a run to find.
+
+    TikTok serves the player and hydrates its chrome separately. A page
+    that arrives as a skeleton has no comment control — which reads
+    exactly like comments being off, and calling it that marks the job
+    never-retry, so the slot is spent on a video that was fine.
+    """
+    from services.outreach.constants import (
+        NEVER_RETRY_RESULTS,
+        RESULT_COMMENTS_CLOSED,
+    )
+
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/skeleton", "hello")
+    )
+    assert result.status != RESULT_SENT
+    assert result.status != RESULT_COMMENTS_CLOSED
+    assert result.status not in NEVER_RETRY_RESULTS, (
+        "a page that did not load must stay retryable"
+    )
 
 
 async def test_a_video_with_comments_off_says_so_and_is_not_retried(driver, site):
@@ -1698,7 +1790,6 @@ async def test_a_video_with_comments_off_says_so_and_is_not_retried(driver, site
         account(), comment_slot(site, "/video/closed", "hello")
     )
     assert result.status == RESULT_COMMENTS_CLOSED
-    # Every slot on the campaign would hit the same wall.
     assert RESULT_COMMENTS_CLOSED in NEVER_RETRY_RESULTS
 
 

@@ -411,7 +411,7 @@ export default function OutreachCampaignPage() {
                 className="flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-muted-foreground transition-colors hover:text-foreground"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
-                {c.target_url ? "Comment setup" : "Set up comments"}
+                {c.target_url ? "Reply setup" : "Set up replies"}
               </button>
             </div>
           )}
@@ -1049,11 +1049,11 @@ function CommentSetup({
   };
 
   return (
-    <Modal title="Comment setup" onClose={onClose}>
+    <Modal title="Reply setup" onClose={onClose}>
       <div className="space-y-3">
         <div>
           <label className="text-xs font-medium text-muted-foreground">
-            Video to comment on
+            Video to reply under
           </label>
           <input
             value={url}
@@ -1065,7 +1065,7 @@ function CommentSetup({
         </div>
         <div>
           <label className="text-xs font-medium text-muted-foreground">
-            How many comments
+            How many replies
           </label>
           <input
             value={howMany}
@@ -1078,7 +1078,7 @@ function CommentSetup({
         </div>
         <div>
           <label className="text-xs font-medium text-muted-foreground">
-            Lines to post, one per line
+            Replies to post, one per line
           </label>
           <textarea
             value={text}
@@ -1091,7 +1091,7 @@ function CommentSetup({
           <p className="mt-1 text-[11px] text-muted-foreground">
             {written.length === 0
               ? "Add at least one line."
-              : `${written.length} line${written.length === 1 ? "" : "s"}, picked at random per comment.`}
+              : `${written.length} line${written.length === 1 ? "" : "s"}, picked at random per reply.`}
           </p>
         </div>
         <button
@@ -1099,7 +1099,7 @@ function CommentSetup({
           disabled={locked || saving || !url.trim() || asked < 1 || written.length === 0}
           className="w-full rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Save comment setup"}
+          {saving ? "Saving…" : "Save reply setup"}
         </button>
         {locked && (
           <p className="text-[11px] text-muted-foreground">

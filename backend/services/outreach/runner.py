@@ -362,6 +362,9 @@ class OutreachWorker:
                         campaign.get("target_url") or target["profile_url"]
                     ),
                     "comment": line,
+                    # Which comment this slot answers. Without it every
+                    # account replies to whichever is first on the day.
+                    "slot_index": comments.slot_index(target["username"]),
                 })
             elif following:
                 result = await driver.follow_target(payload, {

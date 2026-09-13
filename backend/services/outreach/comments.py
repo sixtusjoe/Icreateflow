@@ -1,14 +1,19 @@
-"""Mass commenting: one video, many accounts, a comment each.
+"""Mass commenting: one video, many accounts, a reply each.
+
+Replies under other people's comments, not comments at the top of the
+video — that is where a conversation already is, and where an answer gets
+read.
 
 A comment campaign has no list of people. It has a video, a number of
-comments to leave, and the lines to choose between — so its targets are
-comment *slots*, one row per comment asked for. Everything the queue
-already does for a message campaign then applies unchanged: leases,
-per-account caps, send intervals, retries, the progress counters.
+replies to leave, and the lines to choose between — so its targets are
+*slots*, one row per reply asked for, and the slot's number decides whose
+comment it answers. Everything the queue already does for a message
+campaign then applies unchanged: leases, per-account caps, send
+intervals, retries, the progress counters.
 
 The lines matter more than they look. Several accounts posting the same
 sentence under one video is the pattern a spam filter is built to catch,
-so a campaign carries a set and each comment draws from it.
+so a campaign carries a set and each reply draws from it.
 """
 from __future__ import annotations
 
@@ -45,6 +50,21 @@ def is_comment(campaign: dict[str, Any]) -> bool:
 
 def slot_name(index: int) -> str:
     return f"{SLOT_PREFIX}{index}"
+
+
+def slot_index(username: str) -> int:
+    """Which comment this slot answers, counted from zero.
+
+    Slots are named "comment 1", "comment 2" and so on. The number is what
+    spreads the replies across different people's comments instead of
+    piling every account onto the first one.
+    """
+    name = (username or "").strip()
+    if name.startswith(SLOT_PREFIX):
+        tail = name[len(SLOT_PREFIX):].strip()
+        if tail.isdigit():
+            return max(0, int(tail) - 1)
+    return 0
 
 
 def variations(campaign: dict[str, Any]) -> list[str]:
