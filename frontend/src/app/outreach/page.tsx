@@ -25,7 +25,7 @@ import {
   setCampaignAttachment,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { StatusPill, ProgressBar, PageIcon, Select, inputClass, apiErrorMessage } from "./ui";
+import { LABEL_WHEN_ROOM, PageIcon, ProgressBar, Select, StatusPill, apiErrorMessage, inputClass } from "./ui";
 
 export default function OutreachPage() {
   const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
@@ -113,34 +113,42 @@ export default function OutreachPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <PageIcon icon={Send} />
-          <div>
+          <div className="min-w-0">
             <h1 className="text-xl md:text-2xl font-bold tracking-tight">Outreach</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Import creator lists, queue DMs, and watch them go out across your sending accounts.
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
           <Link
             href="/outreach/accounts"
-            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+            title="Accounts"
+            className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border px-3 lg:px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
           >
-            <Users className="h-4 w-4" /> Accounts
+            <Users className="h-4 w-4" />
+            {/* Hidden only where the title and these share one line and
+                the labels push them onto three ragged rows. */}
+            <span className={LABEL_WHEN_ROOM}>Accounts</span>
             <span className="rounded-full bg-muted px-1.5 text-[11px]">{enabledAccounts}</span>
           </Link>
           <Link
             href="/outreach/templates"
-            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+            title="Templates"
+            className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border px-3 lg:px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
           >
-            <FileText className="h-4 w-4" /> Templates
+            <FileText className="h-4 w-4" />
+            <span className={LABEL_WHEN_ROOM}>Templates</span>
           </Link>
           <button
             onClick={() => setShowNew(true)}
-            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90"
+            title="New campaign"
+            className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-lg bg-foreground px-4 lg:px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90"
           >
-            <Plus className="h-4 w-4" /> New Campaign
+            <Plus className="h-4 w-4" />
+            <span className={LABEL_WHEN_ROOM}>New Campaign</span>
           </button>
         </div>
       </div>

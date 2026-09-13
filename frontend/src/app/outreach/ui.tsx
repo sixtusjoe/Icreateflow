@@ -59,6 +59,15 @@ export function Toggle({
 }
 
 /** Matches the input styling used across the Clipping pages. */
+/** When an action's text label has room to show.
+ *
+ * Visible below `sm`, where the page header stacks and the buttons get
+ * the full width; hidden from `sm`, where the title and the actions share
+ * one line and the labels push them onto three ragged rows; visible again
+ * from `lg`, where the row is wide enough for both.
+ */
+export const LABEL_WHEN_ROOM = "inline sm:hidden lg:inline";
+
 export const inputClass =
   "w-full rounded-lg border border-border bg-background px-4 py-2.5 text-base sm:text-sm outline-none transition-colors focus:border-foreground placeholder:text-muted-foreground";
 

@@ -50,7 +50,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { SessionViewer } from "@/components/outreach/SessionViewer";
-import { Modal, ProgressBar, StatusPill, apiErrorMessage, inputClass, relativeTime } from "../ui";
+import { LABEL_WHEN_ROOM, Modal, ProgressBar, StatusPill, apiErrorMessage, inputClass, relativeTime } from "../ui";
 import { LeadFinder } from "./lead-finder";
 
 type Detail = {
@@ -422,7 +422,7 @@ export default function OutreachCampaignPage() {
             <span className="font-mono">{detail.driver}</span>
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-start gap-2 sm:justify-end">
           {(status === "draft" || status === "stopped" || status === "completed") && (
             <ActionButton
               icon={<Play className="h-4 w-4" />}
@@ -948,13 +948,19 @@ function ActionButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex min-h-[40px] items-center gap-2 rounded-lg px-4 text-sm font-medium transition-colors disabled:opacity-40 ${
+      title={label}
+      aria-label={label}
+      className={cn(
+        "inline-flex min-h-[40px] shrink-0 items-center justify-center gap-2",
+        "rounded-lg px-3 lg:px-4 text-sm font-medium transition-colors",
+        "disabled:opacity-40",
         primary
           ? "bg-foreground text-background hover:opacity-90"
-          : "border border-border hover:bg-muted"
-      }`}
+          : "border border-border hover:bg-muted",
+      )}
     >
-      {icon} {label}
+      {icon}
+      <span className={LABEL_WHEN_ROOM}>{label}</span>
     </button>
   );
 }
