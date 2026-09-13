@@ -79,6 +79,10 @@ RESULT_RATE_LIMITED = "rate_limited"
 #: restricted them to people they follow. Every slot on that campaign hits
 #: the same wall, so retrying is pointless and the target is done with.
 RESULT_COMMENTS_CLOSED = "comments_closed"
+#: Everyone reachable under the video has already been replied to. Not a
+#: fault: the campaign asked for more replies than the video has people,
+#: and answering someone twice is worse than leaving a slot unused.
+RESULT_NO_ONE_LEFT = "no_one_left"
 #: TikTok is showing a human-verification challenge (the slider puzzle)
 #: instead of letting the account act. Nothing about the target is wrong, so
 #: the target must stay retryable — recording it as "does not accept DMs"
@@ -132,6 +136,7 @@ RESULT_DB_ERROR = "database_error"
 TERMINAL_RESULTS = frozenset({
     RESULT_PROFILE_UNAVAILABLE,
     RESULT_COMMENTS_CLOSED,
+    RESULT_NO_ONE_LEFT,
 })
 
 #: The account, not the target, is the problem. These count toward the
@@ -165,6 +170,7 @@ NEVER_RETRY_RESULTS = frozenset({
     RESULT_TEMPLATE_ERROR,
     RESULT_MESSAGE_REFUSED,
     RESULT_COMMENTS_CLOSED,
+    RESULT_NO_ONE_LEFT,
 })
 
 # --- Audit actions --------------------------------------------------------

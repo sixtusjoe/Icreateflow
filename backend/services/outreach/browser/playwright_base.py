@@ -45,6 +45,7 @@ from services.outreach.constants import (
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_NAVIGATION_TIMEOUT,
+    RESULT_NO_ONE_LEFT,
     RESULT_PROFILE_UNAVAILABLE,
     RESULT_RATE_LIMITED,
     RESULT_SESSION_EXPIRED,
@@ -98,6 +99,10 @@ COMMENT_POLL_MS = 700
 #: one settle. TikTok hydrates its chrome separately from the player.
 COMMENT_HYDRATE_RELOADS = 2
 COMMENT_SETTLE_MS = 4000
+#: Rounds of "open a reply thread, then scroll" spent looking for people
+#: the top level does not show.
+COMMENT_WIDEN_ROUNDS = 4
+COMMENT_EXPANDS_PER_ROUND = 8
 #: Following: how long to wait for the profile's own control, and how long
 #: to let a press take effect. A single look two seconds after the click
 #: called confirmed follows "unchanged", and enough of those in a row reads
@@ -1952,6 +1957,86 @@ class PlaywrightMessenger:
         await page.wait_for_timeout(COMMENT_SETTLE_MS)
         return True
 
+    async def _thread_author(self, thread) -> Optional[str]:
+        """Whose comment this is, as a handle without the @."""
+        for selector in self.SELECTORS.get("comment_author", ()):
+            try:
+                link = await thread.query_selector(selector)
+                if link is None:
+                    continue
+                href = (await link.get_attribute("href")) or ""
+                handle = href.strip("/").split("/")[0].lstrip("@")
+                if handle:
+                    return handle.lower()
+            except Exception:  # noqa: BLE001 — a stale node is not an answer
+                continue
+        return None
+
+    async def _widen_comments(self, page) -> None:
+        """Show more people: scroll the panel, and open reply threads.
+
+        Most of a video's commenters are not at the top level — they are
+        behind "View 3 replies", and a panel that has not been scrolled
+        holds only its first screenful. Without both, a campaign of any
+        size runs out of people and starts answering the same ones again.
+        """
+        for _ in range(COMMENT_WIDEN_ROUNDS):
+            opened = 0
+            for selector in self.SELECTORS.get("comment_replies", ()):
+                try:
+                    handles = await page.query_selector_all(selector)
+                except Exception:  # noqa: BLE001
+                    continue
+                for handle in handles:
+                    if opened >= COMMENT_EXPANDS_PER_ROUND:
+                        break
+                    try:
+                        label = " ".join(((await handle.inner_text()) or "").split())
+                        # "Reply" is the action; "View 3 replies" is the
+                        # one that reveals people.
+                        if label.lower() == "reply" or not label:
+                            continue
+                        await handle.click(timeout=CLICK_MS, no_wait_after=True)
+                        opened += 1
+                        await page.wait_for_timeout(COMMENT_POLL_MS)
+                    except Exception:  # noqa: BLE001 — one that will not open
+                        continue
+            try:
+                await page.mouse.wheel(0, 1200)
+            except Exception:  # noqa: BLE001
+                pass
+            await page.wait_for_timeout(COMMENT_POLL_MS)
+            if opened == 0:
+                break
+
+    async def _reply_candidates(self, page) -> list:
+        """Every comment on screen that could be answered, with its author."""
+        found = []
+        seen = set()
+        for key in ("comment_thread", "comment_thread_nested"):
+            for selector in self.SELECTORS.get(key, ()):
+                try:
+                    handles = await page.query_selector_all(selector)
+                except Exception:  # noqa: BLE001
+                    continue
+                for handle in handles:
+                    # Only people actually reachable. A reply still folded
+                    # inside its thread is returned by the query all the
+                    # same, and offering one means picking somebody the
+                    # page will not scroll to — which fails the job rather
+                    # than opening the thread.
+                    try:
+                        if not await handle.is_visible():
+                            continue
+                    except Exception:  # noqa: BLE001 — a stale node is gone
+                        continue
+                    author = await self._thread_author(handle)
+                    if not author or author in seen:
+                        continue
+                    seen.add(author)
+                    found.append((author, handle))
+        return found
+
     async def _reply_control(self, page, thread):
         """The Reply button inside one comment.
 
@@ -2035,14 +2120,13 @@ class PlaywrightMessenger:
                     screenshot=await self._save_debug_shot(
                         page, slot, "no-comment-panel"))
 
-            threads = []
+            candidates = []
             for _ in range(COMMENT_CONFIRM_POLLS):
-                threads = await page.query_selector_all(
-                    self.SELECTORS["comment_thread"][0])
-                if threads:
+                candidates = await self._reply_candidates(page)
+                if candidates:
                     break
                 await page.wait_for_timeout(COMMENT_POLL_MS)
-            if not threads:
+            if not candidates:
                 return MessageResult.failure(
                     RESULT_UNEXPECTED_PAGE,
                     "Nobody has commented on this video yet — there is "
@@ -2051,9 +2135,29 @@ class PlaywrightMessenger:
                     screenshot=await self._save_debug_shot(
                         page, slot, "no-comments-to-reply-to"))
 
-            # Each slot answers a different comment. Without this every
-            # account piles onto whichever comment happens to be first.
-            thread = threads[nth % len(threads)]
+            # Nobody twice. `avoid` is who this campaign has already
+            # answered, read from the database for this job — not a count,
+            # because a modulo over what happens to be on screen answers
+            # the same five people over and over.
+            avoid = {str(a).lower() for a in (target.get("avoid") or [])}
+            avoid.add(str(account.get("name") or "").lower())
+            fresh = [c for c in candidates if c[0] not in avoid]
+            if not fresh:
+                # More people are behind the reply threads and further down
+                # the panel; go and get them before giving up.
+                await self._widen_comments(page)
+                candidates = await self._reply_candidates(page)
+                fresh = [c for c in candidates if c[0] not in avoid]
+            if not fresh:
+                return MessageResult.failure(
+                    RESULT_NO_ONE_LEFT,
+                    f"Everyone reachable under this video has already been "
+                    f"replied to ({len(candidates)} seen)",
+                    url=url)
+
+            # The slot's number only spreads the starting point, so two
+            # accounts working at once do not both take the first.
+            author, thread = fresh[nth % len(fresh)]
             await thread.scroll_into_view_if_needed(timeout=CLICK_MS)
             reply = await self._reply_control(page, thread)
             if reply is None:
@@ -2099,7 +2203,8 @@ class PlaywrightMessenger:
             for _ in range(COMMENT_CONFIRM_POLLS):
                 await page.wait_for_timeout(COMMENT_POLL_MS)
                 if await self._comment_visible(page, text_to_post):
-                    return MessageResult.sent(url=url, comment=text_to_post)
+                    return MessageResult.sent(
+                        url=url, comment=text_to_post, replied_to=author)
 
             if await self._challenge_present(page):
                 return MessageResult.failure(

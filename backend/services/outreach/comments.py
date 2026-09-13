@@ -123,6 +123,23 @@ def validate(campaign: dict[str, Any]) -> None:
         )
 
 
+async def already_answered(database, campaign_id: int) -> list[str]:
+    """Everyone this campaign has already replied to.
+
+    Read fresh for every job rather than held in memory: several accounts
+    work one campaign at once, and two of them picking the same comment a
+    second apart is exactly what this is here to stop.
+    """
+    rows = (await database.session.execute(
+        text(
+            "SELECT DISTINCT replied_to FROM outreach_targets "
+            " WHERE campaign_id = :cid AND replied_to IS NOT NULL"
+        ),
+        {"cid": int(campaign_id)},
+    )).all()
+    return [r[0] for r in rows if r and r[0]]
+
+
 async def sync_slots(database, campaign: dict[str, Any]) -> int:
     """Give the campaign one queued slot per comment asked for.
 

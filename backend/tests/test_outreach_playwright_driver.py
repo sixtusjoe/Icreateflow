@@ -675,15 +675,25 @@ VIDEO_WITH_COMMENTS = """
   <button data-e2e="comment-icon">Comments</button>
   <div id="threads">
     <div data-e2e="comment-level-1">
+      <div data-e2e="comment-username-1"><a href="/@alice">alice</a></div>
       <p data-e2e="comment-text">first person said this</p>
       <p data-e2e="comment-reply-1" class="reply">Reply</p>
-      <p data-e2e="comment-reply-1">View 3 replies</p>
+      <p data-e2e="comment-reply-1" class="expand">View 1 reply</p>
+      <div id="hidden" style="display:none">
+        <div data-e2e="comment-level-2">
+          <div data-e2e="comment-username-2"><a href="/@dave">dave</a></div>
+          <p data-e2e="comment-text">dave replied in the thread</p>
+          <p data-e2e="comment-reply-1" class="reply">Reply</p>
+        </div>
+      </div>
     </div>
     <div data-e2e="comment-level-1">
+      <div data-e2e="comment-username-1"><a href="/@bob">bob</a></div>
       <p data-e2e="comment-text">second person said this</p>
       <p data-e2e="comment-reply-1" class="reply">Reply</p>
     </div>
     <div data-e2e="comment-level-1">
+      <div data-e2e="comment-username-1"><a href="/@carol">carol</a></div>
       <p data-e2e="comment-text">third person said this</p>
       <p data-e2e="comment-reply-1" class="reply">Reply</p>
     </div>
@@ -696,7 +706,13 @@ VIDEO_WITH_COMMENTS = """
     var answering = null;
     document.querySelectorAll('[data-e2e="comment-reply-1"]').forEach(function (el) {
       el.addEventListener('click', function () {
-        if ((el.textContent || '').trim() !== 'Reply') { return; }
+        var label = (el.textContent || '').trim();
+      if (label !== 'Reply') {
+        // "View 1 reply" reveals the people hidden in the thread.
+        var box = document.getElementById('hidden');
+        if (box) { box.style.display = 'block'; }
+        return;
+      }
         answering = el.closest('[data-e2e="comment-level-1"]');
         document.getElementById('editor').style.display = 'block';
       });
@@ -1799,3 +1815,45 @@ async def test_an_empty_comment_is_refused_before_a_page_is_opened(driver, site)
     )
     assert result.status != RESULT_SENT
     assert "no comment text" in (result.error or "").lower()
+
+
+async def test_it_never_replies_to_the_same_person_twice(driver, site):
+    """The campaign's memory of who it answered is what this respects."""
+    slot = comment_slot(site, "/video/ok", "hello again")
+    slot["avoid"] = ["alice", "bob"]
+    result = await driver.comment_on_video(account(), slot)
+    assert result.status == RESULT_SENT, result.error
+    assert result.detail.get("replied_to") not in ("alice", "bob")
+
+
+async def test_it_reports_who_it_answered(driver, site):
+    """Without this the next job cannot know who to avoid."""
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/ok", "nice")
+    )
+    assert result.status == RESULT_SENT, result.error
+    assert result.detail.get("replied_to") in ("alice", "bob", "carol", "dave")
+
+
+async def test_it_opens_reply_threads_to_find_more_people(driver, site):
+    """Most commenters are behind "View 3 replies", not at the top level.
+
+    Everyone visible is excluded here, so the only person left is inside a
+    collapsed thread. A driver that only reads the top level has nobody
+    and fails.
+    """
+    slot = comment_slot(site, "/video/ok", "found you")
+    slot["avoid"] = ["alice", "bob", "carol"]
+    result = await driver.comment_on_video(account(), slot)
+    assert result.status == RESULT_SENT, result.error
+    assert result.detail.get("replied_to") == "dave"
+
+
+async def test_running_out_of_people_is_not_a_silent_duplicate(driver, site):
+    """Better an unused slot than the same person answered twice."""
+    from services.outreach.constants import RESULT_NO_ONE_LEFT
+
+    slot = comment_slot(site, "/video/ok", "anyone?")
+    slot["avoid"] = ["alice", "bob", "carol", "dave"]
+    result = await driver.comment_on_video(account(), slot)
+    assert result.status == RESULT_NO_ONE_LEFT

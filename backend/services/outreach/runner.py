@@ -365,7 +365,20 @@ class OutreachWorker:
                     # Which comment this slot answers. Without it every
                     # account replies to whichever is first on the day.
                     "slot_index": comments.slot_index(target["username"]),
+                    # Everyone this campaign has already answered. Read now
+                    # rather than cached: several accounts work one
+                    # campaign at once, and two picking the same person a
+                    # second apart is what this prevents.
+                    "avoid": await comments.already_answered(
+                        database, campaign["id"]),
                 })
+                answered = (result.detail or {}).get("replied_to")
+                if result.success and answered:
+                    # Written before the job is completed, so a crash in
+                    # between cannot lose who was answered and let the next
+                    # slot answer them again.
+                    await db.update_outreach_target(
+                        database, int(target["id"]), replied_to=str(answered))
             elif following:
                 result = await driver.follow_target(payload, {
                     "username": target["username"],

@@ -766,6 +766,10 @@ class OutreachTarget(Base):
     last_attempt_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: Whose comment this slot answered. A comment campaign must not reply
+    #: to the same person twice, and the only durable record of who has
+    #: been answered is the slot that answered them.
+    replied_to: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     __table_args__ = (
@@ -1511,6 +1515,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         # these are a few hundred KB each and the row is read on every claim.
         ("outreach_campaigns", "attachment_path", "TEXT"),
         ("outreach_campaigns", "activity", "TEXT NOT NULL DEFAULT 'message'"),
+    ("outreach_targets", "replied_to", "TEXT"),
     ("outreach_campaigns", "target_url", "TEXT"),
     ("outreach_campaigns", "comment_count", "INTEGER NOT NULL DEFAULT 0"),
     ("outreach_campaigns", "comment_variations", "TEXT"),

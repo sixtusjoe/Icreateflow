@@ -186,6 +186,15 @@ TIKTOK_SELECTORS: dict[str, Any] = {
     "comment_body": (
         "[data-e2e='comment-text']",
     ),
+    #: A reply under someone's comment. These carry people the top level
+    #: never shows, so they are candidates to answer too.
+    "comment_thread_nested": (
+        "[data-e2e='comment-level-2']",
+    ),
+    #: Whose comment it is. `-1` at the top level, `-2` in a reply.
+    "comment_author": (
+        "[data-e2e^='comment-username'] a[href^='/@']",
+    ),
     # Disabled until the box has text, so it cannot be pressed first.
     "comment_post": (
         "[data-e2e='comment-post']",
