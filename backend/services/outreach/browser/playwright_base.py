@@ -103,6 +103,13 @@ COMMENT_SETTLE_MS = 4000
 #: the top level does not show.
 COMMENT_WIDEN_ROUNDS = 4
 COMMENT_EXPANDS_PER_ROUND = 8
+#: Walking a long comment list looking for somebody not yet answered.
+#: Generous: a video with a thousand comments is the point of this, and a
+#: short fuse stops a third of the way down looking like a short list.
+COMMENT_WALK_STEPS = 160
+COMMENT_WALK_BUDGET_MS = 180000
+COMMENT_QUIET_STEPS = 8
+COMMENT_SCROLL_WAIT_MS = 1400
 #: Following: how long to wait for the profile's own control, and how long
 #: to let a press take effect. A single look two seconds after the click
 #: called confirmed follows "unchanged", and enough of those in a row reads
@@ -1991,58 +1998,116 @@ class PlaywrightMessenger:
             return None
         return None
 
-    async def _widen_comments(self, page) -> None:
-        """Show more people: open reply threads, then scroll the panel.
+    async def _mark_comment_scroller(self, page) -> None:
+        """Tag whatever actually scrolls, walking up from a comment row.
 
-        Most of a video's commenters are not at the top level — they are
-        behind "View 3 replies", and a panel that has not been scrolled
-        holds only its first screenful.
-
-        The panel scrolls inside itself, not the page. Turning the mouse
-        wheel over the document moved the whole page instead, which put
-        every comment out of view and left nobody to answer at all.
+        Platform drivers may override this; the default finds it from the
+        comment row, which is where every layout puts it.
         """
-        panel = None
-        for selector in self.SELECTORS.get("scroll_container", ()):
+        selector = (self.SELECTORS.get("comment_thread") or ("body",))[0]
+        await page.evaluate("""(sel) => {
+            const row = document.querySelector(sel);
+            let el = row && row.parentElement;
+            for (let i = 0; i < 12 && el; i++, el = el.parentElement) {
+                if (el.scrollHeight > el.clientHeight + 60) {
+                    el.setAttribute('data-icf-comments', '1');
+                    return;
+                }
+            }
+        }""", selector)
+
+    async def _expand_visible_replies(self, page) -> int:
+        """Open the reply threads on screen. Returns how many were opened.
+
+        Most of a video's commenters are not at the top level. "View 3
+        replies" shares its data-e2e with the Reply action, so the label is
+        what tells them apart.
+        """
+        opened = 0
+        for selector in self.SELECTORS.get("comment_replies", ()):
             try:
-                panel = await page.query_selector(selector)
+                handles = await page.query_selector_all(selector)
             except Exception:  # noqa: BLE001
-                panel = None
-            if panel is not None:
+                continue
+            for handle in handles:
+                if opened >= COMMENT_EXPANDS_PER_ROUND:
+                    return opened
+                try:
+                    label = " ".join(((await handle.inner_text()) or "").split())
+                    if not label or label.lower() == "reply":
+                        continue
+                    if not await handle.is_visible():
+                        continue
+                    await handle.click(timeout=CLICK_MS, no_wait_after=True)
+                    opened += 1
+                    await page.wait_for_timeout(COMMENT_POLL_MS)
+                except Exception:  # noqa: BLE001 — one that will not open
+                    continue
+        return opened
+
+    async def _scroll_panel_step(self, page) -> tuple[int, bool]:
+        """Move the panel down by just under a screen.
+
+        Less than a screen, never a jump to the bottom: the rows are
+        recycled, so anything skipped is never rendered again and the
+        people in it are unreachable.
+        """
+        await page.evaluate("""() => {
+            const el = document.querySelector("[data-icf-comments='1']");
+            if (!el) return;
+            const step = Math.max(el.clientHeight - 60, 80);
+            const next = el.scrollTop + step;
+            el.scrollTop = next >= el.scrollHeight ? el.scrollHeight : next;
+        }""")
+        await page.wait_for_timeout(COMMENT_SCROLL_WAIT_MS)
+        return await page.evaluate("""() => {
+            const el = document.querySelector("[data-icf-comments='1']");
+            if (!el) return [0, true];
+            return [el.scrollHeight,
+                    el.scrollTop + el.clientHeight >= el.scrollHeight - 4];
+        }""")
+
+    async def _walk_for_unanswered(self, page, avoid: set):
+        """Walk the comment list until somebody unanswered is on screen.
+
+        Not "collect everyone, then choose". The panel recycles its rows,
+        so a handle held from twenty screens ago points at nothing — which
+        is why this stops the moment it finds someone and replies to them
+        while their row is still mounted.
+
+        It goes deeper as a campaign progresses: the twentieth reply
+        scrolls past the nineteen people already answered before it finds
+        its own. That is the cost of not answering anybody twice.
+        """
+        await self._mark_comment_scroller(page)
+        deadline = time.monotonic() + (COMMENT_WALK_BUDGET_MS / 1000)
+        quiet, tallest, seen = 0, 0, 0
+
+        for _ in range(COMMENT_WALK_STEPS):
+            candidates = await self._reply_candidates(page)
+            seen = max(seen, len(candidates))
+            for author, row in candidates:
+                if author not in avoid:
+                    return author, row, seen
+
+            if time.monotonic() > deadline:
+                # Out of time, not out of people. Each job walks past
+                # everyone already answered, so the later ones walk
+                # furthest — and calling that "nobody left" would retire a
+                # slot that had simply not finished looking.
+                return None, None, -1
+            # Open what is on screen first: a thread holds people the top
+            # level never shows, and scrolling past it loses them.
+            await self._expand_visible_replies(page)
+            height, at_end = await self._scroll_panel_step(page)
+            # Quiet means the list stopped growing *and* there is nothing
+            # below. Still working down a loaded list is not being stuck.
+            quiet = 0 if (height > tallest or not at_end) else quiet + 1
+            tallest = max(tallest, height)
+            if quiet >= COMMENT_QUIET_STEPS:
                 break
 
-        for _ in range(COMMENT_WIDEN_ROUNDS):
-            opened = 0
-            for selector in self.SELECTORS.get("comment_replies", ()):
-                try:
-                    handles = await page.query_selector_all(selector)
-                except Exception:  # noqa: BLE001
-                    continue
-                for handle in handles:
-                    if opened >= COMMENT_EXPANDS_PER_ROUND:
-                        break
-                    try:
-                        label = " ".join(((await handle.inner_text()) or "").split())
-                        # "Reply" is the action; "View 3 replies" is the
-                        # one that reveals people.
-                        if not label or label.lower() == "reply":
-                            continue
-                        if not await handle.is_visible():
-                            continue
-                        await handle.click(timeout=CLICK_MS, no_wait_after=True)
-                        opened += 1
-                        await page.wait_for_timeout(COMMENT_POLL_MS)
-                    except Exception:  # noqa: BLE001 — one that will not open
-                        continue
-            if panel is not None:
-                try:
-                    await panel.evaluate(
-                        "el => el.scrollTo(0, el.scrollTop + el.clientHeight * 0.8)")
-                except Exception:  # noqa: BLE001
-                    pass
-            await page.wait_for_timeout(COMMENT_POLL_MS)
-            if opened == 0 and panel is None:
-                break
+        return None, None, seen
 
     async def _reply_candidates(self, page) -> list:
         """Everyone on screen who could be answered, with their row.
@@ -2110,7 +2175,6 @@ class PlaywrightMessenger:
         url = (target.get("profile_url") or "").strip()
         text_to_post = (target.get("comment") or "").strip()
         slot = target.get("username") or "comment"
-        nth = int(target.get("slot_index") or 0)
         if not url:
             return MessageResult.failure(
                 RESULT_UNEXPECTED_PAGE, "No video to comment on")
@@ -2156,44 +2220,35 @@ class PlaywrightMessenger:
                     screenshot=await self._save_debug_shot(
                         page, slot, "no-comment-panel"))
 
-            candidates = []
-            for _ in range(COMMENT_CONFIRM_POLLS):
-                candidates = await self._reply_candidates(page)
-                if candidates:
-                    break
-                await page.wait_for_timeout(COMMENT_POLL_MS)
-            if not candidates:
-                return MessageResult.failure(
-                    RESULT_UNEXPECTED_PAGE,
-                    "Nobody has commented on this video yet — there is "
-                    "nothing to reply to",
-                    url=url,
-                    screenshot=await self._save_debug_shot(
-                        page, slot, "no-comments-to-reply-to"))
-
             # Nobody twice. `avoid` is who this campaign has already
-            # answered, read from the database for this job — not a count,
-            # because a modulo over what happens to be on screen answers
-            # the same five people over and over.
+            # answered, read from the database for this job.
             avoid = {str(a).lower() for a in (target.get("avoid") or [])}
             avoid.add(str(account.get("name") or "").lower())
-            fresh = [c for c in candidates if c[0] not in avoid]
-            if not fresh:
-                # More people are behind the reply threads and further down
-                # the panel; go and get them before giving up.
-                await self._widen_comments(page)
-                candidates = await self._reply_candidates(page)
-                fresh = [c for c in candidates if c[0] not in avoid]
-            if not fresh:
+
+            author, thread, seen = await self._walk_for_unanswered(page, avoid)
+            if author is None:
+                if seen < 0:
+                    return MessageResult.failure(
+                        RESULT_RATE_LIMITED,
+                        f"Ran out of time walking the comments — "
+                        f"{len(avoid) - 1} already answered here, and the "
+                        f"unanswered ones are further down than "
+                        f"{COMMENT_WALK_BUDGET_MS // 1000}s of scrolling",
+                        url=url)
+                if seen == 0:
+                    return MessageResult.failure(
+                        RESULT_UNEXPECTED_PAGE,
+                        "Nobody has commented on this video yet — there is "
+                        "nothing to reply to",
+                        url=url,
+                        screenshot=await self._save_debug_shot(
+                            page, slot, "no-comments-to-reply-to"))
                 return MessageResult.failure(
                     RESULT_NO_ONE_LEFT,
                     f"Everyone reachable under this video has already been "
-                    f"replied to ({len(candidates)} seen)",
+                    f"replied to (walked the list, {len(avoid) - 1} answered "
+                    f"already)",
                     url=url)
-
-            # The slot's number only spreads the starting point, so two
-            # accounts working at once do not both take the first.
-            author, thread = fresh[nth % len(fresh)]
             await thread.scroll_into_view_if_needed(timeout=CLICK_MS)
             reply = await self._reply_control(page, thread)
             if reply is None:

@@ -53,21 +53,6 @@ def slot_name(index: int) -> str:
     return f"{SLOT_PREFIX}{index}"
 
 
-def slot_index(username: str) -> int:
-    """Which comment this slot answers, counted from zero.
-
-    Slots are named "comment 1", "comment 2" and so on. The number is what
-    spreads the replies across different people's comments instead of
-    piling every account onto the first one.
-    """
-    name = (username or "").strip()
-    if name.startswith(SLOT_PREFIX):
-        tail = name[len(SLOT_PREFIX):].strip()
-        if tail.isdigit():
-            return max(0, int(tail) - 1)
-    return 0
-
-
 def variations(campaign: dict[str, Any]) -> list[str]:
     """The lines a comment may use.
 

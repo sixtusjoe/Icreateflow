@@ -370,9 +370,6 @@ class OutreachWorker:
                         campaign.get("target_url") or target["profile_url"]
                     ),
                     "comment": line,
-                    # Which comment this slot answers. Without it every
-                    # account replies to whichever is first on the day.
-                    "slot_index": comments.slot_index(target["username"]),
                     # Everyone this campaign has already answered. Read now
                     # rather than cached: several accounts work one
                     # campaign at once, and two picking the same person a

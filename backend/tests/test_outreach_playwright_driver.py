@@ -764,6 +764,75 @@ VIDEO_SKELETON = """
 <html><body><h1>A video</h1><div class="placeholder"></div></body></html>
 """
 
+#: A long list that recycles its rows, the way the real panel does: only
+#: the few near the scroll position exist in the page at any moment. This
+#: is the shape that matters — a stub rendering all fifty at once lets a
+#: driver that never scrolls pass, which is exactly the bug being tested.
+VIDEO_LONG_LIST = """
+<html><body style="margin:0">
+  <h1>A video</h1>
+  <button data-e2e="comment-icon">Comments</button>
+  <div id="panel" style="height:210px;overflow-y:auto">
+    <div id="threads"></div>
+  </div>
+  <div id="editor" style="display:none">
+    <div data-e2e="comment-input" contenteditable="true" role="textbox"></div>
+    <button data-e2e="comment-post">Post</button>
+  </div>
+  <script>
+    var TOTAL = 50, ROW = 70, WINDOW = 3;
+    var panel = document.getElementById('panel');
+    var threads = document.getElementById('threads');
+    var posted = {};          // author -> the reply left under them
+    var answering = null;     // author currently being replied to
+
+    function render() {
+      var first = Math.max(0, Math.floor(panel.scrollTop / ROW) - 1);
+      var last = Math.min(TOTAL, first + WINDOW + 2);
+      var html = '';
+      for (var i = first; i < last; i++) {
+        var who = 'person' + (i + 1);
+        html += '<div class="DivCommentItemContainer" style="height:' + ROW + 'px">'
+             +    '<div data-e2e="comment-username-1"><a href="/@' + who + '">' + who + '</a></div>'
+             +    '<span data-e2e="comment-level-1">comment number ' + (i + 1) + '</span>'
+             +    '<p data-e2e="comment-reply-1">Reply</p>'
+             +    (posted[who]
+                    ? '<div class="DivCommentItemContainer">'
+                      + '<div data-e2e="comment-username-2"><a href="/@sender">sender</a></div>'
+                      + '<span data-e2e="comment-level-2">' + posted[who] + '</span></div>'
+                    : '')
+             +  '</div>';
+      }
+      threads.style.paddingTop = (first * ROW) + 'px';
+      threads.style.paddingBottom = ((TOTAL - last) * ROW) + 'px';
+      threads.innerHTML = html;
+    }
+
+    panel.addEventListener('scroll', render);
+    document.addEventListener('click', function (e) {
+      var el = e.target;
+      if (!el.getAttribute) { return; }
+      if (el.getAttribute('data-e2e') === 'comment-reply-1'
+          && (el.textContent || '').trim() === 'Reply') {
+        var row = el.closest('.DivCommentItemContainer');
+        var link = row && row.querySelector('a[href*="/@"]');
+        answering = link ? link.getAttribute('href').split('/@')[1] : null;
+        document.getElementById('editor').style.display = 'block';
+      }
+      if (el.getAttribute('data-e2e') === 'comment-post') {
+        var box = document.querySelector('[data-e2e="comment-input"]');
+        var written = (box.innerText || '').trim();
+        if (!written || !answering) { return; }
+        posted[answering] = written;
+        box.innerHTML = '';
+        render();
+      }
+    });
+    render();
+  </script>
+</body></html>
+"""
+
 VIDEO_COMMENTS_OFF = """
 <html><body>
   <h1>A video</h1>
@@ -776,6 +845,7 @@ PAGES = {
     "/video/swallowed": VIDEO_SWALLOWS_REPLY,
     "/video/empty": VIDEO_NO_COMMENTS_YET,
     "/video/skeleton": VIDEO_SKELETON,
+    "/video/long": VIDEO_LONG_LIST,
     "/video/closed": VIDEO_COMMENTS_OFF,
     "/slowshell": SLOW_SHELL,
     "/nevertyped": TYPING_GOES_NOWHERE,
@@ -1733,7 +1803,6 @@ def comment_slot(site: str, path: str, text: str, index: int = 0) -> dict:
         "username": f"comment {index + 1}",
         "profile_url": f"{site}{path}",
         "comment": text,
-        "slot_index": index,
     }
 
 
@@ -1745,23 +1814,27 @@ async def test_a_reply_lands_under_somebody_elses_comment(driver, site):
     assert result.detail.get("comment") == "love this one"
 
 
-async def test_each_slot_answers_a_different_comment(driver, site):
-    """Otherwise every account piles onto whichever comment is first.
+async def test_the_next_slot_answers_somebody_else(driver, site):
+    """Distinctness comes from the record of who was answered.
 
-    Checked by who was answered, not by position: the rows include the
-    nested ones, so an index into them says nothing useful.
+    It used to come from the slot's number, which was a guess dressed as
+    a plan: two slots numbered differently still landed on the same person
+    whenever the list on screen had shifted between them. The campaign
+    now tells the driver who it has already answered, and that is the only
+    thing keeping them apart.
     """
     first = await driver.comment_on_video(
-        account(), comment_slot(site, "/video/ok", "reply to the first", index=0)
-    )
-    second = await driver.comment_on_video(
-        account(), comment_slot(site, "/video/ok", "reply to another", index=2)
+        account(), comment_slot(site, "/video/ok", "reply to the first")
     )
     assert first.status == RESULT_SENT, first.error
+    already = first.detail["replied_to"]
+
+    follow_on = comment_slot(site, "/video/ok", "reply to another")
+    follow_on["avoid"] = [already]
+    second = await driver.comment_on_video(account(), follow_on)
+
     assert second.status == RESULT_SENT, second.error
-    assert first.detail["replied_to"] != second.detail["replied_to"], (
-        f"both slots answered @{first.detail['replied_to']}"
-    )
+    assert second.detail["replied_to"] != already
 
 
 async def test_a_swallowed_reply_is_not_reported_as_posted(driver, site):
@@ -1868,3 +1941,63 @@ async def test_running_out_of_people_is_not_a_silent_duplicate(driver, site):
     slot["avoid"] = ["alice", "bob", "carol", "dave"]
     result = await driver.comment_on_video(account(), slot)
     assert result.status == RESULT_NO_ONE_LEFT
+
+
+async def test_it_scrolls_past_the_first_screenful_to_find_somebody(driver, site):
+    """The gap a live run found: twelve people on a 1090-comment video.
+
+    Everyone on the first screen has been answered here, so the only way
+    to succeed is to walk the panel. A driver that reads what is rendered
+    and gives up reports no_one_left with the list barely started.
+    """
+    answered = [f"person{i}" for i in range(1, 13)]
+    slot = comment_slot(site, "/video/long", "found you further down")
+    slot["avoid"] = answered
+
+    result = await driver.comment_on_video(account(), slot)
+
+    assert result.status == RESULT_SENT, result.error
+    reached = result.detail["replied_to"]
+    assert reached not in answered
+    assert int(reached.replace("person", "")) > 12, (
+        f"stopped at @{reached} — it did not get past the first screenful"
+    )
+
+
+async def test_walking_a_whole_list_and_finding_nobody_is_reported_honestly(driver, site):
+    """Fifty answered, fifty on the page: refuse, do not repeat anyone."""
+    from services.outreach.constants import RESULT_NO_ONE_LEFT
+
+    slot = comment_slot(site, "/video/long", "anyone left?")
+    slot["avoid"] = [f"person{i}" for i in range(1, 51)]
+
+    result = await driver.comment_on_video(account(), slot)
+    assert result.status == RESULT_NO_ONE_LEFT
+
+
+async def test_running_out_of_time_is_not_reported_as_running_out_of_people(
+    driver, site, monkeypatch
+):
+    """Two different failures that must not wear the same name.
+
+    Every job walks past everyone already answered, so the later ones walk
+    furthest. Calling a timeout "nobody left" retires a slot that had
+    simply not finished looking — and that result is never retried.
+    """
+    from services.outreach.constants import NEVER_RETRY_RESULTS, RESULT_NO_ONE_LEFT
+
+    monkeypatch.setattr(
+        "services.outreach.browser.playwright_base.COMMENT_WALK_BUDGET_MS", 1
+    )
+    slot = comment_slot(site, "/video/long", "still looking")
+    slot["avoid"] = [f"person{i}" for i in range(1, 13)]
+
+    result = await driver.comment_on_video(account(), slot)
+
+    assert result.status != RESULT_NO_ONE_LEFT, (
+        "a timeout was reported as having no one left to answer"
+    )
+    assert result.status not in NEVER_RETRY_RESULTS, (
+        "a slot that ran out of time must stay retryable"
+    )
+    assert "time" in (result.error or "").lower()
