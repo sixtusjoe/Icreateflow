@@ -193,3 +193,39 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
   if (Array.isArray(errors) && errors.length) return errors.join(" · ");
   return fallback;
 }
+
+export function Modal({
+  title,
+  children,
+  onClose,
+  wide = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+  /** Room for a remote desktop. A 1440px screen inside max-w-lg is a
+   *  postage stamp, and the overflow put a scrollbar down the side. */
+  wide?: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        // A definite height when the viewer is in it, not just a max: flex-1
+        // divides available space, and a container sized by its content has
+        // none to divide — which collapsed the canvas to nothing.
+        className={`flex w-full flex-col ${
+          wide
+            ? "max-w-4xl h-[90vh] overflow-hidden"
+            : "max-w-lg max-h-[90vh] overflow-y-auto"
+        } rounded-2xl bg-card p-5 md:p-6 shadow-xl`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="mb-5 shrink-0 text-lg font-semibold">{title}</h2>
+        {children}
+      </div>
+    </div>
+  );
+}

@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   ArrowLeft,
+  ChevronDown,
+  MessageSquare,
   Play,
   Pause,
   Square,
@@ -48,7 +50,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { SessionViewer } from "@/components/outreach/SessionViewer";
-import { StatusPill, ProgressBar, inputClass, relativeTime, apiErrorMessage } from "../ui";
+import { Modal, ProgressBar, StatusPill, apiErrorMessage, inputClass, relativeTime } from "../ui";
 import { LeadFinder } from "./lead-finder";
 
 type Detail = {
@@ -77,6 +79,7 @@ export default function OutreachCampaignPage() {
   const [targetTab, setTargetTab] = useState<(typeof TARGET_TABS)[number]>("all");
   const [busy, setBusy] = useState(false);
   const [watch, setWatch] = useState<WatchState | null>(null);
+  const [showComments, setShowComments] = useState(false);
   const imageRef = useRef<HTMLInputElement>(null);
   const [showImport, setShowImport] = useState(false);
   const [findLeads, setFindLeads] = useState(false);
@@ -316,6 +319,18 @@ export default function OutreachCampaignPage() {
         </div>
       )}
 
+      {showComments && (
+        <CommentSetup
+          campaignId={id}
+          videoUrl={c.target_url ?? ""}
+          count={c.comment_count ?? 0}
+          lines={c.comment_variations ?? []}
+          locked={busy || status === "running"}
+          onSaved={loadDetail}
+          onClose={() => setShowComments(false)}
+        />
+      )}
+
       {/* Header + actions */}
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
@@ -376,6 +391,16 @@ export default function OutreachCampaignPage() {
               );
             })}
           </div>
+          {(c.activity ?? "message") === "comment" && (
+            <button
+              type="button"
+              onClick={() => setShowComments(true)}
+              className="ml-2 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium hover:bg-muted"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              {c.target_url ? "Comment setup" : "Set up comments"}
+            </button>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             {c.platform} · retry limit {detail.limits.retry_limit} · max{" "}
             {detail.limits.max_jobs_per_account} jobs per account · driver{" "}
@@ -688,17 +713,6 @@ export default function OutreachCampaignPage() {
             </ul>
           </Panel>
 
-          {(c.activity ?? "message") === "comment" && (
-            <CommentSetup
-              campaignId={id}
-              videoUrl={c.target_url ?? ""}
-              count={c.comment_count ?? 0}
-              lines={c.comment_variations ?? []}
-              locked={busy || status === "running"}
-              onSaved={loadDetail}
-            />
-          )}
-
           <Panel title="Image">
             <div className="px-4 py-3">
               {c.has_attachment ? (
@@ -956,6 +970,7 @@ function CommentSetup({
   lines,
   locked,
   onSaved,
+  onClose,
 }: {
   campaignId: number;
   videoUrl: string;
@@ -963,6 +978,7 @@ function CommentSetup({
   lines: string[];
   locked: boolean;
   onSaved: () => void;
+  onClose: () => void;
 }) {
   const [url, setUrl] = useState(videoUrl);
   const [howMany, setHowMany] = useState(String(count || ""));
@@ -991,6 +1007,7 @@ function CommentSetup({
       });
       toast.success("Comment setup saved");
       onSaved();
+      onClose();
     } catch (e) {
       toast.error(apiErrorMessage(e, "Could not save the comment setup"));
     } finally {
@@ -999,8 +1016,8 @@ function CommentSetup({
   };
 
   return (
-    <Panel title="Comments">
-      <div className="space-y-3 px-4 py-3">
+    <Modal title="Comment setup" onClose={onClose}>
+      <div className="space-y-3">
         <div>
           <label className="text-xs font-medium text-muted-foreground">
             Video to comment on
@@ -1057,8 +1074,39 @@ function CommentSetup({
           </p>
         )}
       </div>
-    </Panel>
+    </Modal>
   );
+}
+
+/** Remembers which panels someone collapsed, between visits.
+ *
+ * Per browser, not per account: it is a reading preference, not data, and
+ * it has no business making a round trip. Every access is guarded —
+ * storage throws outright in some privacy modes rather than returning
+ * nothing, and a page that will not render because of a saved preference
+ * is a bad trade.
+ */
+const PANEL_MEMORY = "outreach:panels:collapsed";
+
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(PANEL_MEMORY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberCollapsed(title: string, collapsed: boolean) {
+  try {
+    const all = readCollapsed();
+    if (collapsed) all[title] = true;
+    else delete all[title];
+    window.localStorage.setItem(PANEL_MEMORY, JSON.stringify(all));
+  } catch {
+    // A preference that cannot be saved is not worth an error.
+  }
 }
 
 function Panel({
@@ -1074,13 +1122,46 @@ function Panel({
   empty?: boolean;
   emptyText?: string;
 }) {
+  // Always starts open, then corrects itself once mounted. Reading
+  // storage during render would make the server's HTML and the first
+  // client render disagree, which React discards the whole tree over.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(Boolean(readCollapsed()[title]));
+  }, [title]);
+
+  const toggle = () => {
+    setCollapsed((was) => {
+      rememberCollapsed(title, !was);
+      return !was;
+    });
+  };
+
   return (
     <div className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
+      <div
+        className={cn(
+          "flex items-center justify-between px-4 py-3",
+          !collapsed && "border-b border-border",
+        )}
+      >
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          className="-m-1 flex flex-1 items-center gap-1.5 rounded p-1 text-left hover:text-foreground"
+        >
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+              collapsed && "-rotate-90",
+            )}
+          />
+          <h2 className="text-sm font-semibold">{title}</h2>
+        </button>
         {action}
       </div>
-      {empty ? (
+      {collapsed ? null : empty ? (
         <p className="px-4 py-6 text-center text-sm text-muted-foreground">{emptyText}</p>
       ) : (
         children
