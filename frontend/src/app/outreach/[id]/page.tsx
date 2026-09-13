@@ -349,7 +349,8 @@ export default function OutreachCampaignPage() {
               Locked while running — switching mid-flight would leave some
               targets messaged and some followed, with nothing recording
               which was which. */}
-          <div className="mt-2 inline-flex rounded-lg border border-border p-0.5 text-[11px]">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border border-border p-0.5 text-[11px]">
             {(
               [
                 ["message", "Message"],
@@ -392,15 +393,18 @@ export default function OutreachCampaignPage() {
             })}
           </div>
           {(c.activity ?? "message") === "comment" && (
-            <button
-              type="button"
-              onClick={() => setShowComments(true)}
-              className="ml-2 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium hover:bg-muted"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              {c.target_url ? "Comment setup" : "Set up comments"}
-            </button>
+            <div className="inline-flex rounded-lg border border-border p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setShowComments(true)}
+                className="flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                {c.target_url ? "Comment setup" : "Set up comments"}
+              </button>
+            </div>
           )}
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {c.platform} · retry limit {detail.limits.retry_limit} · max{" "}
             {detail.limits.max_jobs_per_account} jobs per account · driver{" "}
