@@ -25,6 +25,7 @@ from sqlalchemy import text
 
 from services.outreach.constants import (
     ACTIVITY_COMMENT,
+    JOB_PROCESSING,
     ACTIVITY_MESSAGE,
     TARGET_QUEUED,
 )
@@ -138,6 +139,28 @@ async def already_answered(database, campaign_id: int) -> list[str]:
         {"cid": int(campaign_id)},
     )).all()
     return [r[0] for r in rows if r and r[0]]
+
+
+async def another_in_flight(database, campaign_id: int) -> bool:
+    """Is a reply for this campaign already being written?
+
+    Replies go out one at a time. Two accounts working one video at once
+    both read "who has been answered" before either has written to it, so
+    both pick the same person — which is what happened the first time this
+    ran, twice to @wt.is.sh3 six seconds apart. Serialising the campaign
+    is what makes the answered-list mean anything.
+
+    It is also the kinder shape for the platform: several accounts landing
+    replies under one video inside a few seconds is its own signal.
+    """
+    found = (await database.session.execute(
+        text(
+            "SELECT 1 FROM outreach_jobs "
+            " WHERE campaign_id = :cid AND status = :processing LIMIT 1"
+        ),
+        {"cid": int(campaign_id), "processing": JOB_PROCESSING},
+    )).first()
+    return found is not None
 
 
 async def sync_slots(database, campaign: dict[str, Any]) -> int:

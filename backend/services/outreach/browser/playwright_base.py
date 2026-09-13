@@ -1957,29 +1957,60 @@ class PlaywrightMessenger:
         await page.wait_for_timeout(COMMENT_SETTLE_MS)
         return True
 
-    async def _thread_author(self, thread) -> Optional[str]:
-        """Whose comment this is, as a handle without the @."""
-        for selector in self.SELECTORS.get("comment_author", ()):
-            try:
-                link = await thread.query_selector(selector)
-                if link is None:
-                    continue
-                href = (await link.get_attribute("href")) or ""
-                handle = href.strip("/").split("/")[0].lstrip("@")
+    async def _comment_row(self, handle):
+        """The row that holds one whole comment.
+
+        Anchored on the username rather than the comment text: the text
+        node holds the words alone, with the author, the Reply control and
+        everything else beside it in the row above. Climbing from the
+        username is what reaches all three.
+        """
+        selector = ", ".join(self.SELECTORS.get("comment_row", ())) or "div"
+        try:
+            row = await handle.evaluate_handle(
+                """(el, sel) => el.closest(sel)
+                     || el.parentElement?.parentElement
+                     || el.parentElement""",
+                selector,
+            )
+            return row.as_element()
+        except Exception:  # noqa: BLE001 — a stale node is not an answer
+            return None
+
+    async def _handle_from(self, node) -> Optional[str]:
+        """The @name in a username node, lowercased and without the @."""
+        try:
+            link = await node.query_selector("a[href*='/@']")
+            href = (await link.get_attribute("href")) if link else None
+            if href:
+                tail = href.split("/@")[-1]
+                handle = tail.split("/")[0].split("?")[0].strip().lower()
                 if handle:
-                    return handle.lower()
-            except Exception:  # noqa: BLE001 — a stale node is not an answer
-                continue
+                    return handle
+        except Exception:  # noqa: BLE001
+            return None
         return None
 
     async def _widen_comments(self, page) -> None:
-        """Show more people: scroll the panel, and open reply threads.
+        """Show more people: open reply threads, then scroll the panel.
 
         Most of a video's commenters are not at the top level — they are
         behind "View 3 replies", and a panel that has not been scrolled
-        holds only its first screenful. Without both, a campaign of any
-        size runs out of people and starts answering the same ones again.
+        holds only its first screenful.
+
+        The panel scrolls inside itself, not the page. Turning the mouse
+        wheel over the document moved the whole page instead, which put
+        every comment out of view and left nobody to answer at all.
         """
+        panel = None
+        for selector in self.SELECTORS.get("scroll_container", ()):
+            try:
+                panel = await page.query_selector(selector)
+            except Exception:  # noqa: BLE001
+                panel = None
+            if panel is not None:
+                break
+
         for _ in range(COMMENT_WIDEN_ROUNDS):
             opened = 0
             for selector in self.SELECTORS.get("comment_replies", ()):
@@ -1994,47 +2025,52 @@ class PlaywrightMessenger:
                         label = " ".join(((await handle.inner_text()) or "").split())
                         # "Reply" is the action; "View 3 replies" is the
                         # one that reveals people.
-                        if label.lower() == "reply" or not label:
+                        if not label or label.lower() == "reply":
+                            continue
+                        if not await handle.is_visible():
                             continue
                         await handle.click(timeout=CLICK_MS, no_wait_after=True)
                         opened += 1
                         await page.wait_for_timeout(COMMENT_POLL_MS)
                     except Exception:  # noqa: BLE001 — one that will not open
                         continue
-            try:
-                await page.mouse.wheel(0, 1200)
-            except Exception:  # noqa: BLE001
-                pass
+            if panel is not None:
+                try:
+                    await panel.evaluate(
+                        "el => el.scrollTo(0, el.scrollTop + el.clientHeight * 0.8)")
+                except Exception:  # noqa: BLE001
+                    pass
             await page.wait_for_timeout(COMMENT_POLL_MS)
-            if opened == 0:
+            if opened == 0 and panel is None:
                 break
 
     async def _reply_candidates(self, page) -> list:
-        """Every comment on screen that could be answered, with its author."""
+        """Everyone on screen who could be answered, with their row.
+
+        Driven from the username nodes: one per comment, top-level and
+        nested alike, and the only place the handle actually appears.
+        """
         found = []
         seen = set()
-        for key in ("comment_thread", "comment_thread_nested"):
-            for selector in self.SELECTORS.get(key, ()):
+        for selector in self.SELECTORS.get("comment_author", ()):
+            try:
+                nodes = await page.query_selector_all(selector)
+            except Exception:  # noqa: BLE001
+                continue
+            for node in nodes:
                 try:
-                    handles = await page.query_selector_all(selector)
-                except Exception:  # noqa: BLE001
+                    if not await node.is_visible():
+                        continue
+                except Exception:  # noqa: BLE001 — a stale node is gone
                     continue
-                for handle in handles:
-                    # Only people actually reachable. A reply still folded
-                    # inside its thread is returned by the query all the
-                    # same, and offering one means picking somebody the
-                    # page will not scroll to — which fails the job rather
-                    # than opening the thread.
-                    try:
-                        if not await handle.is_visible():
-                            continue
-                    except Exception:  # noqa: BLE001 — a stale node is gone
-                        continue
-                    author = await self._thread_author(handle)
-                    if not author or author in seen:
-                        continue
-                    seen.add(author)
-                    found.append((author, handle))
+                author = await self._handle_from(node)
+                if not author or author in seen:
+                    continue
+                row = await self._comment_row(node)
+                if row is None:
+                    continue
+                seen.add(author)
+                found.append((author, row))
         return found
 
     async def _reply_control(self, page, thread):
@@ -2231,7 +2267,12 @@ class PlaywrightMessenger:
         needle = " ".join(wanted.split()).strip().lower()
         if not needle:
             return False
-        for key in ("comment_body", "comment_item", "comment_thread"):
+        # A reply lands nested under the comment it answers, so the
+        # top-level selectors alone never see it: a reply that posted was
+        # reported as missing, and the slot failed with the reply already
+        # public — which is the one failure that can duplicate on retry.
+        for key in ("comment_body", "comment_thread_nested", "comment_row",
+                    "comment_item", "comment_thread"):
             for selector in self.SELECTORS.get(key, ()):
                 try:
                     for handle in await page.query_selector_all(selector):

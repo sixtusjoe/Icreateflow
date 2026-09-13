@@ -236,6 +236,14 @@ class OutreachWorker:
                     continue
                 campaign = dict(campaign)
 
+                # One reply at a time per comment campaign. Two accounts
+                # working one video both read the answered-list before
+                # either writes to it, and both pick the same person.
+                if comments.is_comment(campaign) and await comments.another_in_flight(
+                    database, campaign_id
+                ):
+                    continue
+
                 account = await account_mgr.lease_account(database, campaign, settings)
                 if account is None:
                     # Every eligible account is busy, cooling down, capped

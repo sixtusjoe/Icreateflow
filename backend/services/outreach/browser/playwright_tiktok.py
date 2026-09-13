@@ -191,9 +191,16 @@ TIKTOK_SELECTORS: dict[str, Any] = {
     "comment_thread_nested": (
         "[data-e2e='comment-level-2']",
     ),
-    #: Whose comment it is. `-1` at the top level, `-2` in a reply.
+    #: Whose comment it is. The handle lives here, not in the comment
+    #: text: `comment-level-1` is a span holding the words alone, and the
+    #: username sits beside it in the row that contains both.
     "comment_author": (
-        "[data-e2e^='comment-username'] a[href^='/@']",
+        "[data-e2e^='comment-username']",
+    ),
+    #: The row that holds one comment: its author, its text and its Reply.
+    "comment_row": (
+        "div[class*='DivCommentItemContainer']",
+        "div[class*='DivCommentContentContainer']",
     ),
     # Disabled until the box has text, so it cannot be pressed first.
     "comment_post": (

@@ -674,27 +674,27 @@ VIDEO_WITH_COMMENTS = """
   <h1>A video</h1>
   <button data-e2e="comment-icon">Comments</button>
   <div id="threads">
-    <div data-e2e="comment-level-1">
+    <div class="DivCommentItemContainer">
       <div data-e2e="comment-username-1"><a href="/@alice">alice</a></div>
-      <p data-e2e="comment-text">first person said this</p>
+      <span data-e2e="comment-level-1">first person said this</span>
       <p data-e2e="comment-reply-1" class="reply">Reply</p>
       <p data-e2e="comment-reply-1" class="expand">View 1 reply</p>
       <div id="hidden" style="display:none">
-        <div data-e2e="comment-level-2">
+        <div class="DivCommentItemContainer">
           <div data-e2e="comment-username-2"><a href="/@dave">dave</a></div>
-          <p data-e2e="comment-text">dave replied in the thread</p>
+          <span data-e2e="comment-level-2">dave replied in the thread</span>
           <p data-e2e="comment-reply-1" class="reply">Reply</p>
         </div>
       </div>
     </div>
-    <div data-e2e="comment-level-1">
+    <div class="DivCommentItemContainer">
       <div data-e2e="comment-username-1"><a href="/@bob">bob</a></div>
-      <p data-e2e="comment-text">second person said this</p>
+      <span data-e2e="comment-level-1">second person said this</span>
       <p data-e2e="comment-reply-1" class="reply">Reply</p>
     </div>
-    <div data-e2e="comment-level-1">
+    <div class="DivCommentItemContainer">
       <div data-e2e="comment-username-1"><a href="/@carol">carol</a></div>
-      <p data-e2e="comment-text">third person said this</p>
+      <span data-e2e="comment-level-1">third person said this</span>
       <p data-e2e="comment-reply-1" class="reply">Reply</p>
     </div>
   </div>
@@ -713,7 +713,7 @@ VIDEO_WITH_COMMENTS = """
         if (box) { box.style.display = 'block'; }
         return;
       }
-        answering = el.closest('[data-e2e="comment-level-1"]');
+        answering = el.closest('.DivCommentItemContainer');
         document.getElementById('editor').style.display = 'block';
       });
     });
@@ -721,10 +721,18 @@ VIDEO_WITH_COMMENTS = """
       var box = document.querySelector('[data-e2e="comment-input"]');
       var written = (box.innerText || '').trim();
       if (!written || !answering) { return; }
-      var reply = document.createElement('p');
-      reply.setAttribute('data-e2e', 'comment-text');
+      // Nested, as a real reply renders — not a sibling of the comment.
+      var nest = document.createElement('div');
+      nest.className = 'DivCommentItemContainer';
+      var who = document.createElement('div');
+      who.setAttribute('data-e2e', 'comment-username-2');
+      who.innerHTML = '<a href="/@sender">sender</a>';
+      var reply = document.createElement('span');
+      reply.setAttribute('data-e2e', 'comment-level-2');
       reply.textContent = written;
-      answering.appendChild(reply);
+      nest.appendChild(who);
+      nest.appendChild(reply);
+      answering.appendChild(nest);
       box.innerHTML = '';
     });
   </script>
@@ -734,7 +742,10 @@ VIDEO_WITH_COMMENTS = """
 #: Takes the reply, empties the box, shows nothing. Indistinguishable from
 #: a reply that posted until the thread is read back.
 VIDEO_SWALLOWS_REPLY = VIDEO_WITH_COMMENTS.replace(
-    "answering.appendChild(reply);", "/* dropped */"
+    "answering.appendChild(nest);", "/* dropped */"
+)
+assert "appendChild(nest)" not in VIDEO_SWALLOWS_REPLY, (
+    "the swallowing stub stopped swallowing — it must not post"
 )
 
 #: Hydrated, and nobody has commented. There is nothing to reply to, which
@@ -1735,22 +1746,22 @@ async def test_a_reply_lands_under_somebody_elses_comment(driver, site):
 
 
 async def test_each_slot_answers_a_different_comment(driver, site):
-    """Otherwise every account piles onto whichever comment is first."""
+    """Otherwise every account piles onto whichever comment is first.
+
+    Checked by who was answered, not by position: the rows include the
+    nested ones, so an index into them says nothing useful.
+    """
     first = await driver.comment_on_video(
         account(), comment_slot(site, "/video/ok", "reply to the first", index=0)
     )
     second = await driver.comment_on_video(
-        account(), comment_slot(site, "/video/ok", "reply to the third", index=2)
+        account(), comment_slot(site, "/video/ok", "reply to another", index=2)
     )
-    assert first.status == RESULT_SENT and second.status == RESULT_SENT
-
-    page = await driver._page_for(account())
-    under_first = await page.eval_on_selector_all(
-        '[data-e2e="comment-level-1"]',
-        "els => els.map(e => (e.innerText || '').trim())",
+    assert first.status == RESULT_SENT, first.error
+    assert second.status == RESULT_SENT, second.error
+    assert first.detail["replied_to"] != second.detail["replied_to"], (
+        f"both slots answered @{first.detail['replied_to']}"
     )
-    assert "reply to the third" in under_first[2], under_first
-    assert "reply to the third" not in under_first[0], under_first
 
 
 async def test_a_swallowed_reply_is_not_reported_as_posted(driver, site):
