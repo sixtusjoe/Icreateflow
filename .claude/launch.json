@@ -3,8 +3,12 @@
   "configurations": [
     {
       "name": "icreateflow-backend",
-      "url": "http://localhost:8000",
-      "port": 8000
+      "port": 8000,
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/mac/icreateflow-local/backend && set -a && . /Users/mac/icreateflow-local/backend/local-env.sh && set +a && exec /Users/mac/icreateflow-local/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000"
+      ]
     },
     {
       "name": "icreateflow-frontend",
