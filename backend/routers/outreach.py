@@ -314,6 +314,18 @@ def _campaign_public(row: dict) -> dict:
     # driver's. The client only needs to know there is one and what it was
     # called; the bytes come from the endpoint, which checks ownership.
     out["has_attachment"] = bool(out.pop("attachment_path", None))
+    # Stored as JSON, handed over as a list — the client should not have to
+    # know which of those it is getting, and a string arriving where a list
+    # is expected crashes the page that renders it.
+    raw = out.get("comment_variations")
+    if isinstance(raw, str):
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            loaded = None
+        out["comment_variations"] = loaded if isinstance(loaded, list) else []
+    elif not isinstance(raw, list):
+        out["comment_variations"] = []
     return out
 
 

@@ -113,3 +113,39 @@ def test_a_campaign_ticket_opens_its_own_run():
     t = viewer.issue(viewer.KIND_CAMPAIGN, 8, user_id=1, vnc_port=5922)
     spent = viewer.redeem(t.value, viewer.KIND_CAMPAIGN, 8)
     assert spent is not None and spent.vnc_port == 5922
+
+
+# --- is there anything to stream? -----------------------------------------
+#
+# On a machine with no virtual display the browser opens a real window
+# there instead, and the viewer has nothing to connect to. The client was
+# not told, so it opened a socket that closed as 1006 and showed the
+# operator a console error on a page that was working correctly.
+
+
+def test_a_run_without_a_screen_says_so():
+    from services.outreach.watch_run import Watch
+
+    assert Watch(campaign_id=1, platform="tiktok").to_dict()["on_screen"] is False
+
+
+def test_a_run_on_a_screen_says_so():
+    from services.outreach.watch_run import Watch
+
+    watch = Watch(campaign_id=1, platform="tiktok")
+    watch.vnc_port = 41781
+    assert watch.to_dict()["on_screen"] is True
+
+
+def test_a_sign_in_without_a_screen_says_so():
+    from services.outreach.session_capture import Capture
+
+    assert Capture(account_id=1, platform="tiktok").to_dict()["on_screen"] is False
+
+
+def test_a_sign_in_on_a_screen_says_so():
+    from services.outreach.session_capture import Capture
+
+    capture = Capture(account_id=1, platform="tiktok")
+    capture.vnc_port = 41781
+    assert capture.to_dict()["on_screen"] is True

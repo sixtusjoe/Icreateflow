@@ -456,12 +456,23 @@ export default function OutreachAccountsPage() {
           {login?.available && (
             <div className="mb-4 flex min-h-0 flex-1 flex-col">
               {login.capture && !login.capture.done ? (
-                <>
-                  <SessionViewer accountId={sessionFor.id} />
-                  <p className="mt-2 shrink-0 text-xs text-muted-foreground">
-                    Sign in above. Closes on its own when done.
+                login.capture.on_screen ? (
+                  <>
+                    <SessionViewer accountId={sessionFor.id} />
+                    <p className="mt-2 shrink-0 text-xs text-muted-foreground">
+                      Sign in above. Closes on its own when done.
+                    </p>
+                  </>
+                ) : (
+                  // Nowhere to stream from: the backend is on a machine
+                  // with no virtual display, so the sign-in window opened
+                  // there as a real window.
+                  <p className="text-sm text-muted-foreground">
+                    A sign-in window is open on the machine running the
+                    backend — sign in there. This closes on its own when
+                    it is done.
                   </p>
-                </>
+                )
               ) : (
                 <button
                   onClick={handleBrowserLogin}

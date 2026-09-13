@@ -901,6 +901,9 @@ export const createOutreachAccount = (data: {
 }): Promise<OutreachAccount> =>
   api.post("/api/outreach/accounts", data).then((r) => r.data);
 export interface BrowserLoginCapture {
+  /** Whether there is a virtual screen to stream. False on a machine
+   *  without one, where the window opens on that desktop instead. */
+  on_screen: boolean;
   account_id: number;
   platform: string;
   status: "opening" | "waiting" | "saved" | "failed";
@@ -955,12 +958,21 @@ export const issueWatchViewerTicket = (
 /** Where the viewer's websocket goes. Same origin, so it inherits the
  *  page's TLS and cookies rather than needing a host of its own. */
 export const viewerSocketUrl = (t: ViewerTicket): string => {
-  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${window.location.host}${t.path}?ticket=${encodeURIComponent(t.ticket)}`;
+  // The socket has to reach the API, which in development is a different
+  // port from the page: the dev server does not proxy websockets, so a URL
+  // built from the page's own origin arrives nowhere and closes as 1006.
+  // In production both are one origin and this resolves to the same thing.
+  const base = api.defaults.baseURL || window.location.origin;
+  const url = new URL(base, window.location.origin);
+  const scheme = url.protocol === "https:" ? "wss" : "ws";
+  return `${scheme}://${url.host}${t.path}?ticket=${encodeURIComponent(t.ticket)}`;
 };
 
 export interface WatchRun {
   campaign_id: number;
+  /** Whether the run has a virtual screen to stream. False on a machine
+   *  without one, where the browser opens a real window instead. */
+  on_screen: boolean;
   platform: string;
   status: "starting" | "running" | "finished" | "failed";
   message: string;

@@ -313,9 +313,20 @@ export default function OutreachCampaignPage() {
               {watch.watch?.message ?? "Opening…"}
             </p>
           </div>
-          <div className="flex h-[min(60vh,540px)] flex-col">
-            <SessionViewer campaignId={id} />
-          </div>
+          {watch.watch?.on_screen ? (
+            <div className="flex h-[min(60vh,540px)] flex-col">
+              <SessionViewer campaignId={id} />
+            </div>
+          ) : (
+            // No virtual screen where the backend runs — a laptop, where
+            // Xvfb does not exist. The browser opened a real window there
+            // instead, so there is nothing to stream and a canvas here
+            // would only fail with a socket error.
+            <p className="rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+              The browser is open on the machine running the backend — look
+              for the Chromium window. There is no screen to stream here.
+            </p>
+          )}
         </div>
       )}
 
@@ -979,24 +990,42 @@ function CommentSetup({
   campaignId: number;
   videoUrl: string;
   count: number;
-  lines: string[];
+  lines: string[] | string | null;
   locked: boolean;
   onSaved: () => void;
   onClose: () => void;
 }) {
+  // Defensive on purpose. The column holds JSON and the API decodes it,
+  // but a backend that has not restarted yet still sends the raw string —
+  // and `.join` on a string is a blank page, not a wrong label.
+  const asLines = useCallback((value: unknown): string[] => {
+    if (Array.isArray(value)) return value.map(String);
+    if (typeof value === "string" && value.trim()) {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed.map(String);
+      } catch {
+        // Not JSON: treat it as the lines themselves.
+      }
+      return value.split("\n");
+    }
+    return [];
+  }, []);
+
   const [url, setUrl] = useState(videoUrl);
   const [howMany, setHowMany] = useState(String(count || ""));
-  const [text, setText] = useState(lines.join("\n"));
+  const [text, setText] = useState(() => asLines(lines).join("\n"));
   const [saving, setSaving] = useState(false);
 
   // Re-sync when the campaign reloads under us, but never while someone is
   // typing into these fields.
+  const joined = asLines(lines).join("\n");
   useEffect(() => {
     setUrl(videoUrl);
     setHowMany(String(count || ""));
-    setText(lines.join("\n"));
+    setText(joined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoUrl, count, lines.join("\n")]);
+  }, [videoUrl, count, joined]);
 
   const written = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const asked = Number(howMany) || 0;

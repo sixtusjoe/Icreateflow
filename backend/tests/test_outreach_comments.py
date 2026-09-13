@@ -86,3 +86,37 @@ def test_only_comment_campaigns_are_treated_as_one():
     assert comments.is_comment({"activity": ACTIVITY_COMMENT})
     assert not comments.is_comment({"activity": ACTIVITY_MESSAGE})
     assert not comments.is_comment({})  # no activity means the default
+
+
+# --- what the client is handed --------------------------------------------
+#
+# The column holds JSON. The page renders the lines with .join(), so a
+# string arriving where a list belongs is not a cosmetic mismatch — it
+# takes the page down with "lines.join is not a function".
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        ('["nice", "love this"]', ["nice", "love this"]),
+        ("[]", []),
+        (None, []),
+        ("not json at all", []),
+        ('{"not": "a list"}', []),
+        (["already", "a list"], ["already", "a list"]),
+    ],
+)
+def test_variations_always_reach_the_client_as_a_list(stored, expected):
+    import routers.outreach as outreach_router
+
+    out = outreach_router._campaign_public(
+        {
+            "id": 1,
+            "comment_variations": stored,
+            "total_targets": 0,
+            "processed_count": 0,
+            "attachment_path": None,
+        }
+    )
+    assert out["comment_variations"] == expected
+    assert isinstance(out["comment_variations"], list)

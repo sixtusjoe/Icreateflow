@@ -65,6 +65,12 @@ class Watch:
             "done": self.done,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            # Whether there is a screen to stream. Without a virtual
+            # display — a laptop, where Xvfb does not exist — the browser
+            # opens a real window on that machine instead, and there is
+            # nothing for the viewer to connect to. Saying so beats a
+            # canvas that fails with a socket error.
+            "on_screen": self.vnc_port is not None,
         }
 
 
