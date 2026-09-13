@@ -39,6 +39,7 @@ from services.outreach.constants import (
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
+    RESULT_COMMENTS_CLOSED,
     RESULT_FOLLOW_LIMITED,
     RESULT_FOLLOW_PENDING,
     RESULT_MESSAGE_REFUSED,
@@ -47,6 +48,7 @@ from services.outreach.constants import (
     RESULT_PROFILE_UNAVAILABLE,
     RESULT_RATE_LIMITED,
     RESULT_SESSION_EXPIRED,
+    RESULT_TEMPLATE_ERROR,
     RESULT_UNEXPECTED_PAGE,
 )
 
@@ -83,6 +85,15 @@ SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
 #: keystrokes is the failure this exists for, and it is intermittent —
 #: the same profile usually accepts the text on the next go.
 TYPE_ATTEMPTS = int(os.environ.get("ICREATE_OUTREACH_TYPE_ATTEMPTS", "3"))
+
+#: How long to wait for the comment box after opening the panel. The panel
+#: animates in and the editor mounts after it, so this is slower than an
+#: ordinary control.
+COMMENT_BOX_MS = 15000
+#: Reading a posted comment back. It appears optimistically and can be
+#: replaced a moment later by the server's copy.
+COMMENT_CONFIRM_POLLS = 10
+COMMENT_POLL_MS = 700
 #: Following: how long to wait for the profile's own control, and how long
 #: to let a press take effect. A single look two seconds after the click
 #: called confirmed follows "unchanged", and enough of those in a row reads
@@ -1894,6 +1905,144 @@ class PlaywrightMessenger:
         except Exception as exc:  # noqa: BLE001 — a driver fault is a job failure
             return MessageResult.failure(
                 RESULT_BROWSER_ERROR, f"{type(exc).__name__}: {exc}", url=url)
+
+    async def comment_on_video(self, account: dict[str, Any],
+                               target: dict[str, Any]) -> MessageResult:
+        """Leave one comment on one video.
+
+        Nothing is messaged and nobody is followed. The campaign holds the
+        video; the slot holds nothing but its place in the queue, so the
+        text comes in on the target.
+
+        As with following, the click is not the evidence. A comment box
+        that empties looks exactly like a comment that posted and like one
+        the platform swallowed, so the comment list is read back and only
+        the text actually appearing there counts.
+        """
+        url = (target.get("profile_url") or "").strip()
+        text_to_post = (target.get("comment") or "").strip()
+        slot = target.get("username") or "comment"
+        if not url:
+            return MessageResult.failure(
+                RESULT_UNEXPECTED_PAGE, "No video to comment on")
+        if not text_to_post:
+            return MessageResult.failure(
+                RESULT_TEMPLATE_ERROR, "No comment text to post", url=url)
+        if not self.SELECTORS.get("comment_box"):
+            return MessageResult.failure(
+                RESULT_MESSAGING_UNAVAILABLE,
+                f"Commenting is not built for {self.PLATFORM}", url=url)
+
+        try:
+            from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+            page = await self._page_for(account)
+            try:
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=self._timeout)
+            except PlaywrightTimeout:
+                return MessageResult.failure(
+                    RESULT_NAVIGATION_TIMEOUT, f"Timed out loading {url}", url=url)
+
+            await self._dismiss_overlays(page)
+
+            if await self._present(page, self.SELECTORS["login_wall"]):
+                return MessageResult.failure(
+                    RESULT_SESSION_EXPIRED,
+                    "Session expired — the site is showing its login wall",
+                    url=url)
+
+            # The panel is collapsed on a video page until the icon is
+            # pressed, and the box does not exist before that.
+            box = await self._first_visible(
+                page, self.SELECTORS["comment_box"], timeout_ms=3000)
+            if box is None:
+                toggle = await self._first_visible(
+                    page, self.SELECTORS.get("comment_toggle", ()), timeout_ms=3000)
+                if toggle is not None:
+                    await self._click(page, toggle, "comment panel", slot)
+                box = await self._first_visible(
+                    page, self.SELECTORS["comment_box"],
+                    timeout_ms=COMMENT_BOX_MS)
+
+            if box is None:
+                if await self._present(page, self.SELECTORS.get("comment_closed", ())):
+                    return MessageResult.failure(
+                        RESULT_COMMENTS_CLOSED,
+                        "Comments are turned off for this video", url=url)
+                return MessageResult.failure(
+                    RESULT_COMMENTS_CLOSED,
+                    "No comment box on this video — comments are off, or "
+                    "limited to people the creator follows",
+                    url=url,
+                    screenshot=await self._save_debug_shot(
+                        page, slot, "no-comment-box"))
+
+            # Typed, not assigned: the box is a rich-text editor with no
+            # value to set, and the Post button stays disabled until it
+            # sees real input events.
+            posted = False
+            for _ in range(TYPE_ATTEMPTS):
+                await self._type_message(page, box, text_to_post)
+                if await self._message_in_composer(box, text_to_post):
+                    posted = True
+                    break
+            if not posted:
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    "The comment would not stay in the box",
+                    url=url,
+                    screenshot=await self._save_debug_shot(
+                        page, slot, "comment-not-typed"))
+
+            submit = await self._first_visible(
+                page, self.SELECTORS["comment_post"], timeout_ms=3000)
+            if submit is not None:
+                await self._click(page, submit, "post comment", slot)
+            else:
+                await box.press("Enter")
+
+            # Read it back. An emptied box proves the page took the text,
+            # not that anyone else will ever see it.
+            for _ in range(COMMENT_CONFIRM_POLLS):
+                await page.wait_for_timeout(COMMENT_POLL_MS)
+                if await self._comment_visible(page, text_to_post):
+                    return MessageResult.sent(url=url, comment=text_to_post)
+
+            if await self._challenge_present(page):
+                return MessageResult.failure(
+                    RESULT_CHALLENGE_REQUIRED,
+                    "A verification challenge appeared before the comment posted",
+                    url=url)
+            return MessageResult.failure(
+                RESULT_MESSAGE_REFUSED,
+                "The comment did not appear under the video after posting",
+                url=url,
+                screenshot=await self._save_debug_shot(
+                    page, slot, "comment-not-visible"))
+        except Exception as exc:  # noqa: BLE001 — a driver fault is a job failure
+            return MessageResult.failure(
+                RESULT_BROWSER_ERROR, f"{type(exc).__name__}: {exc}", url=url)
+
+    async def _comment_visible(self, page, wanted: str) -> bool:
+        """Is this text among the comments on screen?
+
+        Compared loosely on purpose: platforms trim whitespace, collapse
+        newlines and render emoji as images, so an exact match would call
+        a posted comment missing.
+        """
+        needle = " ".join(wanted.split()).strip().lower()
+        if not needle:
+            return False
+        for selector in self.SELECTORS.get("comment_item", ()):
+            try:
+                for handle in await page.query_selector_all(selector):
+                    body = (await handle.inner_text() or "")
+                    if needle in " ".join(body.split()).lower():
+                        return True
+            except Exception:  # noqa: BLE001 — a stale node is not an answer
+                continue
+        return False
 
     async def _press_follow(self, page, control) -> bool:
         """Press the follow control, and say whether a press happened.

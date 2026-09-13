@@ -326,10 +326,10 @@ export default function OutreachCampaignPage() {
           {c.description && (
             <p className="mt-1 text-sm text-muted-foreground">{c.description}</p>
           )}
-          {/* What this campaign does to each target. A two-state segment
-              rather than a form control: it belongs with the metadata
-              below, not in a dialog, and a full-width dropdown for two
-              options reads as far more consequential than it is.
+          {/* What this campaign does. A small segment rather than a form
+              control: it belongs with the metadata below, not in a dialog,
+              and a full-width dropdown for three options reads as far more
+              consequential than it is.
 
               Locked while running — switching mid-flight would leave some
               targets messaged and some followed, with nothing recording
@@ -339,6 +339,7 @@ export default function OutreachCampaignPage() {
               [
                 ["message", "Message"],
                 ["follow", "Follow"],
+                ["comment", "Comment"],
               ] as const
             ).map(([value, label]) => {
               const on = (c.activity ?? "message") === value;
@@ -355,7 +356,11 @@ export default function OutreachCampaignPage() {
                   onClick={() =>
                     act(
                       () => updateOutreachCampaign(id, { activity: value }),
-                      value === "follow" ? "Now following" : "Now messaging",
+                      value === "follow"
+                        ? "Now following"
+                        : value === "comment"
+                          ? "Now commenting"
+                          : "Now messaging",
                     )
                   }
                   className={cn(
@@ -384,7 +389,17 @@ export default function OutreachCampaignPage() {
               label="Start"
               primary
               disabled={busy}
-              onClick={() => act(() => startOutreachCampaign(id), "Campaign started")}
+              onClick={async () => {
+                await act(() => startOutreachCampaign(id), "Campaign started");
+                // A comment campaign is watched from the first comment.
+                // The whole point of commenting from several accounts is
+                // seeing what lands under the video, and the browser runs
+                // wherever the backend does — so without this there is
+                // nothing to look at.
+                if ((c.activity ?? "message") === "comment") {
+                  await handleWatch();
+                }
+              }}
             />
           )}
           {status === "running" && (
@@ -673,6 +688,17 @@ export default function OutreachCampaignPage() {
             </ul>
           </Panel>
 
+          {(c.activity ?? "message") === "comment" && (
+            <CommentSetup
+              campaignId={id}
+              videoUrl={c.target_url ?? ""}
+              count={c.comment_count ?? 0}
+              lines={c.comment_variations ?? []}
+              locked={busy || status === "running"}
+              onSaved={loadDetail}
+            />
+          )}
+
           <Panel title="Image">
             <div className="px-4 py-3">
               {c.has_attachment ? (
@@ -912,6 +938,126 @@ function Metric({ label, value, tone }: { label: string; value: number; tone?: s
         {value.toLocaleString()}
       </p>
     </div>
+  );
+}
+
+/** Where a comment campaign says what it is commenting on, and with what.
+ *
+ * A comment campaign has no list of people to import, so this replaces
+ * that step: the video, how many comments to leave, and the lines to draw
+ * from. The lines are a list rather than one box because several accounts
+ * posting the same sentence under one video is the pattern that gets a
+ * comment hidden.
+ */
+function CommentSetup({
+  campaignId,
+  videoUrl,
+  count,
+  lines,
+  locked,
+  onSaved,
+}: {
+  campaignId: number;
+  videoUrl: string;
+  count: number;
+  lines: string[];
+  locked: boolean;
+  onSaved: () => void;
+}) {
+  const [url, setUrl] = useState(videoUrl);
+  const [howMany, setHowMany] = useState(String(count || ""));
+  const [text, setText] = useState(lines.join("\n"));
+  const [saving, setSaving] = useState(false);
+
+  // Re-sync when the campaign reloads under us, but never while someone is
+  // typing into these fields.
+  useEffect(() => {
+    setUrl(videoUrl);
+    setHowMany(String(count || ""));
+    setText(lines.join("\n"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoUrl, count, lines.join("\n")]);
+
+  const written = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const asked = Number(howMany) || 0;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await updateOutreachCampaign(campaignId, {
+        target_url: url.trim(),
+        comment_count: asked,
+        comment_variations: written,
+      });
+      toast.success("Comment setup saved");
+      onSaved();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not save the comment setup"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Panel title="Comments">
+      <div className="space-y-3 px-4 py-3">
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">
+            Video to comment on
+          </label>
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            disabled={locked}
+            placeholder="https://www.tiktok.com/@someone/video/123..."
+            className={cn(inputClass, "mt-1 w-full text-xs")}
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">
+            How many comments
+          </label>
+          <input
+            value={howMany}
+            onChange={(e) => setHowMany(e.target.value.replace(/[^0-9]/g, ""))}
+            disabled={locked}
+            inputMode="numeric"
+            placeholder="20"
+            className={cn(inputClass, "mt-1 w-full text-xs")}
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">
+            Lines to post, one per line
+          </label>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            disabled={locked}
+            rows={5}
+            placeholder={"this is so good\nneeded this today\nwho made this"}
+            className={cn(inputClass, "mt-1 w-full resize-y font-mono text-xs")}
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {written.length === 0
+              ? "Add at least one line."
+              : `${written.length} line${written.length === 1 ? "" : "s"}, picked at random per comment.`}
+          </p>
+        </div>
+        <button
+          onClick={save}
+          disabled={locked || saving || !url.trim() || asked < 1 || written.length === 0}
+          className="w-full rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save comment setup"}
+        </button>
+        {locked && (
+          <p className="text-[11px] text-muted-foreground">
+            Pause the campaign to change this.
+          </p>
+        )}
+      </div>
+    </Panel>
   );
 }
 

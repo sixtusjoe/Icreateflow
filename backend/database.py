@@ -655,6 +655,13 @@ class OutreachCampaign(Base):
     platform: Mapped[str] = mapped_column(Text, server_default="tiktok")
     #: "message" or "follow" — what this campaign does to each target.
     activity: Mapped[str] = mapped_column(Text, server_default="message")
+    #: Comment campaigns only: the video every comment goes on, how many
+    #: comments to leave, and the lines to pick from. Variations are stored
+    #: as a JSON array — the same sentence posted by several accounts on
+    #: one video is what a spam filter is looking for.
+    target_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    comment_count: Mapped[int] = mapped_column(server_default="0")
+    comment_variations: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, server_default="draft")
     total_targets: Mapped[int] = mapped_column(Integer, server_default="0")
     queued_count: Mapped[int] = mapped_column(Integer, server_default="0")
@@ -1504,6 +1511,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         # these are a few hundred KB each and the row is read on every claim.
         ("outreach_campaigns", "attachment_path", "TEXT"),
         ("outreach_campaigns", "activity", "TEXT NOT NULL DEFAULT 'message'"),
+    ("outreach_campaigns", "target_url", "TEXT"),
+    ("outreach_campaigns", "comment_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("outreach_campaigns", "comment_variations", "TEXT"),
         ("outreach_sending_accounts", "proxy_url_encrypted", "TEXT"),
         ("outreach_campaigns", "attachment_name", "TEXT"),
         # A template's image is the default for campaigns made from it —

@@ -31,11 +31,13 @@ from typing import Any, Optional
 
 import database as db
 from services.outreach import accounts as account_mgr
+from services.outreach import comments
 from services.outreach import config as cfg, session_capture
 from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
 from services.outreach.constants import (
+    ACTIVITY_COMMENT,
     ACTIVITY_FOLLOW,
     ACTIVITY_MESSAGE,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
@@ -303,14 +305,16 @@ class OutreachWorker:
             return
         target = dict(target_row)
 
-        following = (campaign.get("activity") or ACTIVITY_MESSAGE) == ACTIVITY_FOLLOW
+        activity = campaign.get("activity") or ACTIVITY_MESSAGE
+        following = activity == ACTIVITY_FOLLOW
+        commenting = activity == ACTIVITY_COMMENT
 
         # --- render (never send a half-substituted message) --------------
         # A follow campaign has no message, so a blank or broken template is
         # not a reason to fail the job.
         message = ""
         try:
-            if not following:
+            if not following and not commenting:
                 message = template_svc.render(
                     campaign.get("message_template") or "",
                     template_svc.build_variables(target, campaign, account),
@@ -339,7 +343,27 @@ class OutreachWorker:
         # can reach that block without the assignment having run.
         result: Optional[MessageResult] = None
         try:
-            if following:
+            if commenting:
+                # The slot holds its place in the queue and nothing else —
+                # the video is the campaign's, and the line is drawn per
+                # comment so one video does not collect the same sentence
+                # from every account.
+                try:
+                    line = comments.pick(comments.variations(campaign))
+                except comments.CommentSetupError as exc:
+                    await job_queue.fail_job(
+                        database, job, campaign, RESULT_TEMPLATE_ERROR,
+                        str(exc), settings, force_fail=True,
+                    )
+                    return
+                result = await driver.comment_on_video(payload, {
+                    "username": target["username"],
+                    "profile_url": (
+                        campaign.get("target_url") or target["profile_url"]
+                    ),
+                    "comment": line,
+                })
+            elif following:
                 result = await driver.follow_target(payload, {
                     "username": target["username"],
                     "profile_url": target["profile_url"],

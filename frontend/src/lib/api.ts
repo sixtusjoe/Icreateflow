@@ -696,8 +696,14 @@ export type OutreachCampaign = {
   template_id: number | null;
   template_vars: string | null;
   platform: string;
-  /** What the campaign does to each target: send a message, or follow. */
-  activity: "message" | "follow";
+  /** What the campaign does: message each target, follow them, or leave
+   *  comments on one video. */
+  activity: "message" | "follow" | "comment";
+  /** Comment campaigns only: the video, how many comments, and the lines
+   *  to draw from. Empty on the other two. */
+  target_url: string | null;
+  comment_count: number;
+  comment_variations: string[];
   status: "draft" | "running" | "paused" | "completed" | "stopped";
   total_targets: number;
   queued_count: number;
@@ -817,7 +823,10 @@ export const updateOutreachCampaign = (
     name: string;
     description: string;
     message_template: string;
-    activity: "message" | "follow";
+    activity: "message" | "follow" | "comment";
+    target_url: string;
+    comment_count: number;
+    comment_variations: string[];
     template_vars: Record<string, string>;
     max_jobs: number | null;
     max_jobs_per_account: number | null;

@@ -23,7 +23,11 @@ CAMPAIGN_STATUSES = (
 #: or building an audience before a word is written.
 ACTIVITY_MESSAGE = "message"
 ACTIVITY_FOLLOW = "follow"
-CAMPAIGN_ACTIVITIES = (ACTIVITY_MESSAGE, ACTIVITY_FOLLOW)
+#: Many accounts leaving a comment each on one video. The campaign holds
+#: the video, not a list of people, so its targets are comment slots — one
+#: row per comment the operator asked for.
+ACTIVITY_COMMENT = "comment"
+CAMPAIGN_ACTIVITIES = (ACTIVITY_MESSAGE, ACTIVITY_FOLLOW, ACTIVITY_COMMENT)
 
 TARGET_QUEUED = "queued"
 TARGET_PROCESSING = "processing"
@@ -71,6 +75,10 @@ RESULT_NAVIGATION_TIMEOUT = "navigation_timeout"
 RESULT_UNEXPECTED_PAGE = "unexpected_page"
 RESULT_BROWSER_ERROR = "browser_error"
 RESULT_RATE_LIMITED = "rate_limited"
+#: The video will not take a comment: the creator turned comments off, or
+#: restricted them to people they follow. Every slot on that campaign hits
+#: the same wall, so retrying is pointless and the target is done with.
+RESULT_COMMENTS_CLOSED = "comments_closed"
 #: TikTok is showing a human-verification challenge (the slider puzzle)
 #: instead of letting the account act. Nothing about the target is wrong, so
 #: the target must stay retryable — recording it as "does not accept DMs"
@@ -123,6 +131,7 @@ RESULT_DB_ERROR = "database_error"
 #: costs the target for good.
 TERMINAL_RESULTS = frozenset({
     RESULT_PROFILE_UNAVAILABLE,
+    RESULT_COMMENTS_CLOSED,
 })
 
 #: The account, not the target, is the problem. These count toward the
@@ -155,6 +164,7 @@ IMMEDIATE_ACCOUNT_PAUSE_RESULTS = frozenset({
 NEVER_RETRY_RESULTS = frozenset({
     RESULT_TEMPLATE_ERROR,
     RESULT_MESSAGE_REFUSED,
+    RESULT_COMMENTS_CLOSED,
 })
 
 # --- Audit actions --------------------------------------------------------

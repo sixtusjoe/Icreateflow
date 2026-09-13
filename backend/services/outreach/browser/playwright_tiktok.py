@@ -169,6 +169,29 @@ TIKTOK_SELECTORS: dict[str, Any] = {
     "comment_replies": (
         "[data-e2e='comment-reply-1']",
     ),
+    # --- leaving a comment --------------------------------------------
+    # The box is a DraftJS editor, not an <input>: it has no value, and
+    # setting one does nothing. It has to be clicked and typed into.
+    "comment_box": (
+        "[data-e2e='comment-text-input']",
+        "div[contenteditable='true'][role='textbox']",
+        "div[class*='DivCommentInput'] div[contenteditable='true']",
+    ),
+    # Disabled until the box has text, so it cannot be pressed first.
+    "comment_post": (
+        "[data-e2e='comment-post']",
+        "div[class*='DivPostButton']",
+    ),
+    # Where a posted comment lands, used to confirm it actually arrived.
+    "comment_item": (
+        "[data-e2e='comment-level-1']",
+        "div[class*='DivCommentItemContainer']",
+    ),
+    # Commenting is off for this video, or off for this account.
+    "comment_closed": (
+        "[data-e2e='comments-disabled']",
+        "div[class*='DivCommentsDisabled']",
+    ),
     # The panel scrolls inside itself, not the page.
     "scroll_container": (
         "div[class*='DivCommentListContainer']",

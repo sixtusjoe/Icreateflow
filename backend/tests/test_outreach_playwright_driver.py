@@ -661,7 +661,61 @@ SLOW_SHELL = """
 </body></html>
 """
 
+
+# --- video pages, for commenting ------------------------------------------
+#
+# The comment box is a contenteditable, like the real one: it has no value
+# to set, so a driver that assigns instead of typing finds it empty.
+
+VIDEO_COMMENTABLE = """
+<html><body>
+  <h1>A video</h1>
+  <div id="list"></div>
+  <div data-e2e="comment-text-input" contenteditable="true" role="textbox"></div>
+  <button data-e2e="comment-post">Post</button>
+  <script>
+    document.querySelector('[data-e2e="comment-post"]').addEventListener('click', function () {
+      var box = document.querySelector('[data-e2e="comment-text-input"]');
+      var written = (box.innerText || '').trim();
+      if (!written) { return; }
+      var item = document.createElement('div');
+      item.setAttribute('data-e2e', 'comment-level-1');
+      item.textContent = written;
+      document.getElementById('list').appendChild(item);
+      box.innerHTML = '';
+    });
+  </script>
+</body></html>
+"""
+
+#: Takes the text, empties the box, and shows nothing. A comment the
+#: platform swallowed looks exactly like one that posted — until the list
+#: is read back.
+VIDEO_SWALLOWS_COMMENT = """
+<html><body>
+  <h1>A video</h1>
+  <div id="list"></div>
+  <div data-e2e="comment-text-input" contenteditable="true" role="textbox"></div>
+  <button data-e2e="comment-post">Post</button>
+  <script>
+    document.querySelector('[data-e2e="comment-post"]').addEventListener('click', function () {
+      document.querySelector('[data-e2e="comment-text-input"]').innerHTML = '';
+    });
+  </script>
+</body></html>
+"""
+
+VIDEO_COMMENTS_OFF = """
+<html><body>
+  <h1>A video</h1>
+  <div data-e2e="comments-disabled">Comments are turned off</div>
+</body></html>
+"""
+
 PAGES = {
+    "/video/ok": VIDEO_COMMENTABLE,
+    "/video/swallowed": VIDEO_SWALLOWS_COMMENT,
+    "/video/closed": VIDEO_COMMENTS_OFF,
     "/slowshell": SLOW_SHELL,
     "/nevertyped": TYPING_GOES_NOWHERE,
     "/placeholder": PLACEHOLDER_COMPOSER,
@@ -1604,3 +1658,53 @@ async def _settle():
 
     for _ in range(50):
         await asyncio.sleep(0.02)
+
+
+# --- commenting ------------------------------------------------------------
+#
+# A comment campaign posts on one video from many accounts. The click is
+# never the proof: a box that empties looks the same whether the comment
+# reached the page or the platform dropped it.
+
+
+def comment_slot(site: str, path: str, text: str, slot: str = "comment 1") -> dict:
+    return {"username": slot, "profile_url": f"{site}{path}", "comment": text}
+
+
+async def test_a_comment_is_typed_and_confirmed_on_the_page(driver, site):
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/ok", "love this one")
+    )
+    assert result.status == RESULT_SENT, result.error
+    assert result.detail.get("comment") == "love this one"
+
+
+async def test_a_swallowed_comment_is_not_reported_as_posted(driver, site):
+    """The box emptying is not evidence anyone will see the comment."""
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/swallowed", "nice")
+    )
+    assert result.status != RESULT_SENT
+    assert "did not appear" in (result.error or "").lower()
+
+
+async def test_a_video_with_comments_off_says_so_and_is_not_retried(driver, site):
+    from services.outreach.constants import (
+        NEVER_RETRY_RESULTS,
+        RESULT_COMMENTS_CLOSED,
+    )
+
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/closed", "hello")
+    )
+    assert result.status == RESULT_COMMENTS_CLOSED
+    # Every slot on the campaign would hit the same wall.
+    assert RESULT_COMMENTS_CLOSED in NEVER_RETRY_RESULTS
+
+
+async def test_an_empty_comment_is_refused_before_a_page_is_opened(driver, site):
+    result = await driver.comment_on_video(
+        account(), comment_slot(site, "/video/ok", "   ")
+    )
+    assert result.status != RESULT_SENT
+    assert "no comment text" in (result.error or "").lower()

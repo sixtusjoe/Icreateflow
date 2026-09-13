@@ -57,11 +57,13 @@ from services.outreach import (
     watch_run,
 )
 from services.outreach import runner as outreach_runner
+from services.outreach import comments
 from services.outreach import queue as job_queue
 from services.outreach import stats
 from services.outreach import templates as template_svc
 from services.outreach.browser import DRIVERS
 from services.outreach.constants import (
+    ACTIVITY_COMMENT,
     ACTIVITY_FOLLOW,
     ACTIVITY_MESSAGE,
     CAMPAIGN_ACTIVITIES,
@@ -111,11 +113,29 @@ class CampaignCreate(BaseModel):
     template_id: Optional[int] = None
     template_vars: Optional[dict[str, Any]] = None
     platform: str = "tiktok"
-    #: "message" (default) or "follow".
+    #: "message" (default), "follow" or "comment".
     activity: str = ACTIVITY_MESSAGE
+    #: Comment campaigns: the video, how many comments, and the lines to
+    #: draw from. Ignored by the other two.
+    target_url: Optional[str] = None
+    comment_count: Optional[int] = None
+    comment_variations: Optional[list[str]] = None
     max_jobs: Optional[int] = None
     max_jobs_per_account: Optional[int] = None
     retry_limit: Optional[int] = None
+
+
+def _dump_variations(lines: Optional[list[str]]) -> Optional[str]:
+    """Comment lines, as the column stores them.
+
+    None means "not given" and leaves what is there; an empty list is a
+    deliberate clear. Blank lines are dropped so an editor's trailing
+    newline does not become a comment that posts nothing.
+    """
+    if lines is None:
+        return None
+    kept = [str(line).strip() for line in lines if str(line).strip()]
+    return json.dumps(kept)
 
 
 class CampaignUpdate(BaseModel):
@@ -125,6 +145,9 @@ class CampaignUpdate(BaseModel):
     message_template: Optional[str] = None
     template_id: Optional[int] = None
     template_vars: Optional[dict[str, Any]] = None
+    target_url: Optional[str] = None
+    comment_count: Optional[int] = None
+    comment_variations: Optional[list[str]] = None
     max_jobs: Optional[int] = None
     max_jobs_per_account: Optional[int] = None
     retry_limit: Optional[int] = None
@@ -268,6 +291,17 @@ def _template_public(row: dict) -> dict:
     out = _tag_utc(row)
     out["variables"] = template_svc.extract_variables(row.get("body") or "")
     out["has_attachment"] = bool(out.pop("attachment_path", None))
+    # Stored as JSON, handed over as a list — the client should not have to
+    # know which of those it is getting.
+    raw = out.get("comment_variations")
+    if isinstance(raw, str):
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            loaded = None
+        out["comment_variations"] = loaded if isinstance(loaded, list) else []
+    elif raw is None:
+        out["comment_variations"] = []
     return out
 
 
@@ -360,7 +394,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             # A follow campaign sends nothing, so it needs no template and
             # must not be rejected for lacking one.
             try:
-                if data.activity != ACTIVITY_FOLLOW:
+                if data.activity not in (ACTIVITY_FOLLOW, ACTIVITY_COMMENT):
                     template_svc.validate_template(
                         body or "", known_variables=(data.template_vars or {}).keys()
                     )
@@ -377,6 +411,9 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 template_vars=template_svc.dump_vars(data.template_vars),
                 platform=data.platform,
                 activity=data.activity,
+                target_url=(data.target_url or "").strip() or None,
+                comment_count=int(data.comment_count or 0),
+                comment_variations=_dump_variations(data.comment_variations),
                 status=CAMPAIGN_DRAFT,
                 max_jobs=data.max_jobs,
                 max_jobs_per_account=data.max_jobs_per_account,
@@ -503,6 +540,13 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                         400,
                         f"activity must be one of: {', '.join(CAMPAIGN_ACTIVITIES)}")
                 updates["activity"] = data.activity
+            if data.target_url is not None:
+                updates["target_url"] = data.target_url.strip() or None
+            if data.comment_count is not None:
+                updates["comment_count"] = max(0, int(data.comment_count))
+            if data.comment_variations is not None:
+                updates["comment_variations"] = _dump_variations(
+                    data.comment_variations)
             if updates:
                 await db.update_outreach_campaign(database, campaign_id, **updates)
             row = await db.get_outreach_campaign(database, campaign_id)
@@ -644,7 +688,11 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             problems.append(str(exc))
         counts = await db.count_outreach_targets(database, campaign["id"])
         if counts.get("queued", 0) + counts.get("paused", 0) == 0:
-            problems.append("No queued targets — import a list first")
+            problems.append(
+                "Nothing to comment — set the video and how many comments"
+                if comments.is_comment(campaign)
+                else "No queued targets — import a list first"
+            )
         if not await account_mgr.eligible_account_ids(database, campaign):
             problems.append(
                 "No enabled sending account for this campaign — add one, or "
@@ -657,6 +705,15 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         database = await db.get_db()
         try:
             campaign = await _own_campaign(database, campaign_id, user)
+            # A comment campaign has no list of people — its targets are
+            # the comments themselves. They are materialised before the
+            # preflight, which would otherwise refuse a campaign for
+            # having no targets a moment before it made them.
+            if comments.is_comment(campaign):
+                try:
+                    await comments.sync_slots(database, campaign)
+                except comments.CommentSetupError as exc:
+                    raise HTTPException(400, {"errors": [str(exc)]}) from exc
             problems = await _preflight(database, campaign)
             if problems:
                 raise HTTPException(400, {"errors": problems})
