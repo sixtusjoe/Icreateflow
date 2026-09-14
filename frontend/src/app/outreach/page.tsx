@@ -25,7 +25,7 @@ import {
   setCampaignAttachment,
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { LABEL_WHEN_ROOM, PageIcon, ProgressBar, Select, StatusPill, apiErrorMessage, inputClass } from "./ui";
+import { LABEL_WHEN_ROOM, ProgressBar, Select, StatusPill, apiErrorMessage, inputClass } from "./ui";
 
 export default function OutreachPage() {
   const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
@@ -113,14 +113,11 @@ export default function OutreachPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <PageIcon icon={Send} />
-          <div className="min-w-0">
-            <h1 className="text-xl md:text-2xl font-bold tracking-tight">Outreach</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Import creator lists, queue DMs, and watch them go out across your sending accounts.
-            </p>
-          </div>
+        <div className="min-w-0">
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Outreach</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Import creator lists, queue DMs, and watch them go out across your sending accounts.
+          </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
           <Link

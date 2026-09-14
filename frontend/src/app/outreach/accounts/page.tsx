@@ -28,7 +28,7 @@ import {
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SessionViewer } from "@/components/outreach/SessionViewer";
-import { Modal, PageIcon, Select, StatusPill, Toggle, apiErrorMessage, inputClass, relativeTime } from "../ui";
+import { LABEL_WHEN_ROOM, Modal, Select, StatusPill, Toggle, apiErrorMessage, inputClass, relativeTime } from "../ui";
 
 const MAX_ACCOUNTS = 20;
 
@@ -227,22 +227,21 @@ export default function OutreachAccountsPage() {
       </Link>
 
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <PageIcon icon={Users} />
-          <div>
-            <h1 className="text-xl md:text-2xl font-bold tracking-tight">Sending accounts</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {accounts.length} of {MAX_ACCOUNTS} accounts. Each worker runs an account in its
-              own isolated browser session.
-            </p>
-          </div>
+        <div className="min-w-0">
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Sending accounts</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {accounts.length} of {MAX_ACCOUNTS} accounts. Each worker runs an account in its
+            own isolated browser session.
+          </p>
         </div>
         <button
           onClick={() => setShowNew(true)}
           disabled={accounts.length >= MAX_ACCOUNTS}
-          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
+          title="Add account"
+          className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-foreground px-4 lg:px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
         >
-          <Plus className="h-4 w-4" /> Add account
+          <Plus className="h-4 w-4" />
+          <span className={LABEL_WHEN_ROOM}>Add account</span>
         </button>
       </div>
 
