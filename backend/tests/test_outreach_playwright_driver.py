@@ -643,6 +643,10 @@ TYPING_GOES_NOWHERE = """
 #: so a correct budget clears it. Costs the suite about twelve seconds.
 LATE_BUTTON_DELAY_MS = 12000
 LATE_BUTTON_HITS: list[int] = []
+#: /leaves is the profile, except on the reload straight after a send —
+#: which is where TikTok puts the inbox. A later, deliberate visit gets
+#: the profile back, exactly as returning to it does.
+LEAVES_HITS: list[int] = []
 
 SENDABLE_LATE_BUTTON = """
 <html><body>
@@ -884,6 +888,43 @@ VIDEO_LONG_LIST = """
 </body></html>
 """
 
+#: Sending moves the page somewhere else, the way TikTok does: it opens
+#: the inbox to send, so the confirmation's reload lands on a page with no
+#: profile and no Message button anywhere on it. Waiting longer for that
+#: button cannot help — the page has to go back to the profile first.
+SEND_THEN_LEAVES = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <button data-e2e="message-button" onclick="openChat()">Message</button>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() {
+      document.getElementById('chat').style.display = 'block';
+      fetch('/history').then(function (r) { return r.text(); })
+                       .then(function (h) { document.getElementById('thread').innerHTML = h; });
+    }
+    function sendChat() {
+      var ed = document.querySelector('[data-e2e="message-input-area"]');
+      var item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+  </script>
+</body></html>
+"""
+
+#: Where the send leaves us: an inbox with no profile on it.
+INBOX_AFTER_SEND = """
+<html><body><h1>Messages</h1><div id="conversations"></div></body></html>
+"""
+
 VIDEO_COMMENTS_OFF = """
 <html><body>
   <h1>A video</h1>
@@ -898,6 +939,8 @@ PAGES = {
     "/video/skeleton": VIDEO_SKELETON,
     "/video/long": VIDEO_LONG_LIST,
     "/video/closed": VIDEO_COMMENTS_OFF,
+    "/leaves": SEND_THEN_LEAVES,
+    "/inboxpage": INBOX_AFTER_SEND,
     "/latebutton": SENDABLE_LATE_BUTTON,
     "/slowshell": SLOW_SHELL,
     "/nevertyped": TYPING_GOES_NOWHERE,
@@ -948,6 +991,23 @@ SITE_ERROR_HITS: list[int] = []
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's interface
+        if self.path == "/leaves":
+            LEAVES_HITS.append(1)
+            if len(LEAVES_HITS) == 2:
+                # The reload after a send lands on the inbox — a different
+                # URL, as it is on the real site. Coming back to the
+                # profile deliberately gets the profile.
+                self.send_response(302)
+                self.send_header("Location", "/inboxpage")
+                self.end_headers()
+                return
+            body = SEND_THEN_LEAVES
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body.encode())))
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
         if self.path == "/history":
             self._history()
             return
@@ -1018,6 +1078,7 @@ def clear_received(monkeypatch):
     RECEIVED.clear()
     SITE_ERROR_HITS.clear()
     LATE_BUTTON_HITS.clear()
+    LEAVES_HITS.clear()
     # No screenshots from the test suite.
     monkeypatch.setattr(
         "services.outreach.browser.playwright_base.DEBUG_DIR", ""
@@ -2121,3 +2182,18 @@ def test_tiktok_does_not_wait_for_a_thread_its_profile_never_shows():
     assert PlaywrightTikTokMessenger.THREAD_SURVIVES_RELOAD is False
     # X keeps its conversation at its own URL, so the reload does prove it.
     assert PlaywrightXMessenger.THREAD_SURVIVES_RELOAD is True
+
+
+async def test_a_send_that_ends_on_another_page_is_still_confirmed(driver, site):
+    """TikTok opens the inbox to send, and the reload lands there.
+
+    The confirmation then looked for a Message button on a page that has
+    no profile on it, waited out its budget and reported a delivered
+    message as failed — four in a row on one run, every one of them
+    sitting in the recipient's thread. Returning to the profile is what
+    makes reopening mean anything.
+    """
+    result = await driver.send_message(
+        account(), target(site, "/leaves"), "hello from a page that moved"
+    )
+    assert result.status == RESULT_SENT, result.error

@@ -1302,13 +1302,39 @@ class PlaywrightMessenger:
             return None
         return "Could not find anywhere to attach an image in the composer"
 
+    @staticmethod
+    def _same_page(current: str, wanted: str) -> bool:
+        """Is the browser already on this page, ignoring query and fragment?"""
+        def bare(u: str) -> str:
+            return (u or "").split("?")[0].split("#")[0].rstrip("/").lower()
+
+        return bare(current) == bare(wanted)
+
     async def _reopen_conversation(self, page, target: dict[str, Any], username: str) -> bool:
         """Open this target's conversation again, from the profile.
 
         Used only to confirm a delivery. Clicking Message re-fetches the
         conversation from the platform, so what appears in it came from the
         server rather than from anything this page invented.
+
+        Go back to the profile first. TikTok moves the page to the inbox
+        to send, so after the reload this is sitting on /messages — a page
+        with no profile and no Message button on it anywhere. Waiting
+        longer for a button that is not there was never going to work,
+        however generous the budget: every one of these was reported as
+        undelivered while the message sat in the recipient's thread.
         """
+        url = target.get("profile_url") or self.profile_url(username)
+        try:
+            if not self._same_page(page.url, url):
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=self._timeout)
+                await page.wait_for_timeout(SETTLE_MS)
+        except Exception as exc:  # noqa: BLE001 — answered by the caller
+            print(f"[outreach] could not return to @{username}'s profile to "
+                  f"confirm ({type(exc).__name__})", flush=True)
+            return False
+
         editor = await self._retry_message_click(
             page, target, username, timeout_ms=REOPEN_BUTTON_MS
         )

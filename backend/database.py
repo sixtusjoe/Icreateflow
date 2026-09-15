@@ -37,6 +37,7 @@ from sqlalchemy import (
     Integer,
     Text,
     UniqueConstraint,
+    case,
     delete,
     func,
     insert,
@@ -2602,7 +2603,22 @@ async def get_outreach_targets(
     q = select(OutreachTarget).where(OutreachTarget.campaign_id == campaign_id)
     if status:
         q = q.where(OutreachTarget.status == status)
-    q = q.order_by(OutreachTarget.id.asc()).offset(offset)
+    # Grouped by what happened to them, then by import order.
+    #
+    # Plain id order scatters a handful of sent and failed rows through a
+    # thousand pending ones, so finding them means paging the whole list.
+    # Work first — what is running, what is next — then the outcomes, with
+    # failures ahead of skips because those are the ones worth reading.
+    order = case(
+        (OutreachTarget.status == "processing", 0),
+        (OutreachTarget.status == "queued", 1),
+        (OutreachTarget.status == "paused", 2),
+        (OutreachTarget.status == "sent", 3),
+        (OutreachTarget.status == "failed", 4),
+        (OutreachTarget.status == "skipped", 5),
+        else_=6,
+    )
+    q = q.order_by(order, OutreachTarget.id.asc()).offset(offset)
     if limit:
         q = q.limit(limit)
     return _rows((await s.execute(q)).scalars().all())
