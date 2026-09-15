@@ -631,6 +631,57 @@ TYPING_GOES_NOWHERE = """
 #: The shell TikTok serves before the profile data arrives: an <h1> is on
 #: the page immediately, everything that identifies the account — and the
 #: action row with the Message button — comes later.
+#: The Message button arrives late on the RELOAD — which is where it
+#: actually bit. Measured at ~8.3s on a reloaded TikTok profile against an
+#: 8s budget, so the confirmation missed it by a fraction of a second and
+#: called a delivered message failed. The first visit is served normally:
+#: the send itself was never the problem.
+#:
+#: Past the 8s budget that produced the false negatives, so this test
+#: fails if that budget ever comes back — at 4s it passed either way,
+#: which is a test that proves nothing. Still well under REOPEN_BUTTON_MS,
+#: so a correct budget clears it. Costs the suite about twelve seconds.
+LATE_BUTTON_DELAY_MS = 12000
+LATE_BUTTON_HITS: list[int] = []
+
+SENDABLE_LATE_BUTTON = """
+<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div id="slot"></div>
+  <div id="chat" style="display:none">
+    <div data-e2e="message-input-area" contenteditable="true" role="textbox"></div>
+    <button data-e2e="message-send" onclick="sendChat()">Send</button>
+    <div id="thread"></div>
+  </div>
+  <script>
+    function openChat() {
+      document.getElementById('chat').style.display = 'block';
+      // Reopening fetches the conversation, so what shows came from the
+      // server rather than from anything this page kept.
+      fetch('/history').then(function (r) { return r.text(); })
+                       .then(function (h) { document.getElementById('thread').innerHTML = h; });
+    }
+    function sendChat() {
+      const ed = document.querySelector('[data-e2e="message-input-area"]');
+      const item = document.createElement('div');
+      item.setAttribute('data-e2e', 'chat-item');
+      item.textContent = ed.innerText;
+      document.getElementById('thread').appendChild(item);
+      // Tell the server, so the thread survives the reload the way a real
+      // one does. Without this the confirmation is asking a page that
+      // forgets, which is not the thing being tested.
+      fetch('/sent', { method: 'POST', body: ed.innerText });
+      ed.innerText = '';
+    }
+    // The page is up; its controls are not. Exactly the gap that broke it.
+    setTimeout(function () {
+      document.getElementById('slot').innerHTML =
+        '<button data-e2e="message-button" onclick="openChat()">Message</button>';
+    }, __DELAY__);
+  </script>
+</body></html>
+""".replace("__DELAY__", str(LATE_BUTTON_DELAY_MS))
+
 SLOW_SHELL = """
 <html><body>
   <h1>For You</h1>
@@ -847,6 +898,7 @@ PAGES = {
     "/video/skeleton": VIDEO_SKELETON,
     "/video/long": VIDEO_LONG_LIST,
     "/video/closed": VIDEO_COMMENTS_OFF,
+    "/latebutton": SENDABLE_LATE_BUTTON,
     "/slowshell": SLOW_SHELL,
     "/nevertyped": TYPING_GOES_NOWHERE,
     "/placeholder": PLACEHOLDER_COMPOSER,
@@ -896,7 +948,15 @@ SITE_ERROR_HITS: list[int] = []
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's interface
-        if self.path == "/siteerroronce":
+        if self.path == "/history":
+            self._history()
+            return
+        if self.path == "/latebutton":
+            # First visit behaves; the reload is the one that lags.
+            LATE_BUTTON_HITS.append(1)
+            body = (SENDABLE_LATE_BUTTON.replace(str(LATE_BUTTON_DELAY_MS), "0")
+                    if len(LATE_BUTTON_HITS) == 1 else SENDABLE_LATE_BUTTON)
+        elif self.path == "/siteerroronce":
             SITE_ERROR_HITS.append(1)
             body = SITE_ERROR if len(SITE_ERROR_HITS) == 1 else SENDABLE
         else:
@@ -906,7 +966,8 @@ class _Handler(BaseHTTPRequestHandler):
         # The driver now confirms a send by reloading — a message the server
         # kept comes back, one the client only rendered does not. `/notpersisted`
         # is the stub that deliberately keeps nothing.
-        if self.path != "/notpersisted" and '<div id="thread"></div>' in body:
+        if (self.path not in ("/notpersisted", "/latebutton")
+                and '<div id="thread"></div>' in body):
             items = "".join(
                 f'<div data-e2e="chat-item">{m.split("|")[-1]}</div>'
                 for m in RECEIVED
@@ -917,6 +978,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body.encode())
+
+    def _history(self):
+        """What the server would give back if asked for the conversation."""
+        body = "".join(f'<div data-e2e="chat-item">{m.split("|")[-1]}</div>'
+                       for m in RECEIVED).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
@@ -945,6 +1017,7 @@ def site():
 def clear_received(monkeypatch):
     RECEIVED.clear()
     SITE_ERROR_HITS.clear()
+    LATE_BUTTON_HITS.clear()
     # No screenshots from the test suite.
     monkeypatch.setattr(
         "services.outreach.browser.playwright_base.DEBUG_DIR", ""
@@ -2001,3 +2074,50 @@ async def test_running_out_of_time_is_not_reported_as_running_out_of_people(
         "a slot that ran out of time must stay retryable"
     )
     assert "time" in (result.error or "").lower()
+
+
+# --- confirming a delivery ------------------------------------------------
+#
+# The send worked, the composer cleared, the message was in the thread and
+# stayed there. Then the confirmation reloaded the profile and gave up on
+# the Message button after 8s — while the real one renders at ~8.3s. A
+# third of a run's sends were recorded as failures with the message
+# already delivered: 26 of 89, every one on the same branch.
+
+
+async def test_a_delivery_is_confirmed_when_the_button_arrives_late(driver, site):
+    """The budget has to outlast the page, not race it."""
+    result = await driver.send_message(
+        account(), target(site, "/latebutton"), "hello from the late page"
+    )
+    assert result.status == RESULT_SENT, result.error
+
+
+def test_the_reopen_budget_outlasts_a_real_page():
+    """A regression guard with a measurement behind it.
+
+    The button was measured at 8.26s on a reloaded TikTok profile against
+    an 8s budget. Anything close to the measurement is not a budget — it
+    is the same coin toss that produced the false negatives.
+    """
+    from services.outreach.browser import playwright_base as pb
+
+    assert pb.REOPEN_BUTTON_MS >= 20000, (
+        f"reopen budget is {pb.REOPEN_BUTTON_MS}ms; the button was measured "
+        f"at 8260ms and varies either side of it"
+    )
+    assert pb.REOPEN_BUTTON_MS > pb.MESSAGE_BUTTON_MS
+
+
+def test_tiktok_does_not_wait_for_a_thread_its_profile_never_shows():
+    """Measured: zero chat items in sixty seconds on a reloaded profile.
+
+    The wait cost CONFIRM_RENDER_MS on every single send and could never
+    succeed, because the thread is behind the Message button.
+    """
+    from services.outreach.browser.playwright_tiktok import PlaywrightTikTokMessenger
+    from services.outreach.browser.playwright_x import PlaywrightXMessenger
+
+    assert PlaywrightTikTokMessenger.THREAD_SURVIVES_RELOAD is False
+    # X keeps its conversation at its own URL, so the reload does prove it.
+    assert PlaywrightXMessenger.THREAD_SURVIVES_RELOAD is True

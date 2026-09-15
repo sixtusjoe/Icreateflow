@@ -276,6 +276,11 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
     PLATFORM = "tiktok"
     OVERLAY_DISMISS = TIKTOK_OVERLAY_DISMISS
     SELECTORS = TIKTOK_SELECTORS
+    #: Measured: a reloaded profile shows no chat item in sixty seconds,
+    #: on a profile whose conversation certainly exists. The thread is
+    #: behind the Message button, so waiting for it on the profile was
+    #: four seconds thrown away on every single send.
+    THREAD_SURVIVES_RELOAD = False
     SITE_URL = "https://www.tiktok.com"
     SEARCH_URL = "https://www.tiktok.com/search"
     SEARCH_QUERY_URL = "https://www.tiktok.com/search/user?q={q}"

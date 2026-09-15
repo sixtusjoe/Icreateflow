@@ -138,6 +138,13 @@ PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "1200
 #: nowhere near that fast, and running out of time here is indistinguishable
 #: from the button being absent.
 MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "8000"))
+#: The same button, but when reopening a conversation to confirm a
+#: delivery. Measured on a reloaded TikTok profile: it renders at ~8.3s,
+#: against the 8s budget above — so roughly a third of confirmations missed
+#: it by a fraction of a second and recorded a delivered message as failed.
+#: 26 of 89 sends in one run. Generous on purpose: the cost of waiting is
+#: seconds, and the cost of giving up early is a message sent twice.
+REOPEN_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_REOPEN_BUTTON_MS", "30000"))
 #: How long a reloaded page gets to render an existing conversation before
 #: the check moves on to reopening it. Not a budget for the send — the send
 #: has already happened — just for the thread to draw.
@@ -259,6 +266,15 @@ class PlaywrightMessenger:
     #: Weaker than a reload. Stronger than calling a delivered message
     #: undelivered nine times out of ten.
     CONFIRM_BY_RELOAD = True
+    #: Does a reloaded profile show the conversation again?
+    #:
+    #: Where it does not, waiting for one is dead time on every send that
+    #: can never pay off — measured at zero chat items in sixty seconds on
+    #: a TikTok profile whose conversation certainly exists, because the
+    #: thread lives behind the Message button rather than on the page.
+    #: The confirmation still happens; it happens by reopening, which is
+    #: the step that was always doing the work.
+    THREAD_SURVIVES_RELOAD = True
 
     #: Put the whole message in with one input event instead of typing it.
     #:
@@ -1195,9 +1211,11 @@ class PlaywrightMessenger:
         # the thread genuinely needed longer, the miss falls through to
         # reopening the conversation, which asks the server directly. The
         # fallback is the same one that already handles this, not a failure.
-        await self._first_visible(
-            page, self.SELECTORS["sent_confirmation"], timeout_ms=CONFIRM_RENDER_MS
-        )
+        if self.THREAD_SURVIVES_RELOAD:
+            await self._first_visible(
+                page, self.SELECTORS["sent_confirmation"],
+                timeout_ms=CONFIRM_RENDER_MS,
+            )
         if not await self._message_in_thread(page, message):
             # A locked thread is not an absent message.
             #
@@ -1291,7 +1309,9 @@ class PlaywrightMessenger:
         conversation from the platform, so what appears in it came from the
         server rather than from anything this page invented.
         """
-        editor = await self._retry_message_click(page, target, username)
+        editor = await self._retry_message_click(
+            page, target, username, timeout_ms=REOPEN_BUTTON_MS
+        )
         if editor is None:
             return False
         # Give the history a moment to populate — the composer appears
@@ -1317,7 +1337,8 @@ class PlaywrightMessenger:
             page, self.SELECTORS["profile_loaded"], timeout_ms=PROFILE_READY_MS
         )
 
-    async def _retry_message_click(self, page, target: dict[str, Any], username: str):
+    async def _retry_message_click(self, page, target: dict[str, Any], username: str,
+                                   timeout_ms: Optional[int] = None):
         """Click Message once more when the first click opened nothing.
 
         A challenge thrown by the click consumes it: the page is healthy
@@ -1332,7 +1353,8 @@ class PlaywrightMessenger:
         already found is cheap; losing the job is not.
         """
         button = await self._first_visible_tiered(
-            page, self.SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
+            page, self.SELECTORS["message_button"],
+            timeout_ms=MESSAGE_BUTTON_MS if timeout_ms is None else timeout_ms,
         )
         if button is None:
             print(
