@@ -77,6 +77,13 @@ export default function OutreachCampaignPage() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [targets, setTargets] = useState<OutreachTarget[]>([]);
   const [targetTab, setTargetTab] = useState<(typeof TARGET_TABS)[number]>("all");
+  //: One screenful at a time. The list used to ask for 200 and show
+  //: whatever came back, so a campaign of a thousand looked like a
+  //: campaign of two hundred — the count said otherwise and the list was
+  //: believed.
+  const TARGET_PAGE_SIZE = 100;
+  const [targetPage, setTargetPage] = useState(0);
+  const [targetTotal, setTargetTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [watch, setWatch] = useState<WatchState | null>(null);
   const [showComments, setShowComments] = useState(false);
@@ -103,13 +110,25 @@ export default function OutreachCampaignPage() {
     try {
       const data = await listOutreachTargets(id, {
         status: targetTab === "all" ? undefined : targetTab,
-        limit: 200,
+        limit: TARGET_PAGE_SIZE,
+        offset: targetPage * TARGET_PAGE_SIZE,
       });
       setTargets(data.targets);
+      // The tab decides what is being counted: "all" is everything, a
+      // status tab is only that status.
+      setTargetTotal(
+        targetTab === "all" ? data.total : (data.counts?.[targetTab] ?? 0),
+      );
     } catch {
       /* the detail call already surfaced any auth/404 problem */
     }
-  }, [id, targetTab]);
+  }, [id, targetTab, targetPage]);
+
+  // A different tab is a different list; staying on page 7 of it shows an
+  // empty table and looks like the targets are gone.
+  useEffect(() => {
+    setTargetPage(0);
+  }, [targetTab]);
 
   useEffect(() => {
     loadDetail();
@@ -619,6 +638,31 @@ export default function OutreachCampaignPage() {
                 </table>
               )}
             </div>
+            {targetTotal > TARGET_PAGE_SIZE && (
+              <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-xs">
+                <p className="text-muted-foreground tabular-nums">
+                  {targetPage * TARGET_PAGE_SIZE + 1}–
+                  {Math.min((targetPage + 1) * TARGET_PAGE_SIZE, targetTotal)} of{" "}
+                  {targetTotal.toLocaleString()}
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setTargetPage((n) => Math.max(0, n - 1))}
+                    disabled={targetPage === 0}
+                    className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    onClick={() => setTargetPage((n) => n + 1)}
+                    disabled={(targetPage + 1) * TARGET_PAGE_SIZE >= targetTotal}
+                    className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Error log */}
