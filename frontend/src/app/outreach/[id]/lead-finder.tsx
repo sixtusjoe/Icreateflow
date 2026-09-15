@@ -39,6 +39,14 @@ export function LeadFinder({
   const [availability, setAvailability] = useState<LeadSearchAvailability | null>(null);
   const [niche, setNiche] = useState("");
   const [seeds, setSeeds] = useState("");
+  // A link to a post, on any of the three platforms. This is the same
+  // expression as discovery._POST_URL, which is what actually decides —
+  // a looser or stricter copy here would describe one thing while the
+  // server did another (a tiktok.com/t/ short link, for instance).
+  const POST_LINK = /https?:\/\/\S*\/(video|reel|p|status)\/|tiktok\.com\/t\//i;
+  const postLinks = seeds.split(/[\s,]+/).filter((s) => POST_LINK.test(s));
+  const postCount = postLinks.length;
+  const seedsArePosts = postCount > 0;
   const [location, setLocation] = useState("");
   const [interests, setInterests] = useState("");
   const [wanted, setWanted] = useState(50);
@@ -195,17 +203,35 @@ export function LeadFinder({
             />
             <input
               className={inputClass}
-              placeholder="Or: accounts whose followers to read, e.g. @nike, @adidas"
+              placeholder="Or: a video link, or accounts whose followers to read — e.g. https://www.tiktok.com/@someone/video/123… or @nike, @adidas"
               value={seeds}
               onChange={(e) => setSeeds(e.target.value)}
             />
-            {seeds.trim() && (
+            {/* The field has always taken post links; it simply never said
+                so, and pasting one is the thing people reach for first. */}
+            {!seeds.trim() && (
               <p className="text-xs text-muted-foreground">
-                Reading followers directly — the description, hashtags and post
-                options below are not used. Everyone here chose to follow those
-                accounts, which is a warmer list than a hashtag. It is also the
-                most conspicuous thing this does, so keep the numbers modest.
+                Paste a video link to read everyone who commented on it, or
+                name accounts to read their followers. Several are fine — one
+                per line, or separated by commas.
               </p>
+            )}
+            {seedsArePosts ? (
+              <p className="text-xs text-muted-foreground">
+                Reading the comments on {postCount === 1 ? "that video" : `those ${postCount} videos`},
+                replies included — the description and the options below are
+                not used. Nothing is followed, liked or messaged; it only
+                reads.
+              </p>
+            ) : (
+              seeds.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  Reading followers directly — the description, hashtags and post
+                  options below are not used. Everyone here chose to follow those
+                  accounts, which is a warmer list than a hashtag. It is also the
+                  most conspicuous thing this does, so keep the numbers modest.
+                </p>
+              )
             )}
             <div className="grid grid-cols-2 gap-2">
               <input
