@@ -2494,13 +2494,15 @@ class PlaywrightMessenger:
                 if len(found) >= limit:
                     break
                 print(f"[discovery] reading {url}", flush=True)
-                for username in await self._people_on_post(page, url):
-                    if len(found) >= limit:
-                        break
+                # Each person is handed over as the reader finds them, not
+                # after the video has been read to the end. A thousand-
+                # comment video takes long enough that collecting first and
+                # reporting afterwards loses everything if it is stopped.
+                async def take(username: str) -> None:
                     if not username or username.lower() in skip:
-                        continue
+                        return
                     if username in found:
-                        continue
+                        return
                     found[username] = {
                         "username": username,
                         "profile_url": self.profile_url(username),
@@ -2509,6 +2511,13 @@ class PlaywrightMessenger:
                     }
                     if on_found:
                         await on_found(found[username])
+
+                # Ask only for what is still needed. The limit used to be
+                # applied after reading, so a request for a hundred read
+                # every comment on the video first and discarded the rest.
+                await self._people_on_post(
+                    page, url, want=max(limit - len(found), 1), on_person=take
+                )
                 await asyncio.sleep(interval_seconds)
         finally:
             try:
@@ -2805,7 +2814,9 @@ class PlaywrightMessenger:
         return self._absolute(href)
 
     async def _people_on_post(self, page, post_url: str,
-                              scroll_rounds: int = 0) -> list[str]:
+                              scroll_rounds: int = 0,
+                              want: Optional[int] = None,
+                              on_person: Optional[Any] = None) -> list[str]:
         """Everyone named on a post, in document order.
 
         The author comes first and commenters follow, because that is the
@@ -2814,10 +2825,17 @@ class PlaywrightMessenger:
         every attempt to be more specific than "profile links inside main"
         matched nothing at all.
         """
-        return await self._profile_links(
+        people = await self._profile_links(
             page, self._absolute(post_url),
             self.SELECTORS.get("post_people") or (), scroll_rounds,
         )
+        # This one reads a loaded page in a single pass, so there is nothing
+        # to stream from — but the contract is the same either way, and a
+        # caller that hands in a callback must not find it quietly ignored.
+        if on_person is not None:
+            for name in people[:want] if want else people:
+                await on_person(name)
+        return people[:want] if want else people
 
     async def _post_likers(self, page, post_url: str,
                            scroll_rounds: int = 0) -> list[str]:

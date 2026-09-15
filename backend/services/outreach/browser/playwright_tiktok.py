@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any
+from typing import Any, Optional
 
 from services.outreach.browser.playwright_base import (
     CLICK_MS,
@@ -265,6 +265,10 @@ TIKTOK_OVERLAY_DISMISS = (
 ) + PlaywrightMessenger.OVERLAY_DISMISS
 
 
+class _Enough(Exception):
+    """Enough people have been found; unwind out of the read."""
+
+
 class PlaywrightTikTokMessenger(PlaywrightMessenger):
     """TikTok. The engine, plus the table above.
 
@@ -339,7 +343,9 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
         return username
 
     async def _people_on_post(self, page, post_url: str,
-                              scroll_rounds: int = 0) -> list[str]:
+                              scroll_rounds: int = 0,
+                              want: Optional[int] = None,
+                              on_person: Optional[Any] = None) -> list[str]:
         """Everyone who commented on a video, replies included.
 
         The base version reads profile links off a loaded page, which is
@@ -402,9 +408,26 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
             await self._mark_comment_scroller(page)
 
             async def collect() -> None:
+                """Take what is on screen, and hand each new name straight on.
+
+                Handing them over here rather than at the end is what lets
+                a caller keep everything when a read is stopped part-way:
+                a video with a thousand comments takes long enough that
+                all-or-nothing means losing the lot.
+                """
                 for name in await self._collect_profile_links(
                         page, self.SELECTORS["post_people"]):
+                    if name in seen:
+                        continue
                     seen.setdefault(name)
+                    if on_person is not None:
+                        await on_person(name)
+                    # Stopping between phases is not stopping: phase one
+                    # alone can run for ten minutes past the number asked
+                    # for. This ends the read on the person who completes
+                    # the order.
+                    if want is not None and len(seen) >= want:
+                        raise _Enough()
 
             quiet_phases, phase = 0, 0
             panel_deadline = time.monotonic() + (self.PANEL_BUDGET_MS / 1000)
@@ -414,6 +437,13 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                     print(f"[discovery] stopped after "
                           f"{self.PANEL_BUDGET_MS // 1000}s on this video with "
                           f"{len(seen)} people", flush=True)
+                    break
+                if want is not None and len(seen) >= want:
+                    # Asked for a number, and it is here. Reading the rest
+                    # of a thousand-comment video only to throw it away is
+                    # the caller's time spent on nothing.
+                    print(f"[discovery] {len(seen)} people is what was "
+                          f"asked for — stopping here", flush=True)
                     break
                 before = len(seen)
                 # Back to the top first, so each phase re-walks the whole
@@ -442,6 +472,9 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
                         break
                 else:
                     quiet_phases = 0
+        except _Enough:
+            print(f"[discovery] {len(seen)} people is what was asked for — "
+                  f"stopping here", flush=True)
         except Exception as exc:  # noqa: BLE001 — one bad video is not fatal
             print(f"[discovery] comments on {post_url} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
