@@ -144,3 +144,62 @@ async def test_an_empty_line_asks_nothing_of_the_model(monkeypatch):
 
     assert await comment_ai.vary(_FakeDB(), "   ") == ""
     assert not called
+
+
+# --- the link is the point of the comment ---------------------------------
+#
+# A reply without it costs the same account attempt and asks nobody to go
+# anywhere. Written with a hidden dot because a plain one gets the comment
+# stripped, so the form matters character for character.
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        ("visit our store aceultra.club", "aceultra(dot)club"),
+        ("join our tele channel t.me/wesellmuha", "t(dot)me/wesellmuha"),
+        # Already hidden: taken exactly as written, not re-processed.
+        ("We do free samples! t(dot)me/wesellmuha", "t(dot)me/wesellmuha"),
+        ("shop at Aceultra(dot)club", "Aceultra(dot)club"),
+        ("nothing to click here", None),
+    ],
+)
+def test_the_link_a_comment_has_to_carry(line, expected):
+    assert comment_ai.required_link(line) == expected
+
+
+def test_only_the_dot_before_the_suffix_is_hidden():
+    """t.me/wesellmuha keeps its slash and its path; one dot changes."""
+    assert comment_ai.dotted("t.me/wesellmuha") == "t(dot)me/wesellmuha"
+    assert comment_ai.dotted("shop.aceultra.club") == "shop.aceultra(dot)club"
+
+
+async def test_a_rewrite_that_drops_the_link_gets_it_back(monkeypatch):
+    """Putting it back beats throwing away an otherwise good comment."""
+    _has_key(monkeypatch)
+    _answers("check out the menu, free samples for new customers", monkeypatch)
+
+    out = await comment_ai.vary(
+        _FakeDB(), "visit our yart menu. free samples. aceultra.club"
+    )
+    assert "aceultra(dot)club" in out
+    assert out.startswith("check out the menu")
+
+
+async def test_a_rewrite_that_kept_the_link_is_left_alone(monkeypatch):
+    """No second copy appended to a comment that already has one."""
+    _has_key(monkeypatch)
+    _answers("peep the menu aceultra(dot)club, freebies for new buyers",
+             monkeypatch)
+
+    out = await comment_ai.vary(_FakeDB(), "visit our menu aceultra.club")
+    assert out.count("aceultra(dot)club") == 1
+
+
+async def test_the_required_link_is_named_in_the_prompt(monkeypatch):
+    """The model is told the exact string, not asked to invent the form."""
+    _has_key(monkeypatch)
+    _answers("something aceultra(dot)club", monkeypatch)
+
+    await comment_ai.vary(_FakeDB(), "visit our store aceultra.club")
+    assert "aceultra(dot)club" in _answers.prompt

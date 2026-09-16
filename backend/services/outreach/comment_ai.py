@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Optional, Sequence
@@ -50,21 +51,77 @@ TIMEOUT_SECONDS = 20
 #: not walk back into one it has already used.
 RECENT_TO_AVOID = 25
 
-#: A rewrite this much longer than the original is not a rewrite.
+#: A rewrite this much longer than the original is not a rewrite — but
+#: a comment that reads naturally is worth a few more words, so this is
+#: loose. It exists to catch an answer that stopped being a comment, not
+#: to hold the wording to the original's length.
 LENGTH_CEILING = 2.2
 
-PROMPT = """Rewrite this comment so it says the same thing in different words.
+#: The obfuscated links these comments carry: t(dot)me/name, site(dot)club.
+#: Written this way so the platform does not strip them, which means they
+#: only work character for character — a rewrite that tidies "(dot)" into
+#: "." or dresses the link up in words has thrown the comment away.
+LINK = re.compile(r"\S*\(dot\)\S*", re.I)
 
-It is a reply to someone on TikTok, so it has to read like a person typed \
-it — not a brand, not a slogan, not customer service.
+#: The same link before anyone hid the dot: aceultra.club, t.me/name. A
+#: campaign's own line usually carries one of these, and posting it as
+#: written is how a comment gets stripped — so it goes out in the (dot)
+#: form instead.
+PLAIN_LINK = re.compile(
+    r"\b([\w-]+(?:\.[\w-]+)*)\.(club|com|me|net|org|co|io|shop|store|link)"
+    r"(/\S*)?",
+    re.I,
+)
+
+
+def dotted(link: str) -> str:
+    """A link written the way it has to be posted.
+
+    The dot before the suffix is the one that gets a comment stripped, so
+    that is the one that is hidden: aceultra.club -> Aceultra(dot)club,
+    t.me/name -> t(dot)me/name.
+    """
+    match = PLAIN_LINK.search(link or "")
+    if not match:
+        return link
+    host, suffix, path = match.group(1), match.group(2), match.group(3) or ""
+    return f"{host}(dot){suffix}{path}"
+
+
+def required_link(line: str) -> Optional[str]:
+    """The link this comment has to carry, in the form it has to carry it.
+
+    Taken as written when it is already hidden; converted when it is not.
+    A comment that asks nobody to go anywhere has spent an account's
+    attempt for nothing.
+    """
+    already = LINK.findall(line or "")
+    if already:
+        return already[0]
+    match = PLAIN_LINK.search(line or "")
+    return dotted(match.group(0)) if match else None
+
+PROMPT = """Rewrite this TikTok comment so it says the same thing in \
+different words.
+
+It is a reply to someone, so it has to read like a person typed it — not \
+a brand, not a slogan, not customer service. These are the shape to aim \
+for:
+
+    We do free samples! t(dot)me/wesellmuha
+    visit our store Aceultra(dot)club
+    join our tele channel t(dot)me/wesellmuha
 
 Rules:
-- Keep the meaning and the tone.
-- Change the wording. Do not reuse the same phrasing.
-- Keep it roughly the same length. Short is good.
-- Match the original's register: if it is lower case, stay lower case; if \
-it has an emoji, an emoji is fine; if it has none, do not add one.
-- Keep any link, handle or code exactly as written.
+- Keep it short. One line, about as long as the original — these are \
+comments, not adverts.
+- Change the wording. Do not reuse the original's phrasing, or any \
+phrasing listed below as already used.
+- Include this link exactly as written, character for character: {link}
+  Never turn "(dot)" into ".", never describe the link in words, never \
+leave it out. It is the whole point of the comment.
+- Match the original's register: if it is lower case, stay lower case; \
+if it has an emoji, an emoji is fine; if it has none, do not add one.
 - Reply with the rewritten comment and nothing else. No quotes, no \
 preamble, no explanation, no options.
 
@@ -175,8 +232,10 @@ async def vary(
         return original
 
     recent = [a.strip() for a in avoid if a and a.strip()][-RECENT_TO_AVOID:]
+    link = required_link(original)
     prompt = PROMPT.format(
         line=original,
+        link=link or "(none — the comment carries no link)",
         avoid=AVOID_BLOCK.format(lines="\n".join(f"- {r}" for r in recent))
         if recent else "",
     )
@@ -195,5 +254,17 @@ async def vary(
 
     if not answer or _looks_like_a_refusal(answer, original):
         return original
-    # Models like to wrap a rewrite in quotes even when told not to.
-    return answer.strip().strip('"').strip("'").strip() or original
+
+    # Every link in the original has to survive, exactly. A comment whose
+    # link was tidied into a real dot, described in words, or dropped is
+    # a comment that cost an account's attempt and asks nobody to go
+    # anywhere — worse than posting the line unchanged.
+    # The link is not negotiable. If the rewrite dropped it, put it back
+    # rather than throwing a good comment away: a reply without it costs
+    # the same attempt and asks nobody to go anywhere.
+    answer = answer.strip().strip('"').strip("'").strip()
+    if link and link.lower() not in answer.lower():
+        print(f"[outreach] the rewrite dropped {link} — putting it back",
+              flush=True)
+        answer = f"{answer} {link}".strip()
+    return answer or original
