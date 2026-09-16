@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import database as db
 from services.outreach import accounts as account_mgr
+from services.outreach import comment_ai
 from services.outreach import comments
 from services.outreach import config as cfg, session_capture
 from services.outreach import queue as job_queue
@@ -364,6 +365,18 @@ class OutreachWorker:
                         str(exc), settings, force_fail=True,
                     )
                     return
+
+                # Reworded before it goes out. TikTok hides a comment it
+                # has seen before, so a campaign posting one line under a
+                # hundred comments is posting it to nobody. The rewrite
+                # falls back to the line as written on any failure, so a
+                # missing key or a slow API costs nothing but variety.
+                line = await comment_ai.vary(
+                    database, line,
+                    avoid=await comments.recent_texts(database, campaign["id"]),
+                    user_id=campaign.get("user_id"),
+                )
+
                 result = await driver.comment_on_video(payload, {
                     "username": target["username"],
                     "profile_url": (
@@ -378,6 +391,11 @@ class OutreachWorker:
                         database, campaign["id"]),
                 })
                 answered = (result.detail or {}).get("replied_to")
+                if result.success:
+                    # What was actually said, so the next rewrite can be
+                    # told. The campaign's line is not the posted text.
+                    await db.update_outreach_target(
+                        database, int(target["id"]), posted_text=line)
                 if result.success and answered:
                     # Written before the job is completed, so a crash in
                     # between cannot lose who was answered and let the next

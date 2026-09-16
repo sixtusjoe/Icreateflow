@@ -126,6 +126,25 @@ async def already_answered(database, campaign_id: int) -> list[str]:
     return [r[0] for r in rows if r and r[0]]
 
 
+async def recent_texts(database, campaign_id: int, limit: int = 25) -> list[str]:
+    """What this campaign has already posted under the video.
+
+    Handed to the rewriter so it does not produce something it has
+    already produced. Without this the variations converge: every call
+    sees the same line and reaches for the same handful of rewordings,
+    which is the duplicate problem one step along.
+    """
+    rows = (await database.session.execute(
+        text(
+            "SELECT posted_text FROM outreach_targets "
+            " WHERE campaign_id = :cid AND posted_text IS NOT NULL "
+            " ORDER BY updated_at DESC LIMIT :n"
+        ),
+        {"cid": int(campaign_id), "n": int(limit)},
+    )).all()
+    return [r[0] for r in rows if r and r[0]]
+
+
 async def another_in_flight(database, campaign_id: int) -> bool:
     """Is a reply for this campaign already being written?
 

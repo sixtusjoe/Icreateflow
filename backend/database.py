@@ -771,6 +771,11 @@ class OutreachTarget(Base):
     #: to the same person twice, and the only durable record of who has
     #: been answered is the slot that answered them.
     replied_to: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: What was actually posted, which is not the campaign's line: each
+    #: reply is reworded before it goes out. Kept so the next one can be
+    #: told what has already been said here — rewrites with no memory of
+    #: each other drift back together.
+    posted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     __table_args__ = (
@@ -1517,6 +1522,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         ("outreach_campaigns", "attachment_path", "TEXT"),
         ("outreach_campaigns", "activity", "TEXT NOT NULL DEFAULT 'message'"),
     ("outreach_targets", "replied_to", "TEXT"),
+    ("outreach_targets", "posted_text", "TEXT"),
     ("outreach_campaigns", "target_url", "TEXT"),
     ("outreach_campaigns", "comment_count", "INTEGER NOT NULL DEFAULT 0"),
     ("outreach_campaigns", "comment_variations", "TEXT"),
