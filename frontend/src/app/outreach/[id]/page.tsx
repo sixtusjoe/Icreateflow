@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   ArrowLeft,
-  ChevronDown,
   MessageSquare,
   Play,
   Pause,
@@ -50,7 +49,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { SessionViewer } from "@/components/outreach/SessionViewer";
-import { LABEL_WHEN_ROOM, Modal, ProgressBar, StatusPill, apiErrorMessage, inputClass, relativeTime } from "../ui";
+import { LABEL_WHEN_ROOM, Modal, Panel, ProgressBar, StatusPill, apiErrorMessage, inputClass, relativeTime } from "../ui";
 import { LeadFinder } from "./lead-finder";
 
 type Detail = {
@@ -1158,98 +1157,6 @@ function CommentSetup({
         )}
       </div>
     </Modal>
-  );
-}
-
-/** Remembers which panels someone collapsed, between visits.
- *
- * Per browser, not per account: it is a reading preference, not data, and
- * it has no business making a round trip. Every access is guarded —
- * storage throws outright in some privacy modes rather than returning
- * nothing, and a page that will not render because of a saved preference
- * is a bad trade.
- */
-const PANEL_MEMORY = "outreach:panels:collapsed";
-
-function readCollapsed(): Record<string, boolean> {
-  try {
-    const raw = window.localStorage.getItem(PANEL_MEMORY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function rememberCollapsed(title: string, collapsed: boolean) {
-  try {
-    const all = readCollapsed();
-    if (collapsed) all[title] = true;
-    else delete all[title];
-    window.localStorage.setItem(PANEL_MEMORY, JSON.stringify(all));
-  } catch {
-    // A preference that cannot be saved is not worth an error.
-  }
-}
-
-function Panel({
-  title,
-  action,
-  children,
-  empty,
-  emptyText,
-}: {
-  title: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-  empty?: boolean;
-  emptyText?: string;
-}) {
-  // Always starts open, then corrects itself once mounted. Reading
-  // storage during render would make the server's HTML and the first
-  // client render disagree, which React discards the whole tree over.
-  const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => {
-    setCollapsed(Boolean(readCollapsed()[title]));
-  }, [title]);
-
-  const toggle = () => {
-    setCollapsed((was) => {
-      rememberCollapsed(title, !was);
-      return !was;
-    });
-  };
-
-  return (
-    <div className="rounded-xl border border-border bg-card">
-      <div
-        className={cn(
-          "flex items-center justify-between px-4 py-3",
-          !collapsed && "border-b border-border",
-        )}
-      >
-        <button
-          type="button"
-          onClick={toggle}
-          aria-expanded={!collapsed}
-          className="-m-1 flex flex-1 items-center gap-1.5 rounded p-1 text-left hover:text-foreground"
-        >
-          <ChevronDown
-            className={cn(
-              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
-              collapsed && "-rotate-90",
-            )}
-          />
-          <h2 className="text-sm font-semibold">{title}</h2>
-        </button>
-        {action}
-      </div>
-      {collapsed ? null : empty ? (
-        <p className="px-4 py-6 text-center text-sm text-muted-foreground">{emptyText}</p>
-      ) : (
-        children
-      )}
-    </div>
   );
 }
 

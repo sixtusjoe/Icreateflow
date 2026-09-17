@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ChevronDown, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -235,6 +236,104 @@ export function Modal({
         <h2 className="mb-5 shrink-0 text-lg font-semibold">{title}</h2>
         {children}
       </div>
+    </div>
+  );
+}
+
+/** Remembers which panels someone collapsed, between visits.
+ *
+ * Per browser, not per account: it is a reading preference, not data, and
+ * it has no business making a round trip. Every access is guarded —
+ * storage throws outright in some privacy modes rather than returning
+ * nothing, and a page that will not render because of a saved preference
+ * is a bad trade.
+ */
+const PANEL_MEMORY = "outreach:panels:collapsed";
+
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(PANEL_MEMORY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberCollapsed(title: string, collapsed: boolean) {
+  try {
+    const all = readCollapsed();
+    if (collapsed) all[title] = true;
+    else delete all[title];
+    window.localStorage.setItem(PANEL_MEMORY, JSON.stringify(all));
+  } catch {
+    // A preference that cannot be saved is not worth an error.
+  }
+}
+
+export function Panel({
+  title,
+  memoryKey,
+  action,
+  children,
+  empty,
+  emptyText,
+}: {
+  title: string;
+  /** What the collapsed state is saved under, when the title is not a
+   *  safe name for it. Panels on different pages share one store, so a
+   *  heading as ordinary as "TikTok" wants a key of its own. */
+  memoryKey?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  empty?: boolean;
+  emptyText?: string;
+}) {
+  // Always starts open, then corrects itself once mounted. Reading
+  // storage during render would make the server's HTML and the first
+  // client render disagree, which React discards the whole tree over.
+  const key = memoryKey ?? title;
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(Boolean(readCollapsed()[key]));
+  }, [key]);
+
+  const toggle = () => {
+    setCollapsed((was) => {
+      rememberCollapsed(key, !was);
+      return !was;
+    });
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-card">
+      <div
+        className={cn(
+          "flex items-center justify-between px-4 py-3",
+          !collapsed && "border-b border-border",
+        )}
+      >
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          className="-m-1 flex flex-1 items-center gap-1.5 rounded p-1 text-left hover:text-foreground"
+        >
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+              collapsed && "-rotate-90",
+            )}
+          />
+          <h2 className="text-sm font-semibold">{title}</h2>
+        </button>
+        {action}
+      </div>
+      {collapsed ? null : empty ? (
+        <p className="px-4 py-6 text-center text-sm text-muted-foreground">{emptyText}</p>
+      ) : (
+        children
+      )}
     </div>
   );
 }

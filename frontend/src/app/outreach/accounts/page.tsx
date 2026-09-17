@@ -28,9 +28,22 @@ import {
 } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SessionViewer } from "@/components/outreach/SessionViewer";
-import { LABEL_WHEN_ROOM, Modal, Select, StatusPill, Toggle, apiErrorMessage, inputClass, relativeTime } from "../ui";
+import { LABEL_WHEN_ROOM, Modal, Panel, Select, StatusPill, Toggle, apiErrorMessage, inputClass, relativeTime } from "../ui";
 
 const MAX_ACCOUNTS = 20;
+
+/** The platforms an account can be on, in the order this page lists them.
+ *  An account whose platform is not one of these is not dropped — it gets
+ *  a section under its own name, so nothing can go missing from the page
+ *  by not being recognised here. */
+const PLATFORMS = [
+  { id: "tiktok", label: "TikTok" },
+  { id: "instagram", label: "Instagram" },
+  { id: "x", label: "X (Twitter)" },
+];
+
+const platformLabel = (id: string) =>
+  PLATFORMS.find((p) => p.id === id)?.label ?? id;
 
 export default function OutreachAccountsPage() {
   const [accounts, setAccounts] = useState<OutreachAccount[]>([]);
@@ -217,6 +230,30 @@ export default function OutreachAccountsPage() {
     }
   };
 
+  // One section per platform, listed in PLATFORMS order, with anything
+  // unrecognised following it. Empty platforms are left out: a heading over
+  // no rows says nothing that the add button does not already say.
+  const groups = [
+    ...PLATFORMS.map((p) => p.id),
+    ...accounts
+      .map((a) => a.platform)
+      .filter((id) => !PLATFORMS.some((p) => p.id === id)),
+  ]
+    .filter((id, i, all) => all.indexOf(id) === i)
+    .map((id) => ({
+      id,
+      label: platformLabel(id),
+      rows: accounts.filter((a) => a.platform === id),
+    }))
+    .filter((g) => g.rows.length > 0);
+
+  // Adding from inside a section starts on that section's platform, which
+  // is almost always the one being added to.
+  const openNew = (forPlatform?: string) => {
+    setPlatform(forPlatform ?? "tiktok");
+    setShowNew(true);
+  };
+
   return (
     <div className="mx-auto max-w-5xl">
       <Link
@@ -235,7 +272,7 @@ export default function OutreachAccountsPage() {
           </p>
         </div>
         <button
-          onClick={() => setShowNew(true)}
+          onClick={() => openNew()}
           disabled={accounts.length >= MAX_ACCOUNTS}
           title="Add account"
           className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-foreground px-4 lg:px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
@@ -254,146 +291,163 @@ export default function OutreachAccountsPage() {
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full min-w-[720px] text-sm">
-            <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
-              <tr className="border-b border-border">
-                <th className="px-4 py-3 font-medium">Account</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Messages</th>
-                <th className="px-4 py-3 font-medium">Last activity</th>
-                <th className="px-4 py-3 font-medium">Errors</th>
-                <th className="px-4 py-3 font-medium">Enabled</th>
-                <th className="px-4 py-3 font-medium" />
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((a) => (
-                <tr key={a.id} className="border-b border-border/60 last:border-0 align-top">
-                  <td className="px-4 py-3">
-                    {renamingId === a.id ? (
-                      <input
-                        autoFocus
-                        value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onBlur={() => handleRename(a)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleRename(a);
-                          if (e.key === "Escape") cancelRename();
-                        }}
-                        aria-label={`Rename ${a.name}`}
-                        className={`${inputClass} h-8 w-44 py-1 font-medium`}
-                      />
-                    ) : (
-                      <button
-                        onClick={() => startRename(a)}
-                        title="Click to rename"
-                        className="group flex items-center gap-1.5 rounded font-medium hover:text-primary"
-                      >
-                        <span className="truncate">{a.name}</span>
-                        <Pencil className="h-3 w-3 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
-                      </button>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      {a.platform}
-                      <button
-                        onClick={() => handlePurpose(a)}
-                        title={
-                          a.purpose === "discovery"
-                            ? "Used for finding profiles. Click to use it for sending instead."
-                            : "Used for sending. Click to use it for finding profiles instead."
-                        }
-                        className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide hover:bg-border"
-                      >
-                        {a.purpose === "discovery" ? "discovery" : "sending"}
-                      </button>{" "}
-                      ·{" "}
-                      {a.has_session ? (
-                        <>session stored {relativeTime(a.session_updated_at)}</>
-                      ) : (
-                        <span className="text-amber-600 dark:text-amber-400">no session</span>
-                      )}{" "}
-                      ·{" "}
-                      <button
-                        onClick={() => setProxyFor(a)}
-                        title={
-                          a.proxy
-                            ? `Sends through ${a.proxy}. Click to change.`
-                            : "Sends from this server's own address. Click to set a proxy."
-                        }
-                        className="rounded hover:text-foreground"
-                      >
-                        {a.proxy ? (
-                          <span className="text-muted-foreground">{a.proxy}</span>
-                        ) : (
-                          <span className="text-muted-foreground underline decoration-dotted">
-                            no proxy
-                          </span>
-                        )}
-                      </button>
-                    </p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusPill status={a.status} />
-                    {a.paused_reason && (
-                      <p className="mt-1 max-w-[240px] text-xs text-amber-600 dark:text-amber-400">
-                        {a.paused_reason}
-                      </p>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 tabular-nums">{a.messages_processed}</td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {relativeTime(a.last_activity_at)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="tabular-nums">{a.error_count}</span>
-                    {a.last_error && (
-                      <p className="mt-0.5 max-w-[220px] truncate text-xs text-destructive">
-                        {a.last_error}
-                      </p>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Toggle
-                      checked={a.enabled}
-                      onChange={() => handleToggle(a)}
-                      label={`${a.enabled ? "Disable" : "Enable"} ${a.name}`}
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      {a.status === "paused" && (
-                        <button
-                          onClick={() => handleResume(a)}
-                          title="Clear auto-pause"
-                          className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <PlayCircle className="h-4 w-4" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => {
-                          setSessionFor(a);
-                          setSessionJson("");
-                        }}
-                        title="Attach browser session"
-                        className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      >
-                        <KeyRound className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(a)}
-                        title="Remove account"
-                        className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-4">
+          {groups.map((group) => (
+            <Panel
+              key={group.id}
+              title={group.label}
+              // Keyed apart from the campaign page's panels: both write to
+              // one store, and "TikTok" is too ordinary a name to share.
+              memoryKey={`accounts:${group.id}`}
+              action={
+                <div className="flex items-center gap-2">
+                  <span className="tabular-nums text-xs text-muted-foreground">
+                    {group.rows.length}
+                  </span>
+                  <button
+                    onClick={() => openNew(group.id)}
+                    disabled={accounts.length >= MAX_ACCOUNTS}
+                    title={`Add a ${group.label} account`}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add
+                  </button>
+                </div>
+              }
+            >
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[620px] text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr className="border-b border-border">
+                      <th className="px-4 py-3 font-medium">Account</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Messages</th>
+                      <th className="px-4 py-3 font-medium">Last activity</th>
+                      <th className="px-4 py-3 font-medium">Enabled</th>
+                      <th className="px-4 py-3 font-medium" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map((a) => (
+                      <tr key={a.id} className="border-b border-border/60 last:border-0 align-top">
+                        <td className="px-4 py-3">
+                          {renamingId === a.id ? (
+                            <input
+                              autoFocus
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onBlur={() => handleRename(a)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") handleRename(a);
+                                if (e.key === "Escape") cancelRename();
+                              }}
+                              aria-label={`Rename ${a.name}`}
+                              className={`${inputClass} h-8 w-44 py-1 font-medium`}
+                            />
+                          ) : (
+                            <button
+                              onClick={() => startRename(a)}
+                              title="Click to rename"
+                              className="group flex items-center gap-1.5 rounded font-medium hover:text-primary"
+                            >
+                              <span className="truncate">{a.name}</span>
+                              <Pencil className="h-3 w-3 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
+                            </button>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            <button
+                              onClick={() => handlePurpose(a)}
+                              title={
+                                a.purpose === "discovery"
+                                  ? "Used for finding profiles. Click to use it for sending instead."
+                                  : "Used for sending. Click to use it for finding profiles instead."
+                              }
+                              className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide hover:bg-border"
+                            >
+                              {a.purpose === "discovery" ? "discovery" : "sending"}
+                            </button>{" "}
+                            ·{" "}
+                            {a.has_session ? (
+                              <>session stored {relativeTime(a.session_updated_at)}</>
+                            ) : (
+                              <span className="text-amber-600 dark:text-amber-400">no session</span>
+                            )}{" "}
+                            ·{" "}
+                            <button
+                              onClick={() => setProxyFor(a)}
+                              title={
+                                a.proxy
+                                  ? `Sends through ${a.proxy}. Click to change.`
+                                  : "Sends from this server's own address. Click to set a proxy."
+                              }
+                              className="rounded hover:text-foreground"
+                            >
+                              {a.proxy ? (
+                                <span className="text-muted-foreground">{a.proxy}</span>
+                              ) : (
+                                <span className="text-muted-foreground underline decoration-dotted">
+                                  no proxy
+                                </span>
+                              )}
+                            </button>
+                          </p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusPill status={a.status} />
+                          {a.paused_reason && (
+                            <p className="mt-1 max-w-[240px] text-xs text-amber-600 dark:text-amber-400">
+                              {a.paused_reason}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">{a.messages_processed}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {relativeTime(a.last_activity_at)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Toggle
+                            checked={a.enabled}
+                            onChange={() => handleToggle(a)}
+                            label={`${a.enabled ? "Disable" : "Enable"} ${a.name}`}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1">
+                            {a.status === "paused" && (
+                              <button
+                                onClick={() => handleResume(a)}
+                                title="Clear auto-pause"
+                                className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              >
+                                <PlayCircle className="h-4 w-4" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                setSessionFor(a);
+                                setSessionJson("");
+                              }}
+                              title="Attach browser session"
+                              className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => setConfirmDelete(a)}
+                              title="Remove account"
+                              className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          ))}
         </div>
       )}
 
