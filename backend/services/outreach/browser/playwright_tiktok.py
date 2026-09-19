@@ -97,11 +97,19 @@ TIKTOK_SELECTORS: dict[str, Any] = {
     # is not typing into the box, and reading its text after a send finds
     # the placeholder — which is what made every delivered message report
     # "the message is still sitting in the composer".
+    # Only the editable itself. The bare container used to sit here as a
+    # fallback, and _first_visible races its selectors rather than trying
+    # them in order — so on a slow render the container, which appears
+    # about three seconds before the box inside it, won the race. Measured
+    # 2026-09-19: container visible at 30.8s, the editable at 34.1s. What
+    # came back was the wrapper, and clicking and typing into a wrapper
+    # puts no text anywhere; the job then reported "the message never
+    # reached the composer" over a composer that was sitting right there.
+    # Waiting the extra seconds for the real box is the whole fix.
     "message_input": (
         "[data-e2e='message-input-area'] div[contenteditable='true']",
         "div[contenteditable='true'][role='textbox']",
         "div[contenteditable='true']",
-        "[data-e2e='message-input-area']",
     ),
     # The DM inbox: a list of conversations with none of them open. Landing
     # here after clicking Message means no thread was started, so there is
