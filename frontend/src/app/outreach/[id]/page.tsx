@@ -86,6 +86,7 @@ export default function OutreachCampaignPage() {
   const [busy, setBusy] = useState(false);
   const [watch, setWatch] = useState<WatchState | null>(null);
   const [showComments, setShowComments] = useState(false);
+  const [showMessage, setShowMessage] = useState(false);
   const imageRef = useRef<HTMLInputElement>(null);
   const [showImport, setShowImport] = useState(false);
   const [findLeads, setFindLeads] = useState(false);
@@ -360,6 +361,16 @@ export default function OutreachCampaignPage() {
         />
       )}
 
+      {showMessage && (
+        <MessageSetup
+          campaignId={id}
+          template={c.message_template ?? ""}
+          locked={busy || status === "running"}
+          onSaved={loadDetail}
+          onClose={() => setShowMessage(false)}
+        />
+      )}
+
       {/* Header + actions */}
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
@@ -430,6 +441,18 @@ export default function OutreachCampaignPage() {
               >
                 <MessageSquare className="h-3.5 w-3.5" />
                 {c.target_url ? "Reply setup" : "Set up replies"}
+              </button>
+            </div>
+          )}
+          {(c.activity ?? "message") === "message" && (
+            <div className="inline-flex rounded-lg border border-border p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setShowMessage(true)}
+                className="flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                Message
               </button>
             </div>
           )}
@@ -1027,6 +1050,110 @@ function Metric({ label, value, tone }: { label: string; value: number; tone?: s
  * posting the same sentence under one video is the pattern that gets a
  * comment hidden.
  */
+/** The message this campaign sends, editable after it has run.
+ *
+ *  It was only ever settable at creation, which meant a campaign that had
+ *  started was stuck with whatever it was written with — and the wording
+ *  is the thing most worth changing once you have seen replies come back.
+ *  The API has always allowed the edit on a campaign that is not running;
+ *  nothing here could reach it.
+ *
+ *  Locked while running rather than hidden: the server refuses that edit,
+ *  and a disabled box that says why is kinder than a dialog that saves
+ *  into an error.
+ */
+function MessageSetup({
+  campaignId,
+  template,
+  locked,
+  onSaved,
+  onClose,
+}: {
+  campaignId: number;
+  template: string;
+  locked: boolean;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState(template);
+  const [saving, setSaving] = useState(false);
+
+  // Follow the campaign when it reloads underneath, but never overwrite
+  // what someone is part-way through typing.
+  useEffect(() => {
+    setText(template);
+  }, [template]);
+
+  const body = text.trim();
+  // The same shapes the server validates: {{name}} with word characters,
+  // and nothing else wearing braces.
+  const residue = text.replace(/\{\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}\}/g, "");
+  const malformed = residue.includes("{{") || residue.includes("}}");
+  const tooLong = text.length > 4000;
+  const used = Array.from(
+    new Set(
+      Array.from(text.matchAll(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g))
+        .map((m) => m[1]),
+    ),
+  );
+  const unchanged = body === template.trim();
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await updateOutreachCampaign(campaignId, { message_template: body });
+      toast.success("Message saved");
+      onSaved();
+      onClose();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not save the message"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Message" onClose={onClose}>
+      <div className="space-y-3">
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">
+            What each target is sent
+          </label>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            disabled={locked}
+            rows={8}
+            placeholder="Hi {{username}}, we came across your content..."
+            className={cn(inputClass, "mt-1 w-full resize-y text-xs")}
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {malformed
+              ? "Malformed placeholder — use {{username}}, letters and underscores only."
+              : tooLong
+                ? `${text.length} characters — the limit is 4000.`
+                : used.length
+                  ? `Fills in: ${used.join(", ")}`
+                  : "Available: username, profile_url, campaign_name, account_name."}
+          </p>
+        </div>
+        <button
+          onClick={save}
+          disabled={locked || saving || !body || malformed || tooLong || unchanged}
+          className="w-full rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
+        >
+          {saving ? "Saving…" : unchanged ? "No changes" : "Save message"}
+        </button>
+        <p className="text-[11px] text-muted-foreground">
+          {locked
+            ? "Pause or stop the campaign to change this."
+            : "Only changes what is sent from here on — messages already sent stay as they were."}
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
 function CommentSetup({
   campaignId,
   videoUrl,
