@@ -132,27 +132,39 @@ CHALLENGE_WAIT_HEADFUL_MS = int(
 
 DEFAULT_TIMEOUT_MS = int(os.environ.get("ICREATE_OUTREACH_TIMEOUT_MS", "30000"))
 #: How long to let the profile shell hydrate before looking for anything.
-PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "12000"))
+#: Measured 2026-09-19 against live profiles on a working session: the
+#: avatar and follower counts render early, and the action row holding
+#: Follow and Message is still four grey skeletons three seconds later.
+#: Twelve seconds was not enough to see a button that had not been built.
+PROFILE_READY_MS = int(os.environ.get("ICREATE_OUTREACH_PROFILE_READY_MS", "30000"))
 #: Budget for finding the Message button. The old 2.5s was tuned against a
 #: local stub that rendered instantly; a real profile on a cold server is
 #: nowhere near that fast, and running out of time here is indistinguishable
 #: from the button being absent.
-MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "8000"))
+#: Raised from 8s on 2026-09-19: three of four probed profiles had no
+#: Message button in the DOM at all after the avatar plus three seconds,
+#: including one that had opened a composer minutes earlier. Running out
+#: of time here reads as "this profile does not accept messages", which
+#: is the wrong thing to record about someone who does.
+MESSAGE_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_MESSAGE_BUTTON_MS", "30000"))
 #: The same button, but when reopening a conversation to confirm a
 #: delivery. Measured on a reloaded TikTok profile: it renders at ~8.3s,
 #: against the 8s budget above — so roughly a third of confirmations missed
 #: it by a fraction of a second and recorded a delivered message as failed.
 #: 26 of 89 sends in one run. Generous on purpose: the cost of waiting is
 #: seconds, and the cost of giving up early is a message sent twice.
-REOPEN_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_REOPEN_BUTTON_MS", "30000"))
+#: Raised to 45s alongside the others: the 8.3s that set this number was
+#: measured when pages were rendering in single-digit seconds, and they
+#: are not any more.
+REOPEN_BUTTON_MS = int(os.environ.get("ICREATE_OUTREACH_REOPEN_BUTTON_MS", "45000"))
 #: How long a reloaded page gets to render an existing conversation before
 #: the check moves on to reopening it. Not a budget for the send — the send
 #: has already happened — just for the thread to draw.
-CONFIRM_RENDER_MS = int(os.environ.get("ICREATE_OUTREACH_CONFIRM_RENDER_MS", "4000"))
+CONFIRM_RENDER_MS = int(os.environ.get("ICREATE_OUTREACH_CONFIRM_RENDER_MS", "12000"))
 #: How long to wait for a Message button to appear after following. The
 #: profile re-renders in place rather than navigating, so this is a render,
 #: not a page load — but it is a render behind a network round trip.
-FOLLOW_UNLOCK_MS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_UNLOCK_MS", "5000"))
+FOLLOW_UNLOCK_MS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_UNLOCK_MS", "15000"))
 #: What a fallback tier gets once the first has already waited out the page.
 #: Not a page-load budget — a settled-DOM query, which is instant or never.
 LATER_TIER_MS = int(os.environ.get("ICREATE_OUTREACH_LATER_TIER_MS", "1500"))
@@ -168,7 +180,17 @@ CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
 #: Budget for the composer to appear after clicking Message. Clicking it can
 #: navigate to a whole separate messages app rather than opening an inline
 #: box, and 8s was another stub-speed number that a real page misses.
-COMPOSER_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_MS", "15000"))
+#:
+#: 15s was too, and by a wide margin. Timed on 2026-09-19 by clicking
+#: Message and polling each composer selector every 250ms: the editable
+#: the code types into arrived at 11.3s on one profile and 34.1s on
+#: another, same account, same tab, minutes apart. Everything past 15s
+#: was recorded as "composer did not open" on a page that went on to
+#: render one — 45 such attempts on the second TikTok campaign alone.
+#: 45s covers what was measured with room over it; the cost of the extra
+#: wait is seconds, and the cost of being wrong is a person who never
+#: hears from us and an attempt spent finding that out.
+COMPOSER_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_MS", "45000"))
 
 #: Rows in the inbox conversation list, matched by their own text.
 THREAD_ROWS = "[data-e2e='chat-list-item'], [data-e2e='inbox-title']"
