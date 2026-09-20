@@ -137,6 +137,17 @@ LIST_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS", "4"
 LIST_QUIET_ROUNDS_HUNGRY = int(
     os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS_HUNGRY", "25")
 )
+#: Wall clock for one list read that is still short of what was asked
+#: for. The round budget no longer ends a hungry read, so this is what
+#: guarantees the read ends at all.
+LIST_HUNGRY_BUDGET_MS = int(
+    os.environ.get("ICREATE_OUTREACH_LIST_HUNGRY_BUDGET_MS", "3600000")
+)
+#: Consecutive re-nudges allowed to produce nothing before a hungry read
+#: accepts that the list really has ended. Each one costs a second or
+#: two; three in a row with no new name is a finished list, not a slow
+#: one.
+LIST_RENUDGES = int(os.environ.get("ICREATE_OUTREACH_LIST_RENUDGES", "3"))
 #: Pixels of the previous screen to keep in view when scrolling a list, so
 #: a recycled row is never destroyed before it has been read.
 SCROLL_OVERLAP_PX = int(os.environ.get("ICREATE_OUTREACH_SCROLL_OVERLAP_PX", "120"))
@@ -2600,11 +2611,17 @@ class PlaywrightMessenger:
                 # after the video has been read to the end. A thousand-
                 # comment video takes long enough that collecting first and
                 # reporting afterwards loses everything if it is stopped.
-                async def take(username: str) -> None:
+                async def take(username: str) -> bool:
+                    """True when this one became a lead.
+
+                    The reader budgets by what is taken, so a skip has to
+                    say so — otherwise a post whose audience is already
+                    known spends the whole budget delivering nobody.
+                    """
                     if not username or username.lower() in skip:
-                        return
+                        return False
                     if username in found:
-                        return
+                        return False
                     found[username] = {
                         "username": username,
                         "profile_url": self.profile_url(username),
@@ -2613,6 +2630,7 @@ class PlaywrightMessenger:
                     }
                     if on_found:
                         await on_found(found[username])
+                    return True
 
                 # Ask only for what is still needed. The limit used to be
                 # applied after reading, so a request for a hundred read
@@ -3407,6 +3425,30 @@ class PlaywrightMessenger:
                 quiet = 0
         return list(seen)
 
+    async def _renudge(self, page) -> bool:
+        """Scroll back up and return, to re-arm a list that stopped fetching.
+
+        These lists fetch their next page when a sentinel near the bottom
+        comes into view. Parked at the bottom, that sentinel is already
+        visible, so no fresh intersection ever fires: the list looks
+        finished when it is only waiting to be asked again. Moving away
+        and coming back asks again.
+
+        Returns whether the page could be moved at all. A list that will
+        not scroll up is genuinely static, and that is the one honest
+        reason to stop while the caller is still short.
+        """
+        try:
+            start = await self._scroll_position(page)
+            await page.mouse.wheel(0, -1200)
+            await page.wait_for_timeout(SCROLL_POLL_MS)
+            lifted = await self._scroll_position(page)
+            await page.mouse.wheel(0, 1600)
+            await page.wait_for_timeout(SCROLL_PAUSE_MS)
+            return lifted != start
+        except Exception:  # noqa: BLE001 — a nudge is a courtesy, not a step
+            return False
+
     async def _profile_links(self, page, url: str, selectors,
                              scroll_rounds: int = 0,
                              want: Optional[int] = None,
@@ -3439,6 +3481,12 @@ class PlaywrightMessenger:
             await page.wait_for_timeout(SETTLE_MS)
 
             seen: dict[str, None] = {}
+            #: Names the caller actually took. Not the same as what was
+            #: read: a search excludes everyone it already has, and on a
+            #: post harvested before, nearly every handle on the page is
+            #: one of those. Budgeting by reads rather than takes is why
+            #: a request for 654 more people read 654 and delivered none.
+            taken = [0]
 
             async def keep(found_names) -> bool:
                 """Bank each new name the moment it is read.
@@ -3452,22 +3500,48 @@ class PlaywrightMessenger:
                     if found in seen:
                         continue
                     seen[found] = None
-                    if on_person is not None:
-                        await on_person(found)
-                    if want and len(seen) >= want:
+                    if on_person is None:
+                        taken[0] += 1
+                    else:
+                        # A callback that rejects one says so; a callback
+                        # that returns nothing is taken to have accepted.
+                        if await on_person(found) is not False:
+                            taken[0] += 1
+                    if want and taken[0] >= want:
                         return True
-                return bool(want and len(seen) >= want)
+                return bool(want and taken[0] >= want)
 
             if await keep(await self._collect_profile_links(page, selectors)):
                 return list(seen)
             quiet = 0
-            for _ in range(max(scroll_rounds, 0)):
+            rounds = 0
+            stale_nudges = 0
+            budget = max(scroll_rounds, 0)
+            deadline = time.monotonic() + (LIST_HUNGRY_BUDGET_MS / 1000)
+            while True:
+                hungry = bool(want) and taken[0] < want
+                # The round budget is a guess at how much scrolling a
+                # target is worth, and it was wrong in the only direction
+                # that matters: a request for 654 people ended at 39
+                # because the wheel ran out of turns, not because the
+                # post ran out of comments. While the caller is still
+                # short, only a stalled page or the wall clock may end
+                # the read. Running out of guesses may not.
+                if not hungry and rounds >= budget:
+                    break
+                if time.monotonic() > deadline:
+                    print(f"[discovery] {url}: stopped after "
+                          f"{LIST_HUNGRY_BUDGET_MS // 60000}m holding "
+                          f"{taken[0]} of {want or 0}", flush=True)
+                    break
+                rounds += 1
                 before = len(seen)
                 moved = await self._load_more(page)
                 if await keep(await self._collect_profile_links(page, selectors)):
                     break
                 if len(seen) > before:
                     quiet = 0
+                    stale_nudges = 0
                     continue
                 # Still travelling. Instagram's comment list is 3,000px
                 # deep and only fetches more when the bottom is reached;
@@ -3482,12 +3556,20 @@ class PlaywrightMessenger:
                 # four rounds of waiting, and treating that as the end of
                 # the list is what stopped a 789-lead request at 135.
                 patience = (
-                    LIST_QUIET_ROUNDS_HUNGRY
-                    if want and len(seen) < want
-                    else LIST_QUIET_ROUNDS
+                    LIST_QUIET_ROUNDS_HUNGRY if hungry else LIST_QUIET_ROUNDS
                 )
                 if quiet >= patience:
-                    break
+                    # Out of patience is not out of comments. Before a
+                    # hungry read gives up, make the page ask for more
+                    # once: parked at the bottom, the fetch sentinel is
+                    # already in view and never fires again on its own.
+                    if not hungry or stale_nudges >= LIST_RENUDGES:
+                        break
+                    if not await self._renudge(page):
+                        break
+                    stale_nudges += 1
+                    quiet = 0
+                    continue
                 # Wait longer each time: a slow page is not a finished one.
                 await page.wait_for_timeout(
                     min(SCROLL_PAUSE_MS * quiet, SCROLL_PAUSE_CEILING_MS))
@@ -3495,6 +3577,7 @@ class PlaywrightMessenger:
                     break
                 if len(seen) > before:
                     quiet = 0
+                    stale_nudges = 0
             return list(seen)
         except Exception as exc:  # noqa: BLE001
             print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
