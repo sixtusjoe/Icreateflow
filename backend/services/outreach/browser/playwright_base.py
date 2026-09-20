@@ -148,6 +148,13 @@ LIST_HUNGRY_BUDGET_MS = int(
 #: two; three in a row with no new name is a finished list, not a slow
 #: one.
 LIST_RENUDGES = int(os.environ.get("ICREATE_OUTREACH_LIST_RENUDGES", "3"))
+#: Rounds between heartbeats while reading a list. Zero new leads and
+#: no output is indistinguishable from a hung browser, and on a post
+#: whose audience is already known the first new name can be thousands
+#: of comments down. Say what is being read even when none of it counts.
+LIST_HEARTBEAT_ROUNDS = int(
+    os.environ.get("ICREATE_OUTREACH_LIST_HEARTBEAT_ROUNDS", "25")
+)
 #: Pixels of the previous screen to keep in view when scrolling a list, so
 #: a recycled row is never destroyed before it has been read.
 SCROLL_OVERLAP_PX = int(os.environ.get("ICREATE_OUTREACH_SCROLL_OVERLAP_PX", "120"))
@@ -3535,6 +3542,11 @@ class PlaywrightMessenger:
                           f"{taken[0]} of {want or 0}", flush=True)
                     break
                 rounds += 1
+                if rounds % LIST_HEARTBEAT_ROUNDS == 0:
+                    print(f"[discovery] {url}: round {rounds} — "
+                          f"{len(seen)} handle(s) read, {taken[0]} new"
+                          f"{' of ' + str(want) if want else ''}",
+                          flush=True)
                 before = len(seen)
                 moved = await self._load_more(page)
                 if await keep(await self._collect_profile_links(page, selectors)):
