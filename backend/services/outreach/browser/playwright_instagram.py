@@ -173,6 +173,19 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
         "[aria-label='Load more comments']",
         "button:has-text('View all')",
     ),
+    # Replies are where a big post keeps most of its people. Instagram
+    # shows the top-level comment and hides the thread under "View
+    # replies (N)", so a reader that only scrolls sees one person per
+    # thread no matter how long the thread is. A post with 54K comments
+    # gave up 385 handles for exactly this reason — the comment count is
+    # counting replies the reader never opened.
+    "expand_replies": (
+        "button:has-text('View replies')",
+        "[role='button']:has-text('View replies')",
+        "button:has-text('View more replies')",
+        "[role='button']:has-text('View more replies')",
+        "button:has-text('Show more replies')",
+    ),
     # Who liked it. Instagram puts this behind a dialog, but the dialog has
     # its own URL, so it can be asked for directly.
     "liker": (

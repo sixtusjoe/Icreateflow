@@ -150,6 +150,19 @@ LIST_HUNGRY_BUDGET_MS = int(
 #: two; three in a row with no new name is a finished list, not a slow
 #: one.
 LIST_RENUDGES = int(os.environ.get("ICREATE_OUTREACH_LIST_RENUDGES", "3"))
+#: Rounds that scroll but produce no new name before the reader treats
+#: the list as stalled. Movement was made to excuse a quiet round
+#: because a comment list is 3,000px deep and the trip down it is
+#: silent — but a page that scrolls for ever without yielding anybody
+#: is not travelling, it is finished, and without this the read spins
+#: until the silence backstop instead of trying a nudge.
+LIST_DRY_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_LIST_DRY_ROUNDS", "40"))
+#: Reply threads opened per round. Each click is a fetch; a handful per
+#: turn of the wheel keeps the read moving instead of stopping to open
+#: every thread on screen.
+REPLY_CLICKS_PER_ROUND = int(
+    os.environ.get("ICREATE_OUTREACH_REPLY_CLICKS", "4")
+)
 #: Rounds between heartbeats while reading a list. Zero new leads and
 #: no output is indistinguishable from a hung browser, and on a post
 #: whose audience is already known the first new name can be thousands
@@ -3106,6 +3119,7 @@ class PlaywrightMessenger:
         Scrolls the dialog when one is open — the likes list is inside it
         and the page behind does not move — and the window otherwise.
         """
+        await self._expand_replies(page)
         for selector in self.SELECTORS.get("load_more") or ():
             try:
                 control = page.locator(selector).first
@@ -3434,6 +3448,38 @@ class PlaywrightMessenger:
                 quiet = 0
         return list(seen)
 
+    async def _expand_replies(self, page) -> int:
+        """Open a few hidden reply threads, and say how many were opened.
+
+        A platform that does not define `expand_replies` is unaffected.
+        Where one does, this is the difference between reading one person
+        per thread and reading the thread: the visible comment count on a
+        big post is mostly replies, and they are behind a control, not
+        behind a scroll.
+        """
+        selectors = self.SELECTORS.get("expand_replies") or ()
+        if not selectors:
+            return 0
+        opened = 0
+        for selector in selectors:
+            if opened >= REPLY_CLICKS_PER_ROUND:
+                break
+            try:
+                controls = page.locator(selector)
+                for i in range(await controls.count()):
+                    if opened >= REPLY_CLICKS_PER_ROUND:
+                        break
+                    control = controls.nth(i)
+                    if not await control.is_visible(timeout=200):
+                        continue
+                    await control.click(timeout=CLICK_MS)
+                    opened += 1
+            except Exception:  # noqa: BLE001 — a thread that will not open
+                continue        #   is not a reason to stop reading
+        if opened:
+            await page.wait_for_timeout(SCROLL_POLL_MS)
+        return opened
+
     async def _renudge(self, page) -> bool:
         """Scroll back up and return, to re-arm a list that stopped fetching.
 
@@ -3523,6 +3569,7 @@ class PlaywrightMessenger:
             if await keep(await self._collect_profile_links(page, selectors)):
                 return list(seen)
             quiet = 0
+            dry = 0
             rounds = 0
             stale_nudges = 0
             budget = max(scroll_rounds, 0)
@@ -3556,6 +3603,7 @@ class PlaywrightMessenger:
                     break
                 if len(seen) > before:
                     quiet = 0
+                    dry = 0
                     stale_nudges = 0
                     deadline = time.monotonic() + silence
                     continue
@@ -3564,9 +3612,22 @@ class PlaywrightMessenger:
                 # the rounds spent getting there produce no new names and
                 # used to exhaust the patience before arrival — 13 people
                 # on a post whose comments reach 352 by hand.
+                #
+                # Movement cannot excuse an unlimited number of empty
+                # rounds, though. A page that scrolls for ever and yields
+                # nobody is finished, not travelling, and calling that a
+                # trip in progress is how a read spins to its backstop:
+                # measured on this post, 75 rounds of scrolling after the
+                # 129th handle, all of them "moving", none of them new.
+                stalled = False
                 if moved:
-                    continue
-                quiet += 1
+                    dry += 1
+                    if dry < LIST_DRY_ROUNDS:
+                        continue
+                    dry = 0
+                    stalled = True
+                else:
+                    quiet += 1
                 # Hold on longer while the caller is still short. The
                 # fetch at the bottom of a comment list is slower than
                 # four rounds of waiting, and treating that as the end of
@@ -3574,7 +3635,7 @@ class PlaywrightMessenger:
                 patience = (
                     LIST_QUIET_ROUNDS_HUNGRY if hungry else LIST_QUIET_ROUNDS
                 )
-                if quiet >= patience:
+                if stalled or quiet >= patience:
                     # Out of patience is not out of comments. Before a
                     # hungry read gives up, make the page ask for more
                     # once: parked at the bottom, the fetch sentinel is
@@ -3593,6 +3654,7 @@ class PlaywrightMessenger:
                     break
                 if len(seen) > before:
                     quiet = 0
+                    dry = 0
                     stale_nudges = 0
                     deadline = time.monotonic() + silence
             return list(seen)
