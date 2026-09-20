@@ -78,6 +78,12 @@ SCROLL_PAUSE_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_PAUSE_MS", "1200")
 #: the list finished, and how often to look while waiting.
 LOAD_WAIT_MS = int(os.environ.get("ICREATE_OUTREACH_LOAD_WAIT_MS", "2500"))
 SCROLL_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_SCROLL_POLL_MS", "400"))
+#: How long one quiet round may wait. The pause grows with each quiet
+#: round so a slow fetch is not mistaken for the end, but without a
+#: ceiling twenty-five of them would be most of an hour.
+SCROLL_PAUSE_CEILING_MS = int(
+    os.environ.get("ICREATE_OUTREACH_SCROLL_PAUSE_CEILING_MS", "6000")
+)
 #: Quiet rounds before a list is called finished, and the longest any one
 #: list may be worked. The rounds have a growing pause between them, so
 #: this is roughly half a minute of patience before giving up.
@@ -121,6 +127,16 @@ DIALOG_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_QUIET_ROUNDS", "6"))
 #: Quiet rounds tolerated when reading an ordinary paged list (likers,
 #: repliers) before calling it finished.
 LIST_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS", "4"))
+
+#: The same patience, for a read that has not got what it asked for yet.
+#: Four quiet rounds is about seven seconds — fine when the caller wanted
+#: fifty and has fifty, and far too little at the bottom of a comment
+#: list that is still fetching. Measured: a request for 789 more people
+#: gave up after six minutes on a post with 10.3K comments, having taken
+#: 135. Stopping early is only cheap when there is nothing left to want.
+LIST_QUIET_ROUNDS_HUNGRY = int(
+    os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS_HUNGRY", "25")
+)
 #: Pixels of the previous screen to keep in view when scrolling a list, so
 #: a recycled row is never destroyed before it has been read.
 SCROLL_OVERLAP_PX = int(os.environ.get("ICREATE_OUTREACH_SCROLL_OVERLAP_PX", "120"))
@@ -2626,12 +2642,10 @@ class PlaywrightMessenger:
 
                 if include_likers and len(found) < limit:
                     before = len(found)
-                    for name in await self._post_likers(
-                        page, url, scroll_rounds=rounds
-                    ):
-                        if len(found) >= limit:
-                            break
-                        await take(name)
+                    await self._post_likers(
+                        page, url, scroll_rounds=rounds,
+                        want=max(limit - len(found), 1), on_person=take,
+                    )
                     print(f"[discovery] {url}: {len(found) - before} more "
                           f"from the likes ({len(found)} total)", flush=True)
 
@@ -2942,20 +2956,16 @@ class PlaywrightMessenger:
         every attempt to be more specific than "profile links inside main"
         matched nothing at all.
         """
-        people = await self._profile_links(
+        return await self._profile_links(
             page, self._absolute(post_url),
             self.SELECTORS.get("post_people") or (), scroll_rounds,
+            want=want, on_person=on_person,
         )
-        # This one reads a loaded page in a single pass, so there is nothing
-        # to stream from — but the contract is the same either way, and a
-        # caller that hands in a callback must not find it quietly ignored.
-        if on_person is not None:
-            for name in people[:want] if want else people:
-                await on_person(name)
-        return people[:want] if want else people
 
     async def _post_likers(self, page, post_url: str,
-                           scroll_rounds: int = 0) -> list[str]:
+                           scroll_rounds: int = 0,
+                           want: Optional[int] = None,
+                           on_person: Optional[Any] = None) -> list[str]:
         """Who liked a post.
 
         Instagram keeps this behind a dialog, but the dialog has a URL of
@@ -2966,7 +2976,10 @@ class PlaywrightMessenger:
         if not selectors:
             return []
         url = self._likers_url(post_url)
-        return await self._profile_links(page, url, selectors, scroll_rounds)
+        return await self._profile_links(
+            page, url, selectors, scroll_rounds,
+            want=want, on_person=on_person,
+        )
 
     def _likers_url(self, post_url: str) -> str:
         """Where this platform lists the people who liked a post.
@@ -3395,7 +3408,9 @@ class PlaywrightMessenger:
         return list(seen)
 
     async def _profile_links(self, page, url: str, selectors,
-                             scroll_rounds: int = 0) -> list[str]:
+                             scroll_rounds: int = 0,
+                             want: Optional[int] = None,
+                             on_person: Optional[Any] = None) -> list[str]:
         """Profile handles linked from a page, in order, deduped.
 
         Accumulates across rounds and keeps scrolling through quiet ones.
@@ -3424,14 +3439,33 @@ class PlaywrightMessenger:
             await page.wait_for_timeout(SETTLE_MS)
 
             seen: dict[str, None] = {}
-            for name in await self._collect_profile_links(page, selectors):
-                seen.setdefault(name)
+
+            async def keep(found_names) -> bool:
+                """Bank each new name the moment it is read.
+
+                Reading the whole list and reporting afterwards is how a
+                long scroll loses everything when it is stopped — the
+                lesson the TikTok reader already learned and this one had
+                not. Returns True once `want` is satisfied.
+                """
+                for found in found_names:
+                    if found in seen:
+                        continue
+                    seen[found] = None
+                    if on_person is not None:
+                        await on_person(found)
+                    if want and len(seen) >= want:
+                        return True
+                return bool(want and len(seen) >= want)
+
+            if await keep(await self._collect_profile_links(page, selectors)):
+                return list(seen)
             quiet = 0
             for _ in range(max(scroll_rounds, 0)):
                 before = len(seen)
                 moved = await self._load_more(page)
-                for name in await self._collect_profile_links(page, selectors):
-                    seen.setdefault(name)
+                if await keep(await self._collect_profile_links(page, selectors)):
+                    break
                 if len(seen) > before:
                     quiet = 0
                     continue
@@ -3443,12 +3477,22 @@ class PlaywrightMessenger:
                 if moved:
                     continue
                 quiet += 1
-                if quiet >= LIST_QUIET_ROUNDS:
+                # Hold on longer while the caller is still short. The
+                # fetch at the bottom of a comment list is slower than
+                # four rounds of waiting, and treating that as the end of
+                # the list is what stopped a 789-lead request at 135.
+                patience = (
+                    LIST_QUIET_ROUNDS_HUNGRY
+                    if want and len(seen) < want
+                    else LIST_QUIET_ROUNDS
+                )
+                if quiet >= patience:
                     break
                 # Wait longer each time: a slow page is not a finished one.
-                await page.wait_for_timeout(SCROLL_PAUSE_MS * quiet)
-                for name in await self._collect_profile_links(page, selectors):
-                    seen.setdefault(name)
+                await page.wait_for_timeout(
+                    min(SCROLL_PAUSE_MS * quiet, SCROLL_PAUSE_CEILING_MS))
+                if await keep(await self._collect_profile_links(page, selectors)):
+                    break
                 if len(seen) > before:
                     quiet = 0
             return list(seen)
