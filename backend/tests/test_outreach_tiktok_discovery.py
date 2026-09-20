@@ -26,7 +26,10 @@ pytest.importorskip("playwright.async_api", reason="playwright is not installed"
 from services.outreach.browser.playwright_tiktok import (  # noqa: E402
     PlaywrightTikTokMessenger,
 )
-from services.outreach.discovery import post_urls_in  # noqa: E402
+from services.outreach.discovery import (  # noqa: E402
+    canonical_post_url,
+    post_urls_in,
+)
 
 VIDEO = """
 <html><body>
@@ -254,6 +257,50 @@ def test_a_video_link_is_routed_to_the_comment_reader():
              "https://www.tiktok.com/@a/video/123", "nike"]
     assert post_urls_in(seeds) == [
         "https://www.tiktok.com/t/ZP83Mh84x/",
+        "https://www.tiktok.com/@a/video/123",
+    ]
+
+
+def test_an_instagram_reel_link_is_rewritten_to_the_post_it_points_at():
+    """The share-sheet link does not stay on the page it names.
+
+    Instagram redirects /reel/<code>/?stkn=… to /reels/<code>/, which is
+    the scrolling feed viewer: a different post every few seconds and no
+    comment section anywhere on it. A search seeded that way opened the
+    viewer, read no comments because there were none, and reported "No
+    profiles found" — the one failure that looks exactly like a post
+    nobody engaged with.
+    """
+    shared = "https://www.instagram.com/reel/DJGBgCcprNt/?stkn=cWFqcHNxNGtrZjQx"
+    assert canonical_post_url(shared) == "https://www.instagram.com/p/DJGBgCcprNt/"
+    # Every other spelling Instagram uses lands on the same page.
+    for other in (
+        "https://www.instagram.com/reels/DJGBgCcprNt/",
+        "https://instagram.com/p/DJGBgCcprNt/",
+        "https://www.instagram.com/tv/DJGBgCcprNt/",
+    ):
+        assert canonical_post_url(other) == (
+            "https://www.instagram.com/p/DJGBgCcprNt/"
+        ), other
+
+
+def test_other_platforms_post_links_are_left_exactly_as_given():
+    """Only Instagram redirects like this; rewriting the rest would break them."""
+    for untouched in (
+        "https://www.tiktok.com/@a/video/123",
+        "https://www.tiktok.com/t/ZP83Mh84x/",
+        "https://x.com/someone/status/123",
+    ):
+        assert canonical_post_url(untouched) == untouched, untouched
+
+
+def test_a_shared_reel_survives_seed_parsing():
+    """The rewrite has to happen on the way in, not somewhere downstream."""
+    seeds = ["alice",
+             "https://www.instagram.com/reel/DJGBgCcprNt/?stkn=abc123",
+             "https://www.tiktok.com/@a/video/123"]
+    assert post_urls_in(seeds) == [
+        "https://www.instagram.com/p/DJGBgCcprNt/",
         "https://www.tiktok.com/@a/video/123",
     ]
 

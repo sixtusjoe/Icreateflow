@@ -64,9 +64,35 @@ PLATFORM_DRIVERS = {
 _POST_URL = re.compile(r"https?://\S*/(video|reel|p|status)/|tiktok\.com/t/", re.I)
 
 
+#: An Instagram post link, however it was copied. The share sheet gives
+#: /reel/<code>/?stkn=…, and that form does not stay put: Instagram
+#: redirects it to /reels/<code>/, which is the scrolling feed viewer —
+#: a different post every few seconds and no comment section at all.
+#: Verified 2026-09-20: the reader opened it, found no comments because
+#: there were none to find, and the search ended "No profiles found".
+#: The /p/<code>/ form serves the single post with its comments and does
+#: not redirect.
+_IG_POST = re.compile(
+    r"^https?://(?:www\.)?instagram\.com/(?:reel|reels|p|tv)/([\w-]+)", re.I
+)
+
+
+def canonical_post_url(url: str) -> str:
+    """The form of this link that actually shows the post and its comments.
+
+    Only Instagram needs rewriting today; every other platform's post
+    link is left exactly as it was given.
+    """
+    match = _IG_POST.match((url or "").strip())
+    if not match:
+        return (url or "").strip()
+    # The share token is what the redirect keys off, so it goes too.
+    return f"https://www.instagram.com/p/{match.group(1)}/"
+
+
 def post_urls_in(seeds: list[str]) -> list[str]:
     """The seeds that are links to posts, not account names."""
-    return [s.strip() for s in seeds if _POST_URL.search(s or "")]
+    return [canonical_post_url(s) for s in seeds if _POST_URL.search(s or "")]
 
 
 #: How often a running search writes its progress. Reporting, not work —
@@ -361,7 +387,16 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
 
         posts = post_urls_in(list(seeds))
         if posts:
-            run.message = f"Reading the comments on {len(posts)} post(s)…"
+            wants_likers = bool(search.get("include_likers"))
+            # Commenters unless explicitly switched off: a seed with
+            # neither box ticked should still read something rather than
+            # opening the post and reporting nobody.
+            wants_comments = bool(search.get("include_commenters")) or not wants_likers
+            reading = " and ".join(
+                [w for w, on in (("comments", wants_comments),
+                                 ("likes", wants_likers)) if on]
+            ) or "comments"
+            run.message = f"Reading the {reading} on {len(posts)} post(s)…"
             leads = await driver.discover_from_posts(
                 payload,
                 post_urls=tuple(posts),
@@ -370,6 +405,8 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 should_stop=lambda: search_id in _CANCELLED,
                 on_found=on_found,
                 exclude=known,
+                include_commenters=wants_comments,
+                include_likers=wants_likers,
             )
         elif seeds:
             # Engagement first. A follower list is truncated hard — the same
