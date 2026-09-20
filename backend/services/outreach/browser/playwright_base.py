@@ -137,9 +137,11 @@ LIST_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS", "4"
 LIST_QUIET_ROUNDS_HUNGRY = int(
     os.environ.get("ICREATE_OUTREACH_LIST_QUIET_ROUNDS_HUNGRY", "25")
 )
-#: Wall clock for one list read that is still short of what was asked
-#: for. The round budget no longer ends a hungry read, so this is what
-#: guarantees the read ends at all.
+#: How long a hungry read may go without reading a single new handle
+#: before it is abandoned. A backstop against a spin, not a time limit
+#: on the work: it is pushed forward every time the page yields a name,
+#: so a read that keeps producing is never stopped by a clock. The
+#: quiet-round exit ends a genuinely finished list long before this.
 LIST_HUNGRY_BUDGET_MS = int(
     os.environ.get("ICREATE_OUTREACH_LIST_HUNGRY_BUDGET_MS", "3600000")
 )
@@ -3524,7 +3526,8 @@ class PlaywrightMessenger:
             rounds = 0
             stale_nudges = 0
             budget = max(scroll_rounds, 0)
-            deadline = time.monotonic() + (LIST_HUNGRY_BUDGET_MS / 1000)
+            silence = LIST_HUNGRY_BUDGET_MS / 1000
+            deadline = time.monotonic() + silence
             while True:
                 hungry = bool(want) and taken[0] < want
                 # The round budget is a guess at how much scrolling a
@@ -3537,8 +3540,8 @@ class PlaywrightMessenger:
                 if not hungry and rounds >= budget:
                     break
                 if time.monotonic() > deadline:
-                    print(f"[discovery] {url}: stopped after "
-                          f"{LIST_HUNGRY_BUDGET_MS // 60000}m holding "
+                    print(f"[discovery] {url}: nothing new for "
+                          f"{LIST_HUNGRY_BUDGET_MS // 60000}m, stopping with "
                           f"{taken[0]} of {want or 0}", flush=True)
                     break
                 rounds += 1
@@ -3554,6 +3557,7 @@ class PlaywrightMessenger:
                 if len(seen) > before:
                     quiet = 0
                     stale_nudges = 0
+                    deadline = time.monotonic() + silence
                     continue
                 # Still travelling. Instagram's comment list is 3,000px
                 # deep and only fetches more when the bottom is reached;
@@ -3590,6 +3594,7 @@ class PlaywrightMessenger:
                 if len(seen) > before:
                     quiet = 0
                     stale_nudges = 0
+                    deadline = time.monotonic() + silence
             return list(seen)
         except Exception as exc:  # noqa: BLE001
             print(f"[discovery] {url} failed: {type(exc).__name__}: {exc}", flush=True)
