@@ -192,6 +192,33 @@ CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
 #: hears from us and an attempt spent finding that out.
 COMPOSER_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_MS", "45000"))
 
+#: How hard to work a post's comment list when the operator named that
+#: post themselves. Zero was the default here and it is the wrong one:
+#: the scroll loop is `for _ in range(scroll_rounds)`, so zero never
+#: presses "Load more comments" and never scrolls — it reads the first
+#: render and calls it the whole post. Measured 2026-09-20 on a reel with
+#: ~10,200 comments: 13 people, then "done".
+#:
+#: Generous on purpose. The loop already stops early on quiet rounds, so
+#: a high ceiling costs nothing on a short post and is the difference
+#: between 13 and the rest on a long one.
+#:
+#: Measured on that reel, 2026-09-20, with the reader driving: a wheel
+#: turn moves ~131px, Instagram fetches the next page only once the
+#: bottom is reached, and each page is worth roughly seven handles. That
+#: is about twenty rounds per page — so 80 rounds bought 46 handles and
+#: 150 bought 75, against 73 for a person scrolling by hand for a
+#: minute. The list was still growing at 21,472px when the test ended;
+#: there is no ceiling here except patience, so this buys a few minutes
+#: of it per post.
+POST_SCROLL_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_POST_SCROLL_ROUNDS", "400"))
+
+#: Wheel turns to budget per person still wanted. Measured on the reel:
+#: 150 rounds produced 75 handles, so a round is worth about half of one
+#: — call it two rounds each, with a little over for the travelling
+#: between fetches.
+ROUNDS_PER_LEAD = int(os.environ.get("ICREATE_OUTREACH_ROUNDS_PER_LEAD", "3"))
+
 #: Rows in the inbox conversation list, matched by their own text.
 THREAD_ROWS = "[data-e2e='chat-list-item'], [data-e2e='inbox-title']"
 
@@ -2522,12 +2549,23 @@ class PlaywrightMessenger:
         should_stop: Optional[Any] = None,
         on_found: Optional[Any] = None,
         exclude: Optional[set[str]] = None,
+        include_commenters: bool = True,
+        include_likers: bool = False,
     ) -> list[dict[str, Any]]:
         """Everyone who engaged with these specific posts.
 
         Named posts rather than a search: the operator has already decided
         whose audience they want, which is a better list than any hashtag
         and a great deal less browsing to reach it.
+
+        Both halves of "engaged" are read, because they are not the same
+        people and they are wildly different in size. Measured on one
+        Instagram reel, 2026-09-20: 13 commenters against 198 likers, and
+        the post claims 10.3K comments to 54.9K likes — the comment list
+        simply is not served past the first screenful, while the likes
+        list is a dialog with its own URL that pages properly. Until this
+        took the flags, a post seed read comments only, so switching
+        likers on in the UI changed nothing at all.
 
         Reads only — nothing is followed, liked or commented on.
         """
@@ -2563,9 +2601,40 @@ class PlaywrightMessenger:
                 # Ask only for what is still needed. The limit used to be
                 # applied after reading, so a request for a hundred read
                 # every comment on the video first and discarded the rest.
-                await self._people_on_post(
-                    page, url, want=max(limit - len(found), 1), on_person=take
-                )
+                # Scrolling is not optional here. Without a round count
+                # the reader takes the first screenful and reports the
+                # post exhausted — and the search then blames throttling
+                # for a list it never asked to see.
+                still_wanted = max(limit - len(found), 1)
+                # Rounds have to scale with the ask, not sit under it.
+                # Measured: a round is worth about half a handle, so a
+                # request for a thousand needs a couple of thousand turns
+                # of the wheel. `still_wanted // 4` capped a 1000-lead
+                # request at 400 rounds — roughly 200 people — and then
+                # the post got blamed for running out. The quiet-round
+                # exit still ends a short post early, so a large ceiling
+                # costs nothing where there is nothing to find.
+                rounds = max(POST_SCROLL_ROUNDS, still_wanted * ROUNDS_PER_LEAD)
+
+                if include_commenters:
+                    await self._people_on_post(
+                        page, url, scroll_rounds=rounds,
+                        want=still_wanted, on_person=take,
+                    )
+                    print(f"[discovery] {url}: {len(found)} after comments",
+                          flush=True)
+
+                if include_likers and len(found) < limit:
+                    before = len(found)
+                    for name in await self._post_likers(
+                        page, url, scroll_rounds=rounds
+                    ):
+                        if len(found) >= limit:
+                            break
+                        await take(name)
+                    print(f"[discovery] {url}: {len(found) - before} more "
+                          f"from the likes ({len(found)} total)", flush=True)
+
                 await asyncio.sleep(interval_seconds)
         finally:
             try:
@@ -2934,8 +3003,60 @@ class PlaywrightMessenger:
                 break
         return names
 
-    async def _load_more(self, page) -> None:
+    #: Elements smaller than this are chrome, not a list worth scrolling.
+    _SCROLLER_MIN_HEIGHT = 120
+    #: And a list is only a list if it has this much hidden below the fold.
+    _SCROLLER_MIN_HIDDEN = 200
+
+    async def _scroller_box(self, page):
+        """Where to point the wheel when no configured container matched.
+
+        The likes list is a dialog and has a selector. A post page has no
+        dialog, so the wheel fell through to the window — and the window
+        is not what scrolls. Measured on an Instagram post 2026-09-20: ten
+        wheel events moved `document` once and the comment list not at
+        all, leaving 49 links on a post whose comments reach 352 when a
+        person scrolls them by hand.
+
+        Found by shape rather than by class, because Instagram's class
+        names are generated and change: the element with the most content
+        hidden below its own fold that still holds profile links. Returns
+        None when nothing qualifies, and the caller falls back to the
+        window as before.
+        """
+        try:
+            return await page.evaluate(
+                """(cfg) => {
+                  let best = null, hidden = 0;
+                  for (const n of document.querySelectorAll('div,ul,section,main')) {
+                    const over = n.scrollHeight - n.clientHeight;
+                    if (over < cfg.minHidden) continue;
+                    if (n.clientHeight < cfg.minHeight) continue;
+                    if (!n.querySelector("a[href^='/']")) continue;
+                    const r = n.getBoundingClientRect();
+                    if (r.width < 80 || r.height < 80) continue;
+                    if (r.bottom < 0 || r.top > innerHeight) continue;
+                    if (over > hidden) { hidden = over; best = n; }
+                  }
+                  if (!best) return null;
+                  const r = best.getBoundingClientRect();
+                  return {x: r.x, y: r.y, width: r.width, height: r.height};
+                }""",
+                {"minHidden": self._SCROLLER_MIN_HIDDEN,
+                 "minHeight": self._SCROLLER_MIN_HEIGHT},
+            )
+        except Exception:  # noqa: BLE001 — a hint, not a step
+            return None
+
+    async def _load_more(self, page) -> bool:
         """Scroll whatever holds the list, and press any "load more" control.
+
+        Returns whether the scroller actually moved. A round that moved is
+        not a quiet round, however few new names it produced: the comment
+        list holds 3,000px below the fold and fetches its next page only
+        when the bottom comes into view, so the rounds spent travelling
+        there look identical to the end of the list. Reporting movement is
+        what lets the caller tell those apart.
 
         Comments and likes are both paged: the page renders a dozen and
         fetches the rest as you scroll. Reading what happens to be on screen
@@ -2972,6 +3093,14 @@ class PlaywrightMessenger:
                 step = int(box["height"])
                 moved = True
                 break
+        if not moved:
+            box = await self._scroller_box(page)
+            if box:
+                await page.mouse.move(
+                    box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                )
+                step = int(box["height"])
+                moved = True
         try:
             size = page.viewport_size or {"width": 1280, "height": 800}
             if not moved:
@@ -2982,10 +3111,35 @@ class PlaywrightMessenger:
             # fixed 2400px turn jumped clean over whole screenfuls that
             # were never read. Against a stub of fifty likers it skipped
             # twenty, in windows — liker10-14, liker20-24, and so on.
+            before = await self._scroll_position(page)
             await page.mouse.wheel(0, max(step - SCROLL_OVERLAP_PX, 120))
+            await page.wait_for_timeout(SCROLL_POLL_MS)
+            return await self._scroll_position(page) != before
         except Exception:  # noqa: BLE001
             pass
         await page.wait_for_timeout(SCROLL_POLL_MS)
+        return False
+
+    @staticmethod
+    async def _scroll_position(page) -> int:
+        """How far everything on the page has been scrolled, added up.
+
+        One number for the whole page rather than a handle on one element:
+        which element scrolls differs per platform and per layout, and the
+        only question here is whether anything moved at all.
+        """
+        try:
+            return await page.evaluate(
+                """() => {
+                  let total = Math.round(scrollY);
+                  for (const n of document.querySelectorAll('div,ul,section,main')) {
+                    if (n.scrollTop) total += Math.round(n.scrollTop);
+                  }
+                  return total;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return 0
 
     async def discover_followers(
         self,
@@ -3275,11 +3429,18 @@ class PlaywrightMessenger:
             quiet = 0
             for _ in range(max(scroll_rounds, 0)):
                 before = len(seen)
-                await self._load_more(page)
+                moved = await self._load_more(page)
                 for name in await self._collect_profile_links(page, selectors):
                     seen.setdefault(name)
                 if len(seen) > before:
                     quiet = 0
+                    continue
+                # Still travelling. Instagram's comment list is 3,000px
+                # deep and only fetches more when the bottom is reached;
+                # the rounds spent getting there produce no new names and
+                # used to exhaust the patience before arrival — 13 people
+                # on a post whose comments reach 352 by hand.
+                if moved:
                     continue
                 quiet += 1
                 if quiet >= LIST_QUIET_ROUNDS:
