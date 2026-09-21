@@ -2,7 +2,7 @@
 
 > Session memory for Claude and any dev picking this up cold.
 > Heavy on exact file paths and symbol names so neither audience has to grep.
-> Last updated: 2026-09-04.
+> Last updated: 2026-09-21.
 
 ---
 
@@ -294,6 +294,113 @@ an exception. `playwright_tiktok` keeps one `BrowserContext` per account (the
 isolation boundary), closes only the *page* after a job, and keeps the context
 so the session survives.
 
+### Lead discovery — finding targets instead of importing them
+
+`services/outreach/discovery.py` plus `_profile_links` in
+`browser/playwright_base.py`. A search reads a post's commenters and likers,
+scores them, and writes `outreach_leads` rows against an
+`outreach_lead_searches` row; the campaign import dialog then turns chosen
+leads into targets. `outreach_leads` has a unique `(search_id, username)`.
+
+**Budget by leads taken, not handles read.** The count that ends a read is
+what the caller *accepted*, not everyone whose handle appeared. A search
+excludes people it already has, and on a post harvested before, nearly every
+handle on the page is one of those. `on_person` returning `False` means "not
+taken"; anything else, including `None`, counts. Getting this wrong is why a
+request for 654 more people read 654 handles and delivered none.
+
+**Being short overrides the round budget.** `scroll_rounds` is a guess at how
+much scrolling a target is worth. While the caller is still short, only a
+stalled page or the silence backstop may end the read — running out of rounds
+may not. A request for 654 once ended at 39 because the wheel ran out of turns.
+
+**Three ways a read ends, and only three:**
+
+| Exit | Meaning |
+|---|---|
+| Quiet rounds (`LIST_QUIET_ROUNDS`, 4; `…_HUNGRY`, 25) | The page stopped moving *and* stopped yielding. The fetch at the bottom of a comment list is slower than four rounds of waiting, hence the larger hungry figure. |
+| Dry rounds (`LIST_DRY_ROUNDS`, 40) | It scrolls but yields nobody. Movement excuses a quiet round — a comment list is 3,000px deep and the trip down is silent — but not an unlimited number. Measured: 75 moving-but-empty rounds after the 129th handle. |
+| Silence backstop (`LIST_HUNGRY_BUDGET_MS`, 60min) | Pushed forward on every new handle, so a read that keeps producing is never stopped by a clock. A backstop against a spin, not a time limit on the work. |
+
+**`_renudge` before giving up.** These lists fetch when a sentinel near the
+bottom enters view. Parked at the bottom that sentinel is *already* visible,
+so no fresh intersection fires and the list looks finished when it is only
+waiting to be asked again. Scrolling away and back asks again. A hungry read
+gets `LIST_RENUDGES` (3) of them; a page that cannot be moved at all is the
+one honest reason to stop while still short. Note it swallows every exception,
+so a broken `_renudge` looks exactly like a static page — that is what its
+test exists to catch.
+
+**Leads are banked as they are found.** `_store_lead_now` writes each lead on
+its own connection the moment the reader hands it over, because a read of one
+post takes hours and a run killed part-way used to store nothing at all.
+The end-of-run `_store_leads` sweep then writes the same rows again with what
+the profile read and the scorer added, so its `ON CONFLICT` must be
+`DO UPDATE`, not `DO NOTHING` — the latter kept the bare row and discarded the
+bio, follower count, score and reason. It fills rather than replaces
+(`COALESCE(EXCLUDED.x, outreach_leads.x)`), so a later poorer write can never
+blank what an earlier one earned. Storing is reporting, not the work: a row
+that will not save is logged, never raised.
+
+**A post is used up, and it stays used up.** Re-reading one already harvested
+is close to worthless — measured, 119 comment handles over 350 rounds gave
+**one** new person, while a fresh post gave ~98 new in 50 rounds. When a
+search stalls, point it at another post rather than scrolling the same one
+harder. Most of a big post's people are in reply threads, not top-level
+comments, and Instagram hides those behind "View replies (N)";
+`_expand_replies` opens `REPLY_CLICKS_PER_ROUND` (4) per round where the
+platform defines the selectors. **The Instagram reply selectors are unproven**
+— they matched nothing on the posts tried, because Instagram's "Reply" is the
+composer. Treat that as an open question, not a working feature.
+
+Covered by `tests/test_outreach_discovery_reader.py`, which drives the loop
+against a scripted page rather than Chromium — the loop is what was wrong; a
+real browser would only prove that Playwright scrolls.
+
+### Driver bugs already paid for — do not re-introduce them
+
+Each was invisible to the test suite and only appeared against the live site.
+Every one now has a deliberately-broken stub twin in the driver tests
+(`/silentfail`, `/swallowed`, `/renamed`, `/divbutton`, `/navmessages`,
+`/inboxmiss`).
+
+1. **The Message button is a `div`, not a `<button>`.** `button:has-text(…)`
+   never matched it, so real profiles were skipped as "does not accept DMs".
+   Selectors are tiered: `data-e2e` hooks first, generic role/text second.
+   Tiers matter because `_first_visible` **races** the selectors inside a
+   tier — a loose one can beat the real control.
+2. **"Is the message text on the page?" is not delivery confirmation.** The
+   composer is part of the page. A send that silently did nothing left the
+   text in the input, the check found it, and the campaign reported *sent*
+   having sent nothing. Confirmation is composer **empty** *and* the text
+   still on the page. Never weaken this.
+3. **"Messages" contains "Message".** The left nav entry beat a profile
+   button that rendered a beat late, and the click navigated to the inbox —
+   surfacing as "composer never opened" on what still looked like the profile
+   URL. The generic tier uses `:text-is` (exact). Clicking Message can also
+   legitimately hand off to the messages app, so the driver opens the
+   target's own conversation row — **matched exactly, never fuzzily**, because
+   those rows are other people's chats and a near-match would DM a stranger.
+4. **A verification puzzle is not "this profile has no Message button".** A
+   slider CAPTCHA over the profile ate the click; with no check for it the
+   driver returned `messaging_unavailable`, which is *terminal*, and the queue
+   permanently skipped a real reachable target. Hence `challenge_required`:
+   not terminal, and it pauses the account at once, because retrying cannot
+   clear a challenge. The driver only ever *detects* it — solving it is a
+   person's job.
+
+**The rule that cost three rounds to learn:** stubs are more cooperative than
+the real site. Write a stub that reproduces the new failure, confirm it
+**fails against the current code**, and only then fix it. A fix that was never
+seen to fail first is not trusted.
+
+**Read the diagnostics correctly.** `page offers: [...]` lists every clickable
+element as `data-e2e|label` and answers the only useful question — what is
+actually on the page. An *empty* list once meant "the diagnostic threw", not
+"the page was blank"; `_page_actions` and `_save_debug_shot` now say when they
+fail, and log frame URLs, because a puzzle served in an iframe is invisible to
+`page.locator`.
+
 ### Sessions
 
 Captured on the server by `deploy/outreach-login.sh` → `backend/scripts/outreach_login.py`: Xvfb + x11vnc (localhost-bound, reached through an SSH tunnel) put a real browser on screen, the script polls for the platform's session cookie, and on success writes the encrypted `storage_state` straight into the account row. No file on disk, no copy-paste. Capturing on the server rather than a laptop is deliberate — an imported session moving to a new IP is the usual reason a fresh one gets challenged.
@@ -386,6 +493,26 @@ Both use `public_url_for()` → `{oauth_redirect_base}/api/files/{encoded-path}`
 
 ## 13. Deploy runbook
 
+### Running it locally (the Mac)
+
+The working copy the local app actually runs from is `~/icreateflow-local`,
+**not** the git checkout under `~/Desktop/Zagged`. One command drives both
+halves:
+
+```bash
+zagged            # start backend :8000 + frontend :3000, wait until they answer
+zagged stop|restart|status|logs
+```
+
+`zagged` is an alias for `~/icreateflow-local/dev.sh` (added to `~/.zshrc`);
+run the script by path if the alias is not loaded. It starts both detached, so
+they survive the terminal closing, and logs to `~/icreateflow-local/logs/`.
+Postgres must be up first — `status` says so if it is not.
+
+Readiness is probed at `/api/public/config`: **this API has no `/health`
+route**, and asking for one gets a 404 that reads as "not up yet" forever.
+
+
 ### Every code change — from your Mac:
 
 ```bash
@@ -458,6 +585,34 @@ If the UI looks unchanged after a deploy — **hard refresh**:
 
 ## 14. Open follow-ups
 
+0. **Outreach, as of 2026-09-21:**
+   - **The live server is unreachable — hosting was not renewed.** It sits
+     several commits behind `main`. This is deliberate; leave it. Everything
+     in the deploy runbook below assumes a box that is currently not there.
+   - **A send has never been observed end to end** once a human clears the
+     verification puzzle. Re-queue a target, run
+     `bash deploy/outreach-watch-mac.sh`, solve it in the VNC window and watch
+     what happens next. "Campaign completed" has lied before — the only proof
+     is the message in the receiving account's inbox.
+   - **Instagram reply-thread selectors are unproven.** They matched nothing
+     on every post tried; Instagram's "Reply" is the composer, not a thread
+     expander. Most of a big post's people are in those threads, so this is
+     worth solving, but do not assume the current selectors work.
+   - **Secrets were written in plain text** to the journal and
+     `/var/log/auth.log` by every old `outreach-watch.sh` / `outreach-login.sh`
+     run, because sudo logs the environment it is handed. The scripts no
+     longer do that; the already-written logs have **not** been scrubbed and
+     nothing has been rotated. `ICREATE_JWT_SECRET` is the one that matters —
+     it forges logins from the internet, and rotating it only costs a
+     logout-everyone. Do **not** rotate `ICREATE_OUTREACH_SECRET` casually:
+     it makes every stored session undecryptable and every account has to be
+     signed in again.
+   - **Offered, never answered:** `outreach-watch-mac.sh` takes *the next
+     queued job*, not one picked from a list. A per-target "watch this one"
+     needs a UI button and an endpoint. Don't build it unasked.
+   - **Deliberately skipped:** the bare-glyph icon treatment was applied
+     across the dashboard but not to the public landing page,
+     `frontend/src/app/page.tsx`.
 1. **Persist OAuth granted scopes** on the variation row so missing-scope tokens surface up-front.
 2. **TLS fingerprint hardening (curl-cffi)** — speculative; only if TikTok escalates beyond IP-based blocking.
 3. **YouTube Data API quota raise** — default 10k/day; quota-exhausted backoff prevents log spam but the cure is a quota increase via Google Cloud Console.

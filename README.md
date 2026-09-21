@@ -67,6 +67,20 @@ Key technical detail: **Whisper timestamps are absolute** (from track start, not
    Doing this on the server matters: the session is created on the machine and IP that will use it. Capturing it on a laptop and importing means the platform watches an established session move to a new IP, which is the usual reason a fresh session gets challenged. The API also accepts a pasted `storage_state` JSON (`POST /api/outreach/accounts/{id}/session`) if you need it. Either way no password reaches the service, and sessions are never readable back out of the API.
 2. **Create a campaign** — name, description, and a message template with `{{username}}`, `{{profile_url}}`, `{{campaign_name}}`, `{{account_name}}` plus any campaign variable you define (`{{offer}}`, …).
 3. **Import targets** — CSV upload or paste. Accepts `username`, `profile_url`, or both, in any column order. Off-platform URLs, malformed handles and duplicates are rejected *before* insert; the summary reports `imported / duplicates / invalid / ready`.
+   **Or discover them.** Instead of bringing a list, point a search at a post
+   and let it read the people engaging with it: commenters and likers are
+   scored against the campaign's niche and land in `outreach_leads`, which the
+   same import dialog turns into targets. A search reads until it has the
+   number asked for, not until a scroll budget runs out, and banks each lead
+   as it is found so a long run that is interrupted keeps its work.
+
+   Two things decide whether a search is worth running. A post is **used up**
+   once harvested — measured, re-reading one gave 1 new person in 350 rounds
+   where a fresh post gave ~98 in 50 — so sweep several posts rather than
+   scrolling one harder. And most of a big post's people are in reply threads
+   rather than top-level comments; opening those is implemented but **not yet
+   working on Instagram**, whose "Reply" control is the composer.
+
 4. **Start** — a preflight refuses to run without a valid template, queued targets and an enabled account. Starting enqueues one `outreach_jobs` row per queued target.
 5. **Workers** — `scripts/outreach_worker.py`, run as one or more processes. Each cycle leases a free sending account, claims a job with `FOR UPDATE SKIP LOCKED`, renders the message, calls the browser driver, records the structured result, and releases the lease.
 6. **Monitor** — the campaign page polls every 3 s: progress bar, per-status target list, sending accounts, recent activity, error log, audit trail. Pause / Resume / Stop / Retry failed / Export CSV.
@@ -83,7 +97,7 @@ Key technical detail: **Whisper timestamps are absolute** (from track start, not
 
 The browser layer is isolated behind a driver interface (`services/outreach/browser/`) — `mock` (sends nothing, for dry runs and tests) and `playwright_tiktok` ship today; swapping the automation technology means adding a module there and changing one setting.
 
-Tables: `outreach_campaigns`, `outreach_targets`, `outreach_sending_accounts`, `outreach_jobs`, `outreach_templates`, `outreach_campaign_accounts`, `outreach_audit_logs`.
+Tables: `outreach_campaigns`, `outreach_targets`, `outreach_sending_accounts`, `outreach_jobs`, `outreach_templates`, `outreach_campaign_accounts`, `outreach_audit_logs`, `outreach_lead_searches`, `outreach_leads`.
 Frontend: `frontend/src/app/outreach/`. Admin controls: `/admin → Outreach`.
 
 ---
@@ -188,6 +202,24 @@ Frontend: `frontend/src/app/outreach/`. Admin controls: `/admin → Outreach`.
 
 ## Local setup
 
+### Already set up? One command
+
+On a machine where this has been installed once, both halves start together:
+
+```bash
+zagged                      # backend :8000 + frontend :3000, waits until they answer
+zagged stop|restart|status|logs
+```
+
+`zagged` aliases `~/icreateflow-local/dev.sh` — run it by path if the alias
+isn't loaded in your shell. It starts both detached so they outlive the
+terminal, logs to `~/icreateflow-local/logs/`, and tells you if Postgres is
+down rather than leaving the backend to fail obscurely.
+
+App at **http://localhost:3000**, API docs at **http://127.0.0.1:8000/docs**.
+
+The rest of this section is the from-scratch install.
+
 ### 1. Clone
 
 ```bash
@@ -251,6 +283,13 @@ ICREATE_TEST_DB_DSN=postgresql+asyncpg://postgres@127.0.0.1:5432/icreateflow_tes
 ```
 
 The suite covers the outreach pipeline end to end against a real Postgres (the queue's guarantees are `SKIP LOCKED` and unique indexes, which a stub cannot exercise). Every send goes through the mock driver — no browser, no messages. Without a reachable database the DB-backed tests skip and the pure-logic ones still run.
+
+`tests/test_outreach_discovery_reader.py` covers how a lead search decides to
+keep reading and when it writes what it found. The reader's loop runs against
+a scripted page rather than a browser — the loop is the part that has been
+wrong, and a real Chromium would only prove that Playwright scrolls. The one
+exception is `_renudge`, which is about scrolling, so it gets a real page and
+skips without Playwright.
 
 `tests/test_outreach_playwright_driver.py` additionally drives the real Playwright driver against a local stub site (never TikTok): context-per-account isolation, session loading, typing and submitting, delivery verification, and each bad-page state mapping to the right status. It needs `pip install playwright==1.56.0 && playwright install chromium` and skips without them.
 
