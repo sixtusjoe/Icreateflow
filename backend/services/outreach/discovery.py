@@ -383,6 +383,13 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             collected.append(lead)
             run.found = len(collected)
             run.message = f"Found {len(collected)} of {wanted}…"
+            # Bank it now, not at the end. The driver was taught to hand
+            # people over as it reads them precisely so a long run could
+            # survive being stopped — and then every one of them sat in
+            # this list until the whole read finished, so a run that was
+            # killed at ninety minutes stored nothing at all. A read of
+            # this post takes hours; it cannot be all-or-nothing.
+            await _store_lead_now(search_id, user_id, platform, lead)
             await show_progress()
 
         posts = post_urls_in(list(seeds))
@@ -585,6 +592,23 @@ async def _persist_queries(search_id: int, plan: dict[str, list[str]]) -> None:
             {"id": search_id, "q": json.dumps(plan)},
         )
         await database.session.commit()
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    finally:
+        await database.close()
+
+
+async def _store_lead_now(search_id: int, user_id: Optional[int],
+                          platform: str, lead: dict[str, Any]) -> None:
+    """Write one lead the moment it is found, on its own connection.
+
+    Storing is reporting, not the work: a row that will not save must
+    not take the run down with it, and the final `_store_leads` sweep
+    is idempotent, so anything missed here is still written at the end.
+    """
+    database = await db.get_db()
+    try:
+        await _store_leads(database, search_id, user_id, platform, [lead])
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     finally:
