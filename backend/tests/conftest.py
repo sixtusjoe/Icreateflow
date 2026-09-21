@@ -41,6 +41,8 @@ OUTREACH_TABLES = (
     "outreach_campaign_accounts",
     "outreach_targets",
     "outreach_audit_logs",
+    "outreach_leads",
+    "outreach_lead_searches",
     "outreach_campaigns",
     "outreach_sending_accounts",
     "outreach_templates",
