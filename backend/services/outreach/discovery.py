@@ -617,7 +617,19 @@ async def _store_lead_now(search_id: int, user_id: Optional[int],
 
 async def _store_leads(database, search_id: int, user_id: Optional[int],
                        platform: str, leads: list[dict[str, Any]]) -> int:
-    """Write what was found. Duplicates within a search are dropped."""
+    """Write what was found, filling in anything learned since.
+
+    A lead is written twice now: once the moment the reader finds it, so
+    a run that is stopped keeps its work, and once at the end with
+    whatever the profile read and the scorer added. The second write has
+    to be an update, not a no-op — `DO NOTHING` would keep the bare row
+    banked during the read and silently throw away the bio, the follower
+    count, the score and the reason.
+
+    It fills rather than replaces: a column already holding something
+    keeps it unless the new row actually has a value for it, so the
+    end-of-run sweep can never blank what the live write banked.
+    """
     stored = 0
     for lead in leads:
         try:
@@ -628,7 +640,19 @@ async def _store_leads(database, search_id: int, user_id: Optional[int],
                     "   display_name, bio, followers, source, score, reason) "
                     "VALUES (:sid, :uid, :platform, :username, :url, :name, "
                     "        :bio, :followers, :source, :score, :reason) "
-                    "ON CONFLICT (search_id, username) DO NOTHING"
+                    "ON CONFLICT (search_id, username) DO UPDATE SET "
+                    "  display_name = COALESCE(EXCLUDED.display_name, "
+                    "                          outreach_leads.display_name), "
+                    "  bio          = COALESCE(EXCLUDED.bio, "
+                    "                          outreach_leads.bio), "
+                    "  followers    = COALESCE(EXCLUDED.followers, "
+                    "                          outreach_leads.followers), "
+                    "  source       = COALESCE(EXCLUDED.source, "
+                    "                          outreach_leads.source), "
+                    "  score        = COALESCE(EXCLUDED.score, "
+                    "                          outreach_leads.score), "
+                    "  reason       = COALESCE(EXCLUDED.reason, "
+                    "                          outreach_leads.reason)"
                 ),
                 {
                     "sid": search_id, "uid": user_id, "platform": platform,
