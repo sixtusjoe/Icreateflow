@@ -294,6 +294,139 @@ an exception. `playwright_tiktok` keeps one `BrowserContext` per account (the
 isolation boundary), closes only the *page* after a job, and keeps the context
 so the session survives.
 
+### TikTok follows go through a phone
+
+TikTok **web** accepts a follow from our accounts, answers `status_code: 0`,
+shows "Following" — and discards it (0 of 3 kept, 2026-09-23). The TikTok
+**app** keeps it (2 of 2 kept, 2026-09-24, confirmed by both the target's
+follower count and the account's following count). So a follow for a
+TikTok account that has a phone assigned goes to
+`browser/android_tiktok.py`; messages, comments and discovery stay on the
+browser. Routing is `PHONE_FOLLOW_DRIVERS` in `runner.py`; a mock pin still
+wins.
+
+- **Setup:** an Android phone on USB with USB debugging on, TikTok signed
+  in, *Stay awake* on, no lock screen while running. `adb` on the worker's
+  machine (`~/android/sdk/platform-tools/adb` on the Mac, or set
+  `ICREATE_OUTREACH_ADB`). Assign it on the Accounts page → *Phone for
+  follows*: the phone's serial plus the handle it is signed in as
+  (`device_serial`, `device_handle` columns).
+- **Nothing is installed on the phone.** Deep link with a fresh task
+  (`am start -f 0x10008000 … https://www.tiktok.com/@user`), `uiautomator
+  dump`, `input tap`. About 18s per follow including the verifying reload.
+- **Guards, each with a test that was seen to fail without it:** the phone
+  must show the expected handle as *its own* profile before anything is
+  tapped (a personal account on the phone is never used); the button is
+  the first follow control *under the stats row* (the stats label
+  "Following" sits above it, suggested accounts' "Follow back" far below);
+  after the tap the profile is reopened and only that reading counts.
+- **`device_unavailable`** — unplugged, unauthorised, locked, TikTok
+  missing, signed out or signed in as someone else. Pauses the account at
+  once; a person has to fix the phone.
+- The phone must be on the machine running the worker, so TikTok follow
+  campaigns run from the Mac, not the server. One phone serves one account
+  at a time; one phone per account keeps a ban on one from reaching others.
+- An Android *emulator* was tried first and dropped: the 8 GB Mac swapped
+  ~5 GB and Google sign-in timed out, and an emulator is what TikTok is
+  likeliest to treat like the web.
+
+### Phone accounts — the ICREATEFLOW app does the follows, no cable
+
+The cabled route above needs the phone on the worker's machine. The phone
+app (`mobile/android/`) reverses the direction: it signs in to the server
+like the website, **asks for follows** and reports back, so the phone can
+be anywhere with a connection — the user's own phone, in their own
+location (why cloud phones were rejected: TikTok is strict about location).
+
+- **Account mode `via`** (`browser` | `phone`, `outreach_sending_accounts.via`).
+  Web: Accounts → *Switch to phone* (asks the TikTok username →
+  `device_handle`). App: Phone → *Link* (sets `companion_device` = the
+  install's id, and `via=phone`). A phone account needs **no browser
+  session** and is only leased for what the app can do —
+  `PHONE_ACTIVITIES` (follow, message, unfollow) on `PHONE_PLATFORMS`
+  (tiktok), no image campaigns, enforced in `accounts.lease_account` and
+  `eligible_account_ids` (`accounts.fits`) and by the start check.
+- **Hand-off** (`services/outreach/companion.py`): the worker and the API
+  are separate processes in production, so a follow crosses as a row in
+  `outreach_companion_tasks`: worker `relay()` inserts `pending` and
+  waits; the app's `POST /api/outreach/companion/next` claims it; `POST
+  /companion/tasks/{id}/result` answers it. Everything else — pacing,
+  limits, pauses, audits — is the runner's, unchanged. Only the worker
+  gives up, by expiring a row still in the state it expected in one
+  statement, so a claim or answer racing the timeout is never lost.
+  Timeouts: 90s to pick up, 180s to finish → `device_unavailable`: the
+  person comes back in a minute; three in a row rest the *campaign* 10
+  minutes. A claimed **message** that times out is `outcome_unknown` and is
+  never retried — it may have gone. **Nothing pauses an account**
+  (`AUTO_PAUSE_ACCOUNTS = False`, the operator's rule): a verification
+  puzzle or signed-out app pauses the campaign, naming the account.
+- **Guards** (each seen failing without it, `tests/test_outreach_companion.py`):
+  mock setting or a handed-in driver still wins; another phone or another
+  user can't claim or answer; unlinking takes back unclaimed follows;
+  unknown result statuses are refused; a phone account never gets a
+  message campaign; a phone account nobody linked pauses with a reason.
+- **"Last seen"** (`companion_seen_at`) is written at most every 30s: it
+  locks the account row, and leasing uses SKIP LOCKED.
+- **The app's follow** (`engine/Follower.kt`) mirrors `android_tiktok._follow`
+  and answers in the same statuses. It can't restart TikTok, so a reopened
+  profile shows a *cached* follower count — an unchanged count is not
+  evidence of a drop (proven 2026-09-26: 1,049→1,049 in-app, 1,050 after a
+  restart). A Follow button on reopen *is* a drop.
+- **Opening a profile** (`Follower.open`, used by follow, message and
+  unfollow): a `tiktok.com/@name` link first; for some profiles TikTok's
+  lookup fails and it shows the For You feed — the *same* profiles every
+  time, while the next opens in 2s (not an account limit, as first
+  thought). Then TikTok's own search (`snssdk1233://search?keyword=`),
+  tapping the result whose text is exactly the handle, once it stops
+  moving. No exact result → `profile_unavailable`. `rate_limited` only if
+  search fails too. Handles carry invisible U+200E/U+2068–2069 marks and a
+  verified badge is U+FFFC — strip them or verified profiles never "load".
+  One follower reads "Follower".
+- **Reaching the server:** the app's Server setting — the live site, or any
+  address of this one (review builds allow plain http). Locally that is a
+  `cloudflared` quick tunnel to `127.0.0.1:8000` (new URL each start); a
+  review build takes it with `am start --activity-single-top … --es server
+  <url>`. `dev.sh` binds 127.0.0.1.
+
+### Unfollow campaigns
+
+A fourth campaign task, `unfollow`, on TikTok and Instagram only (refused
+elsewhere at creation). Same queue, limits and pausing as follow. On TikTok
+an account with a phone unfollows in the app (`android_tiktok`), otherwise
+in the browser (`PlaywrightMessenger.unfollow_target`).
+
+- **It can never follow anyone.** Only a control reading Following, Friends
+  or Requested is pressed. Follow / Follow back → `not_following`, a
+  success with nothing pressed. Tested on all three surfaces with a stub
+  that records any press, and seen to fail with the guard removed.
+- **The action:** pressing Following opens a menu — Instagram: Close friends
+  / Favorites / Mute / Restrict / **Unfollow**; TikTok web: a dialog
+  (`aria-haspopup="dialog"`); TikTok app: a bottom sheet (name, Customise
+  name, **Unfollow**). Mutual follows ("Friends") in the app are asked a
+  second time — "Unfollow this person? You and this person are currently
+  friends." — and the driver answers it.
+- **Only a reload counts**, like follows. Button says Follow but a reload
+  says Following → `follow_discarded`; still Following → `follow_limited`.
+- **Who is unfollowed:** only people a follow campaign itself followed —
+  a follow job that succeeded `sent` or `follow_requested` (accepted →
+  unfollowed, still waiting → withdrawn), by the same account
+  (`queue.followed_by`; anything else is `not_our_follow`, skipped).
+  "Unfollow everyone it followed" builds one unfollow campaign per follow
+  campaign, first followed first; clicking again adds only the new.
+  A campaign that has worked on anyone can't switch activity — switching a
+  follow campaign ran its *unfollowed* half as unfollows.
+- **Instagram "Follow Back"** (they follow you, you don't follow them) is a
+  label of its own: unread, a finished unfollow came back "could not tell",
+  and a follow could fall to a Suggested stranger's "Follow".
+- Live 2026-09-24, one person each: phone @depay038 (followers 2,268→2,267),
+  TikTok web @brownthickbeautiful, Instagram @val_19o — all three confirmed
+  from a second surface. **TikTok web unfollows stick even though its
+  follows do not.**
+
+Also fixed alongside: `_preflight` checked the message template on every
+campaign, so a follow or unfollow campaign made from the current dialog
+(which stores no message) could not start — "Message template is empty".
+
 ### Lead discovery — finding targets instead of importing them
 
 `services/outreach/discovery.py` plus `_profile_links` in
@@ -589,6 +722,15 @@ If the UI looks unchanged after a deploy — **hard refresh**:
    - **The live server is unreachable — hosting was not renewed.** It sits
      several commits behind `main`. This is deliberate; leave it. Everything
      in the deploy runbook below assumes a box that is currently not there.
+   - **When it comes back (2026-09-29):** everything since is on
+     `claude/previous-session-review-22f17d`, never deployed. New columns
+     and `outreach_companion_tasks` arrive through the startup migrations
+     (`ADDED_COLUMNS`) — deploy while no campaign is mid-job, or the old
+     process's locks deadlock them. Admin → Tools settings live in each
+     database's `site_config`, so the job limits raised locally (3000 per
+     campaign, 3000 per account per campaign) must be set again on live.
+     The phone app's live address is `LIVE_SERVER` in
+     `mobile/android/…/ui/ServerPicker.kt`.
    - **A send has never been observed end to end** once a human clears the
      verification puzzle. Re-queue a target, run
      `bash deploy/outreach-watch-mac.sh`, solve it in the VNC window and watch
