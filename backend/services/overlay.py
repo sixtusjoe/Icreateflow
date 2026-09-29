@@ -180,7 +180,8 @@ def convert_3x4_to_9x16(img_3x4: Image.Image, bg_color: str = "#000000") -> Imag
 
 def _apply_text_block(img: Image.Image, texts: list[dict],
                       weight: str = DEFAULT_WEIGHT,
-                      text_style: str = "stroke") -> Image.Image:
+                      text_style: str = "stroke",
+                      color: str = "white") -> Image.Image:
     """Apply multiple text blocks to an image.
 
     Each text dict:
@@ -246,7 +247,7 @@ def _apply_text_block(img: Image.Image, texts: list[dict],
                 )
                 layer_draw.text(
                     (layer_w / 2, y_center_local),
-                    line, font=font, fill="white",
+                    line, font=font, fill=color,
                     anchor="mm", align="center",
                 )
         else:
@@ -254,7 +255,7 @@ def _apply_text_block(img: Image.Image, texts: list[dict],
                 y_center_local = i * line_height + line_height // 2 + stroke_width
                 layer_draw.text(
                     (layer_w / 2, y_center_local),
-                    line, font=font, fill="white",
+                    line, font=font, fill=color,
                     stroke_width=stroke_width, stroke_fill="black",
                     anchor="mm", align="center",
                 )
@@ -277,10 +278,38 @@ def _apply_text_block(img: Image.Image, texts: list[dict],
     return img.convert("RGB")
 
 
+#: The sizes the ladder below is written in terms of. A configured size
+#: divided by its base gives the multiplier for every block of that role, so
+#: the ladder keeps its internal proportions — a cta title stays four points
+#: under a content title — and the built-in values render byte-for-byte as
+#: they always have. These are the numbers Settings shows as the defaults.
+HOOK_BASE, TITLE_BASE, BODY_BASE = 56, 52, 38
+
+
+def _scaler(size, base: int):
+    """Turn a configured size into a multiplier for one text role.
+
+    An absent, unparseable or non-positive setting leaves every size alone,
+    because a blank box in Settings must not silently reflow every slide.
+    """
+    try:
+        v = float(size)
+    except (TypeError, ValueError):
+        return lambda s: s
+    if v <= 0:
+        return lambda s: s
+    k = v / base
+    if k == 1.0:
+        return lambda s: s
+    return lambda s: max(8, int(round(s * k)))
+
+
 def apply_overlay(image_path: str, slide_type: str, output_path: str,
                   title_text: str = None, body_text: str = None, cta_text: str = None,
                   bg_color: str = "#000000", weight: str = DEFAULT_WEIGHT,
-                  text_style: str = "stroke") -> dict:
+                  text_style: str = "stroke",
+                  hook_size=None, title_size=None, body_size=None,
+                  text_color: str = "white") -> dict:
     """
     Main entry point. Apply text overlay to a slide image.
 
@@ -288,7 +317,15 @@ def apply_overlay(image_path: str, slide_type: str, output_path: str,
     - hook: Single large text block, upper-center area
     - content: Title (larger) + body (smaller) if present
     - cta: Title + body + CTA text at bottom
+
+    `hook_size`, `title_size` and `body_size` are the workspace defaults from
+    Settings. They scale their role wherever it appears rather than replacing
+    one number, so the relationships between the shapes survive. The cta line
+    has no setting of its own and is left where it is.
     """
+    hook_px = _scaler(hook_size, HOOK_BASE)
+    title_px = _scaler(title_size, TITLE_BASE)
+    body_px = _scaler(body_size, BODY_BASE)
     img = Image.open(image_path).convert("RGB")
     img_3x4 = resize_to_3x4(img)
 
@@ -297,19 +334,19 @@ def apply_overlay(image_path: str, slide_type: str, output_path: str,
     if slide_type == "hook":
         text = title_text or body_text or ""
         if text:
-            texts.append({"text": text, "font_size": 56, "y_ratio": 0.30})
+            texts.append({"text": text, "font_size": hook_px(56), "y_ratio": 0.30})
 
     elif slide_type == "content":
         title = title_text or ""
         body = body_text or ""
 
         if title and body:
-            texts.append({"text": title, "font_size": 52, "y_ratio": 0.28})
-            texts.append({"text": body, "font_size": 38, "y_ratio": 0.48})
+            texts.append({"text": title, "font_size": title_px(52), "y_ratio": 0.28})
+            texts.append({"text": body, "font_size": body_px(38), "y_ratio": 0.48})
         elif title:
-            texts.append({"text": title, "font_size": 52, "y_ratio": 0.35})
+            texts.append({"text": title, "font_size": title_px(52), "y_ratio": 0.35})
         elif body:
-            texts.append({"text": body, "font_size": 44, "y_ratio": 0.35})
+            texts.append({"text": body, "font_size": body_px(44), "y_ratio": 0.35})
 
     elif slide_type == "cta":
         title = title_text or ""
@@ -317,19 +354,21 @@ def apply_overlay(image_path: str, slide_type: str, output_path: str,
         cta = cta_text or ""
 
         if title and cta:
-            texts.append({"text": title, "font_size": 48, "y_ratio": 0.25})
+            texts.append({"text": title, "font_size": title_px(48), "y_ratio": 0.25})
             if body:
-                texts.append({"text": body, "font_size": 34, "y_ratio": 0.45})
+                texts.append({"text": body, "font_size": body_px(34), "y_ratio": 0.45})
             texts.append({"text": cta, "font_size": 42, "y_ratio": 0.75})
         elif title:
-            texts.append({"text": title, "font_size": 48, "y_ratio": 0.30})
+            texts.append({"text": title, "font_size": title_px(48), "y_ratio": 0.30})
             if body:
-                texts.append({"text": body, "font_size": 36, "y_ratio": 0.50})
+                texts.append({"text": body, "font_size": body_px(36), "y_ratio": 0.50})
         elif cta:
             texts.append({"text": cta, "font_size": 44, "y_ratio": 0.70})
 
     if texts:
-        img_3x4 = _apply_text_block(img_3x4, texts, weight=weight, text_style=text_style)
+        img_3x4 = _apply_text_block(
+            img_3x4, texts, weight=weight, text_style=text_style, color=text_color or "white",
+        )
 
     # Save 3:4 version
     output_3x4 = Path(output_path)

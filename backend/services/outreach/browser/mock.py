@@ -50,6 +50,7 @@ class MockMessenger:
         self._handler = handler
         self._default = default
         self.followed: list = []
+        self.unfollowed: list = []
         self._delay = delay_seconds
         self.started = False
         #: Every (account_id, username, message) this driver was asked to
@@ -76,10 +77,42 @@ class MockMessenger:
         return MessageResult.failure(RESULT_UNKNOWN, f"Unrecognised mock outcome: {outcome!r}")
 
     async def follow_target(self, account: dict, target: dict):
-        """Follow, without a browser. Same shape as a real driver's."""
-        await asyncio.sleep(self._delay)
+        """Follow, without a browser. Same shape as a real driver's.
+
+        Honours the same scripted outcomes as `send_message`. It used to
+        return `sent` unconditionally, which made a follow campaign look
+        flawless in every test: a follow limit, a missing profile and an
+        expired session were all unreachable, so none of the handling for
+        them was ever exercised here.
+        """
+        if self._delay:
+            await asyncio.sleep(self._delay)
         self.followed.append((int(account.get("id") or 0), target["username"]))
-        return MessageResult.sent(url=target.get("profile_url"))
+
+        if self._handler is not None:
+            outcome = self._handler(account, target, "")
+            if asyncio.iscoroutine(outcome):
+                outcome = await outcome
+            return self._coerce(outcome)
+        if not self._outcomes and self._default is None:
+            return MessageResult.sent(url=target.get("profile_url"))
+        outcome = self._outcomes.pop(0) if self._outcomes else self._default
+        return self._coerce(outcome)
+
+    async def unfollow_target(self, account: dict, target: dict):
+        """Unfollow, without a browser. Scripted exactly like a follow."""
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        self.unfollowed.append((int(account.get("id") or 0), target["username"]))
+        if self._handler is not None:
+            outcome = self._handler(account, target, "")
+            if asyncio.iscoroutine(outcome):
+                outcome = await outcome
+            return self._coerce(outcome)
+        if not self._outcomes and self._default is None:
+            return MessageResult.sent(url=target.get("profile_url"), action="unfollow")
+        outcome = self._outcomes.pop(0) if self._outcomes else self._default
+        return self._coerce(outcome)
 
     async def send_message(
         self, account: dict[str, Any], target: dict[str, Any], message: str

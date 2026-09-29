@@ -15,8 +15,13 @@ import database as db
 from services.outreach import accounts as account_mgr, importer, queue as job_queue, runner
 from services.outreach.browser.mock import MockMessenger
 from services.outreach.constants import (
+    ACCOUNT_ACTIVE,
+    ACCOUNT_IDLE,
     ACCOUNT_PAUSED,
     CAMPAIGN_COMPLETED,
+    CAMPAIGN_PAUSED,
+    CAMPAIGN_RUNNING,
+    RESULT_FOLLOW_LIMITED,
     JOB_FAILED,
     JOB_QUEUED,
     JOB_SUCCEEDED,
@@ -174,20 +179,68 @@ async def test_a_profile_that_does_not_exist_is_skipped_for_good(seeded, databas
     assert account["consecutive_errors"] == 0
 
 
-async def test_an_expired_session_pauses_the_account_and_stops_the_run(seeded, database):
+async def test_an_expired_session_pauses_the_campaign_not_the_account(seeded, database):
+    """Operator's rule: nothing pauses an account. The campaign waits, with
+    the account named in the reason, and the target keeps its turn."""
     driver = MockMessenger(default=(RESULT_SESSION_EXPIRED, "login wall"))
     settings = seeded["settings"]
     assert await _run(driver, settings) is True
 
     account = dict(await db.get_sending_account(database, seeded["account"]["id"]))
-    assert account["status"] == ACCOUNT_PAUSED
-    assert "session_expired" in account["paused_reason"]
+    assert account["status"] != ACCOUNT_PAUSED
+    campaign = dict(await db.get_outreach_campaign(database, seeded["campaign"]["id"]))
+    assert campaign["status"] == CAMPAIGN_PAUSED
+    assert campaign["paused_until"] is None
+    assert "login wall" in campaign["paused_reason"]
+    assert seeded["account"]["name"] in campaign["paused_reason"]
 
-    # With the only account paused there is nothing to run — and crucially
-    # the worker does not spin claiming jobs it cannot send.
+    # Nothing runs while it waits, and the target was not spent.
     await _clear_backoff(database)
     assert await _run(driver, settings) is False
-    assert len(driver.sent) == 1
+    jobs = [dict(j) for j in await db.get_outreach_jobs(
+        database, campaign_id=seeded["campaign"]["id"])]
+    assert not [j for j in jobs if j["status"] == JOB_FAILED]
+
+
+async def test_a_phone_hiccup_retries_the_target_and_keeps_the_campaign_running(seeded, database):
+    from services.outreach.constants import RESULT_DEVICE_UNAVAILABLE
+    driver = MockMessenger(default=(RESULT_DEVICE_UNAVAILABLE, "TikTok did not come to the front"))
+    await _run(driver, seeded["settings"])
+
+    account = dict(await db.get_sending_account(database, seeded["account"]["id"]))
+    assert account["status"] != ACCOUNT_PAUSED
+    campaign = dict(await db.get_outreach_campaign(database, seeded["campaign"]["id"]))
+    assert campaign["status"] == CAMPAIGN_RUNNING
+    jobs = [dict(j) for j in await db.get_outreach_jobs(
+        database, campaign_id=seeded["campaign"]["id"])]
+    held = [j for j in jobs if j["result_status"] == RESULT_DEVICE_UNAVAILABLE]
+    assert len(held) == 1 and held[0]["status"] == JOB_QUEUED
+    assert held[0]["run_after"] is not None
+
+
+async def test_a_streak_of_phone_hiccups_rests_the_campaign_then_it_carries_on(seeded, database):
+    from services.outreach.constants import RESULT_DEVICE_UNAVAILABLE
+    driver = MockMessenger(default=(RESULT_DEVICE_UNAVAILABLE, "profile did not load"))
+    for _ in range(runner.PHONE_STREAK):
+        await _clear_backoff(database)
+        await _run(driver, seeded["settings"])
+
+    campaign = dict(await db.get_outreach_campaign(database, seeded["campaign"]["id"]))
+    assert campaign["status"] == CAMPAIGN_PAUSED
+    assert campaign["paused_until"] is not None  # resumes by itself
+    account = dict(await db.get_sending_account(database, seeded["account"]["id"]))
+    assert account["status"] != ACCOUNT_PAUSED
+
+
+async def test_a_success_between_hiccups_resets_the_streak(seeded, database):
+    from services.outreach.constants import RESULT_DEVICE_UNAVAILABLE
+    hiccup = (RESULT_DEVICE_UNAVAILABLE, "slow")
+    driver = MockMessenger(outcomes=[hiccup, hiccup, "sent", hiccup, hiccup])
+    for _ in range(5):
+        await _clear_backoff(database)
+        await _run(driver, seeded["settings"])
+    campaign = dict(await db.get_outreach_campaign(database, seeded["campaign"]["id"]))
+    assert campaign["status"] == CAMPAIGN_RUNNING
 
 
 async def test_a_driver_that_raises_is_contained(seeded, database):
@@ -483,6 +536,9 @@ async def test_the_local_worker_opens_a_window_per_configured_slot(monkeypatch):
         await forever.wait()
 
     class _StubWorker:
+        async def apply_headless(self, headless):
+            """The local sender asks this every tick."""
+            self.headless = headless
         def __init__(self, *a, **kw):
             pass
 
@@ -537,6 +593,9 @@ async def test_a_shutdown_waits_for_a_send_already_in_flight(monkeypatch):
         finished = True               # the confirmation it must reach
 
     class _StubWorker:
+        async def apply_headless(self, headless):
+            """The local sender asks this every tick."""
+            self.headless = headless
         def __init__(self, *a, **kw):
             pass
 
@@ -584,6 +643,9 @@ async def test_a_send_that_never_finishes_does_not_hold_the_shutdown_open(
         await asyncio.Event().wait()   # never returns
 
     class _StubWorker:
+        async def apply_headless(self, headless):
+            """The local sender asks this every tick."""
+            self.headless = headless
         def __init__(self, *a, **kw):
             pass
 
@@ -615,6 +677,9 @@ async def test_a_draining_slot_does_not_claim_another_job(monkeypatch):
     first_claim = asyncio.Event()
 
     class _CountingWorker:
+        async def apply_headless(self, headless):
+            """The local sender asks this every tick."""
+            self.headless = headless
         def __init__(self, *a, **kw):
             pass
 
@@ -807,6 +872,9 @@ async def test_closing_the_browser_does_not_stop_the_local_sender(monkeypatch):
     claims = 0
 
     class _Worker:
+        async def apply_headless(self, headless):
+            """The local sender asks this every tick."""
+            self.headless = headless
         def __init__(self, *a, on_browser_lost=None, **kw):
             lost.append(on_browser_lost)
 
@@ -851,3 +919,196 @@ async def test_closing_the_browser_does_not_stop_the_local_sender(monkeypatch):
     assert runner._LOCAL_WORKER["running"] is True
 
     await runner.stop_background_tasks([task])
+
+
+# --- platform limits: the campaign waits, the account does not -------------
+
+async def test_a_platform_limit_pauses_the_campaign_not_the_account(seeded, database):
+    """A limit is a clock, and it belongs to the campaign.
+
+    It used to count against the account's error budget and pause the
+    *account* after five. That is the wrong unit twice: the account is
+    healthy — it has done exactly as much as the platform allows — and
+    pausing it stops every other campaign that account serves. A paused
+    account also needs a person to un-pause it, so a limit that clears in
+    hours cost a day.
+    """
+    driver = MockMessenger(default=(RESULT_FOLLOW_LIMITED, "follow limit reached"))
+    settings = dict(seeded["settings"])
+    await db.update_outreach_campaign(
+        database, seeded["campaign"]["id"], activity="follow")
+
+    assert await _run(driver, settings) is True
+
+    account = dict(await db.get_sending_account(database, seeded["account"]["id"]))
+    assert account["status"] in (ACCOUNT_IDLE, ACCOUNT_ACTIVE), (
+        "the account was blamed for a limit it did not cause"
+    )
+    assert account["consecutive_errors"] == 0
+
+    campaign = dict(await db.get_outreach_campaign(database, seeded["campaign"]["id"]))
+    assert campaign["status"] == CAMPAIGN_PAUSED
+    assert campaign["paused_until"] is not None
+    assert "follow limit reached" in (campaign["paused_reason"] or ""), (
+        "the platform's own words should be kept — our inference about a "
+        "button that did not move is not what the operator needs to read"
+    )
+
+
+async def test_a_limited_job_keeps_its_retry_budget(seeded, database):
+    """Waiting out a limit must not spend the target's attempts.
+
+    The driver did what it was asked and the platform said "not now". If
+    that counted as an attempt, a long enough limit would exhaust every
+    target's retries without a single one having been refused.
+    """
+    driver = MockMessenger(default=(RESULT_FOLLOW_LIMITED, "follow limit reached"))
+    settings = dict(seeded["settings"])
+    await db.update_outreach_campaign(
+        database, seeded["campaign"]["id"], activity="follow")
+    await _run(driver, settings)
+
+    rows = (await database.session.execute(
+        text("SELECT status, attempts FROM outreach_jobs "
+             " WHERE campaign_id = :cid AND status = :q"),
+        {"cid": seeded["campaign"]["id"], "q": JOB_QUEUED},
+    )).mappings().all()
+    assert rows, "the job was not put back on the queue"
+    assert all(r["attempts"] == 0 for r in rows), (
+        f"a limit spent the retry budget: {[dict(r) for r in rows]}"
+    )
+
+
+async def test_a_campaign_resumes_itself_when_the_cooldown_expires(seeded, database):
+    """The whole point of a deadline: nobody has to be watching."""
+    campaign_id = seeded["campaign"]["id"]
+    await database.session.execute(
+        text("UPDATE outreach_campaigns "
+             "   SET status = :paused, paused_until = (NOW() AT TIME ZONE 'UTC') "
+             "       - INTERVAL '1 minute', paused_reason = 'follow limit reached' "
+             " WHERE id = :cid"),
+        {"cid": campaign_id, "paused": CAMPAIGN_PAUSED},
+    )
+    await database.session.commit()
+
+    resumed = await job_queue.resume_limited_campaigns(database)
+    assert campaign_id in resumed
+
+    campaign = dict(await db.get_outreach_campaign(database, campaign_id))
+    assert campaign["status"] == CAMPAIGN_RUNNING
+    assert campaign["paused_until"] is None
+    assert campaign["paused_reason"] is None
+
+
+async def test_the_api_process_resumes_a_cooldown_too(seeded, database):
+    """On a laptop the API process does the sending, and its maintenance
+    used to skip this — campaign 15 sat "resuming" for fifteen hours."""
+    campaign_id = seeded["campaign"]["id"]
+    await database.session.execute(
+        text("UPDATE outreach_campaigns "
+             "   SET status = :paused, paused_until = (NOW() AT TIME ZONE 'UTC') "
+             "       - INTERVAL '1 minute', paused_reason = 'phone break' "
+             " WHERE id = :cid"),
+        {"cid": campaign_id, "paused": CAMPAIGN_PAUSED},
+    )
+    await database.session.commit()
+
+    await runner.maintenance_pass()
+
+    campaign = dict(await db.get_outreach_campaign(database, campaign_id))
+    assert campaign["status"] == CAMPAIGN_RUNNING
+
+
+async def test_a_cooldown_that_has_not_expired_is_left_alone(seeded, database):
+    campaign_id = seeded["campaign"]["id"]
+    await database.session.execute(
+        text("UPDATE outreach_campaigns "
+             "   SET status = :paused, paused_until = (NOW() AT TIME ZONE 'UTC') "
+             "       + INTERVAL '1 hour' WHERE id = :cid"),
+        {"cid": campaign_id, "paused": CAMPAIGN_PAUSED},
+    )
+    await database.session.commit()
+    assert await job_queue.resume_limited_campaigns(database) == []
+
+
+async def test_an_operators_own_pause_is_never_resumed_by_the_clock(seeded, database):
+    """A pause with no deadline was a decision, not a timer."""
+    campaign_id = seeded["campaign"]["id"]
+    await database.session.execute(
+        text("UPDATE outreach_campaigns SET status = :paused, paused_until = NULL "
+             " WHERE id = :cid"),
+        {"cid": campaign_id, "paused": CAMPAIGN_PAUSED},
+    )
+    await database.session.commit()
+    assert await job_queue.resume_limited_campaigns(database) == []
+    campaign = dict(await db.get_outreach_campaign(database, campaign_id))
+    assert campaign["status"] == CAMPAIGN_PAUSED
+
+
+async def test_a_second_limit_does_not_push_the_deadline_out(seeded, database):
+    """The first deadline wins, however many jobs land after it.
+
+    The guard used to be an `if` on the campaign dict, which every slot
+    read when it claimed its job — so each of them still said `running`
+    and each wrote its own pause. The countdown crept forward while it was
+    being watched. It is a condition on the UPDATE now.
+    """
+    campaign_id = seeded["campaign"]["id"]
+    settings = dict(seeded["settings"])
+    await db.update_outreach_campaign(database, campaign_id, activity="follow")
+
+    driver = MockMessenger(default=(RESULT_FOLLOW_LIMITED, "follow limit reached"))
+    assert await _run(driver, settings) is True
+    first = dict(await db.get_outreach_campaign(database, campaign_id))
+    assert first["status"] == CAMPAIGN_PAUSED
+    deadline = first["paused_until"]
+    assert deadline is not None
+
+    # A second job lands holding the campaign as it was *before* the pause,
+    # which is exactly what an in-flight slot has.
+    stale = dict(first, status=CAMPAIGN_RUNNING, paused_until=None)
+    worker = runner.OutreachWorker(worker_id="second-slot", driver=driver, once=True)
+    await worker._pause_campaign_for_limit(
+        database,
+        stale,
+        type("R", (), {"detail": {}, "error": "follow limit reached"})(),
+        settings,
+        900,
+    )
+
+    again = dict(await db.get_outreach_campaign(database, campaign_id))
+    assert again["paused_until"] == deadline, (
+        f"the deadline moved: {deadline} -> {again['paused_until']}"
+    )
+
+
+def test_the_limit_wait_is_not_a_setting():
+    """One limit timer, and the admin page is not where it lives.
+
+    There were briefly two things a person could read as the limit timer:
+    the countdown on the campaign page, and three "wait this long before
+    resuming" boxes on the admin page. They were never two timers — the
+    boxes set the number the countdown counted down — but nothing on
+    either page said so, and the obvious reading was that one of them was
+    overriding the other. The wait is a constant now.
+    """
+    from services.outreach import config as cfg
+
+    stale = {
+        "outreach_follow_limit_cooldown_seconds": 900,
+        "outreach_message_limit_cooldown_seconds": 900,
+        "outreach_comment_limit_cooldown_seconds": 900,
+    }
+    for activity in ("follow", "message", "comment"):
+        assert cfg.limit_cooldown_seconds(activity, stale) == 21_600, (
+            f"{activity} still read its wait from settings"
+        )
+
+    # Rows for the old keys may linger in site_config on a live database.
+    # Nothing reads them, and the admin page must not offer them back.
+    for key in stale:
+        assert key not in cfg.SPEC, f"{key} is still an editable setting"
+
+    # And it still works with no settings dict at all, which is how the
+    # runner will call it once nothing is threading settings through.
+    assert cfg.limit_cooldown_seconds("follow") == 21_600

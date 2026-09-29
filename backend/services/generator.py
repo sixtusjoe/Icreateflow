@@ -10,6 +10,44 @@ from . import overlay, video
 import database as db
 
 
+async def text_defaults(database) -> dict:
+    """The slide-text defaults from Settings, as apply_overlay wants them.
+
+    Absent keys come back as None, which apply_overlay reads as "leave the
+    built-in ladder alone". The old Settings page wrote fallbacks into its
+    boxes but nothing ever read them back, so on most workspaces this
+    returns all-None and every render is unchanged.
+    """
+    keys = ("hook_font_size", "title_font_size", "body_font_size", "text_color")
+    vals = {k: await db.get_setting(database, k) for k in keys}
+    return {
+        "hook_size": vals["hook_font_size"],
+        "title_size": vals["title_font_size"],
+        "body_size": vals["body_font_size"],
+        "text_color": (vals["text_color"] or "").strip() or "white",
+    }
+
+
+async def video_defaults(database) -> dict:
+    """The video defaults from Settings, as build_video wants them.
+
+    A missing or unparseable value keeps ffmpeg's existing numbers rather
+    than failing a render over a typo in a settings box.
+    """
+    async def _num(key, fallback, cast):
+        try:
+            v = cast(await db.get_setting(database, key))
+        except (TypeError, ValueError):
+            return fallback
+        return v if v > 0 else fallback
+
+    return {
+        "slide_duration": await _num("slide_duration", 3.0, float),
+        "transition_duration": await _num("transition_duration", 0.5, float),
+        "fps": await _num("fps", 30, int),
+    }
+
+
 async def render_account_slides(
     database,
     post: dict,
@@ -39,6 +77,8 @@ async def render_account_slides(
     )
     slides_dir = out_dir / "slides"
     slides_dir.mkdir(parents=True, exist_ok=True)
+
+    text_cfg = await text_defaults(database)
 
     variations = await db.get_variations(
         database, post_id=post["id"], account_id=account["id"]
@@ -111,6 +151,7 @@ async def render_account_slides(
                 body_text=slide["body_text"],
                 cta_text=slide["cta_text"],
                 bg_color=bg_color,
+                **text_cfg,
             )
             slide_9x16_paths.append(result["slide_9x16"])
         else:
@@ -187,6 +228,7 @@ async def generate_post(post_id: int, database) -> dict:
                 break
 
     bg_color = "#000000"  # Always black for 9:16 canvas bars
+    video_cfg = await video_defaults(database)
     results = {}
 
     # Update post status
@@ -218,6 +260,7 @@ async def generate_post(post_id: int, database) -> dict:
                         slide_paths=slide_9x16_paths,
                         output_path=video_path,
                         music_path=music_path,
+                        **video_cfg,
                     )
                 except Exception as e:
                     video_path = None
@@ -231,6 +274,7 @@ async def generate_post(post_id: int, database) -> dict:
                             output_path=out_p,
                             platform=plat,
                             music_path=platform_music.get(plat),
+                            **video_cfg,
                         )
                         platform_paths[plat] = out_p
                     except Exception as e:

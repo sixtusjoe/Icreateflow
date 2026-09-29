@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -36,6 +37,10 @@ from typing import Any, Optional
 from services.outreach.browser import MessageResult
 from services.outreach import proxies
 from services.outreach.constants import (
+    RESULT_ALREADY_FOLLOWING,
+    RESULT_FOLLOW_DISCARDED,
+    RESULT_FOLLOW_REQUESTED,
+    RESULT_NOT_FOLLOWING,
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_CHALLENGE_REQUIRED,
@@ -105,6 +110,10 @@ COMMENT_POLL_MS = 700
 #: one settle. TikTok hydrates its chrome separately from the player.
 COMMENT_HYDRATE_RELOADS = 2
 COMMENT_SETTLE_MS = 4000
+#: How long to wait for the Comments tab to appear. The panel's chrome
+#: hydrates late — measured: the tab is not there at seven seconds and
+#: is by fifteen.
+COMMENT_TAB_MS = int(os.environ.get("ICREATE_OUTREACH_COMMENT_TAB_MS", "25000"))
 #: Rounds of "open a reply thread, then scroll" spent looking for people
 #: the top level does not show.
 COMMENT_WIDEN_ROUNDS = 4
@@ -120,7 +129,15 @@ COMMENT_SCROLL_WAIT_MS = 1400
 #: to let a press take effect. A single look two seconds after the click
 #: called confirmed follows "unchanged", and enough of those in a row reads
 #: as a limit that is not there.
-FOLLOW_CONTROL_POLLS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_POLLS", "18"))
+#: How long to keep looking for a profile's follow control.
+#:
+#: 18 polls at 500ms is nine seconds, and that was not enough. Measured on
+#: a live TikTok profile: the control is absent at three, six, nine and
+#: twelve seconds and appears at fifteen. The driver gave up six seconds
+#: early and reported "No follow control on this profile" for a profile
+#: that had one — every TikTok follow failed this way, and not one had ever
+#: succeeded.
+FOLLOW_CONTROL_POLLS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_POLLS", "60"))
 FOLLOW_CONFIRM_POLLS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_CONFIRM", "18"))
 FOLLOW_POLL_MS = int(os.environ.get("ICREATE_OUTREACH_FOLLOW_POLL_MS", "500"))
 DIALOG_QUIET_ROUNDS = int(os.environ.get("ICREATE_OUTREACH_QUIET_ROUNDS", "6"))
@@ -240,6 +257,8 @@ CLICK_MS = int(os.environ.get("ICREATE_OUTREACH_CLICK_MS", "10000"))
 #: wait is seconds, and the cost of being wrong is a person who never
 #: hears from us and an attempt spent finding that out.
 COMPOSER_MS = int(os.environ.get("ICREATE_OUTREACH_COMPOSER_MS", "45000"))
+#: How long the menu that pressing Following opens gets to appear.
+UNFOLLOW_MENU_MS = int(os.environ.get("ICREATE_OUTREACH_UNFOLLOW_MENU_MS", "8000"))
 
 #: How hard to work a post's comment list when the operator named that
 #: post themselves. Zero was the default here and it is the wrong one:
@@ -423,6 +442,40 @@ class PlaywrightMessenger:
     #: the harvest scrolls a modal that does not exist for as long as you
     #: let it, reporting nothing found and no error.
     FOLLOWERS_IN_DIALOG = True
+
+    #: Does this platform hide a video's comments behind a tab?
+    #:
+    #: TikTok's right-hand panel offers "Comments" and "You may like", and
+    #: opens on the second. Until the first is chosen the comment control
+    #: is not in the DOM at all, so looking for it is looking for something
+    #: that does not exist yet.
+    COMMENTS_BEHIND_TAB = False
+
+    #: Does a harvest on this platform need a *headed* browser?
+    #:
+    #: Discovery used to launch `headless=False` for everyone, for a reason
+    #: that is true of exactly one platform: X serves no timeline to a
+    #: headless browser. On the server that costs nothing visible — the
+    #: window draws on a private Xvfb. On a Mac there is no Xvfb, so
+    #: `display_pool.acquire()` returns None and a real window opens on the
+    #: operator's screen, for every harvest, on every platform.
+    #:
+    #: So each platform declares its own need. TikTok was measured
+    #: 2026-09-22: headless and headed mint an identical signature and read
+    #: the same comments, so it has nothing to gain from a window.
+    HEADED_DISCOVERY = False
+
+    #: Must a follow be re-read from a fresh page load before it counts?
+    #:
+    #: Measured on TikTok 2026-09-23: the follow POST returns
+    #: `status_code: 0` and the button turns to "Following", and the follow
+    #: is simply not there on reload. Two accounts, three attempts, none
+    #: survived. Nothing on the page says so — the only way to find out is
+    #: to load the profile again and look.
+    #:
+    #: It costs one page load per follow, so it is off by default and each
+    #: platform turns it on once it has been seen to lie.
+    FOLLOW_VERIFY_RELOAD = False
 
     #: Where the site lives, and where its search is. Only discovery uses
     #: these; messaging navigates to a target's own profile URL.
@@ -671,6 +724,46 @@ class PlaywrightMessenger:
                 continue
         return False
 
+    async def _limit_notice(self, page) -> Optional[str]:
+        """What the platform said about the limit, in its own words.
+
+        Returns the visible text of a limit notice, or None if there is
+        none. Platforms that have not declared `action_limited` in their
+        selector table always return None, which is the old behaviour.
+
+        Worth the extra lookup because the alternative is our own guess.
+        "The Follow button did not change after being pressed — the account
+        has most likely hit its follow limit" describes what we observed
+        and then speculates; Instagram's own notice states it. When the two
+        disagree, the page is right.
+        """
+        # `action_limited` first where a platform declares it — those are
+        # the wordings specific to an action being cut off. Then the
+        # `rate_limited` table, which every platform already has and which
+        # is what detected the limit in the first place. Falling back to it
+        # is why TikTok and X need no new selector list to get this.
+        candidates = tuple(self.SELECTORS.get("action_limited", ())) + tuple(
+            self.SELECTORS.get("rate_limited", ()))
+        for selector in candidates:
+            try:
+                locator = page.locator(selector).first
+                if not await locator.is_visible(timeout=250):
+                    continue
+                # The matched node is often the phrase itself; the useful
+                # sentence is its container.
+                for target in (locator.locator("xpath=ancestor-or-self::*[3]"),
+                               locator):
+                    try:
+                        said = ((await target.inner_text(timeout=500)) or "").strip()
+                    except Exception:  # noqa: BLE001 — try the tighter one
+                        continue
+                    said = " ".join(said.split())
+                    if said:
+                        return said[:300]
+            except Exception:  # noqa: BLE001 — a miss is expected
+                continue
+        return None
+
     async def _type_message(self, page, editor, message: str) -> None:
         """Type the message, keeping its line breaks inside one message.
 
@@ -879,6 +972,37 @@ class PlaywrightMessenger:
         comes first in the DOM, which is a stranger, and clicking it
         follows a stranger.
         """
+        return None, None
+
+    async def _follow_state_from_selectors(self, page):
+        """Read the follow state from the selector table.
+
+        The fallback for every platform that does not override
+        `_profile_follow_control` — which is every platform except X, whose
+        profiles carry several identical follow buttons and so must answer
+        for themselves.
+
+        `_follow_first` has always done this. `follow_target` did not, and
+        because the base hook returns `(None, None)`, a follow campaign on
+        Instagram could only ever end in `messaging_unavailable`: the
+        control was found by nobody, and a profile that was *already*
+        followed reported the same thing as one that did not exist.
+
+        Order matters. "Following" and "Requested" are checked first
+        because their controls are the ones that *undo* a follow, and
+        `:text-is` is what keeps "Follow" from matching them — never
+        loosen it to a substring match.
+        """
+        if await self._present(page, self.SELECTORS.get("already_following", ())):
+            return "following", None
+        if await self._present(page, self.SELECTORS.get("follow_requested", ())):
+            return "pending", None
+        button = await self._first_visible_tiered(
+            page, self.SELECTORS.get("follow_button", ()),
+            timeout_ms=LATER_TIER_MS,
+        )
+        if button is not None:
+            return "can_follow", button
         return None, None
 
     async def _follow_first(self, page, target_username: str) -> bool:
@@ -1590,8 +1714,11 @@ class PlaywrightMessenger:
                     screenshot=await self._save_debug_shot(page, target_username, "login-wall"),
                 )
             if await self._present(page, self.SELECTORS["rate_limited"]):
+                said = await self._limit_notice(page)
                 return MessageResult.failure(
-                    RESULT_RATE_LIMITED, "Platform is rate limiting this account", url=url,
+                    RESULT_RATE_LIMITED,
+                    said or "Platform is rate limiting this account", url=url,
+                    platform_said=said,
                     screenshot=await self._save_debug_shot(page, target_username, "rate-limited"),
                 )
             # Before anything is concluded about the target: is there a
@@ -1874,8 +2001,10 @@ class PlaywrightMessenger:
             # negative here costs a duplicate DM on retry.
             await page.wait_for_timeout(1500)
             if await self._present(page, self.SELECTORS["rate_limited"]):
+                said = await self._limit_notice(page)
                 return MessageResult.failure(
-                    RESULT_RATE_LIMITED, "Rate limited while sending", url=page.url
+                    RESULT_RATE_LIMITED, said or "Rate limited while sending",
+                    url=page.url, platform_said=said,
                 )
 
             composer_cleared = await self._composer_cleared(editor, message)
@@ -1905,13 +2034,23 @@ class PlaywrightMessenger:
             # has already said it did not send this, so there is nothing
             # for a persistence check to add.
             if await self._present(page, self.SELECTORS["message_refused"]):
+                # The platform's own sentence, for the campaign page. Best
+                # effort: the refusal is already established without it.
+                said = None
+                try:
+                    notice = page.get_by_text(
+                        re.compile(r"has not been sent|Community Guidelines", re.I)
+                    ).first
+                    said = " ".join((await notice.inner_text(timeout=1500)).split())[:300]
+                except Exception:  # noqa: BLE001
+                    said = None
                 return MessageResult.failure(
                     RESULT_MESSAGE_REFUSED,
                     "TikTok put the message in the thread and then refused to "
                     "deliver it: it says the message has not been sent. Nothing "
-                    "reached the target. The wording and the account standing "
-                    "are what to change, not the target",
-                    url=page.url,
+                    "reached the target. The wording is what to change, not "
+                    "the target",
+                    url=page.url, platform_said=said,
                     screenshot=await self._save_debug_shot(
                         page, target_username, "message-refused"
                     ),
@@ -2023,6 +2162,12 @@ class PlaywrightMessenger:
                 await page.wait_for_timeout(FOLLOW_POLL_MS)
 
             if state is None:
+                # The platform hook had no answer. Read the table before
+                # concluding there is no control — on every platform but X
+                # the hook never answers, so this is the normal path.
+                state, control = await self._follow_state_from_selectors(page)
+
+            if state is None:
                 if await self._present(page, self.SELECTORS["profile_missing"]):
                     return MessageResult.failure(
                         RESULT_PROFILE_UNAVAILABLE,
@@ -2040,8 +2185,13 @@ class PlaywrightMessenger:
             if state in ("following", "pending"):
                 # Already done, and the control here is the one that undoes
                 # it. Reporting success is right: the campaign wanted this
-                # account followed and it is.
-                return MessageResult.sent(url=url, already=state)
+                # account followed and it is. Reporting *sent* was not —
+                # nothing was pressed, and a run full of these looks
+                # identical to a run that followed a hundred people.
+                return MessageResult.done(
+                    RESULT_ALREADY_FOLLOWING if state == "following"
+                    else RESULT_FOLLOW_REQUESTED,
+                    url=url, already=state)
 
             if not await self._press_follow(page, control):
                 return MessageResult.failure(
@@ -2055,18 +2205,255 @@ class PlaywrightMessenger:
             for _ in range(FOLLOW_CONFIRM_POLLS):
                 await page.wait_for_timeout(FOLLOW_POLL_MS)
                 after, _ctl = await self._profile_follow_control(page)
+                if after is None:
+                    # Same fallback as above. Without it the confirmation
+                    # never sees the button turn into "Following", and a
+                    # follow that worked is reported as a follow limit.
+                    after, _ctl = await self._follow_state_from_selectors(page)
                 if after in ("following", "pending"):
                     break
-            if after in ("following", "pending"):
+            if after == "pending":
+                # Private: the request is in, and an acceptance is somebody
+                # else's decision. Not a follow yet.
+                return MessageResult.done(RESULT_FOLLOW_REQUESTED, url=url)
+            if after == "following":
+                # The button says so. On some platforms the button is not
+                # evidence — see FOLLOW_VERIFY_RELOAD.
+                if self.FOLLOW_VERIFY_RELOAD:
+                    survived = await self._follow_survived_reload(page, url)
+                    if survived is False:
+                        return MessageResult.failure(
+                            RESULT_FOLLOW_DISCARDED,
+                            f"@{username} was followed and the platform "
+                            f"reported success, but the profile still shows "
+                            f"Follow after a reload — the follow was accepted "
+                            f"and discarded. Nothing was actually followed.",
+                            url=url)
+                # The only outcome that actually moved the following count.
                 return MessageResult.sent(url=url)
+            said = await self._limit_notice(page)
+            if not said:
+                # A limit stands a campaign down for hours, so it is not
+                # declared on a button that may simply not have updated
+                # yet. Measured 2026-09-24: @byisci was reported as a limit
+                # and was followed. Load the profile again and believe that.
+                again = await self._follow_state_after_reload(page, url)
+                if again == "following":
+                    return MessageResult.sent(url=url, confirmed_by="reload")
+                if again == "pending":
+                    return MessageResult.done(RESULT_FOLLOW_REQUESTED, url=url)
+                said = await self._limit_notice(page)
             return MessageResult.failure(
                 RESULT_FOLLOW_LIMITED,
-                f"The Follow button on @{username} did not change after being "
-                f"pressed — the account has most likely hit its follow limit",
-                url=url)
+                # The platform's own words when it gave them, and only our
+                # inference when it did not.
+                said or (
+                    f"The Follow button on @{username} did not change after "
+                    f"being pressed — the account has most likely hit its "
+                    f"follow limit"
+                ),
+                url=url, platform_said=said)
         except Exception as exc:  # noqa: BLE001 — a driver fault is a job failure
             return MessageResult.failure(
                 RESULT_BROWSER_ERROR, f"{type(exc).__name__}: {exc}", url=url)
+
+    #: The "Unfollow" choice that pressing Following opens. Measured
+    #: 2026-09-24: Instagram opens a menu (Add to close friends list, Add to
+    #: favorites, Mute, Restrict, Unfollow); TikTok's Following/Friends
+    #: button declares `aria-haspopup="dialog"`. Exact text, so "Unfollow"
+    #: can never be confused with anything else in the menu.
+    UNFOLLOW_CONFIRM: tuple[str, ...] = (
+        "[role='dialog'] button:text-is('Unfollow')",
+        "[role='dialog'] [role='button']:text-is('Unfollow')",
+        "[role='dialog'] :text-is('Unfollow')",
+        "button:text-is('Unfollow')",
+        "[role='button']:text-is('Unfollow')",
+        "[role='menuitem']:text-is('Unfollow')",
+    )
+    #: Platforms whose unfollow has been walked through on the live site.
+    SUPPORTS_UNFOLLOW = False
+
+    async def _read_follow_state(self, page):
+        state, control = await self._profile_follow_control(page)
+        if state is None:
+            state, control = await self._follow_state_from_selectors(page)
+        return state, control
+
+    async def unfollow_target(self, account: dict[str, Any],
+                              target: dict[str, Any]) -> MessageResult:
+        """Unfollow one profile. Never follows anyone.
+
+        The profile's own control is pressed only when it says Following,
+        Friends or Requested. "Follow" means there is nothing to undo, and
+        pressing it would *follow* — so it is reported and left alone.
+
+        Pressing Following opens a menu; "Unfollow" in it is the action.
+        Then the profile is loaded again, and only a reload that reads
+        Follow counts: TikTok web has already shown that its buttons can
+        say one thing while the server keeps another.
+        """
+        url = target.get("profile_url") or self.profile_url(target["username"])
+        username = target["username"]
+        if not self.SUPPORTS_UNFOLLOW:
+            return MessageResult.failure(
+                RESULT_UNEXPECTED_PAGE,
+                f"Unfollowing is not built for {self.PLATFORM} yet", url=url)
+        try:
+            from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+            page = await self._page_for(account)
+            try:
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=self._timeout)
+            except PlaywrightTimeout:
+                return MessageResult.failure(
+                    RESULT_NAVIGATION_TIMEOUT, f"Timed out loading {url}", url=url)
+            await self._dismiss_overlays(page)
+
+            state = control = None
+            for _ in range(FOLLOW_CONTROL_POLLS):
+                state, control = await self._read_follow_state(page)
+                if state:
+                    break
+                # A deleted profile or the login wall will never grow a
+                # button. Each empty read above waits out the selector
+                # table, so without this a gone account cost 3½ minutes of
+                # an unfollow run (@mirella.777.ofc, 2026-09-28).
+                if (await self._present(page, self.SELECTORS["profile_missing"])
+                        or await self._present(page, self.SELECTORS["login_wall"])):
+                    break
+                await page.wait_for_timeout(FOLLOW_POLL_MS)
+            if state is None:
+                if await self._present(page, self.SELECTORS["profile_missing"]):
+                    return MessageResult.failure(
+                        RESULT_PROFILE_UNAVAILABLE,
+                        "Profile not found or private", url=url)
+                if await self._present(page, self.SELECTORS["login_wall"]):
+                    return MessageResult.failure(
+                        RESULT_SESSION_EXPIRED,
+                        "Session expired — the site is showing its login wall",
+                        url=url)
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    f"No follow control on @{username}'s profile", url=url,
+                    screenshot=await self._save_debug_shot(
+                        page, username, "unfollow-no-control"))
+            if state == "can_follow":
+                return MessageResult.done(RESULT_NOT_FOLLOWING, url=url)
+
+            # Followed (or requested). Open its menu.
+            try:
+                await control.click(timeout=CLICK_MS, no_wait_after=True)
+            except Exception:  # noqa: BLE001 — a real mouse press instead
+                state, fresh = await self._read_follow_state(page)
+                if state not in ("following", "pending") or fresh is None:
+                    return MessageResult.failure(
+                        RESULT_UNEXPECTED_PAGE,
+                        "The Following control could not be pressed", url=url)
+                box = await fresh.bounding_box(timeout=CLICK_MS)
+                if not box:
+                    return MessageResult.failure(
+                        RESULT_UNEXPECTED_PAGE,
+                        "The Following control could not be pressed", url=url)
+                await page.mouse.click(box["x"] + box["width"] / 2,
+                                       box["y"] + box["height"] / 2)
+
+            confirm = await self._first_visible(
+                page, self.UNFOLLOW_CONFIRM, timeout_ms=UNFOLLOW_MENU_MS)
+            if confirm is not None:
+                await confirm.click(timeout=CLICK_MS, no_wait_after=True)
+            elif await self._present(page, self.SELECTORS["verification_challenge"]):
+                return MessageResult.failure(
+                    RESULT_CHALLENGE_REQUIRED,
+                    "A verification puzzle is covering the profile", url=url)
+
+            after = None
+            for _ in range(FOLLOW_CONFIRM_POLLS):
+                await page.wait_for_timeout(FOLLOW_POLL_MS)
+                after, _ctl = await self._read_follow_state(page)
+                if after == "can_follow":
+                    break
+
+            if after != "can_follow" and confirm is None:
+                # Nothing to choose and nothing changed: the menu this
+                # platform opens has moved. Say so rather than guess.
+                return MessageResult.failure(
+                    RESULT_UNEXPECTED_PAGE,
+                    f"Pressing Following on @{username} opened no Unfollow "
+                    f"option", url=url,
+                    screenshot=await self._save_debug_shot(
+                        page, username, "unfollow-no-option"))
+
+            # Only a fresh load of the profile is evidence.
+            again = await self._follow_state_after_reload(page, url)
+            if again == "can_follow":
+                return MessageResult.sent(url=url, action="unfollow")
+            if again in ("following", "pending"):
+                said = await self._limit_notice(page)
+                if after == "can_follow":
+                    return MessageResult.failure(
+                        RESULT_FOLLOW_DISCARDED,
+                        f"@{username} showed Follow after unfollowing, but "
+                        f"Following again after a reload — the unfollow was "
+                        f"not kept", url=url)
+                return MessageResult.failure(
+                    RESULT_FOLLOW_LIMITED,
+                    said or (f"@{username} is still followed after "
+                             f"unfollowing — the account has most likely hit "
+                             f"its limit"),
+                    url=url, platform_said=said)
+            # The reload could not be read. The page itself said Follow, so
+            # believe it rather than blame a limit on a network hiccup.
+            if after == "can_follow":
+                return MessageResult.sent(url=url, action="unfollow",
+                                          unconfirmed=True)
+            return MessageResult.failure(
+                RESULT_UNEXPECTED_PAGE,
+                f"Could not tell whether @{username} was unfollowed", url=url)
+        except Exception as exc:  # noqa: BLE001 — a driver fault is a job failure
+            return MessageResult.failure(
+                RESULT_BROWSER_ERROR, f"{type(exc).__name__}: {exc}", url=url)
+
+    async def _follow_state_after_reload(self, page, url: str) -> Optional[str]:
+        """The profile's follow state after loading it again, or None."""
+        try:
+            await page.goto(url, wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await self._dismiss_overlays(page)
+            for _ in range(FOLLOW_CONTROL_POLLS):
+                state, _ctl = await self._profile_follow_control(page)
+                if state is None:
+                    state, _ctl = await self._follow_state_from_selectors(page)
+                if state:
+                    return state
+                await page.wait_for_timeout(FOLLOW_POLL_MS)
+        except Exception:  # noqa: BLE001 — unsure is not a verdict
+            return None
+        return None
+
+    async def _follow_survived_reload(self, page, url: str):
+        """Load the profile again and see whether the follow is still there.
+
+        True it stuck, False the platform discarded it, None we could not
+        tell. `None` is not `False` on purpose: a reload that times out is
+        our problem, and calling somebody's good follow a phantom because
+        the network hiccuped would be the same mistake this check exists to
+        stop, pointed the other way.
+        """
+        try:
+            await page.goto(url, wait_until="domcontentloaded",
+                            timeout=self._timeout)
+            await self._dismiss_overlays(page)
+            for _ in range(FOLLOW_CONTROL_POLLS):
+                state, _ctl = await self._profile_follow_control(page)
+                if state is None:
+                    state, _ctl = await self._follow_state_from_selectors(page)
+                if state:
+                    return state in ("following", "pending")
+                await page.wait_for_timeout(FOLLOW_POLL_MS)
+        except Exception:  # noqa: BLE001 — see the docstring: unsure, not guilty
+            return None
+        return None
 
     async def open_comment_panel(self, page, url: str) -> bool:
         """Get a video's comments on screen. True if they are.
@@ -2082,6 +2469,23 @@ class PlaywrightMessenger:
         for _ in range(2):
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(400)
+
+        # The panel opens on "You may like", not "Comments", and until that
+        # tab is chosen the comment control does not exist at all. Measured
+        # on a live video: `comment-icon` count 0 on load, 2 after the tab
+        # was clicked, and 15 comments with it.
+        #
+        # Without this the lookup below found nothing, reloaded, found
+        # nothing again and reported the video as having no comments — on a
+        # video whose comments were one click away.
+        if await self._select_comments_tab(page):
+            await page.wait_for_timeout(COMMENT_SETTLE_MS)
+
+        # Already on screen? Then there is nothing to open, and pressing the
+        # toggle would *close* it: measured on the same video, clicking
+        # `comment-icon` with the panel open took the count from 15 to 0.
+        if await self._comments_on_screen(page):
+            return True
 
         toggle = await self._first_visible(
             page, self.SELECTORS.get("comment_toggle", ()),
@@ -2108,7 +2512,44 @@ class PlaywrightMessenger:
         except Exception:  # noqa: BLE001 — the panel may already be open
             pass
         await page.wait_for_timeout(COMMENT_SETTLE_MS)
+        # The toggle is a toggle. If the click closed a panel that was
+        # already open, put it back rather than reporting success over an
+        # empty one.
+        if not await self._comments_on_screen(page):
+            try:
+                await toggle.click(timeout=CLICK_MS)
+                await page.wait_for_timeout(COMMENT_SETTLE_MS)
+            except Exception:  # noqa: BLE001 — answered by the caller
+                pass
         return True
+
+    async def _comments_on_screen(self, page) -> bool:
+        """Is at least one comment rendered right now?"""
+        for key in ("comment_thread", "comment_author", "comment_row"):
+            for selector in self.SELECTORS.get(key, ()):
+                try:
+                    if await page.locator(selector).count():
+                        return True
+                except Exception:  # noqa: BLE001 — try the next
+                    continue
+        return False
+
+    async def _select_comments_tab(self, page) -> bool:
+        """Choose the Comments tab where the platform has one.
+
+        Matched by role and text because the class is a rotating hash. A
+        platform without such a tab simply never finds it, which is the
+        old behaviour.
+        """
+        if not getattr(self, "COMMENTS_BEHIND_TAB", False):
+            return False
+        try:
+            tab = page.get_by_role("button", name="Comments").first
+            await tab.wait_for(state="visible", timeout=COMMENT_TAB_MS)
+            await tab.click(timeout=CLICK_MS)
+            return True
+        except Exception:  # noqa: BLE001 — no tab here, or already chosen
+            return False
 
     async def _comment_row(self, handle):
         """The row that holds one whole comment.
@@ -2374,8 +2815,14 @@ class PlaywrightMessenger:
             author, thread, seen = await self._walk_for_unanswered(page, avoid)
             if author is None:
                 if seen < 0:
+                    # Deliberately not `rate_limited`. Nothing refused us:
+                    # the scroll budget ran out. It shared a status with a
+                    # real limit while that status only meant "retry later",
+                    # but a limit now stands the whole campaign down for
+                    # hours — and a comment thread being long is not a
+                    # reason to stop the campaign.
                     return MessageResult.failure(
-                        RESULT_RATE_LIMITED,
+                        RESULT_NAVIGATION_TIMEOUT,
                         f"Ran out of time walking the comments — "
                         f"{len(avoid) - 1} already answered here, and the "
                         f"unanswered ones are further down than "
@@ -2600,6 +3047,7 @@ class PlaywrightMessenger:
         exclude: Optional[set[str]] = None,
         include_commenters: bool = True,
         include_likers: bool = False,
+        include_replies: bool = True,
     ) -> list[dict[str, Any]]:
         """Everyone who engaged with these specific posts.
 
@@ -2618,6 +3066,12 @@ class PlaywrightMessenger:
 
         Reads only — nothing is followed, liked or commented on.
         """
+        # Set on the instance rather than threaded through, because
+        # `_expand_replies` is reached from `_load_more`, which is called
+        # from three places that have no business knowing about replies.
+        # Safe here: discovery builds a driver per search, so this is not
+        # shared with another run.
+        self._read_replies = bool(include_replies)
         found: dict[str, dict[str, Any]] = {}
         skip = {u.lower() for u in (exclude or set())}
         context = await self._context_for(account)
@@ -3457,6 +3911,8 @@ class PlaywrightMessenger:
         big post is mostly replies, and they are behind a control, not
         behind a scroll.
         """
+        if not getattr(self, "_read_replies", True):
+            return 0
         selectors = self.SELECTORS.get("expand_replies") or ()
         if not selectors:
             return 0

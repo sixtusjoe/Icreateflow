@@ -36,6 +36,7 @@ from services.outreach.browser.playwright_x import (  # noqa: E402
     PlaywrightXMessenger,
 )
 from services.outreach.constants import (  # noqa: E402
+    RESULT_ALREADY_FOLLOWING,
     ACCOUNT_FAULT_RESULTS,
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
@@ -926,7 +927,11 @@ async def test_follow_target_does_not_touch_an_account_already_followed(driver, 
     """
     result = await driver.follow_target(account(), target(site, "/following"))
     assert result.success is True
-    assert "already" in (result.error or "").lower() or result.status == RESULT_SENT
+    # A success, but deliberately not `sent`: nothing was pressed and the
+    # account's following count does not move. Reporting these as sends is
+    # what made a run of 72 look like 72 follows when it was 36.
+    assert result.status == RESULT_ALREADY_FOLLOWING
+    assert result.status != RESULT_SENT
     assert RECEIVED == [], f"the Following control was clicked: {RECEIVED!r}"
 
 

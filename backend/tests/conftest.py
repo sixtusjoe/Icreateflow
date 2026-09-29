@@ -37,6 +37,7 @@ import database as db  # noqa: E402
 
 #: Wiped between tests, children first.
 OUTREACH_TABLES = (
+    "outreach_companion_tasks",
     "outreach_jobs",
     "outreach_campaign_accounts",
     "outreach_targets",

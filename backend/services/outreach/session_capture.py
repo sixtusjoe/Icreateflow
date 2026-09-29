@@ -227,7 +227,7 @@ def unavailable_reason() -> Optional[str]:
     if not crypto_available():
         return (
             "No encryption key, so a captured session could not be stored. "
-            "Set ICREATE_OUTREACH_SECRET (or ICREATE_JWT_SECRET)."
+            "The backend's session secret has to be set first."
         )
     return None
 

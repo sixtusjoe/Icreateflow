@@ -29,26 +29,72 @@ import traceback
 import uuid
 from typing import Any, Optional
 
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import text
+
 import database as db
 from services.outreach import accounts as account_mgr
 from services.outreach import comment_ai
 from services.outreach import comments
+from services.outreach import companion
 from services.outreach import config as cfg, session_capture
 from services.outreach import queue as job_queue
 from services.outreach import templates as template_svc
 from services.outreach.browser import DriverUnavailable, MessageResult, get_driver
 from services.outreach.constants import (
+    RESULT_FOLLOW_DISCARDED,
     ACTIVITY_COMMENT,
     ACTIVITY_FOLLOW,
     ACTIVITY_MESSAGE,
+    ACTIVITY_UNFOLLOW,
+    AUDIT_CAMPAIGN_LIMITED,
+    AUDIT_CAMPAIGN_PAUSED,
+    AUDIT_CAMPAIGN_LIMIT_CLEARED,
+    AUDIT_CAMPAIGN_MESSAGE_REFUSED,
+    CAMPAIGN_PAUSED,
+    CAMPAIGN_RUNNING,
+    CAMPAIGN_ATTENTION_RESULTS,
+    CAMPAIGN_STOP_RESULTS,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
+    PHONE_RETRY_RESULTS,
+    LIMIT_RESULTS,
     RESULT_ABORTED,
     RESULT_BROWSER_ERROR,
     RESULT_DB_ERROR,
+    RESULT_NOT_OUR_FOLLOW,
     RESULT_FOLLOW_PENDING,
     RESULT_TEMPLATE_ERROR,
     RESULT_UNKNOWN,
 )
+
+#: An unfollow followed by another of the campaign's accounts waits this
+#: long for that account, then is offered again.
+UNFOLLOW_HANDOFF_SECONDS = 30
+
+#: A phone hiccup brings the target back after this long.
+PHONE_RETRY_SECONDS = 60
+#: This many phone hiccups in a row, with no success between…
+PHONE_STREAK = 3
+#: …and the campaign rests this long, then carries on by itself.
+PHONE_BREAK_SECONDS = 600
+
+#: The most one follow or unfollow may take in the browser. A normal one is
+#: under 30s and the slowest honest path about two minutes; past this the
+#: browser has frozen (@_giuliosss, 2026-09-28: fourteen minutes, holding
+#: the account — and so both Instagram campaigns — until a restart). Only
+#: these two are cut off: repeating either is harmless, it just finds
+#: "already following" or "not followed". A message or comment cut off
+#: halfway might have gone, so those are never timed out.
+BROWSER_ACTION_SECONDS = int(os.environ.get("ICREATE_OUTREACH_BROWSER_ACTION_SECONDS", "300"))
+
+#: This many dropped follows in a row from one account, with no success
+#: between, is TikTok's follow limit and stands the campaign down. Fewer is
+#: that person: TikTok drops follows to some profiles every time while the
+#: next one sticks (2026-09-28: 8 drops among ~150 kept follows, the same
+#: profiles dropping twice) — and each lone drop used to pause the whole
+#: campaign for six hours.
+DISCARD_STREAK = 3
 
 #: After these, the account's browser is thrown away and rebuilt on the
 #: next job. Everything else keeps it.
@@ -69,6 +115,13 @@ PLATFORM_DRIVERS: dict[str, str] = {
     "tiktok": "playwright_tiktok",
     "instagram": "playwright_instagram",
     "x": "playwright_x",
+}
+
+#: Follows that go through the platform's app on a phone instead of its
+#: website. TikTok web accepts a follow from these accounts and discards
+#: it; the app keeps it. Only used for an account that has a phone.
+PHONE_FOLLOW_DRIVERS: dict[str, str] = {
+    "tiktok": "android_tiktok",
 }
 
 
@@ -161,16 +214,24 @@ class OutreachWorker:
         configured = (settings.get(cfg.DRIVER_KEY) or "").strip()
         return configured if configured == "mock" else None
 
-    def _driver_name_for(self, settings: dict[str, Any], platform: Optional[str]) -> str:
+    def _driver_name_for(self, settings: dict[str, Any], platform: Optional[str],
+                         via_phone: bool = False) -> str:
         """Which driver sends for this account.
 
         The account's platform decides, unless something pinned it. One
         worker serves campaigns on every platform, and a TikTok selector
         table has nothing useful to say about an Instagram profile.
+
+        `via_phone` is a follow by an account with a phone assigned. A pin
+        still wins — mock above all must never reach a real phone.
         """
         pinned = self._pinned_driver(settings)
         if pinned:
             return pinned
+        if via_phone:
+            phone = PHONE_FOLLOW_DRIVERS.get((platform or "").strip().lower())
+            if phone:
+                return phone
         name = PLATFORM_DRIVERS.get((platform or "").strip().lower())
         if not name:
             raise DriverUnavailable(
@@ -179,7 +240,8 @@ class OutreachWorker:
             )
         return name
 
-    async def _get_driver(self, settings: dict[str, Any], platform: Optional[str] = None):
+    async def _get_driver(self, settings: dict[str, Any], platform: Optional[str] = None,
+                          via_phone: bool = False):
         # A driver handed in directly (tests, rehearsals) is used as-is.
         if self._driver is not None:
             if not self._driver_started:
@@ -187,7 +249,7 @@ class OutreachWorker:
                 self._driver_started = True
             return self._driver
 
-        name = self._driver_name_for(settings, platform)
+        name = self._driver_name_for(settings, platform, via_phone)
         driver = self._drivers.get(name)
         if driver is not None:
             return driver
@@ -219,6 +281,29 @@ class OutreachWorker:
             except Exception:  # noqa: BLE001 — shutdown must not raise
                 traceback.print_exc()
             self._drivers.pop(name, None)
+
+    async def apply_headless(self, headless: bool) -> None:
+        """Switch between windowed and headless between jobs.
+
+        A driver holds a browser that was launched one way or the other, so
+        changing the setting cannot affect one that is already running. The
+        cached drivers are dropped instead and the next job builds a fresh
+        one — which is why this is called between jobs and never during.
+
+        A no-op when nothing changed, because that is the common case and
+        tearing a browser down every tick would be worse than the window.
+        """
+        if headless == self._headless:
+            return
+        self._headless = headless
+        for name, driver in list(self._drivers.items()):
+            try:
+                await driver.shutdown()
+            except Exception:  # noqa: BLE001 — a teardown must not stop the worker
+                traceback.print_exc()
+            self._drivers.pop(name, None)
+        print(f"[outreach] browsers switched to "
+              f"{'headless' if headless else 'visible'}", flush=True)
 
     def stop(self) -> None:
         self._stopping.set()
@@ -316,14 +401,38 @@ class OutreachWorker:
 
         activity = campaign.get("activity") or ACTIVITY_MESSAGE
         following = activity == ACTIVITY_FOLLOW
+        unfollowing = activity == ACTIVITY_UNFOLLOW
         commenting = activity == ACTIVITY_COMMENT
+
+        # --- unfollow undoes only our own follows -------------------------
+        # An unfollow campaign unfollows people an account followed through
+        # a follow campaign ("Followed"), never a friend or a follow made by
+        # hand. If another of this campaign's accounts did the follow, the
+        # job waits a moment for that account to pick it up — nobody is
+        # charged — and if none did, the person is skipped untouched.
+        if unfollowing:
+            eligible = await account_mgr.eligible_account_ids(database, campaign)
+            ours = await job_queue.followed_by(
+                database, target["username"], sorted({*eligible, int(account["id"])}))
+            if int(account["id"]) not in ours:
+                if ours:
+                    await job_queue.hold_job(
+                        database, job, RESULT_NOT_OUR_FOLLOW,
+                        f"@{target['username']} was followed by another account on this "
+                        f"campaign — waiting for that account", UNFOLLOW_HANDOFF_SECONDS)
+                else:
+                    await job_queue.fail_job(
+                        database, job, campaign, RESULT_NOT_OUR_FOLLOW,
+                        f"@{target['username']} wasn't followed through an ICREATEFLOW follow "
+                        f"campaign — left alone, nothing pressed", settings)
+                return
 
         # --- render (never send a half-substituted message) --------------
         # A follow campaign has no message, so a blank or broken template is
         # not a reason to fail the job.
         message = ""
         try:
-            if not following and not commenting:
+            if not following and not unfollowing and not commenting:
                 message = template_svc.render(
                     campaign.get("message_template") or "",
                     template_svc.build_variables(target, campaign, account),
@@ -336,7 +445,31 @@ class OutreachWorker:
             return
 
         # --- send --------------------------------------------------------
-        driver = await self._get_driver(settings, account.get("platform"))
+        # A follow or a message by a phone account is handed to that phone;
+        # there is no driver on this machine to call. Anything that pins the
+        # driver — the mock setting, a driver handed in for a test or a
+        # rehearsal — still wins, so a rehearsal never reaches a phone.
+        messaging = not (following or unfollowing or commenting)
+        if ((following or unfollowing or messaging) and companion.uses_phone_app(account)
+                and self._driver is None and not self._pinned_driver(settings)):
+            try:
+                result = await companion.relay(
+                    database, account, job, target,
+                    companion.ACTION_MESSAGE if messaging
+                    else companion.ACTION_UNFOLLOW if unfollowing else companion.ACTION_FOLLOW,
+                    message=message if messaging else None)
+            except Exception as exc:  # noqa: BLE001 — a relay bug is a job failure
+                traceback.print_exc()
+                result = MessageResult.failure(
+                    RESULT_UNKNOWN, f"{type(exc).__name__}: {exc}"[:500])
+            await self._record_result(database, campaign, account, job, target, result, settings)
+            return
+
+        driver = await self._get_driver(
+            settings, account.get("platform"),
+            via_phone=(following or unfollowing)
+            and bool((account.get("device_serial") or "").strip()),
+        )
         payload = {
             "id": int(account["id"]),
             "name": account.get("name"),
@@ -347,6 +480,9 @@ class OutreachWorker:
             # carries a password, and this one is bought per account so
             # that four accounts do not all send from one address.
             "proxy_url": decrypt_session(account.get("proxy_url_encrypted")),
+            # Only the phone driver reads these.
+            "device_serial": account.get("device_serial"),
+            "device_handle": account.get("device_handle"),
         }
         # Bound before the try: the `finally` reads it, and a cancellation
         # can reach that block without the assignment having run.
@@ -402,11 +538,21 @@ class OutreachWorker:
                     # slot answer them again.
                     await db.update_outreach_target(
                         database, int(target["id"]), replied_to=str(answered))
-            elif following:
-                result = await driver.follow_target(payload, {
-                    "username": target["username"],
-                    "profile_url": target["profile_url"],
-                })
+            elif following or unfollowing:
+                act = driver.follow_target if following else driver.unfollow_target
+                try:
+                    result = await asyncio.wait_for(act(payload, {
+                        "username": target["username"],
+                        "profile_url": target["profile_url"],
+                    }), BROWSER_ACTION_SECONDS)
+                except asyncio.TimeoutError:
+                    # RESULT_BROWSER_ERROR resets the account's browser tab
+                    # below, so the next person gets a fresh one.
+                    result = MessageResult.failure(
+                        RESULT_BROWSER_ERROR,
+                        f"The browser stopped responding on @{target['username']} "
+                        f"for {BROWSER_ACTION_SECONDS // 60} minutes — its tab is "
+                        f"replaced and they'll be tried again")
             else:
                 result = await driver.send_message(
                     payload,
@@ -480,6 +626,85 @@ class OutreachWorker:
             await account_mgr.record_success(database, account_id)
             return
 
+        if result.status == RESULT_FOLLOW_DISCARDED and not await self._drop_streak(
+                database, account_id, job):
+            # One person's follow dropped: that person is tried again later
+            # (an attempt spent, so a profile TikTok always drops is
+            # eventually left behind) and the campaign carries on.
+            await job_queue.fail_job(
+                database, job, campaign, result.status, result.error, settings)
+            return
+
+        if result.status in LIMIT_RESULTS:
+            # A limit is a clock, not a fault. The job goes back on the
+            # queue untouched — the target is fine and deserves its turn —
+            # and the campaign stands down until the cooldown expires.
+            # Nothing is recorded against the account: it did nothing wrong,
+            # and pausing it would stop every other campaign it serves.
+            cooldown = cfg.limit_cooldown_seconds(
+                campaign.get("activity"), settings)
+            # `hold_job` rather than `fail_job`: the driver did what it was
+            # asked and the platform said "not now". It also gives back the
+            # attempt, so waiting out a limit cannot exhaust a target's
+            # retry budget. It comes back when the campaign does.
+            await job_queue.hold_job(
+                database, job, result.status, result.error, cooldown)
+            await self._pause_campaign_for_limit(
+                database, campaign, result, settings, cooldown)
+            return
+
+        if result.status in PHONE_RETRY_RESULTS:
+            # The phone couldn't do it this time. The target is fine and
+            # keeps its attempt; it comes back in a minute. The streak (kept
+            # on the account, cleared by any success) decides whether this
+            # is a hiccup or a phone that needs a moment — and then the
+            # campaign rests briefly and carries on by itself.
+            health = await account_mgr.record_failure(
+                database, account_id, result.status, result.error, settings,
+                user_id=campaign.get("user_id"),
+            )
+            await job_queue.hold_job(
+                database, job, result.status, result.error, PHONE_RETRY_SECONDS)
+            if health.get("consecutive_errors", 0) >= PHONE_STREAK:
+                await self._pause_campaign_for_limit(
+                    database, campaign, result, settings, PHONE_BREAK_SECONDS)
+            return
+
+        if result.status in CAMPAIGN_ATTENTION_RESULTS:
+            # Needs a person. The campaign waits with the reason on it; the
+            # account is not paused and keeps serving other campaigns.
+            await account_mgr.record_failure(
+                database, account_id, result.status, result.error, settings,
+                user_id=campaign.get("user_id"),
+            )
+            await job_queue.hold_job(database, job, result.status, result.error, 0)
+            await self._pause_campaign_for_attention(database, campaign, account, result)
+            return
+
+        if result.status in CAMPAIGN_STOP_RESULTS:
+            # The words were refused, not the account. This target is done
+            # with — the same text to the same person is refused again — and
+            # the campaign stops until someone changes what it says. The
+            # account is not charged: it goes on serving other campaigns.
+            decision = await job_queue.fail_job(
+                database, job, campaign, result.status, result.error, settings
+            )
+            await db.log_error(
+                database,
+                "outreach.send",
+                f"{result.status}: {result.error or ''}"[:2000],
+                user_id=campaign.get("user_id"),
+                context=(
+                    f"campaign_id={campaign['id']} job_id={job['id']} "
+                    f"target={target.get('username')} account_id={account_id} "
+                    f"outcome={decision['outcome']}"
+                ),
+                level="warning",
+            )
+            await self._pause_campaign_for_refusal(
+                database, campaign, target, result)
+            return
+
         decision = await job_queue.fail_job(
             database, job, campaign, result.status, result.error, settings
         )
@@ -538,6 +763,169 @@ class OutreachWorker:
             if not did_work:
                 await self._sleep(settings["outreach_worker_idle_seconds"])
 
+    async def _pause_campaign_for_limit(
+        self, database, campaign: dict, result: Any,
+        settings: dict[str, Any], seconds: int,
+    ) -> None:
+        """Stand the campaign down until the platform's limit clears.
+
+        Sets a deadline rather than waiting on a person. A follow limit
+        clears by itself in hours; the old behaviour paused the *account*
+        and needed somebody to notice and un-pause it, so a limit that
+        expired overnight still cost the next day.
+
+        Already paused is left alone: the first deadline is the honest one.
+
+        The check is a condition on the UPDATE, not an `if` on the campaign
+        dict, because that dict was read when the job was claimed and says
+        `running` for every slot that was already in flight. Two slots
+        hitting the limit in the same breath would each write a pause, and
+        the later one would push the deadline out — so the countdown would
+        creep forward while the operator watched it, for as long as jobs
+        kept landing. One statement, decided by the database.
+        """
+        campaign_id = int(campaign["id"])
+        until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=seconds)
+        said = (result.detail or {}).get("platform_said") or result.error or ""
+        reason = (said or "the platform reported a limit")[:500]
+
+        applied = (await database.session.execute(
+            text(
+                "UPDATE outreach_campaigns "
+                "   SET status = :paused, paused_until = :until, "
+                "       paused_reason = :reason, "
+                "       updated_at = (NOW() AT TIME ZONE 'UTC') "
+                " WHERE id = :cid "
+                "   AND (status <> :paused OR paused_until IS NULL) "
+                "RETURNING id"
+            ),
+            {"cid": campaign_id, "paused": CAMPAIGN_PAUSED,
+             "until": until, "reason": reason},
+        )).first()
+        await database.session.commit()
+        if not applied:
+            # Another slot got there first. Its deadline stands.
+            return
+
+        await db.log_outreach_audit(
+            database, AUDIT_CAMPAIGN_LIMITED, "campaign", campaign_id,
+            user_id=campaign.get("user_id"),
+            detail=f"paused until {until.isoformat()}Z: {reason}",
+        )
+        print(
+            f"[outreach] campaign {campaign_id} paused for "
+            f"{seconds // 60}m — {reason}",
+            flush=True,
+        )
+
+    @staticmethod
+    async def _drop_streak(database, account_id: int, job: dict) -> bool:
+        """Whether this drop completes DISCARD_STREAK in a row for the account:
+        its last attempts before this one, by time, were all drops."""
+        rows = (await database.session.execute(text(
+            "SELECT result_status FROM outreach_jobs "
+            " WHERE sending_account_id = :a AND id <> :j AND result_status IS NOT NULL "
+            " ORDER BY updated_at DESC LIMIT :n"
+        ), {"a": account_id, "j": int(job["id"]), "n": DISCARD_STREAK - 1})).all()
+        await database.session.commit()
+        return (len(rows) == DISCARD_STREAK - 1
+                and all(r[0] == RESULT_FOLLOW_DISCARDED for r in rows))
+
+    async def _pause_campaign_for_attention(
+        self, database, campaign: dict, account: dict, result: Any,
+    ) -> None:
+        """Stop the campaign until a person fixes the account it met.
+
+        No clock: an expired sign-in or a puzzle doesn't clear itself. The
+        reason names the account so the operator knows where to look. Any
+        pause already on the campaign is kept — the first reason stands.
+        """
+        campaign_id = int(campaign["id"])
+        name = account.get("name") or f"account {account.get('id')}"
+        reason = (f"{name}: {result.error or result.status} — fix it, then resume "
+                  f"the campaign. The account itself isn't paused.")[:1000]
+        applied = (await database.session.execute(
+            text(
+                "UPDATE outreach_campaigns "
+                "   SET status = :paused, paused_until = NULL, paused_reason = :reason, "
+                "       updated_at = (NOW() AT TIME ZONE 'UTC') "
+                " WHERE id = :cid AND status <> :paused "
+                "RETURNING id"
+            ),
+            {"cid": campaign_id, "paused": CAMPAIGN_PAUSED, "reason": reason},
+        )).first()
+        await database.session.commit()
+        if not applied:
+            return
+        await db.log_outreach_audit(
+            database, AUDIT_CAMPAIGN_PAUSED, "campaign", campaign_id,
+            user_id=campaign.get("user_id"), detail=reason,
+        )
+        print(f"[outreach] campaign {campaign_id} paused — {reason}", flush=True)
+
+    async def _pause_campaign_for_refusal(
+        self, database, campaign: dict, target: dict, result: Any,
+    ) -> None:
+        """Stop the campaign because the platform refused its message.
+
+        No deadline: a clock would resume it onto the same words, which are
+        refused again. The refused text is recorded so the campaign cannot
+        be started on it again (see `_preflight`), and the reason is written
+        for the campaign page — the platform's own sentence where the driver
+        read one, not our paraphrase.
+
+        A limit pause already on the campaign is overridden: a limit clears
+        itself, a refusal does not, and resuming on the clock would send the
+        refused text again. A refusal already recorded is kept — the first
+        one is the one the operator should read.
+        """
+        campaign_id = int(campaign["id"])
+        who = target.get("username") or "a target"
+        said = (result.detail or {}).get("platform_said")
+        reason = (
+            f"TikTok refused to deliver this campaign's message to @{who}"
+            + (f": \u201c{said}\u201d" if said else
+               " \u2014 it said the message may break its Community Guidelines")
+            + ". Nothing reached them. The account is fine; the wording is "
+            "what was refused, so change the message before resuming."
+        )[:1000]
+        if (campaign.get("platform") or "tiktok") != "tiktok":
+            reason = reason.replace("TikTok", "The platform")
+
+        applied = (await database.session.execute(
+            text(
+                "UPDATE outreach_campaigns "
+                "   SET status = :paused, paused_until = NULL, "
+                "       paused_reason = :reason, "
+                "       refused_template = message_template, "
+                "       updated_at = (NOW() AT TIME ZONE 'UTC') "
+                " WHERE id = :cid "
+                "   AND (status <> :paused OR paused_until IS NOT NULL) "
+                "RETURNING id"
+            ),
+            {"cid": campaign_id, "paused": CAMPAIGN_PAUSED, "reason": reason},
+        )).first()
+        await database.session.commit()
+        if not applied:
+            return
+        await db.log_outreach_audit(
+            database, AUDIT_CAMPAIGN_MESSAGE_REFUSED, "campaign", campaign_id,
+            user_id=campaign.get("user_id"), detail=reason,
+        )
+        print(f"[outreach] campaign {campaign_id} paused — {reason}", flush=True)
+
+    async def _pause_campaign_blocked(self, database, campaign: dict, reason: str) -> None:
+        """Pause a campaign no account can work, with the reason on it."""
+        campaign_id = int(campaign["id"])
+        await job_queue.pause_campaign(database, campaign_id)
+        await db.update_outreach_campaign(
+            database, campaign_id, paused_until=None, paused_reason=reason[:1000])
+        await db.log_outreach_audit(
+            database, AUDIT_CAMPAIGN_PAUSED, "campaign", campaign_id,
+            user_id=campaign.get("user_id"), detail=reason,
+        )
+        print(f"[outreach] campaign {campaign_id} paused — {reason}", flush=True)
+
     async def _explain_idleness(
         self, database, campaign: dict, settings: dict[str, Any]
     ) -> None:
@@ -555,6 +943,12 @@ class OutreachWorker:
         if now - last < EXPLAIN_IDLE_SECONDS:
             return
         try:
+            # Nothing will change until a person does something: say so on
+            # the campaign, not only in this log, and stop looking "running".
+            stuck = await account_mgr.blocked_for_good(database, campaign, settings)
+            if stuck:
+                await self._pause_campaign_blocked(database, campaign, stuck)
+                return
             why = await account_mgr.explain_no_account(database, campaign, settings)
         except Exception:  # noqa: BLE001 — a diagnostic must not stop the worker
             return
@@ -583,6 +977,8 @@ class OutreachWorker:
                 settings = await cfg.get_all(database)
                 await job_queue.reap_stale_jobs(database, settings)
                 await account_mgr.release_expired_leases(database, settings)
+                await resume_cooled_down(database)
+                await unstick(database, settings)
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
             finally:
@@ -640,6 +1036,38 @@ async def run_once(driver: Any = None, worker_id: str = "test-worker") -> bool:
 # In-process maintenance (started from FastAPI's lifespan)
 # ---------------------------------------------------------------------------
 
+async def resume_cooled_down(database) -> list[int]:
+    """Campaigns whose timed pause has run out, running again.
+
+    Campaigns the platform (or a streak of phone hiccups) stood down pick
+    themselves up here. Nobody has to be watching for the clock to run out,
+    which was the point of putting it on a clock. Run by both maintenance
+    loops: it used to live only in the standalone worker's, so on a laptop —
+    where the API process does the sending — a timed pause never ended
+    (campaign 15 sat "resuming" for fifteen hours, 2026-09-26). Two loops
+    running it is safe: the UPDATE hands each campaign to one of them.
+    """
+    resumed_ids = await job_queue.resume_limited_campaigns(database)
+    for resumed in resumed_ids:
+        await db.log_outreach_audit(
+            database, AUDIT_CAMPAIGN_LIMIT_CLEARED,
+            "campaign", resumed,
+            detail="the pause's time ran out; resuming",
+        )
+        print(f"[outreach] campaign {resumed} resumed — its timed pause ran out",
+              flush=True)
+    return resumed_ids
+
+
+async def unstick(database, settings) -> None:
+    """Stalled running campaigns: queued again, or paused with the reason."""
+    for cid, what in await job_queue.unstick_running(database, settings):
+        if what != "queued the people left":
+            await db.log_outreach_audit(database, AUDIT_CAMPAIGN_PAUSED, "campaign", cid,
+                                        detail=what)
+        print(f"[outreach] campaign {cid}: {what}", flush=True)
+
+
 async def _maintenance_loop() -> None:
     """Reaper only — never sends anything.
 
@@ -652,18 +1080,25 @@ async def _maintenance_loop() -> None:
     """
     await asyncio.sleep(20)  # let startup logs flush, like clip_scheduler
     while True:
-        database = None
-        try:
-            database = await db.get_db()
-            settings = await cfg.get_all(database)
-            await job_queue.reap_stale_jobs(database, settings)
-            await account_mgr.release_expired_leases(database, settings)
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-        finally:
-            if database is not None:
-                await database.close()
-        await asyncio.sleep(120)
+        await maintenance_pass()
+        await asyncio.sleep(60)
+
+
+async def maintenance_pass() -> None:
+    """One round of the API process's recovery work. Never raises."""
+    database = None
+    try:
+        database = await db.get_db()
+        settings = await cfg.get_all(database)
+        await job_queue.reap_stale_jobs(database, settings)
+        await account_mgr.release_expired_leases(database, settings)
+        await resume_cooled_down(database)
+        await unstick(database, settings)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    finally:
+        if database is not None:
+            await database.close()
 
 
 def local_worker_enabled() -> bool:
@@ -731,6 +1166,11 @@ async def _local_slot(worker: "OutreachWorker", stopping: asyncio.Event) -> None
                 await _idle(stopping, int(settings["outreach_worker_idle_seconds"]))
                 continue
 
+            # Read per tick, like every other setting here, so the admin
+            # switch takes effect on the next job rather than on a restart.
+            await worker.apply_headless(
+                bool(int(settings.get("outreach_headless", 1))))
+
             # Checked again here: the wait above is where a slot spends most
             # of its life, and claiming a job on the way out is the one
             # thing a draining worker must not do.
@@ -785,20 +1225,24 @@ async def _local_worker_loop() -> None:
             flush=True,
         )
 
-    worker = OutreachWorker(headless=False, on_browser_lost=browser_closed)
+    worker = OutreachWorker(on_browser_lost=browser_closed)
     database = await db.get_db()
     try:
         settings = await cfg.get_all(database)
     finally:
         await database.close()
     slots = int(settings["outreach_local_worker_concurrency"])
+    # The admin switch decides; each slot re-reads it every tick after this.
+    _headless = bool(int(settings.get("outreach_headless", 1)))
+    await worker.apply_headless(_headless)
 
     _LOCAL_WORKER["running"] = True
     _LOCAL_WORKER["slots"] = slots
     _LOCAL_WORKER["busy"] = 0
     print(
         f"[outreach] local sender started — {slots} "
-        f"{'window' if slots == 1 else 'windows'}, visible",
+        f"{'window' if slots == 1 else 'windows'}, "
+        f"{'headless' if _headless else 'visible'}",
         flush=True,
     )
     tasks = [asyncio.create_task(_local_slot(worker, stopping)) for _ in range(slots)]

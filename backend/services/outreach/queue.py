@@ -31,6 +31,9 @@ import database as db
 from services.outreach import config as cfg
 from services.outreach import stats
 from services.outreach.constants import (
+    ACTIVITY_FOLLOW,
+    RESULT_FOLLOW_REQUESTED,
+    RESULT_SENT,
     CAMPAIGN_PAUSED,
     CAMPAIGN_RUNNING,
     CAMPAIGN_STOPPED,
@@ -121,6 +124,56 @@ async def enqueue_campaign(database, campaign: dict, settings: dict[str, Any]) -
     )).all()
     await session.commit()
     return len(rows)
+
+
+async def unstick_running(database, settings: dict[str, Any]) -> list[tuple[int, str]]:
+    """Running campaigns with people left and nothing queued, moving again.
+
+    Jobs are made at start and resume only, and never past the campaign's
+    job limit — every attempt counts, sent or failed. A campaign that
+    reached it just sat "running" with nobody queued and nothing said
+    (campaign 15, 2026-09-28: 1000 jobs, 19 people left, silent). Now,
+    each maintenance pass: if there's room (the limit was raised), the
+    people left are queued; if not, the campaign pauses and says why.
+    Returns (campaign id, what happened) for each one touched.
+    """
+    session = database.session
+    stalled = (await session.execute(text(
+        "SELECT c.* FROM outreach_campaigns c "
+        " WHERE c.status = :running "
+        "   AND EXISTS (SELECT 1 FROM outreach_targets t WHERE t.campaign_id = c.id "
+        "                 AND t.status IN (:t_queued, :t_processing)) "
+        "   AND NOT EXISTS (SELECT 1 FROM outreach_jobs j WHERE j.campaign_id = c.id "
+        "                     AND j.status IN (:queued, :processing))"
+    ), {"running": CAMPAIGN_RUNNING, "t_queued": TARGET_QUEUED,
+        "t_processing": TARGET_PROCESSING, "queued": JOB_QUEUED,
+        "processing": JOB_PROCESSING})).mappings().all()
+    await session.commit()
+    touched: list[tuple[int, str]] = []
+    for row in stalled:
+        campaign = dict(row)
+        cid = int(campaign["id"])
+        # Nobody left `processing` has a live job here — the campaign has none.
+        await session.execute(text(
+            f"UPDATE outreach_targets SET status = :queued, updated_at = {UTC_NOW} "
+            f" WHERE campaign_id = :cid AND status = :processing"
+        ), {"cid": cid, "queued": TARGET_QUEUED, "processing": TARGET_PROCESSING})
+        await session.commit()
+        if await enqueue_campaign(database, campaign, settings):
+            touched.append((cid, "queued the people left"))
+            continue
+        limit = cfg.campaign_limit(campaign, settings, "max_jobs", "outreach_max_jobs_per_campaign")
+        left = (await session.execute(text(
+            "SELECT COUNT(*) FROM outreach_targets WHERE campaign_id = :cid AND status = :queued"
+        ), {"cid": cid, "queued": TARGET_QUEUED})).scalar_one()
+        reason = (f"Reached its limit of {limit} jobs, with {left} "
+                  f"{'person' if left == 1 else 'people'} still to go — every try "
+                  f"counts, done or failed. Raise “Maximum jobs per campaign” in "
+                  f"Admin → Tools, then resume.")
+        await pause_campaign(database, cid)
+        await db.update_outreach_campaign(database, cid, paused_reason=reason)
+        touched.append((cid, reason))
+    return touched
 
 
 # ---------------------------------------------------------------------------
@@ -443,12 +496,18 @@ async def start_campaign(database, campaign: dict, settings: dict[str, Any]) -> 
     """
     campaign_id = campaign["id"]
     session = database.session
+    # Also anyone left `processing` with no live job — stranded by a stop
+    # before `stop_campaign` released them. Nothing would ever pick them up.
     await session.execute(
         text(
-            f"UPDATE outreach_targets SET status = :queued, updated_at = {UTC_NOW} "
-            f" WHERE campaign_id = :cid AND status = :paused"
+            f"UPDATE outreach_targets t SET status = :queued, updated_at = {UTC_NOW} "
+            f" WHERE t.campaign_id = :cid AND (t.status = :paused OR (t.status = :processing "
+            f"   AND NOT EXISTS (SELECT 1 FROM outreach_jobs j WHERE j.target_id = t.id "
+            f"                     AND j.status IN (:job_queued, :job_processing))))"
         ),
-        {"cid": campaign_id, "queued": TARGET_QUEUED, "paused": TARGET_PAUSED},
+        {"cid": campaign_id, "queued": TARGET_QUEUED, "paused": TARGET_PAUSED,
+         "processing": TARGET_PROCESSING, "job_queued": JOB_QUEUED,
+         "job_processing": JOB_PROCESSING},
     )
     await session.commit()
     await db.update_outreach_campaign(database, campaign_id, status=CAMPAIGN_RUNNING)
@@ -500,12 +559,21 @@ async def stop_campaign(database, campaign_id: int) -> None:
         ),
         {"cid": campaign_id, "cancelled": JOB_CANCELLED, "queued": JOB_QUEUED},
     )
+    # Queued targets, and `processing` ones whose job was just cancelled: a
+    # job waiting to retry leaves its target `processing`, and a stop used
+    # to strand those there — no live job, and start only revives `paused`
+    # (2026-09-28: 34 people one morning, 17 the next hour). One still
+    # being worked keeps its live job and is left for the worker to finish.
     await session.execute(
         text(
-            f"UPDATE outreach_targets SET status = :paused, updated_at = {UTC_NOW} "
-            f" WHERE campaign_id = :cid AND status = :queued"
+            f"UPDATE outreach_targets t SET status = :paused, updated_at = {UTC_NOW} "
+            f" WHERE t.campaign_id = :cid AND t.status IN (:queued, :processing) "
+            f"   AND NOT EXISTS (SELECT 1 FROM outreach_jobs j WHERE j.target_id = t.id "
+            f"                     AND j.status IN (:job_queued, :job_processing))"
         ),
-        {"cid": campaign_id, "paused": TARGET_PAUSED, "queued": TARGET_QUEUED},
+        {"cid": campaign_id, "paused": TARGET_PAUSED, "queued": TARGET_QUEUED,
+         "processing": TARGET_PROCESSING, "job_queued": JOB_QUEUED,
+         "job_processing": JOB_PROCESSING},
     )
     await session.commit()
     await db.update_outreach_campaign(database, campaign_id, status=CAMPAIGN_STOPPED)
@@ -541,6 +609,32 @@ async def hold_job(database, job: dict, result_status: str, error: str | None,
     await session.commit()
 
 
+async def resume_limited_campaigns(database) -> list[int]:
+    """Start campaigns whose platform cooldown has run out.
+
+    The counterpart to pausing on a limit. Only campaigns the *platform*
+    stopped are picked up — an operator's own pause leaves `paused_until`
+    NULL and is never resumed by a clock, because that was a decision and
+    not a timer.
+
+    Returns the campaign ids that were resumed, so the caller can log them.
+    """
+    session = database.session
+    rows = (await session.execute(
+        text(
+            f"UPDATE outreach_campaigns "
+            f"   SET status = :running, paused_until = NULL, "
+            f"       paused_reason = NULL, updated_at = {UTC_NOW} "
+            f" WHERE status = :paused AND paused_until IS NOT NULL "
+            f"   AND paused_until <= {UTC_NOW} "
+            f"RETURNING id"
+        ),
+        {"running": CAMPAIGN_RUNNING, "paused": CAMPAIGN_PAUSED},
+    )).all()
+    await session.commit()
+    return [int(r[0]) for r in rows]
+
+
 async def retry_failed(database, campaign_id: int) -> int:
     """Put failed targets back in the queue. Returns how many were reset.
 
@@ -572,3 +666,31 @@ async def job_counts(database, campaign_id: int) -> dict[str, int]:
         {"cid": campaign_id},
     )).all()
     return {str(r[0]): int(r[1]) for r in rows}
+
+
+async def followed_by(database, username: str, account_ids: list[int]) -> set[int]:
+    """Which of these accounts followed `username` through a follow campaign.
+
+    A follow job that succeeded with `sent`, or with `follow_requested` —
+    a request to a private account is ICREATEFLOW's too: accepted, it's a
+    follow to undo; still waiting, it's withdrawn (the operator's choice,
+    2026-09-28 — 2 of 12 sampled Instagram requests had been accepted and
+    were being left behind). Already following and a follow made by hand
+    don't count, so an unfollow campaign never undoes anything
+    ICREATEFLOW didn't do.
+    """
+    if not account_ids:
+        return set()
+    keys = {f"a{i}": int(a) for i, a in enumerate(account_ids)}
+    rows = (await database.session.execute(text(
+        "SELECT DISTINCT j.sending_account_id FROM outreach_jobs j "
+        "  JOIN outreach_targets t ON t.id = j.target_id "
+        "  JOIN outreach_campaigns c ON c.id = j.campaign_id "
+        " WHERE c.activity = :follow AND j.status = :succeeded "
+        "   AND j.result_status IN (:sent, :requested) "
+        "   AND lower(t.username) = lower(:u) "
+        f"  AND j.sending_account_id IN ({', '.join(':' + k for k in keys)})"
+    ), {"follow": ACTIVITY_FOLLOW, "succeeded": JOB_SUCCEEDED, "sent": RESULT_SENT,
+        "requested": RESULT_FOLLOW_REQUESTED, "u": username.strip().lstrip("@"), **keys})).all()
+    await database.session.commit()
+    return {int(r[0]) for r in rows}

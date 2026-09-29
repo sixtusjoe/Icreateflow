@@ -10,8 +10,12 @@ import database as db
 from services.outreach import accounts as account_mgr, importer, queue as job_queue
 from services.outreach.constants import (
     ACCOUNT_ACTIVE,
+    ACCOUNT_FAULT_RESULTS,
     ACCOUNT_IDLE,
     ACCOUNT_PAUSED,
+    LIMIT_RESULTS,
+    RESULT_BROWSER_ERROR,
+    RESULT_FOLLOW_LIMITED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_RATE_LIMITED,
     RESULT_SESSION_EXPIRED,
@@ -215,38 +219,40 @@ async def test_a_target_side_failure_does_not_blame_the_account(
     assert row["status"] != ACCOUNT_PAUSED
 
 
-async def test_repeated_account_faults_auto_pause_with_a_reason(
+async def _pause(database, account_id: int, reason: str = "paused by hand") -> None:
+    """Accounts are never auto-paused any more; a pause can only be put there."""
+    await database.session.execute(text(
+        "UPDATE outreach_sending_accounts SET status = :p, paused_reason = :r WHERE id = :id"
+    ), {"id": account_id, "p": ACCOUNT_PAUSED, "r": reason})
+    await database.session.commit()
+
+
+async def test_repeated_account_faults_never_pause_the_account(
     database, account_factory, settings
 ):
+    """Operator's rule: nothing pauses an account. The streak is still kept."""
     account = await account_factory()
     threshold = int(settings["outreach_account_error_threshold"])
-    for i in range(threshold):
+    for _ in range(threshold + 2):
         health = await account_mgr.record_failure(
-            database, account["id"], RESULT_RATE_LIMITED, "slow down", settings
+            database, account["id"], RESULT_BROWSER_ERROR, "chromium died", settings
         )
-        assert health["paused"] is (i == threshold - 1)
-
+        assert health["paused"] is False
     row = dict(await db.get_sending_account(database, account["id"]))
-    assert row["status"] == ACCOUNT_PAUSED
-    assert "rate_limited" in row["paused_reason"]
-    # The operator can see it — the pause is audited.
-    audit = await db.get_outreach_audit_logs(
-        database, entity_type="account", entity_id=account["id"]
-    )
-    assert any(a["action"] == "account.auto_paused" for a in audit)
+    assert row["status"] != ACCOUNT_PAUSED
+    assert row["consecutive_errors"] == threshold + 2
 
 
-async def test_an_expired_session_pauses_the_account_immediately(
+async def test_an_expired_session_does_not_pause_the_account(
     database, account_factory, settings
 ):
-    """Retrying an expired session just burns attempts — pause at once."""
     account = await account_factory()
     health = await account_mgr.record_failure(
         database, account["id"], RESULT_SESSION_EXPIRED, "login wall", settings
     )
-    assert health["paused"] is True
+    assert health["paused"] is False
     row = dict(await db.get_sending_account(database, account["id"]))
-    assert row["status"] == ACCOUNT_PAUSED
+    assert row["status"] != ACCOUNT_PAUSED
 
 
 async def test_a_paused_account_is_not_leased_again(
@@ -254,18 +260,14 @@ async def test_a_paused_account_is_not_leased_again(
 ):
     campaign = await campaign_factory()
     account = await account_factory()
-    await account_mgr.record_failure(
-        database, account["id"], RESULT_SESSION_EXPIRED, "login wall", settings
-    )
+    await _pause(database, account["id"])
     await _age_activity(database, account["id"], minutes=120)
     assert await account_mgr.lease_account(database, campaign, settings) is None
 
 
 async def test_resume_clears_the_pause(database, account_factory, settings):
     account = await account_factory()
-    await account_mgr.record_failure(
-        database, account["id"], RESULT_SESSION_EXPIRED, "login wall", settings
-    )
+    await _pause(database, account["id"])
     await account_mgr.resume_account(database, account["id"])
     row = dict(await db.get_sending_account(database, account["id"]))
     assert row["status"] == ACCOUNT_IDLE
@@ -279,9 +281,7 @@ async def test_releasing_a_lease_never_unpauses_an_account(
     campaign = await campaign_factory()
     account = await account_factory()
     await account_mgr.lease_account(database, campaign, settings)
-    await account_mgr.record_failure(
-        database, account["id"], RESULT_SESSION_EXPIRED, "login wall", settings
-    )
+    await _pause(database, account["id"])
     await account_mgr.release_account(database, account["id"])
     row = dict(await db.get_sending_account(database, account["id"]))
     assert row["status"] == ACCOUNT_PAUSED
@@ -435,3 +435,86 @@ def test_a_lease_from_another_machine_is_never_declared_dead():
     assert account_mgr.worker_is_gone(None) is False
     assert account_mgr.worker_is_gone("malformed") is False
     assert account_mgr.worker_is_gone(f"{socket.gethostname()}:notapid:x") is False
+
+
+async def test_a_platform_limit_is_not_the_accounts_fault(
+    database, account_factory, settings
+):
+    """Limits are a clock, and the clock is the campaign's to wait out.
+
+    `rate_limited` and `follow_limited` used to sit in ACCOUNT_FAULT_RESULTS
+    and pause the account after five. The account is healthy — it has done
+    exactly as much as the platform allows — and pausing it stops every
+    other campaign that account serves, for a fault it does not have. Worse,
+    a paused account waits for a person, so a limit that cleared in hours
+    cost a day.
+    """
+    account = await account_factory()
+    threshold = int(settings["outreach_account_error_threshold"])
+    for status in (RESULT_RATE_LIMITED, RESULT_FOLLOW_LIMITED):
+        assert status in LIMIT_RESULTS
+        assert status not in ACCOUNT_FAULT_RESULTS
+
+    for _ in range(threshold + 2):
+        health = await account_mgr.record_failure(
+            database, account["id"], RESULT_FOLLOW_LIMITED,
+            "follow limit reached", settings,
+        )
+        assert health["paused"] is False
+
+    row = dict(await db.get_sending_account(database, account["id"]))
+    assert row["status"] != ACCOUNT_PAUSED
+    assert row["consecutive_errors"] == 0, (
+        "a limit spent the account's error budget — five of them in a row "
+        "would pause an account that is working perfectly"
+    )
+
+
+async def test_a_busy_day_no_longer_stops_an_account(
+    database, campaign_factory, account_factory, settings
+):
+    """There is no daily action ceiling of our own any more.
+
+    There was one, and it was a number we picked. It stopped a healthy
+    account for hours while the campaign still read "running" and nothing
+    on the page said why — the account had simply done more today than we
+    had guessed it should. Instagram's own limit arrives as a result the
+    driver can see, pauses the campaign, and shows a countdown; a private
+    counter in our database can do none of that and only ever guesses.
+
+    So a settings dict still carrying the old key must change nothing.
+    """
+    campaign = await campaign_factory()
+    account = await account_factory(name="Worked hard today")
+    await importer.import_targets(
+        database, campaign["id"], "username\nalice\nbob\ncarol\n")
+    await job_queue.start_campaign(database, campaign, settings)
+    campaign = dict(await db.get_outreach_campaign(database, campaign["id"]))
+
+    # Three actions banked in the last hour, and an old cap of one.
+    await database.session.execute(
+        text(
+            "INSERT INTO outreach_jobs "
+            "  (campaign_id, target_id, sending_account_id, status, attempts, "
+            "   completed_at, result_status, created_at, updated_at) "
+            "SELECT :cid, t.id, :aid, 'succeeded', 1, "
+            "       (NOW() AT TIME ZONE 'UTC') - INTERVAL '1 hour', 'sent', "
+            "       (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') "
+            "  FROM outreach_targets t WHERE t.campaign_id = :cid LIMIT 3"
+        ),
+        {"cid": campaign["id"], "aid": account["id"]},
+    )
+    await database.session.commit()
+    await _age_activity(database, account["id"], minutes=120)
+
+    stale = dict(settings)
+    stale["outreach_daily_action_cap"] = 1
+
+    leased = await account_mgr.lease_account(database, campaign, stale)
+    assert leased is not None, (
+        "a day's work stopped the account — the daily cap is back"
+    )
+    assert leased["id"] == account["id"]
+
+    why = await account_mgr.explain_no_account(database, campaign, stale)
+    assert "24 hours" not in why, f"the cap is still being explained: {why!r}"

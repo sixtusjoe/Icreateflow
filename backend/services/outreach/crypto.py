@@ -30,7 +30,7 @@ def _key() -> bytes:
     secret = os.environ.get("ICREATE_OUTREACH_SECRET") or os.environ.get("ICREATE_JWT_SECRET")
     if not secret:
         raise SessionCryptoUnavailable(
-            "Set ICREATE_OUTREACH_SECRET (or ICREATE_JWT_SECRET) before storing "
+            "The backend's session secret has to be set before storing "
             "sending-account sessions."
         )
     # Fernet wants 32 url-safe base64 bytes; the app secrets are arbitrary

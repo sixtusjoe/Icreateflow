@@ -23,6 +23,7 @@ Two rules hold everywhere in this file:
 from __future__ import annotations
 
 import csv
+import re
 import io
 import asyncio
 import socket
@@ -56,6 +57,7 @@ from services.outreach import (
     session_viewer,
     watch_run,
 )
+from services.outreach import companion
 from services.outreach import runner as outreach_runner
 from services.outreach import comments
 from services.outreach import queue as job_queue
@@ -63,13 +65,24 @@ from services.outreach import stats
 from services.outreach import templates as template_svc
 from services.outreach.browser import DRIVERS
 from services.outreach.constants import (
+    TARGET_STATUSES,
     ACTIVITY_COMMENT,
     ACTIVITY_FOLLOW,
+    ACTIVITY_UNFOLLOW,
+    JOB_FAILED,
+    JOB_SUCCEEDED,
+    RESULT_FOLLOW_REQUESTED,
+    RESULT_SENT,
     ACTIVITY_MESSAGE,
     CAMPAIGN_ACTIVITIES,
+    UNFOLLOW_PLATFORMS,
     ACCOUNT_IDLE,
     ACCOUNT_PURPOSE_SENDING,
     ACCOUNT_PURPOSES,
+    ACCOUNT_VIAS,
+    ACCOUNT_VIA_BROWSER,
+    ACCOUNT_VIA_PHONE,
+    PHONE_PLATFORMS,
     ACCOUNT_PAUSED,
     AUDIT_ACCOUNT_ASSIGNED,
     AUDIT_ACCOUNT_CREATED,
@@ -174,6 +187,14 @@ class AccountUpdate(BaseModel):
     enabled: Optional[bool] = None
     purpose: Optional[str] = None
     session_reference: Optional[str] = None
+    #: The phone (adb serial) that does this account's TikTok follows, and
+    #: the handle the app on it must be signed in as. Blank clears.
+    device_serial: Optional[str] = None
+    device_handle: Optional[str] = None
+    #: "browser" or "phone" — whether the server's browser or the user's
+    #: phone app does this account's work. Switching to phone needs a
+    #: handle, here or already stored.
+    via: Optional[str] = None
 
 
 class LeadSearchCreate(BaseModel):
@@ -197,6 +218,7 @@ class LeadSearchCreate(BaseModel):
     #: posted, which is usually the better list.
     include_commenters: bool = False
     include_likers: bool = False
+    include_replies: bool = True
     #: Open each profile for its bio and follower count. One page load per
     #: lead, so off unless asked for.
     enrich_profiles: bool = False
@@ -305,6 +327,19 @@ def _template_public(row: dict) -> dict:
     return out
 
 
+def _remaining_phrase(until) -> str:
+    """"12m", "3h 5m", or "no time" — for an audit line, not a UI."""
+    if not isinstance(until, datetime):
+        return "no time"
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    left = int((until - datetime.now(timezone.utc)).total_seconds())
+    if left <= 0:
+        return "no time"
+    hours, minutes = divmod(left // 60, 60)
+    return f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
 def _campaign_public(row: dict) -> dict:
     out = _tag_utc(row)
     total = int(out.get("total_targets") or 0)
@@ -314,6 +349,11 @@ def _campaign_public(row: dict) -> dict:
     # driver's. The client only needs to know there is one and what it was
     # called; the bytes come from the endpoint, which checks ownership.
     out["has_attachment"] = bool(out.pop("attachment_path", None))
+    # Whether the platform refused the words the campaign has *now*. False
+    # once the message is edited, which is what the page's "change the
+    # message" prompt waits for.
+    refused = out.pop("refused_template", None)
+    out["message_refused"] = bool(refused) and refused == (out.get("message_template") or "")
     # Stored as JSON, handed over as a list — the client should not have to
     # know which of those it is getting, and a string arriving where a list
     # is expected crashes the page that renders it.
@@ -333,6 +373,25 @@ def _campaign_public(row: dict) -> dict:
 # Router
 # ---------------------------------------------------------------------------
 
+class CompanionLink(BaseModel):
+    """The phone app linking itself to a TikTok account for follows."""
+    device_id: str
+    account_id: int
+    handle: str
+
+
+class CompanionDevice(BaseModel):
+    device_id: str
+
+
+class CompanionResult(BaseModel):
+    """What the phone did with one follow — a status from companion.PHONE_RESULTS."""
+    device_id: str
+    status: str
+    error: Optional[str] = None
+    detail: Optional[dict] = None
+
+
 def build_router(get_current_user, admin_required) -> APIRouter:
     """Build the outreach router around the app's auth dependencies."""
 
@@ -348,6 +407,15 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         if user.get("role") != "admin" and campaign.get("user_id") != user["id"]:
             raise HTTPException(403, "Access denied")
         return campaign
+
+    async def _has_worked(database, campaign_id: int) -> bool:
+        """Whether any of the campaign's people has been followed, messaged or
+        tried and failed. Cancelled jobs were never done, so they don't count."""
+        row = (await database.session.execute(text(
+            "SELECT 1 FROM outreach_jobs WHERE campaign_id = :cid "
+            "   AND status IN (:succeeded, :failed) LIMIT 1"
+        ), {"cid": campaign_id, "succeeded": JOB_SUCCEEDED, "failed": JOB_FAILED})).first()
+        return row is not None
 
     async def _own_account(database, account_id: int, user: dict) -> dict:
         row = await db.get_sending_account(database, account_id)
@@ -372,6 +440,156 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         return None if user.get("role") == "admin" else user["id"]
 
     # =====================================================================
+    # Dashboard summary
+    # =====================================================================
+
+    #: What the dashboard's range control offers. Anything else is refused
+    #: rather than clamped — a silently substituted window would put a
+    #: figure on screen under a label that does not describe it.
+    SUMMARY_WINDOWS = (7, 14, 30, 90)
+
+    @router.get("/summary")
+    async def outreach_summary(days: int = 14,
+                               user: dict = Depends(get_current_user)):
+        """Everything the dashboard needs about outreach, in one round trip.
+
+        The campaign list already carries per-campaign counters, so this
+        deliberately does not repeat them. What it adds is the things no
+        existing endpoint can answer without fetching every row: how many
+        leads discovery has found, how sends are distributed over the
+        chosen window, which weekday actually sends the most, and how the
+        campaigns and sending accounts divide by state. All of it is
+        scoped to the caller.
+
+        `days` selects the window for `daily_sends` and `range` only. The
+        target counts, the delivery rate and the weekday histogram are
+        all-time by definition and ignore it — every one of them is
+        labelled as such on the dashboard.
+        """
+        if days not in SUMMARY_WINDOWS:
+            raise HTTPException(
+                400, f"days must be one of: "
+                     f"{', '.join(str(d) for d in SUMMARY_WINDOWS)}")
+        uid = _scope(user)
+        database = await db.get_db()
+        try:
+            def scoped(sql: str, alias: str) -> str:
+                # Admins (uid is None) see the whole instance; everyone else
+                # is filtered to their own rows by the same parameter, so the
+                # query shape never changes between the two.
+                # The cast is load-bearing: an admin passes NULL here, and
+                # Postgres cannot infer a bare parameter's type from
+                # `$1 IS NULL` alone — it raises AmbiguousParameterError.
+                return sql.replace(
+                    "/*scope*/",
+                    f"AND (CAST(:uid AS INTEGER) IS NULL "
+                    f"     OR {alias}.user_id = CAST(:uid AS INTEGER))")
+
+            async def rows(sql: str, alias: str, **params):
+                cur = await database.session.execute(
+                    text(scoped(sql, alias)), {"uid": uid, **params})
+                return cur.all()
+
+            states = {r[0]: int(r[1]) for r in await rows(
+                "SELECT t.status, COUNT(*) FROM outreach_targets t "
+                "  JOIN outreach_campaigns c ON c.id = t.campaign_id "
+                " WHERE TRUE /*scope*/ GROUP BY 1", "c")}
+
+            # Every day in the window, including the silent ones. Grouping
+            # alone drops days with no sends, which left the line plotting
+            # 12 points across a 14-day axis — evenly spaced, so a gap in
+            # sending read as a smooth stretch rather than the hole it was.
+            daily = [{"date": str(r[0]), "count": int(r[1])} for r in await rows(
+                "SELECT d::date, COALESCE(x.c, 0) FROM generate_series("
+                "         CURRENT_DATE - (CAST(:days AS INTEGER) - 1),"
+                "         CURRENT_DATE, INTERVAL '1 day') d "
+                "  LEFT JOIN (SELECT t.sent_at::date AS sd, COUNT(*) AS c "
+                "               FROM outreach_targets t "
+                "               JOIN outreach_campaigns c ON c.id = t.campaign_id "
+                "              WHERE t.status = 'sent' AND t.sent_at IS NOT NULL "
+                "                AND t.sent_at::date > CURRENT_DATE "
+                "                                      - CAST(:days AS INTEGER) "
+                "                /*scope*/ GROUP BY 1) x ON x.sd = d::date "
+                " ORDER BY 1", "c", days=days)]
+
+            # The same window, and the one immediately before it, so the
+            # dashboard compares like with like at any range rather than
+            # always pitting seven days against seven.
+            def window_sent(lo: str, hi: str) -> str:
+                return ("SELECT COUNT(*) FROM outreach_targets t "
+                        "  JOIN outreach_campaigns c ON c.id = t.campaign_id "
+                        " WHERE t.status = 'sent' AND t.sent_at IS NOT NULL "
+                        f"   AND t.sent_at::date > {lo} AND t.sent_at::date <= {hi} "
+                        " /*scope*/")
+
+            n = "CAST(:days AS INTEGER)"
+            range_sent = int((await rows(
+                window_sent(f"CURRENT_DATE - {n}", "CURRENT_DATE"),
+                "c", days=days))[0][0] or 0)
+            range_prev = int((await rows(
+                window_sent(f"CURRENT_DATE - 2 * {n}", f"CURRENT_DATE - {n}"),
+                "c", days=days))[0][0] or 0)
+
+            weekday = {r[0].strip(): int(r[1]) for r in await rows(
+                "SELECT to_char(t.sent_at, 'Dy'), COUNT(*) FROM outreach_targets t "
+                "  JOIN outreach_campaigns c ON c.id = t.campaign_id "
+                " WHERE t.status = 'sent' AND t.sent_at IS NOT NULL /*scope*/ "
+                " GROUP BY 1", "c")}
+
+            leads = int((await database.session.execute(
+                text(scoped(
+                    "SELECT COUNT(*) FROM outreach_leads l "
+                    "  JOIN outreach_lead_searches s ON s.id = l.search_id "
+                    " WHERE TRUE /*scope*/", "s")), {"uid": uid})).scalar() or 0)
+
+            accounts = {r[0]: int(r[1]) for r in await rows(
+                "SELECT a.status, COUNT(*) FROM outreach_sending_accounts a "
+                " WHERE TRUE /*scope*/ GROUP BY 1", "a")}
+
+            # Campaigns by state, for the same reason the target states are
+            # here: the sidebar wants one number — how many campaigns have
+            # finished — and the campaign list is a far heavier call to make
+            # for it. Only the states actually present appear, so a reader
+            # must treat a missing key as zero.
+            campaigns = {r[0]: int(r[1]) for r in await rows(
+                "SELECT c.status, COUNT(*) FROM outreach_campaigns c "
+                " WHERE TRUE /*scope*/ GROUP BY 1", "c")}
+
+            # What the most recent discovery run turned up, so the dashboard
+            # can say where the newest leads came from rather than only how
+            # many exist in total.
+            latest = (await database.session.execute(
+                text(scoped(
+                    "SELECT s.id, s.found, s.status FROM outreach_lead_searches s "
+                    " WHERE TRUE /*scope*/ ORDER BY s.id DESC LIMIT 1", "s")),
+                {"uid": uid})).first()
+
+            sent = states.get("sent", 0)
+            # Delivery rate is over what was *attempted*, so targets still
+            # sitting in the queue must not count against it.
+            attempted = sent + states.get("failed", 0) + states.get("skipped", 0)
+            return {
+                "targets": states,
+                "total_targets": sum(states.values()),
+                "sent": sent,
+                "attempted": attempted,
+                "delivery_rate": round(sent / attempted, 4) if attempted else 0.0,
+                "leads": leads,
+                "latest_search": ({"id": latest[0], "found": int(latest[1] or 0),
+                                   "status": latest[2]} if latest else None),
+                "accounts": accounts,
+                "campaigns": campaigns,
+                "daily_sends": daily,
+                "weekday_sends": weekday,
+                # The only range-scoped block on the payload. Everything
+                # above it is all-time, so a caller can never mistake one
+                # for the other.
+                "range": {"days": days, "sent": range_sent, "prev_sent": range_prev},
+            }
+        finally:
+            await database.close()
+
+    # =====================================================================
     # Campaigns
     # =====================================================================
 
@@ -394,6 +612,9 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         if data.activity not in CAMPAIGN_ACTIVITIES:
             raise HTTPException(
                 400, f"activity must be one of: {', '.join(CAMPAIGN_ACTIVITIES)}")
+        if data.activity == ACTIVITY_UNFOLLOW and data.platform not in UNFOLLOW_PLATFORMS:
+            raise HTTPException(
+                400, "Unfollowing works on TikTok and Instagram only, for now")
 
         database = await db.get_db()
         try:
@@ -406,7 +627,8 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             # A follow campaign sends nothing, so it needs no template and
             # must not be rejected for lacking one.
             try:
-                if data.activity not in (ACTIVITY_FOLLOW, ACTIVITY_COMMENT):
+                if data.activity not in (ACTIVITY_FOLLOW, ACTIVITY_UNFOLLOW,
+                                         ACTIVITY_COMMENT):
                     template_svc.validate_template(
                         body or "", known_variables=(data.template_vars or {}).keys()
                     )
@@ -418,7 +640,17 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 user_id=user["id"],
                 name=name,
                 description=(data.description or "").strip() or None,
-                message_template=body,
+                # Never None. The column is NOT NULL with a server default
+                # of "", but a default only applies to a column left out of
+                # the INSERT — passing NULL explicitly is a constraint
+                # violation, which is a 500 rather than the empty template
+                # the default was there to provide.
+                #
+                # A follow or comment campaign legitimately has no message,
+                # and the client is right to omit the field for those. It
+                # arrives here as None because that is what Pydantic fills
+                # an absent optional with, so the emptiness is restored here.
+                message_template=body or "",
                 template_id=data.template_id,
                 template_vars=template_svc.dump_vars(data.template_vars),
                 platform=data.platform,
@@ -478,6 +710,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 "campaign": _campaign_public(campaign),
                 "target_counts": counts,
                 "job_counts": await job_queue.job_counts(database, campaign_id),
+                "success_outcomes": await _success_outcomes(database, campaign_id),
                 "recent_jobs": [_tag_utc(dict(j)) for j in jobs],
                 "failed_jobs": [_tag_utc(dict(j)) for j in errors],
                 "assigned_account_ids": assigned,
@@ -500,6 +733,25 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         finally:
             await database.close()
 
+    async def _success_outcomes(database, campaign_id: int) -> dict[str, int]:
+        """What this campaign's successes actually were.
+
+        `successful_count` cannot answer "are the follows landing": a
+        profile already followed succeeds without anything being pressed,
+        and a private one succeeds as a request that may never be accepted.
+        Only `sent` moved the account's following count.
+        """
+        rows = (await database.session.execute(
+            text(
+                "SELECT COALESCE(result_status, 'unknown') AS r, COUNT(*) "
+                "  FROM outreach_jobs "
+                " WHERE campaign_id = :cid AND status = 'succeeded' "
+                " GROUP BY 1"
+            ),
+            {"cid": campaign_id},
+        )).all()
+        return {str(r): int(n) for r, n in rows}
+
     @router.get("/campaigns/{campaign_id}/progress")
     async def campaign_progress(campaign_id: int, user: dict = Depends(get_current_user)):
         """Small payload for the dashboard's live poll."""
@@ -509,10 +761,20 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             counts = await db.count_outreach_targets(database, campaign_id)
             totals = stats.totals_from_counts(counts)
             jobs = await db.get_outreach_jobs(database, campaign_id=campaign_id, limit=10)
+            paused = _tag_utc({"paused_until": campaign.get("paused_until")})
             return {
                 "status": campaign["status"],
                 **totals,
+                # Carried on the poll, not just the detail load, so the
+                # countdown on the page is the server's clock rather than
+                # one the browser started when it happened to open.
+                "paused_until": paused.get("paused_until"),
+                "paused_reason": campaign.get("paused_reason"),
+                "message_refused": bool(campaign.get("refused_template"))
+                and campaign.get("refused_template")
+                == (campaign.get("message_template") or ""),
                 "target_counts": counts,
+                "success_outcomes": await _success_outcomes(database, campaign_id),
                 "recent_jobs": [_tag_utc(dict(j)) for j in jobs],
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -536,11 +798,28 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 updates["template_id"] = data.template_id
             if data.template_vars is not None:
                 updates["template_vars"] = template_svc.dump_vars(data.template_vars)
-            if data.message_template is not None:
-                if campaign["status"] == CAMPAIGN_RUNNING:
-                    raise HTTPException(
-                        400, "Pause the campaign before editing its message"
+            # What the campaign does, and what it sends, is frozen while it
+            # runs. Editing the message was already refused; the rest was
+            # not, so a running campaign could be switched from messaging
+            # to following mid-flight and finish with some targets messaged
+            # and some followed, and nothing recording which was which.
+            # Name, description and the job limits stay editable — renaming
+            # a run or throttling it down changes nothing already done.
+            if campaign["status"] == CAMPAIGN_RUNNING:
+                frozen = [
+                    name for name in (
+                        "activity", "message_template", "target_url",
+                        "comment_count", "comment_variations",
                     )
+                    if getattr(data, name) is not None
+                ]
+                if frozen:
+                    raise HTTPException(
+                        400,
+                        "Pause the campaign before editing what it sends "
+                        f"({', '.join(sorted(frozen))})",
+                    )
+            if data.message_template is not None:
                 try:
                     template_svc.validate_template(data.message_template)
                 except template_svc.TemplateError as exc:
@@ -551,6 +830,22 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     raise HTTPException(
                         400,
                         f"activity must be one of: {', '.join(CAMPAIGN_ACTIVITIES)}")
+                if (data.activity == ACTIVITY_UNFOLLOW
+                        and (campaign.get("platform") or "tiktok") not in UNFOLLOW_PLATFORMS):
+                    raise HTTPException(
+                        400, "Unfollowing works on TikTok and Instagram only, for now")
+                # Once anyone has been worked on, the rest of the list was
+                # picked for the old activity: a follow campaign switched to
+                # unfollow ran its 320 not-yet-followed people as unfollows
+                # (2026-09-28) instead of undoing the 665 it had followed.
+                if data.activity != campaign.get("activity") and await _has_worked(
+                        database, campaign_id):
+                    raise HTTPException(400, (
+                        "This campaign has already worked on people, so what it does can't "
+                        "change — the rest of its list would be done the new way. "
+                        + ("To undo its follows, use “Unfollow everyone it followed”."
+                           if data.activity == ACTIVITY_UNFOLLOW
+                           else "Start a new campaign for that instead.")))
                 updates["activity"] = data.activity
             if data.target_url is not None:
                 updates["target_url"] = data.target_url.strip() or None
@@ -600,6 +895,85 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             ),
         )
         return summary
+
+    @router.post("/campaigns/{campaign_id}/unfollow-followed")
+    async def unfollow_followed(campaign_id: int, user: dict = Depends(get_current_user)):
+        """A new unfollow campaign for everyone this follow campaign followed,
+        in the order they were followed.
+
+        Follow jobs that succeeded with `sent`, and requests it sent to
+        private accounts (`follow_requested`) — accepted ones are unfollowed,
+        waiting ones withdrawn. Already following is left out: that wasn't
+        this campaign's follow to undo. The same accounts are
+        assigned, so each person is unfollowed by the account that followed
+        them (the worker holds to that either way). Created as a draft: it
+        does nothing until it's started.
+        """
+        database = await db.get_db()
+        try:
+            source = await _own_campaign(database, campaign_id, user)
+            if (source.get("activity") or ACTIVITY_MESSAGE) != ACTIVITY_FOLLOW:
+                raise HTTPException(400, "Only a follow campaign has people to unfollow")
+            platform = source.get("platform") or "tiktok"
+            if platform not in UNFOLLOW_PLATFORMS:
+                raise HTTPException(400, "Unfollowing works on TikTok and Instagram only")
+            # In the order they were followed, the first follow first: the
+            # list is imported in this order and the queue works it in list
+            # order, so the oldest follows are undone first.
+            rows = (await database.session.execute(text(
+                "SELECT username, profile_url FROM ("
+                "  SELECT DISTINCT ON (lower(t.username)) t.username, t.profile_url, "
+                "         COALESCE(j.completed_at, t.sent_at, j.updated_at) AS followed_at "
+                "    FROM outreach_targets t JOIN outreach_jobs j ON j.target_id = t.id "
+                "   WHERE t.campaign_id = :cid AND j.status = :succeeded "
+                "     AND j.result_status IN (:sent, :requested) "
+                "   ORDER BY lower(t.username), followed_at"
+                ") followed ORDER BY followed_at, username"
+            ), {"cid": campaign_id, "succeeded": JOB_SUCCEEDED, "sent": RESULT_SENT,
+                "requested": RESULT_FOLLOW_REQUESTED})).all()
+            if not rows:
+                raise HTTPException(400, "This campaign hasn't followed anyone yet")
+
+            # One unfollow campaign per follow campaign. Clicking again adds
+            # the people followed since — the importer skips anyone already
+            # on it — instead of a second list repeating the first.
+            existing = (await database.session.execute(text(
+                "SELECT id FROM outreach_campaigns WHERE source_campaign_id = :cid "
+                "   AND activity = :unfollow ORDER BY id DESC LIMIT 1"
+            ), {"cid": campaign_id, "unfollow": ACTIVITY_UNFOLLOW})).first()
+            csv_text = "username,profile_url\n" + "".join(
+                f"{r[0]},{r[1] or ''}\n" for r in rows)
+            if existing:
+                target_id = int(existing[0])
+                summary = await importer.import_targets(database, target_id, csv_text, platform=platform)
+                added = int(summary.get("ready", 0))
+                if added:
+                    await db.log_outreach_audit(
+                        database, AUDIT_TARGETS_IMPORTED, "campaign", target_id, user_id=user["id"],
+                        detail=f"{added} newly followed from campaign {campaign_id}",
+                    )
+                row = await db.get_outreach_campaign(database, target_id)
+                return {"campaign": _campaign_public(dict(row)), "people": added, "created": False}
+
+            name = f"Unfollow — {source.get('name') or f'campaign {campaign_id}'}"[:200]
+            new_id = await db.create_outreach_campaign(
+                database, user_id=source.get("user_id") or user["id"], name=name,
+                description=f"Everyone “{source.get('name')}” followed.",
+                message_template="", platform=platform, activity=ACTIVITY_UNFOLLOW,
+                status=CAMPAIGN_DRAFT, source_campaign_id=campaign_id,
+            )
+            summary = await importer.import_targets(database, new_id, csv_text, platform=platform)
+            for account_id in await db.get_campaign_account_ids(database, campaign_id):
+                await db.assign_account_to_campaign(database, new_id, account_id)
+            await db.log_outreach_audit(
+                database, AUDIT_CAMPAIGN_CREATED, "campaign", new_id, user_id=user["id"],
+                detail=f"{name}: {summary.get('ready', len(rows))} people from campaign {campaign_id}",
+            )
+            row = await db.get_outreach_campaign(database, new_id)
+            return {"campaign": _campaign_public(dict(row)), "people": summary.get("ready", len(rows)),
+                    "created": True}
+        finally:
+            await database.close()
 
     @router.post("/campaigns/{campaign_id}/import")
     async def import_targets_file(
@@ -654,7 +1028,36 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             await database.close()
 
     @router.get("/campaigns/{campaign_id}/export.csv")
-    async def export_results(campaign_id: int, user: dict = Depends(get_current_user)):
+    async def export_results(
+        campaign_id: int,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+        links_only: bool = False,
+        user: dict = Depends(get_current_user),
+    ):
+        """The campaign's targets as CSV, filtered the way the page asks.
+
+        `status` is a comma-separated list of target statuses — the usual
+        ask is "just the ones still to do" or "just the skipped", and
+        exporting all seven thousand to filter them in a spreadsheet is
+        what people were doing instead.
+
+        `limit` caps the rows. `links_only` drops the bookkeeping columns
+        and leaves the handle and the profile link, which is the shape you
+        want when the export is going somewhere that takes a list of links.
+        """
+        wanted: set[str] = set()
+        if status:
+            wanted = {s.strip().lower() for s in status.split(",") if s.strip()}
+            unknown = sorted(wanted - set(TARGET_STATUSES))
+            if unknown:
+                raise HTTPException(
+                    400,
+                    f"Unknown status: {', '.join(unknown)}. Known: "
+                    f"{', '.join(TARGET_STATUSES)}")
+        if limit is not None and limit < 1:
+            raise HTTPException(400, "limit must be 1 or more")
+
         database = await db.get_db()
         try:
             campaign = await _own_campaign(database, campaign_id, user)
@@ -666,23 +1069,50 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         finally:
             await database.close()
 
+        platform = campaign.get("platform") or importer.DEFAULT_PLATFORM
+        selected = [dict(r) for r in rows
+                    if not wanted or (r["status"] or "").lower() in wanted]
+        if limit is not None:
+            selected = selected[:limit]
+
         buffer = io.StringIO()
         writer = csv.writer(buffer)
-        writer.writerow([
-            "username", "profile_url", "status", "attempts",
-            "sending_account", "last_attempt_at", "sent_at", "error_message",
-        ])
-        for row in rows:
-            item = dict(row)
+        if links_only:
+            writer.writerow(["username", "profile_url"])
+        else:
             writer.writerow([
-                item.get("username"), item.get("profile_url"), item.get("status"),
+                "username", "profile_url", "status", "attempts",
+                "sending_account", "last_attempt_at", "sent_at", "error_message",
+            ])
+        for item in selected:
+            # Stored URLs are absolute and platform-correct today, but a
+            # list imported as bare handles would have none — and an export
+            # of blanks is worse than useless when the whole point is the
+            # link. Rebuilt from the campaign's platform when it is missing.
+            link = (item.get("profile_url") or "").strip()
+            if not link:
+                link = importer.profile_url_for(item.get("username") or "", platform)
+            if links_only:
+                writer.writerow([item.get("username"), link])
+                continue
+            writer.writerow([
+                item.get("username"), link, item.get("status"),
                 item.get("attempts"),
                 accounts.get(item.get("assigned_account_id") or -1, ""),
                 item.get("last_attempt_at") or "", item.get("sent_at") or "",
                 (item.get("error_message") or "").replace("\n", " "),
             ])
         buffer.seek(0)
-        filename = f"outreach-campaign-{campaign_id}.csv"
+        # The filename says what is in it, so three exports taken a minute
+        # apart are still tellable apart in a downloads folder.
+        parts = [f"outreach-campaign-{campaign_id}", platform]
+        if wanted:
+            parts.append("-".join(sorted(wanted)))
+        if links_only:
+            parts.append("links")
+        if limit is not None:
+            parts.append(str(len(selected)))
+        filename = "-".join(parts) + ".csv"
         return StreamingResponse(
             iter([buffer.getvalue()]),
             media_type="text/csv",
@@ -694,10 +1124,15 @@ def build_router(get_current_user, admin_required) -> APIRouter:
     async def _preflight(database, campaign: dict) -> list[str]:
         """Reasons this campaign cannot start. Empty list means go."""
         problems: list[str] = []
-        try:
-            template_svc.validate_template(campaign.get("message_template") or "")
-        except template_svc.TemplateError as exc:
-            problems.append(str(exc))
+        # Only a message campaign sends a message. Checking the template on
+        # the others refused every follow or unfollow campaign made from the
+        # current dialog, which stores no message for them — "Message
+        # template is empty" on a campaign that has none by design.
+        if (campaign.get("activity") or ACTIVITY_MESSAGE) == ACTIVITY_MESSAGE:
+            try:
+                template_svc.validate_template(campaign.get("message_template") or "")
+            except template_svc.TemplateError as exc:
+                problems.append(str(exc))
         counts = await db.count_outreach_targets(database, campaign["id"])
         if counts.get("queued", 0) + counts.get("paused", 0) == 0:
             problems.append(
@@ -706,9 +1141,29 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 else "No queued targets — import a list first"
             )
         if not await account_mgr.eligible_account_ids(database, campaign):
+            phone_only = any(
+                (r.get("via") or ACCOUNT_VIA_BROWSER) == ACCOUNT_VIA_PHONE and r.get("enabled")
+                for r in await db.get_sending_accounts(
+                    database, user_id=campaign.get("user_id"), platform=campaign.get("platform"))
+            ) and not account_mgr.phone_ok(campaign)
             problems.append(
+                ("Phone accounts can't send images yet — remove the image, or use an "
+                 "account signed in on the browser"
+                 if campaign.get("attachment_path") else
+                 "Phone accounts only do TikTok follows, unfollows and messages for now — "
+                 "this campaign needs an account signed in on the browser")
+                if phone_only else
                 "No enabled sending account for this campaign — add one, or "
                 "re-enable a paused account"
+            )
+        refused = campaign.get("refused_template")
+        if refused and refused == (campaign.get("message_template") or ""):
+            # Resuming on the same words sends them into the same refusal,
+            # one flagged message at a time, from an account that did
+            # nothing wrong.
+            problems.append(
+                "The platform refused this exact message — change the wording "
+                "before starting again"
             )
         return problems
 
@@ -731,9 +1186,22 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 raise HTTPException(400, {"errors": problems})
             settings = await cfg.get_all(database)
             created = await job_queue.start_campaign(database, campaign, settings)
+            # Starting by hand clears a platform cooldown, exactly as
+            # resuming does. Without this the campaign runs with a deadline
+            # still set on it: the countdown does not show because the
+            # status is `running`, and when that deadline passes the sweep
+            # "resumes" a campaign that never stopped and logs a cooldown
+            # clearing that nobody was waiting on.
+            await db.update_outreach_campaign(
+                database, campaign_id, paused_until=None, paused_reason=None,
+                refused_template=None)
             await db.log_outreach_audit(
                 database, AUDIT_CAMPAIGN_STARTED, "campaign", campaign_id,
-                user_id=user["id"], detail=f"queued {created} job(s)",
+                user_id=user["id"],
+                detail=(f"queued {created} job(s)"
+                        + (f"; cleared a platform cooldown that had "
+                           f"{_remaining_phrase(campaign.get('paused_until'))} left"
+                           if campaign.get("paused_until") else "")),
             )
             row = await db.get_outreach_campaign(database, campaign_id)
             return {"ok": True, "jobs_queued": created, "campaign": _campaign_public(dict(row))}
@@ -766,9 +1234,22 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 raise HTTPException(400, {"errors": problems})
             settings = await cfg.get_all(database)
             created = await job_queue.resume_campaign(database, campaign, settings)
+            # Resuming by hand overrides a platform cooldown. The operator
+            # can see what the platform said and may know better — the app
+            # tried it again on their say-so, not on the clock's. Clearing
+            # the deadline also stops the sweep from "resuming" a campaign
+            # that is already running and logging a cooldown that expired
+            # after somebody had already dealt with it.
+            await db.update_outreach_campaign(
+                database, campaign_id, paused_until=None, paused_reason=None,
+                refused_template=None)
             await db.log_outreach_audit(
                 database, AUDIT_CAMPAIGN_RESUMED, "campaign", campaign_id,
-                user_id=user["id"], detail=f"queued {created} job(s)",
+                user_id=user["id"],
+                detail=(f"queued {created} job(s)"
+                        + (f"; cleared a platform cooldown that had "
+                           f"{_remaining_phrase(campaign.get('paused_until'))} left"
+                           if campaign.get("paused_until") else "")),
             )
             row = await db.get_outreach_campaign(database, campaign_id)
             return {"ok": True, "jobs_queued": created, "campaign": _campaign_public(dict(row))}
@@ -970,6 +1451,124 @@ def build_router(get_current_user, admin_required) -> APIRouter:
     # Sending accounts
     # =====================================================================
 
+    @router.get("/devices")
+    async def list_devices(user: dict = Depends(get_current_user)):
+        """Phones attached to the machine running the worker."""
+        from services.outreach.browser.android_tiktok import connected_phones
+
+        return await connected_phones()
+
+    # =====================================================================
+    # The phone app — TikTok follows without a cable (services/outreach/companion.py)
+    # =====================================================================
+
+    def _device(device_id: str) -> str:
+        device = (device_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{16,64}", device):
+            raise HTTPException(400, "That is not a phone id this app would send")
+        return device
+
+    @router.get("/companion/accounts")
+    async def companion_accounts(device_id: str = Query(...),
+                                 user: dict = Depends(get_current_user)):
+        """The caller's TikTok accounts, and which phone each one follows through."""
+        device = _device(device_id)
+        database = await db.get_db()
+        try:
+            rows = await db.get_sending_accounts(database, user_id=_scope(user))
+            out = []
+            for r in rows:
+                a = dict(r)
+                if (a.get("platform") or "") != "tiktok" or a.get("purpose") == "discovery":
+                    continue
+                linked = a.get("companion_device")
+                out.append({
+                    "id": a["id"], "name": a["name"], "enabled": a.get("enabled"),
+                    "status": a.get("status"), "paused_reason": a.get("paused_reason"),
+                    "handle": a.get("device_handle"),
+                    "linked": "this" if linked == device else ("other" if linked else None),
+                    "seen_at": _tag_utc({"t": a.get("companion_seen_at")})["t"],
+                })
+            return out
+        finally:
+            await database.close()
+
+    @router.post("/companion/link")
+    async def companion_link(data: CompanionLink, user: dict = Depends(get_current_user)):
+        """This phone does this account's TikTok follows, signed in as `handle`."""
+        device = _device(data.device_id)
+        handle = (data.handle or "").strip().lstrip("@")
+        if not re.fullmatch(r"[\w.]{1,30}", handle):
+            raise HTTPException(400, "That does not look like a TikTok handle")
+        database = await db.get_db()
+        try:
+            account = await _own_account(database, data.account_id, user)
+            if account.get("platform") != "tiktok":
+                raise HTTPException(400, "Only TikTok accounts follow through the phone app")
+            await db.update_sending_account(
+                database, data.account_id, companion_device=device, device_handle=handle,
+                via=ACCOUNT_VIA_PHONE)
+            await db.log_outreach_audit(
+                database, AUDIT_ACCOUNT_UPDATED, "account", data.account_id,
+                user_id=user["id"], detail=f"phone app linked for follows as @{handle}")
+            return {"ok": True}
+        finally:
+            await database.close()
+
+    @router.post("/companion/unlink/{account_id}")
+    async def companion_unlink(account_id: int, data: CompanionDevice,
+                               user: dict = Depends(get_current_user)):
+        device = _device(data.device_id)
+        database = await db.get_db()
+        try:
+            account = await _own_account(database, account_id, user)
+            if account.get("companion_device") != device:
+                raise HTTPException(409, "This account isn't linked to this phone")
+            await db.update_sending_account(database, account_id, companion_device=None)
+            await db.log_outreach_audit(
+                database, AUDIT_ACCOUNT_UPDATED, "account", account_id,
+                user_id=user["id"], detail="phone app unlinked")
+            return {"ok": True}
+        finally:
+            await database.close()
+
+    @router.post("/companion/next")
+    async def companion_next(data: CompanionDevice, user: dict = Depends(get_current_user)):
+        """The next follow for this phone, or none. The phone asks every few seconds."""
+        device = _device(data.device_id)
+        database = await db.get_db()
+        try:
+            return {"task": await companion.claim(database, device, _scope(user))}
+        finally:
+            await database.close()
+
+    @router.post("/companion/tasks/{task_id}/result")
+    async def companion_result(task_id: int, data: CompanionResult,
+                               user: dict = Depends(get_current_user)):
+        device = _device(data.device_id)
+        if data.status not in companion.PHONE_RESULTS:
+            raise HTTPException(400, f"Unknown result {data.status!r}")
+        database = await db.get_db()
+        try:
+            # Only a phone that claimed the task under this user's account
+            # can answer it; `finish` checks the device and the state.
+            owner = (await database.session.execute(text(
+                "SELECT a.user_id FROM outreach_companion_tasks t "
+                "  JOIN outreach_sending_accounts a ON a.id = t.account_id WHERE t.id = :id"
+            ), {"id": task_id})).first()
+            if owner is None:
+                raise HTTPException(404, "Task not found")
+            if user.get("role") != "admin" and owner[0] != user["id"]:
+                raise HTTPException(403, "Access denied")
+            ok = await companion.finish(database, task_id, device, data.status,
+                                        data.error, data.detail)
+            if not ok:
+                # Expired, answered already, or claimed by another phone.
+                raise HTTPException(409, "That follow is no longer waiting for this phone")
+            return {"ok": True}
+        finally:
+            await database.close()
+
     @router.get("/accounts")
     async def list_accounts(user: dict = Depends(get_current_user)):
         database = await db.get_db()
@@ -1040,7 +1639,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
     ):
         database = await db.get_db()
         try:
-            await _own_account(database, account_id, user)
+            account = await _own_account(database, account_id, user)
             updates: dict[str, Any] = {}
             if data.name is not None:
                 if not data.name.strip():
@@ -1058,6 +1657,22 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 updates["proxy_url_encrypted"] = (
                     encrypt_session(data.proxy_url.strip()) if proxy else None
                 )
+            if data.device_serial is not None:
+                updates["device_serial"] = data.device_serial.strip() or None
+            if data.device_handle is not None:
+                handle = data.device_handle.strip().lstrip("@")
+                if handle and not re.fullmatch(r"[\w.]{1,30}", handle):
+                    raise HTTPException(400, "That does not look like a TikTok handle")
+                updates["device_handle"] = handle or None
+            if data.via is not None:
+                if data.via not in ACCOUNT_VIAS:
+                    raise HTTPException(400, f"via must be one of: {', '.join(ACCOUNT_VIAS)}")
+                if data.via == ACCOUNT_VIA_PHONE:
+                    if account.get("platform") not in PHONE_PLATFORMS:
+                        raise HTTPException(400, "Only TikTok accounts can work through the phone app yet")
+                    if not (updates.get("device_handle") or account.get("device_handle")):
+                        raise HTTPException(400, "Enter the TikTok username the phone is signed in as")
+                updates["via"] = data.via
             if data.purpose is not None:
                 if data.purpose not in ACCOUNT_PURPOSES:
                     raise HTTPException(
@@ -1154,8 +1769,8 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         if not crypto_available():
             raise HTTPException(
                 500,
-                "Session encryption is not configured — set ICREATE_OUTREACH_SECRET "
-                "(or ICREATE_JWT_SECRET) on the backend",
+                "Session encryption is not configured on the backend — its "
+                "session secret has to be set before an account can be signed in",
             )
         raw = data.session_state
         if isinstance(raw, (dict, list)):
@@ -1482,14 +2097,13 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             )
             budgets = []
             for account in accounts:
+                # Still reported, because knowing how hard an account has
+                # been worked today is useful. It no longer stops anything.
                 used = await discovery.visited_today(database, int(account["id"]))
                 budgets.append({
                     "id": account["id"],
                     "name": account["name"],
                     "used_today": used,
-                    "remaining_today": max(
-                        int(settings["outreach_discovery_daily_cap"]) - used, 0
-                    ),
                 })
         finally:
             await database.close()
@@ -1506,7 +2120,6 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             "unavailable_reason": reason,
             "busy": discovery.any_running(),
             "accounts": budgets,
-            "daily_cap": int(settings["outreach_discovery_daily_cap"]),
             "max_per_search": int(settings["outreach_discovery_max_per_search"]),
         }
 
@@ -1549,10 +2162,11 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     "INSERT INTO outreach_lead_searches "
                     "  (user_id, campaign_id, platform, niche, location, "
                     "   interests, wanted, include_commenters, include_likers, "
-                    "   enrich_profiles, seed_accounts, account_id, status) "
+                    "   include_replies, enrich_profiles, seed_accounts, "
+                    "   account_id, status) "
                     "VALUES (:uid, :cid, :platform, :niche, :loc, :interests, "
-                    "        :wanted, :commenters, :likers, :enrich, :seeds, "
-                    "        :aid, :status) RETURNING id"
+                    "        :wanted, :commenters, :likers, :replies, :enrich, "
+                    "        :seeds, :aid, :status) RETURNING id"
                 ),
                 {
                     "uid": user["id"], "cid": campaign_id, "platform": platform,
@@ -1562,6 +2176,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     "wanted": max(1, int(data.wanted or 50)),
                     "commenters": bool(data.include_commenters),
                     "likers": bool(data.include_likers),
+                    "replies": bool(data.include_replies),
                     "enrich": bool(data.enrich_profiles),
                     "seeds": (data.seed_accounts or "").strip() or None,
                     "aid": int(account["id"]), "status": discovery.STATUS_QUEUED,
@@ -1577,6 +2192,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 "interests": data.interests, "wanted": data.wanted,
                 "include_commenters": bool(data.include_commenters),
                 "include_likers": bool(data.include_likers),
+                "include_replies": bool(data.include_replies),
                 "enrich_profiles": bool(data.enrich_profiles),
             }
         finally:
@@ -1631,14 +2247,41 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             await database.close()
         if not row:
             raise HTTPException(404, "No such search.")
-        return {"ok": True, "was_running": discovery.cancel(search_id)}
+        was_running = discovery.cancel(search_id)
+        if not was_running:
+            # The row says `running` and there is no task behind it — the
+            # process that owned it is gone. Nothing else will ever finish
+            # that row, so Stop has to, or it stays "running" forever and
+            # the button goes on doing nothing every time it is pressed.
+            database = await db.get_db()
+            try:
+                await database.session.execute(
+                    text(
+                        "UPDATE outreach_lead_searches "
+                        "   SET status = :cancelled, "
+                        "       message = 'Stopped. The run was no longer "
+                        "active — nothing was lost.', "
+                        "       finished_at = (NOW() AT TIME ZONE 'UTC') "
+                        " WHERE id = :id AND status IN ('queued', 'running')"
+                    ),
+                    {"id": search_id, "cancelled": discovery.STATUS_CANCELLED},
+                )
+                await database.session.commit()
+            finally:
+                await database.close()
+        return {"ok": True, "was_running": was_running}
 
     @router.get("/leads/searches/{search_id}/leads")
     async def list_leads(
         search_id: int, user: dict = Depends(get_current_user),
-        limit: int = Query(500, ge=1, le=2000),
+        limit: Optional[int] = Query(None, ge=1),
     ):
-        """What a search found, best first. Unscored leads sort last."""
+        """Everything a search found, best first. Unscored leads sort last.
+
+        No limit unless one is asked for (`LIMIT NULL` is no limit). A
+        default of 500 once made a 638-lead search show 500 when it stopped,
+        and "Select all" import 500 of them.
+        """
         database = await db.get_db()
         try:
             rows = (await database.session.execute(
@@ -1658,7 +2301,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
     async def pending_leads(
         platform: str = Query("instagram"),
         user: dict = Depends(get_current_user),
-        limit: int = Query(1000, ge=1, le=5000),
+        limit: Optional[int] = Query(None, ge=1),
     ):
         """Leads found by past searches that never made it into a campaign.
 

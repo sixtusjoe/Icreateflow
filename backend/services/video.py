@@ -134,6 +134,7 @@ async def build_platform_video(
     output_path: str,
     platform: str,
     music_path: str | None = None,
+    slide_duration: float | None = None,
     transition_duration: float = 0.5,
     fps: int = 30,
 ) -> str:
@@ -142,6 +143,10 @@ async def build_platform_video(
     Computes a per-slide dwell time that keeps total duration <= the
     platform's max_duration; falls back to the base 3.0s dwell otherwise.
     Delegates the actual ffmpeg invocation to build_video.
+
+    `slide_duration` is the workspace default from Settings and replaces the
+    profile's starting dwell. The cap still wins: a longer dwell that would
+    overrun Shorts is shortened here exactly as the profile's own would be.
     """
     profile = PLATFORM_PROFILES.get(platform)
     if not profile:
@@ -151,7 +156,7 @@ async def build_platform_video(
     if n < 2:
         raise ValueError("Need at least 2 slides to create a video")
 
-    dwell = profile["slide_duration"]
+    dwell = slide_duration if slide_duration and slide_duration > 0 else profile["slide_duration"]
     cap = profile["max_duration"]
     # Duration with the default dwell.
     total = get_video_duration(n, dwell, transition_duration)

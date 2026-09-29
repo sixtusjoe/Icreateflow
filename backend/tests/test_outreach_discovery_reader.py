@@ -377,3 +377,78 @@ async def test_a_row_that_will_not_save_does_not_take_the_run_down(
     )
 
     assert await _row(database, search_id) is None
+
+
+# --- a named account: its followers first ----------------------------------------
+
+
+class _OrderDriver:
+    """Records which reader ran, and hands back distinct people from each."""
+
+    def __init__(self, followers: int):
+        self.calls: list[str] = []
+        self._followers = followers
+
+    async def startup(self):
+        return None
+
+    async def shutdown(self):
+        return None
+
+    async def discover_followers(self, payload, *, seeds, limit, on_found=None, exclude=(), **_):
+        self.calls.append("followers")
+        out = [{"username": f"follower{i}", "profile_url": f"https://x.com/follower{i}",
+                "source": f"followers:@{seeds[0]}"} for i in range(min(self._followers, limit))]
+        for lead in out:
+            if on_found:
+                await on_found(lead)
+        return out
+
+    async def discover_from_engagement(self, payload, *, seeds, limit, on_found=None, exclude=(), **_):
+        self.calls.append(("engagement", limit))
+        out = [{"username": f"liker{i}", "profile_url": f"https://x.com/liker{i}",
+                "source": f"engagement:@{seeds[0]}"} for i in range(limit)]
+        for lead in out:
+            if on_found:
+                await on_found(lead)
+        return out
+
+
+async def _seed_run(database, user, monkeypatch, followers: int, wanted: int):
+    from services.outreach import discovery, display_pool
+
+    fake = _OrderDriver(followers)
+    monkeypatch.setattr(discovery, "get_driver", lambda *a, **k: fake)
+
+    async def _no_screen():
+        return None
+    monkeypatch.setattr(display_pool, "acquire", _no_screen)
+
+    search_id = (await database.session.execute(text(
+        "INSERT INTO outreach_lead_searches "
+        "  (user_id, campaign_id, platform, niche, wanted, status, seed_accounts) "
+        "VALUES (:uid, NULL, 'x', '', :w, 'running', 'https://x.com/allergictoguac?s=11') "
+        "RETURNING id"), {"uid": user["id"], "w": wanted})).scalar_one()
+    await database.session.commit()
+    search = dict((await database.session.execute(text(
+        "SELECT * FROM outreach_lead_searches WHERE id=:s"), {"s": search_id})).mappings().first())
+    settings = {"outreach_discovery_max_per_search": 1000, "outreach_discovery_interval_seconds": 0,
+                "outreach_discovery_scroll_rounds": 4, "outreach_headless": 1}
+    run = discovery.Run(search_id=int(search_id), wanted=wanted)
+    await discovery._run(search, {"id": 1, "name": "reader"}, settings, run)
+    return fake, run
+
+
+async def test_a_named_account_has_its_followers_read_first(database, user, monkeypatch):
+    """Search 47 was stopped part-way through 25 posts and never reached the
+    follower list — the one thing the operator named the account for."""
+    fake, run = await _seed_run(database, user, monkeypatch, followers=80, wanted=200)
+    assert fake.calls[0] == "followers"
+    # The posts fill only what the followers left short.
+    assert fake.calls[1] == ("engagement", 120)
+    assert run.found == 200
+
+
+async def test_posts_are_not_read_when_the_followers_were_enough(database, user, monkeypatch):
+    fake, _ = await _seed_run(database, user, monkeypatch, followers=80, wanted=50)
+    assert fake.calls == ["followers"]

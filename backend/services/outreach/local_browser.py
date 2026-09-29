@@ -39,9 +39,15 @@ def unavailable_reason(what: str) -> Optional[str]:
     if not is_enabled():
         return (
             f"{what} is switched off on this host. It opens a real browser "
-            f"window, so it is only enabled where someone can see it — set "
-            f"{FLAG}=1 when running the app locally."
+            f"window, so it only runs on a machine someone is sitting at — "
+            f"turn on local browser mode in the backend's environment file "
+            f"and restart it."
         )
+        # The flag's actual name is FLAG above, deliberately not repeated
+        # here: this string is read by whoever is using the app, and a bare
+        # environment variable in it reads as an error rather than an
+        # instruction. Whoever edits the environment file is reading this
+        # module, not the screen.
     try:
         import playwright.async_api  # noqa: F401
     except ImportError:

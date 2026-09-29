@@ -332,6 +332,14 @@ class AdminUserUpdate(BaseModel):
     role: Optional[str] = None
     status: Optional[str] = None
     name: Optional[str] = None
+    # The address they sign in with. The column has a unique index, so the
+    # endpoint checks for a clash and says so rather than letting the driver
+    # raise something the caller cannot read.
+    email: Optional[str] = None
+    # Whether the app is allowed to email them at all. `False` is a real
+    # value here, which is why the endpoint below keeps booleans rather than
+    # dropping everything falsy.
+    email_notifications: Optional[bool] = None
 
 class BrandCreate(BaseModel):
     name: str
@@ -832,7 +840,15 @@ async def admin_approve_user(user_id: int, admin: dict = Depends(admin_required)
 async def admin_update_user(user_id: int, data: AdminUserUpdate, admin: dict = Depends(admin_required)):
     database = await db.get_db()
     try:
+        # `is not None` rather than a truth test: turning email off sends
+        # False, and a falsy check would silently drop it.
         updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        email = (updates.get("email") or "").strip().lower()
+        if email:
+            clash = await db.get_user_by_email(database, email)
+            if clash and int(dict(clash)["id"]) != user_id:
+                raise HTTPException(400, "Another account already uses that email")
+            updates["email"] = email
         if updates:
             await db.update_user(database, user_id, **updates)
         user = await db.get_user(database, user_id)
@@ -1121,9 +1137,36 @@ async def admin_delete_user(user_id: int, admin: dict = Depends(admin_required))
             await database.execute("DELETE FROM posts WHERE brand_id = ?", (bid,))
             await database.execute("DELETE FROM accounts WHERE brand_id = ?", (bid,))
         await database.execute("DELETE FROM brands WHERE user_id = ?", (user_id,))
+
+        # Artists, and the clipping side under them. Every child of `artists`
+        # carries ON DELETE CASCADE, so the database removes campaigns,
+        # variations, clips, audio and clip_posts on its own.
+        await database.execute("DELETE FROM artists WHERE user_id = ?", (user_id,))
+
+        # Outreach. These rows are foreign keys to users.id with no ON DELETE
+        # rule, so leaving them behind does not orphan them — it makes the
+        # whole delete fail with a foreign-key violation and a 500 the caller
+        # cannot act on. A person with a campaign was undeletable.
+        #
+        # Order matters, and it is the order of the arrows: leads hang off
+        # searches, targets and jobs off campaigns, and both of those point at
+        # sending accounts. Campaigns before accounts means nothing is still
+        # referring to an account when it goes.
+        #
+        # A campaign that is running right now is included. The worker may be
+        # holding one of its jobs; that job's row disappears underneath it and
+        # the claim fails harmlessly on write-back. Being mid-run is a thing to
+        # say on the confirm dialog, not a reason to refuse the delete.
+        await database.execute("DELETE FROM outreach_leads WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM outreach_lead_searches WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM outreach_campaigns WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM outreach_sending_accounts WHERE user_id = ?", (user_id,))
+        await database.execute("DELETE FROM outreach_templates WHERE user_id = ?", (user_id,))
+
         await database.execute("DELETE FROM music_tracks WHERE user_id = ?", (user_id,))
         await database.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
         await database.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        # One commit, so either the whole account goes or none of it does.
         await database.commit()
         return {"ok": True}
     finally:
@@ -2376,6 +2419,20 @@ async def get_post(post_id: int, user: dict = Depends(get_current_user)):
 
         outputs = await db.get_outputs(database, post_id)
         result["outputs"] = rows_to_list(outputs)
+        # A row is a record of a build, not proof the files survived it.
+        # Output can be cleared off disk while the row stays, and the editor
+        # then tells the operator everything is ready for a post that has
+        # nothing to send. One stat per path is worth not lying.
+        for o in result["outputs"]:
+            paths = [
+                o.get("video_path"),
+                o.get("youtube_video_path"),
+                o.get("instagram_video_path"),
+                o.get("facebook_video_path"),
+            ]
+            o["files_on_disk"] = any(p and Path(p).exists() for p in paths) or bool(
+                o.get("slides_dir") and Path(o["slides_dir"]).exists()
+            )
 
         brand_dict = row_to_dict(brand)
         if brand_dict:
@@ -2418,6 +2475,66 @@ async def delete_post(post_id: int, user: dict = Depends(get_current_user)):
                     shutil.rmtree(d, ignore_errors=True)
 
         return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.post("/api/posts/{post_id}/duplicate")
+async def duplicate_post(post_id: int, user: dict = Depends(get_current_user)):
+    """Copy a post into a fresh draft for today.
+
+    The slides point at the same files on disk — a copy is a starting
+    point, not a second set of uploads, and nothing here ever writes to a
+    master image in place. Variations are copied as `keep`/pending so the
+    new draft starts unapproved and unbuilt; outputs and the schedule slot
+    are deliberately not carried over.
+    """
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        cur = await database.execute(
+            "SELECT COALESCE(MAX(post_number), 0) + 1 AS next_num FROM posts WHERE brand_id = ? AND date = ?",
+            (post["brand_id"], today),
+        )
+        next_num = (await cur.fetchone())["next_num"]
+
+        new_id = await db.create_post(
+            database,
+            post["brand_id"],
+            today,
+            next_num,
+            caption=post["caption"] or "",
+            tiktok_url=post["tiktok_url"],
+            tiktok_sound_id=post["tiktok_sound_id"],
+            music_track_id=post["music_track_id"],
+            youtube_music_track_id=post["youtube_music_track_id"],
+            instagram_music_track_id=post["instagram_music_track_id"],
+            facebook_music_track_id=post["facebook_music_track_id"],
+        )
+
+        for s_row in await db.get_slides(database, post_id):
+            new_slide_id = await db.create_slide(
+                database,
+                new_id,
+                s_row["slide_number"],
+                s_row["type"],
+                title_text=s_row["title_text"],
+                body_text=s_row["body_text"],
+                cta_text=s_row["cta_text"],
+                master_image_path=s_row["master_image_path"],
+            )
+            cur_v = await database.execute(
+                "SELECT * FROM variations WHERE slide_id = ? ORDER BY account_id", (s_row["id"],)
+            )
+            for v in await cur_v.fetchall():
+                await db.create_variation(database, new_slide_id, v["account_id"], v["action"])
+
+        return row_to_dict(await db.get_post(database, new_id))
     finally:
         await database.close()
 
@@ -2919,6 +3036,8 @@ async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dic
         _font_weight = font_weight
         _text_style = text_style
 
+        _text_color = (await db.get_setting(database, "text_color") or "").strip() or "white"
+
         def _render_slide():
             _img = Image.open(_source).convert("RGB")
             _img_3x4 = overlay.resize_to_3x4(_img)
@@ -2926,6 +3045,7 @@ async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dic
                 _img_3x4 = overlay._apply_text_block(
                     _img_3x4, _custom_texts,
                     weight=_font_weight, text_style=_text_style,
+                    color=_text_color,
                 )
             _out_3x4 = Path(_output_path)
             _out_3x4.parent.mkdir(parents=True, exist_ok=True)
@@ -3045,18 +3165,23 @@ async def regenerate_single_video(post_id: int, data: RegenerateVideo, user: dic
         filename = f"video_{data.platform}.mp4" if data.platform else "video.mp4"
         video_path = str(out_dir / filename)
 
+        from services.generator import video_defaults
+        video_cfg = await video_defaults(database)
+
         if data.platform:
             await video.build_platform_video(
                 slide_paths=slide_paths,
                 output_path=video_path,
                 platform=data.platform,
                 music_path=music_path,
+                **video_cfg,
             )
         else:
             await video.build_video(
                 slide_paths=slide_paths,
                 output_path=video_path,
                 music_path=music_path,
+                **video_cfg,
             )
 
         # Update output record — platform-specific column when platform set,
@@ -4005,6 +4130,42 @@ async def clear_failed_outputs(post_id: int, user: dict = Depends(get_current_us
         await database.close()
 
 
+@app.post("/api/posts/{post_id}/accounts/{account_id}/output")
+async def ensure_output(post_id: int, account_id: int, user: dict = Depends(get_current_user)):
+    """Get — or create — the output row for one account on one post.
+
+    TikTok's settings are per (post, account) and live on that row, but the
+    generator only creates it when it renders. Choosing privacy and
+    disclosure is something an operator does *before* building, so the row
+    has to be able to exist first. The generator already updates an
+    existing row rather than inserting a second one, so this is safe to
+    call at any point.
+    """
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+
+        accounts = await db.get_accounts(database, post["brand_id"])
+        if not any(a["id"] == account_id for a in accounts):
+            raise HTTPException(404, "That account does not belong to this post's brand")
+
+        cur = await database.execute(
+            "SELECT * FROM outputs WHERE post_id = ? AND account_id = ?", (post_id, account_id)
+        )
+        row = await cur.fetchone()
+        if row:
+            return row_to_dict(row)
+
+        new_id = await db.create_output(database, post_id, account_id, posting_status="pending")
+        cur = await database.execute("SELECT * FROM outputs WHERE id = ?", (new_id,))
+        return row_to_dict(await cur.fetchone())
+    finally:
+        await database.close()
+
+
 @app.patch("/api/outputs/{output_id}/tiktok")
 async def update_output_tiktok(
     output_id: int,
@@ -4583,6 +4744,7 @@ async def get_stats(user: dict = Depends(get_current_user)):
             brands_n = await _count("SELECT COUNT(*) as count FROM brands")
             posts_today_n = await _count("SELECT COUNT(*) as count FROM posts WHERE date = ?", (today,))
             scheduled_n = await _count("SELECT COUNT(*) as count FROM posts WHERE status = 'scheduled'")
+            draft_n = await _count("SELECT COUNT(*) as count FROM posts WHERE status = 'draft'")
             total_posts_n = await _count("SELECT COUNT(*) as count FROM posts")
             accounts_n = await _count("SELECT COUNT(*) as count FROM accounts")
             artists_n = await _count("SELECT COUNT(*) as count FROM artists")
@@ -4599,6 +4761,10 @@ async def get_stats(user: dict = Depends(get_current_user)):
             )
             scheduled_n = await _count(
                 "SELECT COUNT(*) as count FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.status = 'scheduled' AND b.user_id = ?",
+                (uid,),
+            )
+            draft_n = await _count(
+                "SELECT COUNT(*) as count FROM posts p JOIN brands b ON p.brand_id = b.id WHERE p.status = 'draft' AND b.user_id = ?",
                 (uid,),
             )
             total_posts_n = await _count(
@@ -4632,6 +4798,7 @@ async def get_stats(user: dict = Depends(get_current_user)):
             "accounts": accounts_n,
             "posts_today": posts_today_n,
             "scheduled": scheduled_n,
+            "drafts": draft_n,
             "total_posts": total_posts_n,
             "artists": artists_n,
             "variations": variations_n,

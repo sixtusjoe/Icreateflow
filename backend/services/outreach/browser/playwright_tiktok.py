@@ -177,6 +177,18 @@ TIKTOK_SELECTORS: dict[str, Any] = {
     "comment_replies": (
         "[data-e2e='comment-reply-1']",
     ),
+    #: The same controls, under the name the *reading* side looks for.
+    #:
+    #: `_expand_replies` reads `expand_replies`, and TikTok only ever
+    #: defined `comment_replies` — which is the comment *campaign's* key.
+    #: So the reader returned 0 on the first line of that method and no
+    #: TikTok reply thread was ever opened by a harvest. Measured on a live
+    #: video: 64 of these controls on the page, all of them unclicked, on a
+    #: video whose 121 comments were 100 at the top level and the rest
+    #: inside the threads behind them.
+    "expand_replies": (
+        "[data-e2e='comment-reply-1']",
+    ),
     # --- leaving a comment --------------------------------------------
     # The box is a DraftJS editor, not an <input>: it has no value, and
     # setting one does nothing. It has to be clicked and typed into.
@@ -243,6 +255,19 @@ TIKTOK_SELECTORS: dict[str, Any] = {
         "text=You're sending messages too fast",
         "text=Too many attempts",
     ),
+    # Read for its *wording*, not to detect anything — `rate_limited` above
+    # already does the detecting. These are the sentences TikTok puts on
+    # screen when it cuts an action off, so the operator is shown what the
+    # platform said instead of our inference about a button that did not
+    # move. `_limit_notice` tries these first and falls back to the table
+    # above, so nothing breaks if the wording drifts.
+    "action_limited": (
+        "text=You are visiting too frequently",
+        "text=Daily limit reached",
+        "text=You have reached the daily limit",
+        "text=Too many requests",
+        "text=try again later",
+    ),
     # TikTok's human-verification puzzle. It renders *over* a perfectly
     # normal profile: the Message button is right there and visible, so
     # every check above passes and the click simply never lands. Without
@@ -297,6 +322,70 @@ class PlaywrightTikTokMessenger(PlaywrightMessenger):
     SEARCH_URL = "https://www.tiktok.com/search"
     SEARCH_QUERY_URL = "https://www.tiktok.com/search/user?q={q}"
     name = "playwright_tiktok"
+
+    #: The right-hand panel opens on "You may like". Until "Comments" is
+    #: chosen the comment control is not in the DOM, so the driver has to
+    #: choose it before looking for anything.
+    COMMENTS_BEHIND_TAB = True
+
+    #: TikTok accepts a follow, answers `status_code: 0`, turns the button
+    #: to "Following", and does not keep it. Measured 2026-09-23 on two
+    #: accounts, three attempts, none of which survived a reload. So on
+    #: this platform the button is not evidence and the profile is re-read.
+    FOLLOW_VERIFY_RELOAD = True
+    #: Following/Friends opens a dialog with Unfollow in it (the button
+    #: declares aria-haspopup="dialog"), measured 2026-09-24.
+    SUPPORTS_UNFOLLOW = True
+
+    async def _profile_follow_control(self, page):
+        """The profile's own Follow button — never a suggestion's.
+
+        Measured on a live profile, 2026-09-23: **21** elements matching
+        `[data-e2e='follow-button']`, every one of them visible and reading
+        "Follow". One belongs to the profile; the other twenty are the
+        suggested-accounts row. A selector cannot tell them apart — they
+        are the same markup, with the same hook, inside the same
+        `user-page` container.
+
+        Position does: the profile's control sits 71px under the handle at
+        `top: 107`, and the suggestions are a row at `top: 512`. So the
+        page is asked directly and the topmost one wins, then tagged so the
+        ordinary click path can use it — the same shape as X's override,
+        for the same reason.
+        
+        This mattered in both directions. `already_following` matched *any*
+        of the 21, so one suggested account you already follow made a real
+        target look done and it was skipped and recorded as a success.
+        """
+        label = await page.evaluate("""() => {
+            document.querySelectorAll('[data-icf-own-follow]').forEach(
+                el => el.removeAttribute('data-icf-own-follow'));
+            const all = [...document.querySelectorAll("[data-e2e='follow-button']")]
+                .filter(el => !el.closest("[role='dialog']"))
+                .filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                });
+            if (!all.length) return null;
+            all.sort((a, b) => a.getBoundingClientRect().top
+                             - b.getBoundingClientRect().top);
+            const el = all[0];
+            el.setAttribute('data-icf-own-follow', '1');
+            return (el.textContent || '').trim().toLowerCase();
+        }""")
+        if not label:
+            # Not rendered yet. The caller polls, and on this platform it
+            # needs to keep polling for a while — see FOLLOW_CONTROL_POLLS.
+            return None, None
+
+        locator = page.locator("[data-icf-own-follow='1']").first
+        # "Friends" is TikTok's mutual-follow state. It is still followed,
+        # and the control still unfollows, so it must never be pressed.
+        if label in ("following", "friends"):
+            return "following", locator
+        if label == "requested":
+            return "pending", locator
+        return "can_follow", locator
 
     #: How many times to alternate scrolling and opening reply threads.
     #: Opening threads makes the panel taller, which lets more top-level

@@ -239,6 +239,16 @@ X_SELECTORS: dict[str, Any] = {
         "text=Rate limit exceeded",
         "text=Try again later",
     ),
+    # The follow-specific wordings, which the table above does not carry —
+    # it was written for sending. Read for their text rather than to
+    # detect: `_limit_notice` prefers these and falls back to
+    # `rate_limited`, so this list only ever improves the message.
+    "action_limited": (
+        "text=You are unable to follow more people at this time",
+        "text=unable to follow more people",
+        "text=You've reached your daily limit",
+        "text=You are over the daily limit",
+    ),
     # X's identity check. A person has to clear it; the engine holds the
     # browser open while it is on screen rather than blaming the target.
     # The Arkose puzzle arrives in an iframe, so the frame is matched too.
@@ -401,6 +411,11 @@ class PlaywrightXMessenger(PlaywrightMessenger):
     SEARCH_URL = "https://x.com/explore"
     SEARCH_QUERY_URL = "https://x.com/search?q={q}&f=user"
     name = "playwright_x"
+
+    #: X serves no timeline to a headless browser — the page loads and the
+    #: feed is simply never populated, which reads as "found nothing" rather
+    #: than as an error. This is the one platform that needs the window.
+    HEADED_DISCOVERY = True
 
     async def profile_summary(self, page, username: str) -> dict[str, Any]:
         """Read a profile from the text of the page.

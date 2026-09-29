@@ -206,6 +206,22 @@ INSTAGRAM_SELECTORS: dict[str, Any] = {
         "text=Enter the code we sent",
         "text=Suspicious Login Attempt",
     ),
+    # Instagram says outright when it has cut an action off, and it is worth
+    # reading rather than inferring. Our own message for this was "The Follow
+    # button did not change after being pressed — the account has most likely
+    # hit its follow limit", which is a description of a symptom plus a
+    # guess. The operator confirmed the real one in the app: "follow limit
+    # reached". When the page is telling us the answer, report the answer.
+    "action_limited": (
+        "text=We limit how often you can do certain things",
+        "text=Try Again Later",
+        "text=Action Blocked",
+        "text=You're Temporarily Blocked",
+        "text=temporarily blocked",
+        "text=limit how often",
+        "text=Follow limit reached",
+        "text=follow limit",
+    ),
     "site_error": (
         "text=Something went wrong",
         "text=There's an issue and the page could not be loaded",
@@ -288,6 +304,8 @@ class PlaywrightInstagramMessenger(PlaywrightMessenger):
     """Instagram. The engine, plus the table above."""
 
     PLATFORM = "instagram"
+    #: Following opens a menu ending in Unfollow, measured 2026-09-24.
+    SUPPORTS_UNFOLLOW = True
     SELECTORS = INSTAGRAM_SELECTORS
     OVERLAY_DISMISS = INSTAGRAM_OVERLAY_DISMISS
     CHALLENGE_FRAME_HINTS = ("challenge", "checkpoint")
@@ -295,6 +313,77 @@ class PlaywrightInstagramMessenger(PlaywrightMessenger):
     SEARCH_URL = "https://www.instagram.com/explore/search/"
     SEARCH_QUERY_URL = "https://www.instagram.com/explore/search/keyword/?q={q}"
     name = "playwright_instagram"
+
+    async def _profile_follow_control(self, page):
+        """The profile's own Follow button — never a suggestion's.
+
+        The same trap X has, and it was found the same way. Instagram puts a
+        "Suggested for you" row under the profile header, and every entry in
+        it carries its own Follow/Following button built from the same
+        markup as the real one. The selector table is matched page-wide
+        (`page.locator(sel).first`), so a stranger's "Following" answers a
+        question asked about the target: before pressing it reads as
+        "already followed" and the real follow is skipped, and after
+        pressing it confirms a follow that never landed.
+
+        Both record the job as done while the account's following count
+        stays put. A run of 72 sends that moved the count by 36 is what it
+        looks like from outside — and, exactly as X's note predicted, it was
+        read as a follow limit first.
+
+        The difference is an ancestor, not anything a selector can see, so
+        the page is asked directly. The profile's own control is the topmost
+        one on the page: the header sits above the suggestions row. The
+        answer is tagged with an attribute so the ordinary click path can
+        use it, the same way X does it.
+        """
+        label = await page.evaluate("""() => {
+            document.querySelectorAll('[data-icf-own-follow]').forEach(
+                el => el.removeAttribute('data-icf-own-follow'));
+            // "Follow Back": they follow this account and it doesn't follow
+            // them. Missing it, the profile's own button went unseen — an
+            // unfollow that worked read as "could not tell" (13 people,
+            // 2026-09-28), and a follow could fall to a suggestion's
+            // "Follow" further down, a stranger.
+            const WANTED = ['follow', 'follow back', 'following', 'requested'];
+            // What a person sees, not textContent. The Following button
+            // carries a chevron whose SVG <title> is text too, so its
+            // textContent is "FollowingDown chevron icon" — which matched
+            // nothing, left a suggestion's plain "Follow" as the topmost
+            // match, and made every follow that landed read as a limit.
+            const label = el => ((el.innerText || el.textContent || '')
+                .replace(/\s+/g, ' ').trim().toLowerCase());
+            const all = Array.from(
+                document.querySelectorAll("button, [role='button']"))
+                .filter(el => WANTED.includes(label(el)))
+                // A control inside a dialog belongs to the dialog, not the
+                // profile behind it.
+                .filter(el => !el.closest("[role='dialog']"))
+                .filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                });
+            if (!all.length) return null;
+            // The header is above the suggestions row, always.
+            all.sort((a, b) => a.getBoundingClientRect().top
+                             - b.getBoundingClientRect().top);
+            const el = all[0];
+            el.setAttribute('data-icf-own-follow', '1');
+            return label(el);
+        }""")
+        if not label:
+            # No answer. `follow_target` falls back to the selector table,
+            # which is right for a page with only one control on it.
+            return None, None
+
+        locator = page.locator("[data-icf-own-follow='1']").first
+        if label == "following":
+            return "following", locator
+        # Private, and the request is already in. This control withdraws it,
+        # so it is returned to identify the state and never to be pressed.
+        if label == "requested":
+            return "pending", locator
+        return "can_follow", locator
 
     async def profile_summary(self, page, username: str) -> dict[str, Any]:
         """Read a profile from the text of the page.

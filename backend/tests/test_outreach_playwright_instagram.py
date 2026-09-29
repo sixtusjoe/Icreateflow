@@ -28,6 +28,8 @@ from services.outreach.browser.playwright_instagram import (  # noqa: E402
 )
 from services.outreach.constants import (  # noqa: E402
     ACCOUNT_FAULT_RESULTS,
+    RESULT_ALREADY_FOLLOWING,
+    RESULT_FOLLOW_REQUESTED,
     RESULT_MESSAGE_REFUSED,
     RESULT_MESSAGING_UNAVAILABLE,
     RESULT_SENT,
@@ -268,6 +270,120 @@ FOLLOW_UNLOCKS_MESSAGE = f"""
 </body></html>
 """
 
+#: Instagram's button as it really is after a follow, measured 2026-09-24:
+#: it *shows* "Following", but a dropdown chevron inside it carries an SVG
+#: <title>, so its textContent is "FollowingDown chevron icon". A driver
+#: matching textContent exactly never saw the follow land, called it a
+#: follow limit, and paused the campaign for six hours after every follow.
+_CHEVRON = ('<svg aria-label="Down chevron icon" width="12" height="12">'
+            '<title>Down chevron icon</title><path d="M0 0h12v12H0z"/></svg>')
+FOLLOW_CHEVRON = f"""
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions">
+    <button type="button" onclick="follow()"><div class="_ap3a">Follow</div></button>
+  </div>
+  <div style="margin-top:400px">
+    <p>Suggested for you</p>
+    <button type="button"><div>Follow</div></button>
+    <button type="button"><div>Follow</div></button>
+  </div>
+  <script>
+    function follow() {{
+      document.getElementById('actions').innerHTML =
+        '<button type="button" onclick="fetch(\\'/sent\\', {{method: \\'POST\\', body: \\'UNFOLLOWED\\'}})">'
+        + '<div class="_ap3a">Following</div>{_CHEVRON}</button>';
+    }}
+  </script>
+</body></html>
+"""
+
+#: Already followed, in the same real markup. Both pages carry the
+#: "Suggested for you" row: with the profile's own button unreadable, the
+#: topmost exact "Follow" on the page is a stranger's, and that is what
+#: the driver read as the profile still saying Follow.
+ALREADY_FOLLOWING_CHEVRON = f"""
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions">
+    <button type="button" onclick="fetch('/sent', {{ method: 'POST', body: 'UNFOLLOWED' }})">
+      <div class="_ap3a">Following</div>{_CHEVRON}
+    </button>
+  </div>
+  <div style="margin-top:400px">
+    <p>Suggested for you</p>
+    <button type="button"><div>Follow</div></button>
+    <button type="button"><div>Follow</div></button>
+  </div>
+</body></html>
+"""
+
+#: The follow lands on the server, but the page is slow to say so: the
+#: button has not changed by the time the driver stops watching it. Only a
+#: reload shows "Following". Measured 2026-09-24: @byisci was reported as a
+#: follow limit — and paused the campaign six hours — while followed.
+SLOW_FOLLOW = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions">
+    <button type="button" onclick="fetch('/sent', {method: 'POST', body: 'SLOWFOLLOWED'})">
+      <div>Follow</div></button>
+  </div>
+  <div style="margin-top:400px"><button type="button"><div>Follow</div></button></div>
+</body></html>
+"""
+SLOW_FOLLOWED = f"""
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><button type="button"><div>Following</div>{_CHEVRON}</button></div>
+  <div style="margin-top:400px"><button type="button"><div>Follow</div></button></div>
+</body></html>
+"""
+
+#: A real limit: the press is ignored, and a reload still says Follow.
+IGNORED_FOLLOW = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><button type="button"><div>Follow</div></button></div>
+</body></html>
+"""
+
+#: Unfollowing, as Instagram does it (measured 2026-09-24): Following opens
+#: a menu — Add to close friends list, Add to favorites, Mute, Restrict,
+#: Unfollow. `/unfollowme` remembers the unfollow; `/unfollowlies` flips its
+#: button and forgets, so only a reload tells the truth.
+_SUGGESTED = """<div style="margin-top:400px"><p>Suggested for you</p>
+  <button type="button" onclick="fetch('/sent',{method:'POST',body:'FOLLOWED-STRANGER'})"><div>Follow</div></button></div>"""
+_MENU = """<div role="dialog">
+  <button>Add to close friends list</button><button>Add to favorites</button>
+  <button>Mute</button><button>Restrict</button>
+  <button onclick="{action}">Unfollow</button></div>"""
+def _unfollow_page(record: bool, after: str = "Follow") -> str:
+    action = ("fetch('/sent',{method:'POST',body:'UNFOLLOWED'});" if record else "") + \
+        f"document.getElementById('actions').innerHTML='<button type=button><div>{after}</div></button>';" \
+        "document.getElementById('menu').innerHTML='';"
+    return f"""<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><button type="button"
+      onclick="document.getElementById('menu').innerHTML = document.getElementById('tpl').innerHTML">
+    <div>Following</div>{_CHEVRON}</button></div>
+  <div id="menu"></div>
+  <template id="tpl">{_MENU.format(action=action.replace('"', '&quot;'))}</template>
+  {_SUGGESTED}
+</body></html>"""
+#: They follow this account and it doesn't follow them: "Follow Back",
+#: with the suggestions' plain "Follow" buttons further down.
+FOLLOWS_BACK_PAGE = f"""<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><button type="button" onclick="fetch('/sent',{{method:'POST',body:'FOLLOWED'}})"><div>Follow Back</div></button></div>
+  {_SUGGESTED}
+</body></html>"""
+UNFOLLOWED_PAGE = f"""<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions"><button type="button" onclick="fetch('/sent',{{method:'POST',body:'FOLLOWED'}})"><div>Follow</div></button></div>
+  {_SUGGESTED}
+</body></html>"""
+
 #: Private. Follow turns into "Requested" and the profile stays shut — the
 #: request has to be accepted by a person before anything can be sent.
 PRIVATE_ACCOUNT = """
@@ -299,6 +415,41 @@ ALREADY_FOLLOWING = """
 </body></html>
 """
 
+
+#: A profile with a Follow button of its own, and — below it — Instagram's
+#: "Suggested for you" row, whose entries carry *their own* Follow and
+#: Following buttons built from the same markup.
+#:
+#: This is the Instagram version of the trap X's `_profile_follow_control`
+#: override exists for. The selector table is matched page-wide
+#: (`page.locator(sel).first`), so a "Following" button belonging to a
+#: suggestion can answer a question that was asked about the profile:
+#: before pressing it reads as "already followed" and the real follow is
+#: skipped; after pressing it confirms a follow that never landed. Either
+#: way the job is recorded as done and the account's following count does
+#: not move — which is what 72 sends and 36 follows looks like.
+SUGGESTIONS_BELOW = """
+<html><body>
+  <header><section><h2>alice</h2></section></header>
+  <div id="actions">
+    <button type="button" onclick="follow()"><div class="_ap3a">Follow</div></button>
+  </div>
+  <div id="suggested">
+    <h3>Suggested for you</h3>
+    <button type="button"><div class="_ap3a">Following</div></button>
+    <button type="button"><div class="_ap3a">Following</div></button>
+    <button type="button"><div class="_ap3a">Follow</div></button>
+  </div>
+  <script>
+    function follow() {
+      document.getElementById('actions').innerHTML =
+        '<button type="button"><div class="_ap3a">Following</div></button>';
+      fetch('/sent', { method: 'POST', body: 'FOLLOWED-ALICE' });
+    }
+  </script>
+</body></html>
+"""
+
 PAGES = {
     "/alice": SENDABLE,
     "/entersends": ENTER_SENDS,
@@ -310,6 +461,11 @@ PAGES = {
     "/followunlocks": FOLLOW_UNLOCKS_MESSAGE,
     "/private": PRIVATE_ACCOUNT,
     "/following": ALREADY_FOLLOWING,
+    "/followchevron": FOLLOW_CHEVRON,
+    "/slowfollow": SLOW_FOLLOW,
+    "/ignoredfollow": IGNORED_FOLLOW,
+    "/followingchevron": ALREADY_FOLLOWING_CHEVRON,
+    "/suggestions": SUGGESTIONS_BELOW,
     "/gone": MISSING_PROFILE,
     "/loggedout": LOGIN_WALL,
     "/refused": SEND_REFUSED,
@@ -329,6 +485,18 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body.encode())
             return
         body = PAGES.get(self.path, "<html><body>not found</body></html>")
+        if self.path == "/slowfollow" and "SLOWFOLLOWED" in RECEIVED:
+            body = SLOW_FOLLOWED
+        if self.path == "/unfollowme":
+            body = UNFOLLOWED_PAGE if "UNFOLLOWED" in RECEIVED else _unfollow_page(True)
+        if self.path == "/unfollowlies":
+            body = _unfollow_page(False)
+        if self.path == "/unfollowback":
+            body = FOLLOWS_BACK_PAGE if "UNFOLLOWED" in RECEIVED else _unfollow_page(True, "Follow Back")
+        if self.path == "/followsback":
+            body = FOLLOWS_BACK_PAGE
+        if self.path == "/notfollowed":
+            body = UNFOLLOWED_PAGE
         # Serve back what was submitted. The engine confirms a send by
         # reloading, so a stub that stores nothing would fail every send.
         # `/dock` is the exception: its conversation does not exist until it
@@ -740,3 +908,192 @@ async def test_a_tab_that_dies_is_replaced_not_reused(driver, site):
 
     assert result.success is True, result.error
     assert driver._pages[1] is not dead, "the closed tab was handed out again"
+
+
+# --- following, as its own campaign activity -------------------------------
+#
+# `follow_target` is not `_follow_first`. The first is a follow campaign; the
+# second is the follow that a *message* sometimes needs first. They were not
+# equally well served: `follow_target` asked only
+# `_profile_follow_control`, which is a hook that the base class answers with
+# `(None, None)` and only X overrides. So on Instagram every follow job ended
+# in `messaging_unavailable` — 1,000 of them on one campaign, with the
+# profiles opening one after another and nothing ever being followed.
+
+async def test_a_follow_campaign_actually_follows_on_instagram(driver, site):
+    """The bug, reproduced: a plain profile with a Follow button.
+
+    Instagram does not override `_profile_follow_control`, so before the
+    selector-table fallback existed this returned `messaging_unavailable`
+    and the profile was left unfollowed.
+    """
+    result = await driver.follow_target(
+        account(), target(site, "/followunlocks"))
+    assert result.success, (
+        f"a profile with a Follow button was not followed: "
+        f"{result.status} — {result.error}"
+    )
+    assert result.status == RESULT_SENT
+    assert "UNFOLLOWED" not in "".join(RECEIVED)
+
+
+async def test_a_follow_campaign_counts_an_already_followed_profile_as_done(
+    driver, site
+):
+    """Already followed is success, and the button is never pressed.
+
+    This is the half the operator noticed first: profiles they already
+    followed were opened, not marked, and reported as failures. The control
+    on this page is the one that *unfollows*, and it tells the server if it
+    is ever clicked.
+    """
+    result = await driver.follow_target(account(), target(site, "/following"))
+    assert result.success, (
+        f"an already-followed profile was not counted as done: {result.status}"
+    )
+    assert result.status == RESULT_ALREADY_FOLLOWING, (
+        "reported as a send, so a report cannot tell a follow that landed "
+        "from one that was never needed — which is how 56 'sent' turned out "
+        "to be 16 actual follows"
+    )
+    assert result.status != RESULT_SENT
+    assert result.detail.get("already") == "following"
+    assert "UNFOLLOWED" not in "".join(RECEIVED), (
+        "the Following control was pressed — that unfollows somebody"
+    )
+
+
+async def test_a_private_profile_is_requested_and_counted(driver, site):
+    """A request pending is done too — there is nothing further to press."""
+    result = await driver.follow_target(account(), target(site, "/private"))
+    assert result.success, f"a private profile was not handled: {result.status}"
+    assert result.status == RESULT_FOLLOW_REQUESTED, (
+        "a pending request is not a follow — the following count does not "
+        "move until a person accepts it, and they may never"
+    )
+
+
+async def test_a_profile_with_no_follow_control_still_reports_it(driver, site):
+    """The fallback must not turn a genuinely absent control into a success."""
+    result = await driver.follow_target(account(), target(site, "/gone"))
+    assert not result.success
+
+
+async def test_a_suggestions_row_cannot_answer_for_the_profile(driver, site):
+    """The profile's own Follow button must win over a suggestion's.
+
+    The page has one Follow button that belongs to @alice and three buttons
+    that belong to strangers, two of them reading "Following". A page-wide
+    match finds a stranger's first and concludes the job is already done.
+
+    The assertion is not on the status alone — a status can be right for the
+    wrong reason. The stub reports to the server when @alice's own button is
+    pressed, so this checks the follow actually happened.
+    """
+    result = await driver.follow_target(account(), target(site, "/suggestions"))
+    assert "FOLLOWED-ALICE" in "".join(RECEIVED), (
+        "the profile's own Follow button was never pressed — a suggestion's "
+        "'Following' button answered for it, and the job was recorded as done "
+        "while the account followed nobody"
+    )
+    assert result.success
+    assert result.status == RESULT_SENT, (
+        f"expected a real follow, got {result.status}"
+    )
+
+
+async def test_a_follow_is_seen_when_the_button_carries_an_icon(driver, site):
+    """The follow landed; the driver said "follow limit" and paused the
+    campaign for six hours — three times in two minutes on 2026-09-24,
+    on profiles that were all, in fact, followed."""
+    result = await driver.follow_target(account(), target(site, "/followchevron"))
+    assert result.status == RESULT_SENT, (
+        f"a follow that landed was reported as {result.status}: {result.error}")
+    assert "UNFOLLOWED" not in "".join(RECEIVED)
+
+
+async def test_an_already_followed_profile_with_the_icon_is_left_alone(driver, site):
+    result = await driver.follow_target(account(), target(site, "/followingchevron"))
+    assert result.status == RESULT_ALREADY_FOLLOWING, result.status
+    assert "UNFOLLOWED" not in "".join(RECEIVED), (
+        "the Following control was pressed — that unfollows somebody")
+
+
+async def test_a_follow_the_page_is_slow_to_show_is_checked_before_blaming_a_limit(
+        driver, site, monkeypatch):
+    """A limit pauses the campaign for hours, so it is not declared on a
+    button that simply had not updated yet. The profile is reloaded first."""
+    from services.outreach.browser import playwright_base
+    monkeypatch.setattr(playwright_base, "FOLLOW_CONFIRM_POLLS", 2)
+    result = await driver.follow_target(account(), target(site, "/slowfollow"))
+    assert "SLOWFOLLOWED" in RECEIVED, "the profile's own button was not pressed"
+    assert result.status == RESULT_SENT, (
+        f"a follow that landed was reported as {result.status}: {result.error}")
+
+
+async def test_a_real_limit_is_still_a_limit_after_the_reload(driver, site, monkeypatch):
+    from services.outreach.browser import playwright_base
+    from services.outreach.constants import RESULT_FOLLOW_LIMITED
+    monkeypatch.setattr(playwright_base, "FOLLOW_CONFIRM_POLLS", 2)
+    result = await driver.follow_target(account(), target(site, "/ignoredfollow"))
+    assert result.status == RESULT_FOLLOW_LIMITED, result.status
+
+
+# --- unfollowing -------------------------------------------------------
+
+
+async def test_unfollow_goes_through_the_menu_and_is_confirmed_by_reload(driver, site):
+    from services.outreach.constants import RESULT_SENT
+    result = await driver.unfollow_target(account(), target(site, "/unfollowme"))
+    assert result.status == RESULT_SENT, f"{result.status}: {result.error}"
+    assert "UNFOLLOWED" in RECEIVED
+    assert "FOLLOWED-STRANGER" not in RECEIVED and "FOLLOWED" not in RECEIVED
+
+
+async def test_unfollowing_someone_not_followed_presses_nothing(driver, site):
+    """Pressing Follow here would *follow* them. It must never happen."""
+    from services.outreach.constants import RESULT_NOT_FOLLOWING
+    result = await driver.unfollow_target(account(), target(site, "/notfollowed"))
+    assert result.success and result.status == RESULT_NOT_FOLLOWING, result.status
+    assert RECEIVED == [], f"something was pressed: {RECEIVED}"
+
+
+async def test_unfollowing_a_deleted_profile_gives_up_at_once(driver, site):
+    """It used to wait out every read for a button that would never come:
+    3½ minutes per gone account in a live run (2026-09-28)."""
+    import time
+    from services.outreach.constants import RESULT_PROFILE_UNAVAILABLE
+    started = time.monotonic()
+    result = await driver.unfollow_target(account(), target(site, "/gone"))
+    assert result.status == RESULT_PROFILE_UNAVAILABLE, f"{result.status}: {result.error}"
+    assert time.monotonic() - started < 20
+    assert RECEIVED == [], f"something was pressed: {RECEIVED}"
+
+
+async def test_an_unfollow_that_leaves_follow_back_is_done(driver, site):
+    """They follow this account: the button reads "Follow Back" afterwards.
+    Unread, 13 unfollows that worked came back "could not tell" (2026-09-28)."""
+    from services.outreach.constants import RESULT_SENT
+    result = await driver.unfollow_target(account(), target(site, "/unfollowback"))
+    assert result.status == RESULT_SENT, f"{result.status}: {result.error}"
+    assert RECEIVED == ["UNFOLLOWED"], RECEIVED
+
+
+async def test_follow_back_is_not_followed_and_nothing_is_pressed(driver, site):
+    from services.outreach.constants import RESULT_NOT_FOLLOWING
+    result = await driver.unfollow_target(account(), target(site, "/followsback"))
+    assert result.success and result.status == RESULT_NOT_FOLLOWING, result.status
+    assert RECEIVED == [], f"something was pressed: {RECEIVED}"
+
+
+async def test_following_someone_who_follows_back_presses_their_own_button(driver, site):
+    """Not the first suggestion's "Follow" — a stranger."""
+    await driver.follow_target(account(), target(site, "/followsback"))
+    assert "FOLLOWED-STRANGER" not in RECEIVED, RECEIVED
+    assert "FOLLOWED" in RECEIVED, RECEIVED
+
+
+async def test_an_unfollow_the_site_does_not_keep_is_not_reported_as_done(driver, site):
+    from services.outreach.constants import RESULT_FOLLOW_DISCARDED
+    result = await driver.unfollow_target(account(), target(site, "/unfollowlies"))
+    assert result.status == RESULT_FOLLOW_DISCARDED, f"{result.status}: {result.error}"

@@ -34,13 +34,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import httpx
 from sqlalchemy import text
 
 import database as db
 from services.outreach import config as cfg
 from services.outreach import lead_ai, local_browser
 from services.outreach import display_pool
-from services.outreach.browser import get_driver
+from services.outreach.browser import discovery_needs_headed, get_driver
 from services.outreach.constants import ACCOUNT_PURPOSE_DISCOVERY
 from services.outreach.crypto import decrypt_session
 
@@ -61,7 +62,28 @@ PLATFORM_DRIVERS = {
 
 #: A seed that is a link to a post rather than an account. Handing the
 #: search specific videos is a different job from searching for them.
-_POST_URL = re.compile(r"https?://\S*/(video|reel|p|status)/|tiktok\.com/t/", re.I)
+#:
+#: The short forms matter more than they look. TikTok's own "Copy link" in
+#: the app gives `vt.tiktok.com/<code>` — and only `tiktok.com/t/<code>`
+#: was matched here, so the link most people actually paste fell through to
+#: the account branch: discovery read it as a *handle*, went looking for
+#: that account's followers, found nothing, and reported "No profiles
+#: found. Try a broader niche, or different wording." Which cannot work,
+#: because there was nothing wrong with the niche.
+#:
+#: Both short hosts are real and both are in circulation — `vm` is the
+#: older one, `vt` is what the app hands out now.
+SHORT_LINK_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+
+_POST_URL = re.compile(
+    r"https?://\S*/(video|reel|p|status)/"
+    r"|tiktok\.com/t/"
+    r"|https?://(?:vt|vm)\.tiktok\.com/[\w-]+",
+    re.I,
+)
 
 
 #: An Instagram post link, however it was copied. The share sheet gives
@@ -90,9 +112,49 @@ def canonical_post_url(url: str) -> str:
     return f"https://www.instagram.com/p/{match.group(1)}/"
 
 
+#: TikTok's share-sheet links, which hide the real post behind a redirect.
+_TIKTOK_SHORT = re.compile(r"^https?://(?:vt|vm)\.tiktok\.com/[\w-]+", re.I)
+
+
 def post_urls_in(seeds: list[str]) -> list[str]:
     """The seeds that are links to posts, not account names."""
     return [canonical_post_url(s) for s in seeds if _POST_URL.search(s or "")]
+
+
+async def expand_short_links(urls: list[str]) -> list[str]:
+    """Follow TikTok's share links to the post they actually point at.
+
+    The browser would follow the redirect by itself, so this is not what
+    makes the read work. It is what makes two spellings of one post the
+    same post: a run seeded with `vt.tiktok.com/ZSbejH26F` and one seeded
+    with the full `/@kjlyrics/video/7639669277162769685` are otherwise two
+    different posts to everything that remembers which have been read, and
+    a post that is used up gets harvested again for nothing.
+
+    Failure is not fatal — an unresolved link is handed on as it came, and
+    the browser still follows it.
+    """
+    out: list[str] = []
+    for url in urls:
+        if not _TIKTOK_SHORT.match(url or ""):
+            out.append(url)
+            continue
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=15,
+                headers={"user-agent": SHORT_LINK_USER_AGENT},
+            ) as client:
+                response = await client.get(url)
+            resolved = str(response.url).split("?", 1)[0]
+            if _POST_URL.search(resolved):
+                print(f"[outreach] seed {url} -> {resolved}", flush=True)
+                out.append(resolved)
+                continue
+        except Exception as exc:  # noqa: BLE001 — a seed is not worth failing on
+            print(f"[outreach] could not expand {url}: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+        out.append(url)
+    return out
 
 
 #: How often a running search writes its progress. Reporting, not work —
@@ -146,11 +208,37 @@ def _started(run: "Run") -> datetime:
         return datetime.now(timezone.utc)
 
 
+#: A link to someone's profile rather than to a post: the handle is the
+#: first part of the path (TikTok's with an "@").
+_PROFILE_URL = re.compile(
+    r"^(?:https?://)?(?:www\.|m\.|mobile\.)?"
+    r"(?:x\.com|twitter\.com|tiktok\.com|instagram\.com)/@?([\w.]+)",
+    re.I,
+)
+
+
+def _seed(part: str) -> str:
+    """One seed as the readers want it: a handle, or a post link untouched.
+
+    A pasted profile link used to go through as the "handle" — X's share
+    sheet gives `https://x.com/allergictoguac?s=11`, and the run went
+    looking for a user called that, found nothing and said so only as
+    "0 recent posts" (2026-09-27, search 46).
+    """
+    part = part.strip()
+    if _POST_URL.search(part):
+        return part
+    match = _PROFILE_URL.match(part)
+    if match:
+        return match.group(1)
+    return part.lstrip("@")
+
+
 def _seed_list(raw: Optional[str]) -> list[str]:
-    """"@one, two" -> ["one", "two"]."""
+    """"@one, two, https://x.com/three?s=11" -> ["one", "two", "three"]."""
     if not raw:
         return []
-    parts = [p.strip().lstrip("@") for p in str(raw).replace("\n", ",").split(",")]
+    parts = [_seed(p) for p in str(raw).replace("\n", ",").split(",")]
     return [p for p in parts if p][:10]
 
 
@@ -171,11 +259,55 @@ def any_running() -> bool:
     return any(t is not None and not t.done() for t in _TASKS.values())
 
 
+#: How long a cancelled run is given to stop by itself before the task is
+#: cancelled outright. Cooperative first, because a run that stops at its
+#: own next checkpoint keeps the profiles it has already found.
+CANCEL_GRACE_SECONDS = float(os.environ.get("ICREATE_OUTREACH_CANCEL_GRACE", "8"))
+
+
+async def _hard_cancel_after_grace(search_id: int) -> None:
+    """Cancel the task outright if asking nicely did not work.
+
+    The flag is only read between profiles, and a run can be inside one
+    operation for a very long time — the silence backstop on a hungry list
+    is sixty minutes. So "Stop" looked like it did nothing at all, because
+    from outside it is indistinguishable from doing nothing.
+
+    `_run` already handles `CancelledError`: it marks the search cancelled
+    and its `finally` shuts the browser down, so this loses nothing except
+    the profiles that operation would have returned.
+    """
+    try:
+        await asyncio.sleep(CANCEL_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return
+    task = _TASKS.get(int(search_id))
+    if task is not None and not task.done():
+        print(f"[outreach] search {search_id} did not stop within "
+              f"{CANCEL_GRACE_SECONDS:.0f}s — cancelling it outright",
+              flush=True)
+        task.cancel()
+
+
 def cancel(search_id: int) -> bool:
-    """Ask a run to stop at its next profile. Returns whether it was live."""
+    """Stop a run. Returns whether there was a live task to stop.
+
+    Asks first and insists second. The caller must not depend on the return
+    value to decide whether the *search* was stopped — a row can say
+    `running` with no task behind it, and the endpoint marks those stopped
+    itself rather than leaving them running forever.
+    """
+    search_id = int(search_id)
+    # Set the flag even when no task is found: it costs nothing, and a task
+    # that is mid-await when this is called still reads it afterwards.
+    _CANCELLED.add(search_id)
     if not is_running(search_id):
         return False
-    _CANCELLED.add(int(search_id))
+    try:
+        asyncio.get_running_loop().create_task(_hard_cancel_after_grace(search_id))
+    except RuntimeError:
+        # No loop here (a synchronous caller); the cooperative flag stands.
+        pass
     return True
 
 
@@ -288,20 +420,11 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
         database = await db.get_db()
         try:
             per_search = int(settings["outreach_discovery_max_per_search"])
-            daily_cap = int(settings["outreach_discovery_daily_cap"])
-            already = await visited_today(database, int(account["id"]))
-            remaining_today = max(daily_cap - already, 0)
-            if remaining_today <= 0:
-                finish(
-                    STATUS_FAILED,
-                    f"This account has already opened {already} profiles in the "
-                    f"last 24 hours — the cap is {daily_cap}. Try tomorrow, or "
-                    f"raise the cap in settings if you are sure.",
-                )
-                await _persist_status(search_id, STATUS_FAILED, run.message, 0, 0)
-                return
-
-            wanted = min(int(search.get("wanted") or 50), per_search, remaining_today)
+            # No 24-hour ceiling on how many profiles an account may open.
+            # It was a number we picked, and it stopped searches that the
+            # platform was perfectly willing to serve. A platform that has
+            # had enough says so, and that is what stands a run down.
+            wanted = min(int(search.get("wanted") or 50), per_search)
             run.wanted = wanted
 
             # --- what to search for ------------------------------------
@@ -311,6 +434,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 # Named accounts need no expansion: the operator has already
                 # said exactly whose audience they want.
                 plan = {"hashtags": [], "terms": [], "seeds": seeds}
+                # Followers are read first (below), so this is what happens first.
                 run.message = f"Reading the followers of {len(seeds)} account(s)…"
             else:
                 run.message = "Working out what to search for…"
@@ -347,11 +471,22 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             # and a harvest is the most visible thing they do.
             "proxy_url": decrypt_session(account.get("proxy_url_encrypted")),
         }
-        # Headed, because X serves no timeline to a headless browser — and on
-        # a screen of its own, because the shared one is what a viewer
-        # ticket falls back to when the pool has nothing left.
-        screen = await display_pool.acquire()
-        driver = get_driver(driver_name, headless=False,
+        # Headed only where the platform actually needs it — X serves no
+        # timeline to a headless browser, and says so by setting
+        # HEADED_DISCOVERY. Everywhere else a harvest runs headless, which
+        # is what stops a window opening on the operator's screen every time
+        # a search runs on a machine with no Xvfb to hide it.
+        #
+        # A screen of its own when one is needed, because the shared one is
+        # what a viewer ticket falls back to when the pool has nothing left.
+        # Two reasons to show a window, and the platform's is the one that
+        # cannot be overruled: X serves no timeline to a headless browser,
+        # so a headless harvest there finds nothing and calls it "no
+        # results". The operator's preference decides everywhere else.
+        headed = (discovery_needs_headed(driver_name)
+                  or not bool(int(settings.get("outreach_headless", 1))))
+        screen = await display_pool.acquire() if headed else None
+        driver = get_driver(driver_name, headless=not headed,
                             launch_env=screen.env if screen else None)
         await driver.startup()
 
@@ -392,7 +527,7 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
             await _store_lead_now(search_id, user_id, platform, lead)
             await show_progress()
 
-        posts = post_urls_in(list(seeds))
+        posts = await expand_short_links(post_urls_in(list(seeds)))
         if posts:
             wants_likers = bool(search.get("include_likers"))
             # Commenters unless explicitly switched off: a seed with
@@ -414,53 +549,56 @@ async def _run(search: dict[str, Any], account: dict[str, Any],
                 exclude=known,
                 include_commenters=wants_comments,
                 include_likers=wants_likers,
+                # Default on when the row predates the column, which is the
+                # behaviour the threads deserve — they hold most of the people.
+                include_replies=bool(search.get("include_replies", True)),
             )
         elif seeds:
-            # Engagement first. A follower list is truncated hard — the same
-            # seventy to a hundred names whether the account has 17,300
-            # followers or 180,700 — while the people who liked and replied
-            # to recent posts are the same audience without that ceiling.
-            # Measured across four seeds: 108 from the follower lists, 776
-            # from the posts.
-            leads = []
-            if hasattr(driver, "discover_from_engagement"):
-                run.message = f"Reading recent posts by {len(seeds)} account(s)…"
-                leads = await driver.discover_from_engagement(
+            # Followers first, then engagement. The follower list is the
+            # thing an operator names an account for, and it is short — the
+            # platforms show seventy to a hundred names of it however many
+            # followers there are — so it is read in a few minutes. It used
+            # to come last, after 25 posts' worth of likers, and a run
+            # stopped part-way through the posts never read it at all
+            # (search 47, 2026-09-27). The posts are where the volume is
+            # (measured across four seeds: 108 from follower lists, 776 from
+            # posts), so they fill the rest.
+            run.message = f"Reading the followers of {len(seeds)} account(s)…"
+            leads = await driver.discover_followers(
+                payload,
+                seeds=tuple(seeds),
+                limit=wanted,
+                interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
+                # Enough rounds for the number asked for, not a fixed
+                # depth. A followers list yields roughly a dozen new people
+                # per scroll, so a request for a thousand needs about ninety
+                # — and stops early anyway once it has them, or once the
+                # list genuinely ends.
+                scroll_rounds=max(
+                    int(settings["outreach_discovery_scroll_rounds"]) * 3,
+                    wanted // 10 + 20,
+                ),
+                should_stop=lambda: search_id in _CANCELLED,
+                on_found=on_found,
+                exclude=known,
+            )
+            if (len(leads) < wanted and search_id not in _CANCELLED
+                    and hasattr(driver, "discover_from_engagement")):
+                run.message = f"Reading who engages with recent posts by {len(seeds)} account(s)…"
+                already = {lead["username"].lower() for lead in leads}
+                leads = leads + await driver.discover_from_engagement(
                     payload,
                     seeds=tuple(seeds),
-                    limit=wanted,
+                    limit=wanted - len(leads),
                     interval_seconds=float(
                         settings["outreach_discovery_interval_seconds"]),
                     should_stop=lambda: search_id in _CANCELLED,
                     on_found=on_found,
-                    exclude=known,
-                )
-            # Short, or the platform has no engagement reader: fall back to
-            # the follower list rather than returning what little there was.
-            if len(leads) < wanted and search_id not in _CANCELLED:
-                run.message = f"Reading the followers of {len(seeds)} account(s)…"
-                already = {lead["username"].lower() for lead in leads}
-                leads = leads + await driver.discover_followers(
-                    payload,
-                    seeds=tuple(seeds),
-                    limit=wanted,
-                    interval_seconds=float(settings["outreach_discovery_interval_seconds"]),
-                    # Enough rounds for the number asked for, not a fixed
-                    # depth. A followers list yields roughly a dozen new people
-                    # per scroll, so a request for a thousand needs about ninety
-                    # — and stops early anyway once it has them, or once the
-                    # list genuinely ends.
-                    scroll_rounds=max(
-                        int(settings["outreach_discovery_scroll_rounds"]) * 3,
-                        wanted // 10 + 20,
-                    ),
-                    should_stop=lambda: search_id in _CANCELLED,
-                    on_found=on_found,
-                    # Everyone engagement already returned, as well as everyone
-                    # known before — otherwise the follower pass offers the same
-                    # people again and the count stalls without saying why.
+                    # Everyone the follower pass returned, as well as everyone
+                    # known before — otherwise the posts offer the same people
+                    # again and the count stalls without saying why.
                     exclude=known | already,
-                    )
+                )
         else:
             leads = await driver.discover_profiles(
                 payload,

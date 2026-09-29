@@ -34,14 +34,23 @@ from sqlalchemy import text
 import database as db
 from services.outreach import config as cfg
 from services.outreach.constants import (
+    RESULT_ALREADY_FOLLOWING,
     ACCOUNT_ACTIVE,
     ACCOUNT_IDLE,
     ACCOUNT_PAUSED,
     ACCOUNT_PURPOSE_SENDING,
+    ACCOUNT_VIA_BROWSER,
+    ACCOUNT_VIA_PHONE,
     ACCOUNT_FAULT_RESULTS,
+    ACTIVITY_MESSAGE,
+    PHONE_ACTIVITIES,
+    PHONE_PLATFORMS,
     AUDIT_ACCOUNT_AUTO_PAUSED,
     IMMEDIATE_ACCOUNT_PAUSE_RESULTS,
 )
+
+#: Off by the operator's rule: problems pause the campaign, not the account.
+AUTO_PAUSE_ACCOUNTS = False
 
 #: UTC "now" as a naive timestamp, in SQL.
 UTC_NOW = "(NOW() AT TIME ZONE 'UTC')"
@@ -50,6 +59,24 @@ UTC_NOW = "(NOW() AT TIME ZONE 'UTC')"
 def utc_now() -> datetime:
     """UTC now, tz-naive — the convention for TIMESTAMP columns here."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def phone_ok(campaign: dict) -> bool:
+    """Whether a phone account may take this campaign's work.
+
+    The phone types text; it can't attach the campaign's image yet, so a
+    message campaign with one stays with browser accounts.
+    """
+    return (
+        (campaign.get("activity") or ACTIVITY_MESSAGE) in PHONE_ACTIVITIES
+        and (campaign.get("platform") or "tiktok") in PHONE_PLATFORMS
+        and not campaign.get("attachment_path")
+    )
+
+
+def fits(row, campaign: dict) -> bool:
+    """A phone account works only what the phone app can do."""
+    return (row.get("via") or ACCOUNT_VIA_BROWSER) != ACCOUNT_VIA_PHONE or phone_ok(campaign)
 
 
 async def eligible_account_ids(database, campaign: dict) -> list[int]:
@@ -70,6 +97,8 @@ async def eligible_account_ids(database, campaign: dict) -> list[int]:
         if not row.get("enabled"):
             continue
         if row.get("status") == ACCOUNT_PAUSED:
+            continue
+        if not fits(row, campaign):
             continue
         out.append(int(row["id"]))
     return out
@@ -101,6 +130,9 @@ async def lease_account(
         "active": ACCOUNT_ACTIVE,
         "paused": ACCOUNT_PAUSED,
         "sending": ACCOUNT_PURPOSE_SENDING,
+        "no_action": RESULT_ALREADY_FOLLOWING,
+        "phone": ACCOUNT_VIA_PHONE,
+        "phone_ok": phone_ok(campaign),
     }
     # Clauses are composed from a fixed vocabulary; every value is bound.
     owner_clause = ""
@@ -128,6 +160,9 @@ async def lease_account(
                   AND a.status <> :paused
                   -- Never lease a harvesting account to send a message.
                   AND COALESCE(a.purpose, :sending) = :sending
+                  -- A phone account has no browser session: only work the
+                  -- phone app can do.
+                  AND (COALESCE(a.via, 'browser') <> :phone OR :phone_ok)
                   {owner_clause}
                   {assignment_clause}
                   -- free, or its lease has expired (worker crash)
@@ -144,6 +179,12 @@ async def lease_account(
                            AND j.sending_account_id = a.id
                            AND j.status <> 'cancelled'
                       ) < :cap
+                  -- No daily action cap here on purpose. A number we
+                  -- guessed cannot know what the platform will allow today,
+                  -- and guessing low stops a healthy account for hours while
+                  -- the campaign reads "running". The platform says when it
+                  -- has had enough, and that answer stands the campaign down
+                  -- with a countdown — see LIMIT_RESULTS.
                 ORDER BY a.last_activity_at ASC NULLS FIRST, a.id ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
@@ -219,6 +260,7 @@ async def explain_no_account(
         if (not assigned or row["id"] in assigned)
         and row.get("enabled")
         and (row.get("purpose") or ACCOUNT_PURPOSE_SENDING) == ACCOUNT_PURPOSE_SENDING
+        and fits(row, campaign)
     ]
     if not candidates:
         return (
@@ -280,6 +322,61 @@ async def explain_no_account(
         # Busy, or inside the send interval. Both clear on their own.
         return ""
     return "; ".join(reasons)
+
+
+async def blocked_for_good(
+    database, campaign: dict, settings: dict[str, Any]
+) -> str:
+    """Why no account can *ever* take this campaign's work until a person
+    changes something — empty when any account could, given time.
+
+    Every account on it has used its jobs for this campaign, or is paused,
+    or there is none. `explain_no_account` only logged this, so a campaign
+    sat "running" with work queued and nothing said on its page (Lancastar,
+    1000 of 1000 jobs, 2026-09-28). A busy account, one inside its send
+    interval, or one held by a dead worker all clear by themselves and
+    are not this.
+    """
+    per_account_cap = cfg.campaign_limit(
+        campaign, settings, "max_jobs_per_account", "outreach_max_jobs_per_account"
+    )
+    assigned = await db.get_campaign_account_ids(database, campaign["id"])
+    rows = await db.get_sending_accounts(
+        database, user_id=campaign.get("user_id"), platform=campaign.get("platform")
+    )
+    candidates = [
+        row for row in rows
+        if (not assigned or row["id"] in assigned)
+        and row.get("enabled")
+        and (row.get("purpose") or ACCOUNT_PURPOSE_SENDING) == ACCOUNT_PURPOSE_SENDING
+        and fits(row, campaign)
+    ]
+    if not candidates:
+        return ("No sending account can work this campaign — assign one on the "
+                "campaign, or check the account is switched on, then resume.")
+    reasons = []
+    capped = False
+    for row in candidates:
+        name = row.get("name") or f"account {row['id']}"
+        if row.get("status") == ACCOUNT_PAUSED:
+            reasons.append(f"{name} is paused")
+            continue
+        used = (await database.session.execute(
+            text(
+                "SELECT COUNT(*) FROM outreach_jobs "
+                " WHERE campaign_id = :campaign_id AND sending_account_id = :account_id "
+                "   AND status <> 'cancelled'"
+            ),
+            {"campaign_id": campaign["id"], "account_id": row["id"]},
+        )).scalar_one()
+        await database.session.commit()
+        if used < per_account_cap:
+            return ""
+        capped = True
+        reasons.append(f"{name} has done {used} of its {per_account_cap} jobs for this campaign")
+    advice = ("Raise “Maximum jobs per account (per campaign)” in Admin → Tools, "
+              "then resume." if capped else "Switch the account back on, then resume.")
+    return f"{'; '.join(reasons)}. {advice}"
 
 
 async def release_account(database, account_id: int, status: str = ACCOUNT_IDLE) -> None:
@@ -354,6 +451,11 @@ async def record_failure(
         return {"paused": False, "reason": None, "consecutive_errors": 0}
 
     streak = int(row[0] or 0)
+    # Nothing pauses an account any more (constants.py, PHONE_RETRY_RESULTS):
+    # the streak is still kept — the runner reads it, and the pages show it —
+    # but what stops is the campaign that met the problem, never the account.
+    if not AUTO_PAUSE_ACCOUNTS:
+        return {"paused": False, "reason": None, "consecutive_errors": streak}
     should_pause = account_fault and (
         result_status in IMMEDIATE_ACCOUNT_PAUSE_RESULTS or streak >= threshold
     )

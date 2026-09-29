@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -467,6 +468,33 @@ SEND_VANISHES = """
 """
 
 #: A profile with a Follow control, used by the follow-first tests.
+#: TikTok web's followed profile, as read 2026-09-24: the own control is
+#: `[data-e2e='follow-button']` reading "Friends" (or "Following") with
+#: `aria-haspopup="dialog"`, and a suggestions row whose buttons carry the
+#: same hook. Unfollow is in the dialog it opens.
+def _tt_unfollow_page(record: bool) -> str:
+    keep = "fetch('/sent',{method:'POST',body:'UNFOLLOWED'});" if record else ""
+    return f"""<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div data-e2e="user-subtitle">alice</div><div data-e2e="followers-count">10</div>
+  <button data-e2e="follow-button" aria-haspopup="dialog"
+    onclick="document.getElementById('menu').style.display='block'">Friends</button>
+  <div id="menu" role="dialog" style="display:none">
+    <button onclick="{keep}this.parentElement.style.display='none';document.querySelector('[data-e2e=follow-button]').textContent='Follow'">Unfollow</button>
+  </div>
+  <div style="margin-top:500px">
+    <button data-e2e="follow-button" onclick="fetch('/sent',{{method:'POST',body:'FOLLOWED-STRANGER'}})">Follow</button>
+  </div>
+</body></html>"""
+TT_NOT_FOLLOWED = """<html><body>
+  <div data-e2e="user-title">@alice</div>
+  <div data-e2e="user-subtitle">alice</div><div data-e2e="followers-count">9</div>
+  <button data-e2e="follow-button" onclick="fetch('/sent',{method:'POST',body:'FOLLOWED'})">Follow</button>
+  <div style="margin-top:500px">
+    <button data-e2e="follow-button" onclick="fetch('/sent',{method:'POST',body:'FOLLOWED-STRANGER'})">Follow</button>
+  </div>
+</body></html>"""
+
 FOLLOWABLE = """
 <html><body>
   <div data-e2e="user-title">@alice</div>
@@ -1016,6 +1044,12 @@ class _Handler(BaseHTTPRequestHandler):
             LATE_BUTTON_HITS.append(1)
             body = (SENDABLE_LATE_BUTTON.replace(str(LATE_BUTTON_DELAY_MS), "0")
                     if len(LATE_BUTTON_HITS) == 1 else SENDABLE_LATE_BUTTON)
+        elif self.path == "/ttunfollow":
+            body = TT_NOT_FOLLOWED if "UNFOLLOWED" in RECEIVED else _tt_unfollow_page(True)
+        elif self.path == "/ttunfollowlies":
+            body = _tt_unfollow_page(False)
+        elif self.path == "/ttnotfollowed":
+            body = TT_NOT_FOLLOWED
         elif self.path == "/siteerroronce":
             SITE_ERROR_HITS.append(1)
             body = SITE_ERROR if len(SITE_ERROR_HITS) == 1 else SENDABLE
@@ -1620,14 +1654,20 @@ async def test_a_message_tiktok_refuses_to_deliver_is_not_reported_as_sent(drive
     )
     assert result.success is False, "a refused message must never count as sent"
     assert result.status == RESULT_MESSAGE_REFUSED
+    # TikTok's own sentence, so the campaign page can show it.
+    assert "Community Guidelines" in (result.detail.get("platform_said") or "")
 
 
-async def test_a_refused_message_is_never_retried_and_stops_the_account():
-    """Retrying sends the identical text again, gets the identical refusal,
-    and adds another flagged message to an account the platform has already
-    said is at risk."""
+async def test_a_refused_message_is_never_retried_and_stops_the_campaign():
+    """Retrying sends the identical text again and gets the identical
+    refusal. What is refused is the wording, so it is the campaign that
+    stops — the account goes on serving other campaigns. (It used to pause
+    the account, which stopped every campaign over one campaign's text.)"""
+    from services.outreach.constants import CAMPAIGN_STOP_RESULTS
+
     assert RESULT_MESSAGE_REFUSED in NEVER_RETRY_RESULTS
-    assert RESULT_MESSAGE_REFUSED in IMMEDIATE_ACCOUNT_PAUSE_RESULTS
+    assert RESULT_MESSAGE_REFUSED in CAMPAIGN_STOP_RESULTS
+    assert RESULT_MESSAGE_REFUSED not in IMMEDIATE_ACCOUNT_PAUSE_RESULTS
 
 
 
@@ -2197,3 +2237,78 @@ async def test_a_send_that_ends_on_another_page_is_still_confirmed(driver, site)
         account(), target(site, "/leaves"), "hello from a page that moved"
     )
     assert result.status == RESULT_SENT, result.error
+
+
+async def test_a_limit_is_reported_in_the_platforms_own_words(driver, site):
+    """What the page said, not what we inferred from it.
+
+    Our own wording for these described a symptom and then guessed —
+    "the Follow button did not change after being pressed, the account has
+    most likely hit its follow limit". The operator checked the app and it
+    said plainly that a limit had been reached. When the page is telling us
+    the answer, the answer is what should be recorded.
+
+    It matters more now than it did: a limit stands the whole campaign down
+    for hours, and the countdown on the campaign page quotes this string.
+    """
+    result = await driver.send_message(account(), target(site, "/throttled"), "Hi.")
+    assert result.status == RESULT_RATE_LIMITED
+    assert "sending messages too fast" in (result.error or "").lower(), (
+        f"the platform's own notice was not read: {result.error!r}"
+    )
+    assert result.detail.get("platform_said"), (
+        "platform_said should carry the notice so the campaign's pause "
+        "reason can quote it"
+    )
+
+
+async def test_a_slow_comment_walk_is_a_timeout_not_a_platform_limit():
+    """A scroll budget running out must not stand the campaign down.
+
+    It used to share `rate_limited` with a genuine limit, which was
+    harmless while that only meant "retry this job later". It stopped being
+    harmless when limits began pausing the campaign for hours: a long
+    comment thread would have taken the whole run offline until a cooldown
+    nobody set expired.
+    """
+    from services.outreach.constants import (
+        LIMIT_RESULTS, RESULT_NAVIGATION_TIMEOUT, RESULT_RATE_LIMITED,
+    )
+    assert RESULT_RATE_LIMITED in LIMIT_RESULTS
+    assert RESULT_NAVIGATION_TIMEOUT not in LIMIT_RESULTS, (
+        "a timeout would pause the campaign for hours"
+    )
+    source = (Path(__file__).resolve().parents[1]
+              / "services/outreach/browser/playwright_base.py").read_text()
+    marker = source.index("Ran out of time walking the comments")
+    # The status handed to MessageResult.failure sits just above the
+    # message. Read the few lines before the marker rather than the whole
+    # file, so this cannot pass on some unrelated mention elsewhere.
+    preceding = source[max(0, marker - 300):marker]
+    assert "RESULT_NAVIGATION_TIMEOUT" in preceding, (
+        f"the comment-walk budget reports something other than a timeout: "
+        f"{preceding[-160:]!r}"
+    )
+    assert "RESULT_RATE_LIMITED" not in preceding
+
+
+# --- unfollowing -------------------------------------------------------
+
+
+async def test_tiktok_web_unfollows_through_the_dialog(driver, site):
+    result = await driver.unfollow_target(account(), target(site, "/ttunfollow"))
+    assert result.status == RESULT_SENT, f"{result.status}: {result.error}"
+    assert "UNFOLLOWED" in RECEIVED and "FOLLOWED-STRANGER" not in RECEIVED
+
+
+async def test_tiktok_web_never_follows_during_an_unfollow(driver, site):
+    from services.outreach.constants import RESULT_NOT_FOLLOWING
+    result = await driver.unfollow_target(account(), target(site, "/ttnotfollowed"))
+    assert result.status == RESULT_NOT_FOLLOWING, result.status
+    assert RECEIVED == [], f"something was pressed: {RECEIVED}"
+
+
+async def test_tiktok_web_unfollow_that_is_not_kept_is_caught(driver, site):
+    from services.outreach.constants import RESULT_FOLLOW_DISCARDED
+    result = await driver.unfollow_target(account(), target(site, "/ttunfollowlies"))
+    assert result.status == RESULT_FOLLOW_DISCARDED, f"{result.status}: {result.error}"

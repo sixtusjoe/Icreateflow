@@ -678,6 +678,27 @@ class OutreachCampaign(Base):
     # this row is read on every job claim.
     attachment_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     attachment_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: When a platform limit paused this campaign, and until when.
+    #:
+    #: A limit is the campaign's problem, not the account's. The account is
+    #: working exactly as it should — it has simply done as much as the
+    #: platform allows today, and pausing *it* stops every other campaign
+    #: that account serves for a fault it does not have. So the campaign
+    #: stands down instead, and resumes itself when the clock runs out.
+    paused_until: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: What the platform actually said, kept verbatim. "The Follow button
+    #: did not change after being pressed" is our inference about a symptom;
+    #: "We limit how often you can do certain things" is Instagram telling
+    #: us the answer. The operator should see the second one.
+    paused_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: The message text the platform refused to deliver, kept so the
+    #: campaign cannot be restarted on the same words. Cleared when the
+    #: campaign next starts with different ones.
+    refused_template: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: For an unfollow campaign made by "Unfollow everyone it followed": the
+    #: follow campaign it undoes. One per follow campaign — clicking again
+    #: adds the newly followed to it instead of making another.
+    source_campaign_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     __table_args__ = (
@@ -701,6 +722,27 @@ class SendingAccount(Base):
     #: An outbound proxy for this account, encrypted at rest — it
     #: carries credentials. Never returned by the API.
     proxy_url_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: The Android phone (its adb serial) that does this account's follows
+    #: through the real TikTok app. TikTok web accepts a follow and then
+    #: discards it; the app keeps it. None means follows go through the
+    #: browser like everything else.
+    device_serial: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: The handle that phone must be signed in as. Checked before every
+    #: run of follows, so a phone switched to somebody's personal account
+    #: never follows from it.
+    device_handle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: The ICREATEFLOW phone app (its install id) that does this account's
+    #: TikTok follows. Unlike `device_serial` the phone needs no cable: it
+    #: asks the server for follows and reports what happened. Takes
+    #: precedence over `device_serial`. Checked against `device_handle`
+    #: like the cabled phone.
+    companion_device: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: "browser" or "phone" — see ACCOUNT_VIAS. A phone account needs no
+    #: browser sign-in; the phone app does its work.
+    via: Mapped[str] = mapped_column(Text, server_default="browser")
+    #: When that phone last asked for work — how the site can say whether
+    #: the phone is actually on.
+    companion_seen_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(Text, server_default="idle")
     # Opaque human-readable pointer to the stored browser session, e.g.
     # "outreach_sessions/acct-7.enc". NEVER a credential.
@@ -724,6 +766,43 @@ class SendingAccount(Base):
         CheckConstraint(
             "status IN ('idle','active','paused','error')",
             name="outreach_accounts_status_chk",
+        ),
+    )
+
+
+class CompanionTask(Base):
+    """One follow handed from the worker to a phone, and the phone's answer.
+
+    The worker and the API are separate processes, and the phone only ever
+    talks to the API — so the hand-off goes through a row. The worker
+    writes it `pending` and waits; the phone claims it (`claimed`), does
+    it, and writes the outcome (`done`). A row nobody claims in time is
+    `expired` by the worker, which is the only side that decides it gave up.
+    """
+
+    __tablename__ = "outreach_companion_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_sending_accounts.id", ondelete="CASCADE"), nullable=False)
+    device_id: Mapped[str] = mapped_column(Text, nullable=False)
+    job_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The handle TikTok on the phone must be signed in as.
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    #: A message task's text, already rendered. None for a follow.
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, server_default="pending")
+    result_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','claimed','done','expired')",
+            name="outreach_companion_tasks_status_chk",
         ),
     )
 
@@ -814,6 +893,12 @@ class OutreachLeadSearch(Base):
     wanted: Mapped[int] = mapped_column(Integer, server_default="50")
     include_commenters: Mapped[bool] = mapped_column(Boolean, server_default="false")
     include_likers: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    #: Open the "View N replies" threads under each comment.
+    #:
+    #: Defaults on because the threads are where the people are: a video
+    #: whose 121 comments were 100 at the top level had the rest behind 64
+    #: of these controls, and none of them were ever opened.
+    include_replies: Mapped[bool] = mapped_column(Boolean, server_default="true")
     enrich_profiles: Mapped[bool] = mapped_column(Boolean, server_default="false")
     #: The hashtags and search terms an LLM derived from the above.
     queries: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -1508,6 +1593,8 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         ("outreach_campaigns", "max_jobs", "INTEGER"),
         ("outreach_campaigns", "max_jobs_per_account", "INTEGER"),
         ("outreach_campaigns", "retry_limit", "INTEGER"),
+        ("outreach_campaigns", "paused_until", "TIMESTAMP"),
+        ("outreach_campaigns", "paused_reason", "TEXT"),
         ("outreach_sending_accounts", "session_state_encrypted", "TEXT"),
         ("outreach_sending_accounts", "session_updated_at", "TIMESTAMP"),
         ("outreach_sending_accounts", "consecutive_errors", "INTEGER NOT NULL DEFAULT 0"),
@@ -1541,9 +1628,19 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
          "TEXT NOT NULL DEFAULT 'sending'"),
         ("outreach_lead_searches", "include_likers",
          "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("outreach_lead_searches", "include_replies",
+         "BOOLEAN NOT NULL DEFAULT TRUE"),
         ("outreach_lead_searches", "enrich_profiles",
          "BOOLEAN NOT NULL DEFAULT FALSE"),
         ("outreach_lead_searches", "seed_accounts", "TEXT"),
+        ("outreach_sending_accounts", "device_serial", "TEXT"),
+        ("outreach_sending_accounts", "device_handle", "TEXT"),
+        ("outreach_campaigns", "refused_template", "TEXT"),
+        ("outreach_sending_accounts", "companion_device", "TEXT"),
+        ("outreach_sending_accounts", "companion_seen_at", "TIMESTAMP"),
+        ("outreach_sending_accounts", "via", "TEXT NOT NULL DEFAULT 'browser'"),
+        ("outreach_companion_tasks", "message", "TEXT"),
+        ("outreach_campaigns", "source_campaign_id", "INTEGER"),
 )
 
 
@@ -1671,7 +1768,12 @@ async def get_users(db: Connection):
     s = db.session
     result = await s.execute(
         select(
-            User.id, User.email, User.name, User.role, User.status, User.created_at, User.last_login
+            User.id, User.email, User.name, User.role, User.status, User.created_at,
+            User.last_login,
+            # The admin user page offers this as a switch, so the list it
+            # reads from has to carry it. Never the password hash or the
+            # unsubscribe token: one is a secret and the other is a key.
+            User.email_notifications,
         ).order_by(User.created_at.desc())
     )
     return _rows(result.mappings().all())

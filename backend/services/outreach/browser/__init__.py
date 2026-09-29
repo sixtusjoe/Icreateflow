@@ -63,6 +63,17 @@ class MessageResult:
         return cls(success=True, status=RESULT_SENT, detail=detail)
 
     @classmethod
+    def done(cls, status: str, **detail: Any) -> "MessageResult":
+        """A success that is not a send.
+
+        Following something already followed, or a request left pending,
+        both satisfy the campaign without anything being delivered. They
+        are successes so the target is not retried forever, and they carry
+        their own status so a report can tell them from work actually done.
+        """
+        return cls(success=True, status=status, detail=detail)
+
+    @classmethod
     def failure(cls, status: str, error: str, **detail: Any) -> "MessageResult":
         return cls(success=False, status=status or RESULT_UNKNOWN, error=error, detail=detail)
 
@@ -107,11 +118,42 @@ DRIVERS: dict[str, str] = {
     "playwright_instagram":
         "services.outreach.browser.playwright_instagram:PlaywrightInstagramMessenger",
     "playwright_x": "services.outreach.browser.playwright_x:PlaywrightXMessenger",
+    #: TikTok follows through the real app on an attached Android phone.
+    "android_tiktok": "services.outreach.browser.android_tiktok:AndroidTikTokFollower",
 }
 
 
 class DriverUnavailable(RuntimeError):
     """The requested driver isn't registered, or its dependencies are missing."""
+
+
+def _driver_class(name: str):
+    """The class behind a registry name, without instantiating it."""
+    path = DRIVERS.get((name or "").strip())
+    if not path:
+        raise DriverUnavailable(
+            f"Unknown outreach driver {name!r}. Available: {', '.join(sorted(DRIVERS))}"
+        )
+    module_name, _, attr = path.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise DriverUnavailable(
+            f"Driver {name!r} is registered but its dependencies are not installed: {exc}"
+        ) from exc
+    return getattr(module, attr)
+
+
+def discovery_needs_headed(name: str) -> bool:
+    """Does a harvest with this driver need a visible browser?
+
+    Asked before the driver is built, because it decides how to build it.
+    A driver that does not answer — the mock — does not need one.
+    """
+    try:
+        return bool(getattr(_driver_class(name), "HEADED_DISCOVERY", False))
+    except DriverUnavailable:
+        return False
 
 
 def get_driver(name: str, **kwargs: Any) -> MessengerDriver:
