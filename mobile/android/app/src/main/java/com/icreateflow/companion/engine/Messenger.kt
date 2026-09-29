@@ -32,13 +32,17 @@ object Messenger {
     private val SLOW_DOWN = listOf("sending messages too fast", "too many messages", "slow down",
         "try again later")
     /** The person doesn't take messages from this account. */
+    // "Couldn’t message this account … has been suspended" (2026-09-29,
+    // @ezeonyiko411): read as "the box didn't take the text" before.
     private val CLOSED = listOf("can't send messages", "cannot send messages", "only friends",
-        "only accepts messages", "turned off messages", "can't message")
+        "only accepts messages", "turned off messages", "can't message", "couldn't message",
+        "has been suspended")
 
     /** The first line on screen matching `needles`, ignoring anything in `except`. */
     private fun has(nodes: List<Node>, needles: List<String>, except: Set<String> = emptySet()): String? =
         nodes.map { it.text.ifBlank { it.desc }.trim() }.firstOrNull { t ->
-            t !in except && t.lowercase().let { low -> needles.any { it in low } }
+            // TikTok writes its apostrophes curly (’); the needles are straight.
+            t !in except && t.lowercase().replace('\u2019', '\'').let { low -> needles.any { it in low } }
         }
 
     suspend fun send(
@@ -71,6 +75,16 @@ object Messenger {
                 fail(Follower.DEVICE_UNAVAILABLE, "TikTok did not come to the front — the phone will try again shortly")
             else fail(Follower.NAVIGATION_TIMEOUT, "@$who's profile did not load on the phone")
             profile.isSelf -> return fail(Follower.MESSAGING_UNAVAILABLE, "That is this account's own profile")
+            // A friend's profile (TikTok's newer layout) has "Send a 👋" and
+            // no Message button — and that button *sends a wave* before it
+            // opens the chat (tried 2026-09-29 on @yunglabozz: 👋 went out
+            // at once). Every person would get a wave they weren't meant to,
+            // then the message. It is never pressed; the profile has no
+            // other way into the chat (its share menu has none either).
+            profile.message == null && svc.snapshot().any { it.label.startsWith("send a") } ->
+                return fail(Follower.MESSAGING_UNAVAILABLE,
+                    "@$who is a friend on TikTok, and their profile only offers \"Send a 👋\", which " +
+                        "sends a wave straight away — not pressed, no message sent")
             profile.message == null -> return fail(Follower.MESSAGING_UNAVAILABLE,
                 "@$who's profile has no Message button — they don't take messages from this account")
         }

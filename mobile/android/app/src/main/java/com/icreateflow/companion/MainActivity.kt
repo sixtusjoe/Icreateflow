@@ -112,6 +112,23 @@ class MainActivity : ComponentActivity() {
             }
             return
         }
+        // `--es open_only someone` opens their profile the way every job
+        // does — link, then TikTok's search, tapping only a steady exact
+        // match — and presses nothing, so a person can be looked at from
+        // the Mac without hand-tapping a moving results list.
+        intent?.getStringExtra("open_only")?.let { who ->
+            val svc = com.icreateflow.companion.engine.FollowService.instance
+            if (svc == null) {
+                android.util.Log.i(com.icreateflow.companion.engine.FollowService.TAG, "open refused: service off")
+            } else {
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                    val v = com.icreateflow.companion.engine.Follower.open(svc, who.removePrefix("@"))
+                    android.util.Log.i(com.icreateflow.companion.engine.FollowService.TAG,
+                        "opened @$who: handle=${v.handle} state=${v.state} message=${v.message != null}")
+                }
+            }
+            return
+        }
         val target = intent?.getStringExtra("follow_target") ?: return
         com.icreateflow.companion.engine.FollowTest.prefill.value = target
         openPhoneTab.value = true
