@@ -47,7 +47,11 @@ fun flatten(root: AccessibilityNodeInfo?): List<Node> {
 }
 
 val CAN_FOLLOW = setOf("follow", "follow back")
-val FOLLOWING = setOf("following", "friends")
+// "More actions ▾": TikTok's newer profile for someone you follow (seen on
+// friends, 2026-09-29) shows "Send a 👋" and this instead of Friends — and
+// it opens the same sheet, Customise name / Unfollow. Unread, every such
+// profile was "No follow control", and even an opened link looked unloaded.
+val FOLLOWING = setOf("following", "friends", "more actions")
 val PENDING = setOf("requested")
 
 private val MISSING = listOf("couldn't find this account")
