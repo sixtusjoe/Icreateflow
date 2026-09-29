@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Scoped to TikTok. Android only sends the service events from these two
+     packages, and the service's own code reads only a TikTok window and
+     taps only inside one (FollowService.snapshot). That is the first thing
+     a person asks about an Accessibility permission, so it is the first
+     thing this file says. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:packageNames="com.zhiliaoapp.musically,com.ss.android.ugc.trill"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:notificationTimeout="100"
+    android:description="@string/service_description" />

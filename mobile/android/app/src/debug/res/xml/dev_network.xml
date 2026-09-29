@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Review builds talk to ICREATEFLOW running on a computer: over the USB
+     cable (adb reverse, the phone's own loopback) or over Wi-Fi by the
+     computer's local address, which changes from network to network — so
+     plain HTTP is allowed to any address here. The release build has no
+     such file and speaks https only. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

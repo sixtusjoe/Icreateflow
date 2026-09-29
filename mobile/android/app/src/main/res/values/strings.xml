@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">ICREATEFLOW</string>
+    <string name="service_label">ICREATEFLOW follows</string>
+    <string name="service_description">Lets ICREATEFLOW follow and unfollow people inside the TikTok app for your campaigns. It only reads and taps inside TikTok, and only when you or a campaign asks it to.</string>
+</resources>
