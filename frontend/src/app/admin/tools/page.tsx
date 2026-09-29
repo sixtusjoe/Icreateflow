@@ -1,19 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Shield, Users, FileText, Music, Layers, Save, Activity, HardDrive,
-  Calendar, Key, Trash2, AlertTriangle, CheckCircle2, XCircle, Link2, Bug,
-  Mic2, Scissors, Video, Mail, Eye, EyeOff, Loader2,
+  Shield, Music, Layers, Save, Trash2, CheckCircle2, XCircle, Bug,
+  Scissors, Video, Mail, Eye, EyeOff, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import {
-  getAdminStats, getUsers, updateUser, approveUser, deleteAdminUser, getSiteConfig, updateSiteConfig,
+  getSiteConfig, updateSiteConfig,
   getAdminBrands, deleteAdminBrand, getAdminPosts, deleteAdminPost, getAdminAccounts,
-  getAdminMusic, deleteAdminMusic, getAdminSchedule, getAdminApiKeys,
+  getAdminMusic, deleteAdminMusic, getAdminSchedule,
   getOAuthApps, updateOAuthApp,
   getAdminArtists, deleteAdminArtist,
   getAdminErrorLogs, clearAdminErrorLogs,
@@ -25,20 +24,36 @@ import {
   getOutreachSettings, updateOutreachSettings,
 } from "@/lib/api";
 
-type Tab = "overview" | "users" | "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email" | "outreach";
+type Tab = "brands" | "artists" | "posts" | "accounts" | "music" | "schedule" | "oauth" | "errors" | "branding" | "email" | "outreach";
 
-export default function AdminPage() {
+const TABS: { id: Tab; label: string }[] = [
+  { id: "brands", label: "Brands" },
+  { id: "artists", label: "Artists" },
+  { id: "posts", label: "Posts" },
+  { id: "accounts", label: "Accounts" },
+  { id: "music", label: "Music" },
+  { id: "schedule", label: "Schedule" },
+  { id: "oauth", label: "Integrations" },
+  { id: "errors", label: "Error log" },
+  { id: "branding", label: "Branding & storage" },
+  { id: "email", label: "Site & email" },
+  { id: "outreach", label: "Outreach" },
+];
+
+function AdminTools() {
   const { user } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("overview");
-  const [stats, setStats] = useState<any>(null);
-  const [users, setUsers] = useState<any[]>([]);
+  // The admin rail links straight at a tab, so the query string is what
+  // decides which one is open — otherwise every row in the System group
+  // would land on Brands and the nav would be lying about where it goes.
+  const wanted = useSearchParams().get("tab");
+  const tab: Tab = (TABS.some((t) => t.id === wanted) ? wanted : "brands") as Tab;
+  const setTab = (id: Tab) => router.replace(`/admin/tools?tab=${id}`);
   const [brands, setBrands] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [music, setMusic] = useState<any[]>([]);
   const [schedule, setSchedule] = useState<any[]>([]);
-  const [apiKeys, setApiKeys] = useState<any[]>([]);
   const [oauth, setOauth] = useState<any>(null);
   const [artists, setArtists] = useState<any[]>([]);
   const [siteConfig, setSiteConfig] = useState<Record<string, string>>({});
@@ -50,14 +65,11 @@ export default function AdminPage() {
   }, [user]);
 
   const reloadAll = () => {
-    getAdminStats().then(setStats).catch(() => {});
-    getUsers().then(setUsers).catch(() => {});
     getAdminBrands().then(setBrands).catch(() => {});
     getAdminPosts().then(setPosts).catch(() => {});
     getAdminAccounts().then(setAccounts).catch(() => {});
     getAdminMusic().then(setMusic).catch(() => {});
     getAdminSchedule().then(setSchedule).catch(() => {});
-    getAdminApiKeys().then(setApiKeys).catch(() => {});
     getOAuthApps().then(setOauth).catch(() => {});
     getAdminArtists().then(setArtists).catch(() => {});
     getSiteConfig().then(setSiteConfig).catch(() => {});
@@ -65,34 +77,21 @@ export default function AdminPage() {
 
   if (!user || user.role !== "admin") return null;
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "overview", label: "Overview" },
-    { id: "users", label: "Users" },
-    { id: "brands", label: "Brands" },
-    { id: "artists", label: "Artists" },
-    { id: "posts", label: "Posts" },
-    { id: "accounts", label: "Accounts" },
-    { id: "music", label: "Music" },
-    { id: "schedule", label: "Schedule" },
-    { id: "oauth", label: "OAuth Apps" },
-    { id: "errors", label: "Errors" },
-    { id: "branding", label: "Branding" },
-    { id: "email", label: "Email / SMTP" },
-    { id: "outreach", label: "Outreach" },
-  ];
-
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6 md:mb-8 flex items-center gap-3">
         <Shield className="h-7 w-7 shrink-0 text-foreground" strokeWidth={1.75} />
         <div>
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Admin Command Center</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Full visibility across every user on the platform.</p>
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Everything else</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            The parts of admin that have not been redesigned yet. Each one moves out to its own page in
+            turn; nothing here is going away before it has somewhere to go.
+          </p>
         </div>
       </div>
 
       <div className="mb-6 flex gap-1 overflow-x-auto rounded-lg border border-border p-1">
-        {tabs.map((t) => (
+        {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -105,8 +104,6 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab stats={stats} />}
-      {tab === "users" && <UsersTab users={users} currentUserId={user.id} onReload={reloadAll} />}
       {tab === "brands" && <BrandsTab brands={brands} onReload={reloadAll} />}
       {tab === "artists" && <ArtistsTab artists={artists} onReload={reloadAll} />}
       {tab === "posts" && <PostsTab posts={posts} onReload={reloadAll} />}
@@ -122,98 +119,13 @@ export default function AdminPage() {
   );
 }
 
-/* ============================================================
- * OVERVIEW — platform health + stats + 24h activity
- * ============================================================ */
-function OverviewTab({ stats }: { stats: any }) {
-  if (!stats) return <div className="text-sm text-muted-foreground">Loading…</div>;
-  const health = stats.health || {};
-  const storage = stats.storage_mb || {};
-  const healthCards = [
-    { label: "CPU", value: health.cpu_percent, unit: "%" },
-    { label: "Memory", value: health.mem_percent, unit: "%" },
-    { label: "Disk", value: health.disk_percent, unit: "%" },
-  ];
-
+// `useSearchParams` reads the ?tab= the admin rail links at, and Next wants
+// that behind a boundary or the route cannot be prerendered at all.
+export default function AdminToolsPage() {
   return (
-    <div className="space-y-6">
-      <Section title="Platform health">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-          {healthCards.map((h) => (
-            <HealthCard key={h.label} label={h.label} value={h.value} unit={h.unit} />
-          ))}
-          <Card icon={HardDrive} label="Storage" value={`${storage.total ?? 0} MB`}
-            hint={`uploads ${storage.uploads ?? 0} · output ${storage.output ?? 0} · music ${storage.music ?? 0}`} />
-        </div>
-      </Section>
-
-      <Section title="Totals · Brands">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
-          <Card icon={Users} label="Users" value={stats.total_users} />
-          <Card icon={Layers} label="Brands" value={stats.total_brands} />
-          <Card icon={FileText} label="Posts" value={stats.total_posts} />
-          <Card icon={Music} label="Music" value={stats.total_tracks} />
-          <Card icon={Link2} label="Accounts" value={stats.total_accounts} />
-        </div>
-      </Section>
-
-      <Section title="Totals · Clipping">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-          <Card icon={Mic2} label="Artists" value={stats.total_artists ?? 0} />
-          <Card icon={Link2} label="Variations" value={stats.total_variations ?? 0} />
-          <Card icon={Video} label="Clips" value={stats.total_clips ?? 0} />
-          <Card icon={Scissors} label="Clip posts" value={stats.total_clip_posts ?? 0} />
-        </div>
-      </Section>
-
-      <Section title="Activity">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Card icon={Activity} label="Scheduled" value={stats.scheduled_posts}
-            hint={stats.scheduled_posts ? "in queue" : undefined} accent={stats.scheduled_posts > 0 ? "info" : undefined} />
-          <Card icon={AlertTriangle} label="Failed posts" value={stats.failed_posts}
-            accent={stats.failed_posts > 0 ? "danger" : undefined} />
-          <Card icon={XCircle} label="Suspended" value={stats.suspended_users}
-            accent={stats.suspended_users > 0 ? "warn" : undefined} />
-          <Card icon={Calendar} label="24h" value={`+${stats.new_posts_24h} posts`}
-            hint={`+${stats.new_users_24h} users`} />
-        </div>
-      </Section>
-    </div>
-  );
-}
-
-function Card({ icon: Icon, label, value, hint, accent }: any) {
-  const accentCls =
-    accent === "danger" ? "text-destructive" :
-    accent === "warn" ? "text-amber-500" :
-    accent === "info" ? "text-blue-500" : "";
-  return (
-    <div className="rounded-2xl bg-card p-4 md:p-5">
-      <div className="flex items-center gap-3">
-        <Icon className="h-6 w-6 shrink-0 text-foreground" strokeWidth={1.75} />
-        <div className="min-w-0">
-          <p className={`text-lg md:text-xl font-bold tracking-tight truncate ${accentCls}`}>{value ?? "—"}</p>
-          <p className="text-xs text-muted-foreground truncate">{label}</p>
-          {hint && <p className="text-[11px] text-muted-foreground/70 truncate">{hint}</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function HealthCard({ label, value, unit }: { label: string; value: number | null; unit: string }) {
-  const pct = value ?? 0;
-  const tone = pct > 85 ? "bg-destructive" : pct > 65 ? "bg-amber-500" : "bg-green-500";
-  return (
-    <div className="rounded-2xl bg-card p-4 md:p-5">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">{label}</p>
-        <p className="text-sm font-bold tabular-nums">{value == null ? "—" : `${value}${unit}`}</p>
-      </div>
-      <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
-        <div className={`h-full ${tone}`} style={{ width: `${Math.min(100, pct)}%` }} />
-      </div>
-    </div>
+    <Suspense fallback={null}>
+      <AdminTools />
+    </Suspense>
   );
 }
 
@@ -225,108 +137,6 @@ function Section({ title, children }: { title: string; children: any }) {
     </div>
   );
 }
-
-/* ============================================================
- * USERS — with delete
- * ============================================================ */
-function UsersTab({ users, currentUserId, onReload }: any) {
-  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
-  const handleRole = async (id: number, role: string) => {
-    try { await updateUser(id, { role }); toast.success("Role updated"); onReload(); } catch { toast.error("Failed"); }
-  };
-  const handleStatus = async (id: number, status: string) => {
-    try { await updateUser(id, { status }); toast.success("Status updated"); onReload(); } catch { toast.error("Failed"); }
-  };
-  const handleApprove = async (id: number, name: string) => {
-    try { await approveUser(id); toast.success(`${name} approved`); onReload(); }
-    catch (e: any) { toast.error(e.response?.data?.detail || "Failed to approve"); }
-  };
-  const handleDelete = (id: number, name: string) => {
-    setConfirm({ title: "Delete user", description: `Delete ${name} and ALL their brands, posts, music? This cannot be undone.`, onConfirm: async () => { try { await deleteAdminUser(id); toast.success("User deleted"); onReload(); } catch (e: any) { toast.error(e.response?.data?.detail || "Failed"); } } });
-  };
-
-  const pendingUsers = users.filter((u: any) => u.status === "pending");
-  const otherUsers = users.filter((u: any) => u.status !== "pending");
-
-  return (
-    <div className="space-y-4">
-      {pendingUsers.length > 0 && (
-        <div className="rounded-2xl border-2 border-amber-400/50 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/5 p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-            <h3 className="text-sm font-bold text-foreground">
-              Pending approval ({pendingUsers.length})
-            </h3>
-          </div>
-          <div className="space-y-2">
-            {pendingUsers.map((u: any) => (
-              <div key={u.id} className="flex items-center justify-between gap-3 rounded-xl bg-background p-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{u.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">{u.email} · signed up {new Date(u.created_at).toLocaleString()}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => handleApprove(u.id, u.name)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-xs font-semibold text-background hover:opacity-90">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Approve
-                  </button>
-                  <button onClick={() => handleDelete(u.id, u.name)} title="Reject & delete"
-                    className="inline-flex min-h-[32px] min-w-[32px] items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="overflow-x-auto rounded-2xl bg-card">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left">
-              <Th>Name</Th><Th className="hidden md:table-cell">Email</Th><Th>Role</Th><Th>Status</Th><Th className="hidden md:table-cell">Joined</Th><Th></Th>
-            </tr>
-          </thead>
-          <tbody>
-            {otherUsers.map((u: any) => (
-              <tr key={u.id} className="border-b border-border/50">
-                <Td>
-                  <div className="font-medium">{u.name}</div>
-                  <div className="text-xs text-muted-foreground md:hidden">{u.email}</div>
-                </Td>
-                <Td className="hidden md:table-cell text-muted-foreground">{u.email}</Td>
-                <Td>
-                  <select value={u.role} onChange={(e) => handleRole(u.id, e.target.value)} disabled={u.id === currentUserId}
-                    className="rounded-md border border-border bg-background px-2 py-1 text-base sm:text-xs">
-                    <option value="user">User</option><option value="admin">Admin</option>
-                  </select>
-                </Td>
-                <Td>
-                  <select value={u.status} onChange={(e) => handleStatus(u.id, e.target.value)} disabled={u.id === currentUserId}
-                    className="rounded-md border border-border bg-background px-2 py-1 text-base sm:text-xs">
-                    <option value="active">Active</option><option value="suspended">Suspended</option>
-                  </select>
-                </Td>
-                <Td className="hidden md:table-cell text-muted-foreground">{new Date(u.created_at).toLocaleDateString()}</Td>
-                <Td>
-                  {u.id !== currentUserId && (
-                    <button onClick={() => handleDelete(u.id, u.name)} title="Delete user"
-                      className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {confirm && <ConfirmModal open onOpenChange={(o) => !o && setConfirm(null)} variant="danger" title={confirm.title} description={confirm.description} onConfirm={confirm.onConfirm} />}
-    </div>
-  );
-}
-
 /* ============================================================
  * BRANDS / POSTS / ACCOUNTS / MUSIC / SCHEDULE
  * ============================================================ */
@@ -1102,8 +912,8 @@ function PollIntervalCard({ siteConfig, setSiteConfig }: any) {
 }
 
 function BrandCacheCleanupCard() {
-  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [stats, setStats] = useState<any>(null);
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [target, setTarget] = useState<"output" | "uploads" | "all">("output");
   const [date, setDate] = useState<string>(() => {
     const d = new Date();
@@ -1214,8 +1024,8 @@ function BrandCacheCleanupCard() {
 }
 
 function CacheCleanupCard() {
-  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [stats, setStats] = useState<any>(null);
+  const [confirm, setConfirm] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
   const [target, setTarget] = useState<"video_renders" | "caption_variants" | "passthrough_clips" | "all">("all");
   const [days, setDays] = useState<string>("30");
   const [busy, setBusy] = useState(false);
@@ -1522,6 +1332,7 @@ function OutreachTab() {
   if (!settings) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
   const workersOn = values.outreach_workers_enabled !== false;
+  const headlessOn = Number(values.outreach_headless ?? 1) !== 0;
 
   const LABELS: Record<string, string> = {
     outreach_max_jobs_per_campaign: "Maximum jobs per campaign",
@@ -1533,6 +1344,17 @@ function OutreachTab() {
     outreach_retry_backoff_seconds: "Retry backoff (seconds)",
     outreach_min_send_interval_seconds: "Minimum gap between sends, per account (seconds)",
     outreach_worker_idle_seconds: "Worker idle poll (seconds)",
+    outreach_headless: "Browsers run headless",
+    // Named for what someone would search the page for. The first version
+    // read "Actions per account per 24h", which contains neither "daily"
+    // nor "cap" — the two words you would scan for after reading either in
+    // a log line or a conversation.
+    outreach_discovery_interval_seconds: "Discovery: seconds between profile visits",
+    outreach_discovery_max_per_search: "Discovery: most profiles one search may open",
+    outreach_discovery_scroll_rounds: "Discovery: scroll rounds per list",
+    outreach_follow_wait_seconds: "Follow first, then message this many seconds later (0 = off)",
+    outreach_follow_to_unlock: "Follow a profile with no Message button, then look again (1/0)",
+    outreach_local_worker_concurrency: "Local sender: accounts driven at once",
   };
 
   return (
@@ -1606,9 +1428,52 @@ function OutreachTab() {
         </div>
       </Section>
 
+      <Section title="Browser windows">
+        <div className="rounded-xl border border-border bg-card p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">
+                {headlessOn
+                  ? "Browsers run hidden"
+                  : "Browsers open on screen"}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {headlessOn
+                  ? "Nothing appears while campaigns run. The catch: a verification puzzle can no longer be solved by hand, so a job that hits one fails instead of waiting for you."
+                  : "Every job opens a window you can watch, and you can solve a verification puzzle when a platform throws one. On a machine you are working at, that is a window per job."}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Signing an account in always opens a window, whichever way this is
+                set. Lead discovery on X does too — it is served no timeline without
+                one.
+              </p>
+            </div>
+            <button
+              onClick={() => save({ outreach_headless: headlessOn ? 0 : 1 })}
+              disabled={saving}
+              className={`min-h-[44px] whitespace-nowrap rounded-lg px-5 text-sm font-medium transition-opacity hover:opacity-90 disabled:opacity-50 ${
+                headlessOn ? "bg-foreground text-background" : "bg-muted text-foreground"
+              }`}
+            >
+              {headlessOn ? "Show browser windows" : "Hide browser windows"}
+            </button>
+          </div>
+        </div>
+      </Section>
+
       <Section title="Limits">
         <div className="grid gap-4 rounded-xl border border-border bg-card p-5 sm:grid-cols-2">
-          {Object.keys(settings.spec).map((key) => (
+          {Object.keys(settings.spec)
+            .filter((key) => key !== "outreach_headless")
+            // The sending limits first, then discovery, then the rest.
+            // SPEC order is the order things were added to the file, which
+            // is no use to anyone reading the page.
+            .sort((a, b) => {
+              const rank = (k: string) =>
+                k.includes("discovery") ? 2 : 1;
+              return rank(a) - rank(b) || a.localeCompare(b);
+            })
+            .map((key) => (
             <div key={key}>
               <label className="mb-1.5 block text-sm font-medium">
                 {LABELS[key] ?? key}
@@ -1635,8 +1500,16 @@ function OutreachTab() {
           ))}
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Campaigns can override the first three per campaign; these are the defaults.
-          A change takes effect on each worker&apos;s next job — no restart needed.
+          When a platform says a limit has been hit, the <em>campaign</em> stands down
+          and resumes itself — the sending account is left alone, since it has done
+          nothing wrong and other campaigns may still need it. There is no dial for
+          that wait here: the countdown on the campaign page is the one timer, and it
+          runs itself. Resuming by hand overrides it.
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Jobs per campaign, jobs per account and the retry limit can each be
+          overridden on the campaign itself; these are the defaults. A change takes
+          effect on each worker&apos;s next job — no restart needed.
         </p>
       </Section>
     </div>

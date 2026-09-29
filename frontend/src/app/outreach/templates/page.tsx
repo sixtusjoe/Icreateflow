@@ -1,325 +1,321 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, FileText, Plus, Trash2, Save } from "lucide-react";
+/**
+ * Message templates — reusable bodies with placeholders.
+ *
+ * A grid rather than a table: a template is read, not compared, and the
+ * thing worth seeing at a glance is the message itself. Each card shows
+ * the body, the placeholders it uses, and whether any campaign depends on
+ * it — the last of which is what makes editing or deleting one safe or
+ * not.
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import { Copy, FileText, Plus, Search, Send, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import {
-  listOutreachTemplates,
   createOutreachTemplate,
-  updateOutreachTemplate,
   deleteOutreachTemplate,
-  previewOutreachTemplate,
+  listOutreachCampaigns,
+  listOutreachTemplates,
+  type OutreachCampaign,
   type OutreachTemplate,
-  setTemplateAttachment,
-  clearTemplateAttachment,
-  templateAttachmentUrl,
 } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { PageIcon, inputClass, apiErrorMessage } from "../ui";
-
-const STARTER =
-  "Hello {{username}}, we came across your content and wanted to reach out about {{offer}}.";
+import {
+  BackLink,
+  Card,
+  Chip,
+  DotsMenu,
+  Empty,
+  MenuItem,
+  n,
+  Note,
+  PageActions,
+  PageHead,
+  PageTitle,
+  PrimaryButton,
+  Tabs,
+} from "@/components/kit";
+import { ConfirmDialog } from "@/components/kit/dialog";
+import { TemplateDialog } from "@/components/outreach/template-dialog";
+import { extractVariables } from "@/components/outreach/template";
+import { apiErrorMessage } from "@/components/kit/format";
 
 export default function OutreachTemplatesPage() {
-  const [templates, setTemplates] = useState<OutreachTemplate[]>([]);
-  const [selected, setSelected] = useState<OutreachTemplate | null>(null);
-  const imageRef = useRef<HTMLInputElement>(null);
-  const [imageBusy, setImageBusy] = useState(false);
-  const [name, setName] = useState("");
-  const [body, setBody] = useState(STARTER);
-  const [preview, setPreview] = useState("");
-  const [error, setError] = useState("");
-  const [variables, setVariables] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [templates, setTemplates] = useState<OutreachTemplate[] | null>(null);
+  const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+
+  const [editing, setEditing] = useState<OutreachTemplate | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<OutreachTemplate | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const load = () =>
     listOutreachTemplates()
       .then(setTemplates)
-      .catch((e) => toast.error(apiErrorMessage(e, "Failed to load templates")));
+      .catch((e) => {
+        setTemplates([]);
+        toast.error(apiErrorMessage(e, "Failed to load templates"));
+      });
 
   useEffect(() => {
     load();
+    // Campaign rows are what "used by" is counted from, and what makes a
+    // delete consequential rather than tidy-up.
+    listOutreachCampaigns().then(setCampaigns).catch(() => {});
   }, []);
 
-  // Live validation + preview. Debounced so every keystroke isn't a request.
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (!body.trim()) {
-        setPreview("");
-        setVariables([]);
-        setError("");
-        return;
+  const usedBy = useMemo(() => {
+    const c: Record<number, number> = {};
+    for (const x of campaigns) if (x.template_id) c[x.template_id] = (c[x.template_id] ?? 0) + 1;
+    return c;
+  }, [campaigns]);
+
+  const all = templates ?? [];
+  const inUse = all.filter((t) => (usedBy[t.id] ?? 0) > 0);
+  const unused = all.filter((t) => (usedBy[t.id] ?? 0) === 0);
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return all.filter((t) => {
+      const okFilter =
+        filter === "all" || (filter === "used" ? (usedBy[t.id] ?? 0) > 0 : (usedBy[t.id] ?? 0) === 0);
+      const okQuery = !q || t.name.toLowerCase().includes(q) || t.body.toLowerCase().includes(q);
+      return okFilter && okQuery;
+    });
+  }, [templates, filter, query, usedBy]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openNew = () => {
+    setEditing(null);
+    setShowEditor(true);
+  };
+
+  const duplicate = async (t: OutreachTemplate) => {
+    try {
+      let defaults: Record<string, string> | undefined;
+      if (t.defaults) {
+        try {
+          defaults = JSON.parse(t.defaults);
+        } catch {
+          // A defaults blob that will not parse is dropped rather than
+          // carried into the copy as a broken string.
+        }
       }
-      previewOutreachTemplate(body)
-        .then((r) => {
-          setPreview(r.preview);
-          setVariables(r.variables);
-          setError("");
-        })
-        .catch((e) => {
-          setPreview("");
-          setError(apiErrorMessage(e, "Template is not valid"));
-        });
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [body]);
-
-  const startNew = () => {
-    setSelected(null);
-    setName("");
-    setBody(STARTER);
-  };
-
-  const select = (template: OutreachTemplate) => {
-    setSelected(template);
-    setName(template.name);
-    setBody(template.body);
-  };
-
-  const handleAttach = async (file?: File) => {
-    if (!file || !selected) return;
-    setImageBusy(true);
-    try {
-      const updated = await setTemplateAttachment(selected.id, file);
-      setSelected(updated);
-      toast.success("Image attached — new campaigns from this template get a copy");
-      load();
+      const made = await createOutreachTemplate({ name: `${t.name} (copy)`, body: t.body, defaults });
+      await load();
+      toast.success(`“${made.name}” created`);
     } catch (e) {
-      toast.error(apiErrorMessage(e, "Could not attach that image"));
-    } finally {
-      setImageBusy(false);
-      if (imageRef.current) imageRef.current.value = "";
+      toast.error(apiErrorMessage(e, "Could not duplicate"));
     }
   };
 
-  const handleClearImage = async () => {
-    if (!selected) return;
-    setImageBusy(true);
-    try {
-      const updated = await clearTemplateAttachment(selected.id);
-      setSelected(updated);
-      toast.success("Image removed");
-      load();
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Could not remove the image"));
-    } finally {
-      setImageBusy(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!name.trim()) return toast.error("Template name is required");
-    setBusy(true);
-    try {
-      if (selected) {
-        await updateOutreachTemplate(selected.id, { name: name.trim(), body });
-        toast.success("Template saved");
-      } else {
-        const created = await createOutreachTemplate({ name: name.trim(), body });
-        setSelected(created);
-        toast.success("Template created");
-      }
-      load();
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to save template"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDelete = async () => {
+  const doDelete = async () => {
     if (!confirmDelete) return;
     setDeleting(true);
     try {
       await deleteOutreachTemplate(confirmDelete.id);
-      if (selected?.id === confirmDelete.id) startNew();
       setConfirmDelete(null);
-      load();
+      await load();
       toast.success("Template deleted");
     } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to delete template"));
+      toast.error(apiErrorMessage(e, "Failed to delete"));
     } finally {
       setDeleting(false);
     }
   };
 
+  const cardMenu = (t: OutreachTemplate): MenuItem[] => [
+    {
+      label: "Edit template",
+      icon: FileText,
+      onClick: () => {
+        setEditing(t);
+        setShowEditor(true);
+      },
+    },
+    { label: "Duplicate", icon: Copy, onClick: () => duplicate(t) },
+    {
+      label: "Copy message text",
+      icon: Send,
+      onClick: () => {
+        void navigator.clipboard.writeText(t.body);
+        toast.success("Message copied");
+      },
+    },
+    "-",
+    { label: "Delete template", icon: Trash2, danger: true, onClick: () => setConfirmDelete(t) },
+  ];
+
+  const loading = templates === null;
+
   return (
-    <div className="mx-auto max-w-5xl">
-      <Link
-        href="/outreach"
-        className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" /> Outreach
-      </Link>
+    <div className="flex flex-col gap-4" data-metrics>
+      <BackLink href="/outreach">Outreach</BackLink>
 
-      <div className="mb-6 flex items-center gap-3">
-        <PageIcon icon={FileText} />
-        <div>
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Message templates</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Reusable messages with variables. Every campaign freezes its own copy at start.
-          </p>
-        </div>
-      </div>
+      <PageHead>
+        <PageTitle
+          title="Message templates"
+          sub="Reusable message bodies with placeholders, so a campaign does not start from a blank box."
+        />
+        <PageActions>
+          <Chip icon={Users} href="/outreach/accounts">
+            Accounts
+          </Chip>
+          <PrimaryButton icon={Plus} onClick={openNew}>
+            New template
+          </PrimaryButton>
+        </PageActions>
+      </PageHead>
 
-      <div className="grid gap-6 md:grid-cols-3">
-        <div className="rounded-xl border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="text-sm font-semibold">Saved</h2>
-            <button
-              onClick={startNew}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium hover:bg-muted"
-            >
-              <Plus className="h-3.5 w-3.5" /> New
-            </button>
-          </div>
-          {templates.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-              No templates yet.
-            </p>
-          ) : (
-            <ul className="divide-y divide-border/60">
-              {templates.map((t) => (
-                <li key={t.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
-                  <button
-                    onClick={() => select(t)}
-                    className={`min-w-0 flex-1 text-left text-sm ${
-                      selected?.id === t.id ? "font-semibold" : ""
-                    }`}
-                  >
-                    <span className="block truncate">{t.name}</span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {(t.variables ?? []).map((v) => `{{${v}}}`).join(" ") || "no variables"}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => setConfirmDelete(t)}
-                    aria-label={`Delete ${t.name}`}
-                    className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="space-y-4 md:col-span-2">
-          <div>
-            <label className="mb-1.5 block text-sm font-medium">Name</label>
-            <input
-              className={inputClass}
-              placeholder="e.g. Creator intro"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm font-medium">Message</label>
-            <textarea
-              rows={6}
-              className={inputClass}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              {"Built-in variables: {{username}}, {{profile_url}}, {{campaign_name}}, {{account_name}}. Any other name is filled from the campaign's variables."}
-            </p>
-          </div>
-
-          <div>
-            <label className="mb-1.5 block text-sm font-medium">Image</label>
-            {!selected ? (
-              <p className="text-xs text-muted-foreground">
-                Save the template first, then an image can be attached to it.
-              </p>
-            ) : selected.has_attachment ? (
-              <div className="rounded-xl border border-border p-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={templateAttachmentUrl(selected.id)}
-                  alt={selected.attachment_name || "Template image"}
-                  className="max-h-40 w-full rounded-lg object-contain"
+      {all.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Tabs
+            value={filter}
+            onChange={setFilter}
+            items={[
+              { key: "all", label: "All", count: all.length },
+              { key: "used", label: "In use", count: inUse.length },
+              { key: "unused", label: "Unused", count: unused.length },
+            ]}
+          />
+          <div className="ml-auto">
+            {searching || query ? (
+              <div className="flex items-center gap-[7px] rounded-[11px] border border-border bg-card px-[13px] py-2 shadow-card">
+                <Search className="h-3.5 w-3.5 flex-none text-subtle" />
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onBlur={() => !query && setSearching(false)}
+                  placeholder="Search templates"
+                  className="w-[150px] border-0 bg-transparent text-[12.5px] leading-normal text-foreground outline-none placeholder:text-subtle"
                 />
-                <p className="mt-2 truncate text-xs text-muted-foreground">
-                  {selected.attachment_name}
-                </p>
-                <button
-                  onClick={handleClearImage}
-                  disabled={imageBusy}
-                  className="mt-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                >
-                  Remove image
-                </button>
               </div>
             ) : (
-              <>
-                <input
-                  ref={imageRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/gif,image/webp"
-                  className="hidden"
-                  onChange={(e) => handleAttach(e.target.files?.[0])}
-                />
-                <button
-                  onClick={() => imageRef.current?.click()}
-                  disabled={imageBusy}
-                  className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                >
-                  Add image
-                </button>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  Sent with the message. Campaigns made from this template get their
-                  own copy, so editing the template later cannot change what a
-                  running campaign sends. Instagram only — TikTok&apos;s web
-                  composer is text-only.
-                </p>
-              </>
+              <Chip icon={Search} onClick={() => setSearching(true)}>
+                Search templates
+              </Chip>
             )}
           </div>
-
-          {error ? (
-            <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-              {error}
-            </div>
-          ) : (
-            preview && (
-              <div className="rounded-xl border border-border bg-card p-4">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Preview</p>
-                <p className="mt-1.5 whitespace-pre-wrap text-sm">{preview}</p>
-                {variables.length > 0 && (
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    Variables: {variables.join(", ")}
-                  </p>
-                )}
-              </div>
-            )
-          )}
-
-          <button
-            onClick={handleSave}
-            disabled={busy || !!error}
-            className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-foreground px-5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
-          >
-            <Save className="h-4 w-4" />
-            {busy ? "Saving…" : selected ? "Save changes" : "Create template"}
-          </button>
         </div>
-      </div>
+      )}
 
-      <ConfirmModal
+      {loading ? (
+        <Card>
+          <div className="p-4 text-[12.5px] leading-normal text-subtle">Loading templates…</div>
+        </Card>
+      ) : rows.length === 0 ? (
+        <Card>
+          <Empty
+            icon={FileText}
+            title={all.length === 0 ? "No templates yet" : "No templates match"}
+            action={
+              all.length === 0 ? (
+                <PrimaryButton icon={Plus} onClick={openNew}>
+                  Write your first template
+                </PrimaryButton>
+              ) : undefined
+            }
+          >
+            {all.length === 0 ? (
+              <>
+                A template holds the message body and its placeholders —{" "}
+                <b className="font-mono text-[11px] font-semibold text-muted-foreground">{"{{username}}"}</b> for the
+                creator&apos;s handle,{" "}
+                <b className="font-mono text-[11px] font-semibold text-muted-foreground">{"{{offer}}"}</b> for whatever
+                you are pitching. Write it once and every campaign can reuse it.
+              </>
+            ) : (
+              "Change the filter or the search, or write a new one."
+            )}
+          </Empty>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
+          {rows.map((t) => {
+            const vars = extractVariables(t.body);
+            const used = usedBy[t.id] ?? 0;
+            return (
+              <Card key={t.id} className="flex flex-col px-[18px] pb-3.5 pt-4">
+                <div className="mb-[11px] flex items-center gap-2.5">
+                  <span className="min-w-0 truncate text-[13.5px] font-bold leading-normal text-foreground">
+                    {t.name}
+                  </span>
+                  <span className="ml-auto flex-none">
+                    <DotsMenu label={`Actions for ${t.name}`} items={cardMenu(t)} />
+                  </span>
+                </div>
+                <div className="min-h-[74px] whitespace-pre-wrap break-words rounded-[12px] border border-border bg-secondary px-3.5 py-3 text-[12.5px] leading-[1.55] text-muted-foreground">
+                  {t.body}
+                </div>
+                <div className="mt-[11px] flex flex-wrap items-center gap-2.5">
+                  <span className="flex flex-wrap gap-1.5">
+                    {vars.map((v) => (
+                      <span
+                        key={v}
+                        className="rounded-[6px] bg-chart-2/12 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold leading-normal text-chart-2"
+                      >
+                        {`{{${v}}}`}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="ml-auto whitespace-nowrap text-[11px] leading-normal text-subtle">
+                    {used ? `Used by ${used} campaign${used === 1 ? "" : "s"}` : "Not used yet"} ·{" "}
+                    {t.created_at.slice(0, 10)}
+                  </span>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {all.length > 0 && (
+        <Note>
+          A placeholder with no value at send time stops the campaign rather than sending the raw{" "}
+          <b className="font-mono font-semibold text-muted-foreground">{"{{token}}"}</b> to a real person.
+        </Note>
+      )}
+
+      <TemplateDialog
+        open={showEditor}
+        onClose={() => setShowEditor(false)}
+        template={editing}
+        usedBy={editing ? (usedBy[editing.id] ?? 0) : 0}
+        onSaved={load}
+      />
+
+      <ConfirmDialog
         open={confirmDelete !== null}
-        onOpenChange={(open) => !open && setConfirmDelete(null)}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={doDelete}
         title="Delete template?"
-        description={`“${confirmDelete?.name}” will be removed. Campaigns already using it keep their own copy of the message.`}
-        confirmLabel="Delete"
-        variant="danger"
-        loading={deleting}
-        onConfirm={handleDelete}
+        confirmLabel="Delete template"
+        busy={deleting}
+        body={
+          <>
+            <b className="font-bold text-foreground">“{confirmDelete?.name}”</b> is removed from the template list.
+            {confirmDelete && (usedBy[confirmDelete.id] ?? 0) > 0 ? (
+              <>
+                {" "}
+                It is used by{" "}
+                <b className="font-bold text-foreground">
+                  {n(usedBy[confirmDelete.id])} campaign
+                  {usedBy[confirmDelete.id] === 1 ? "" : "s"}
+                </b>
+                .
+              </>
+            ) : null}
+          </>
+        }
+        bullets={[
+          "Campaigns already created from it keep their own copy of the message — none of them stop sending",
+          "New campaigns can no longer start from it",
+          "Any image attached to the template is deleted with it",
+        ]}
       />
     </div>
   );

@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
@@ -7,12 +7,14 @@ import { AuthProvider } from "@/lib/auth";
 import AppShell from "@/components/AppShell";
 import { SiteJsonLd } from "@/components/JsonLd";
 
-const inter = Inter({
+// Geist, a neo-grotesque in the Söhne/Akzidenz line. Self-hosted by
+// next/font, so there is no Google Fonts request at runtime.
+const geistSans = Geist({
   variable: "--font-sans",
   subsets: ["latin"],
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const geistMono = Geist_Mono({
   variable: "--font-mono",
   subsets: ["latin"],
 });
@@ -99,7 +101,7 @@ export default async function RootLayout({
   const cfg = await fetchPublicConfig();
 
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning data-scroll-behavior="smooth">
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning data-scroll-behavior="smooth">
       <head>
         <Script id="theme-init" strategy="beforeInteractive">{`
           (function(){try{var t=localStorage.getItem('theme');if(t!=='light')document.documentElement.classList.add('dark')}catch(e){document.documentElement.classList.add('dark')}})()

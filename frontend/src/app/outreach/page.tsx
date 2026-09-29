@@ -1,105 +1,297 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+/**
+ * Outreach — every campaign, and the state of the queue behind them.
+ *
+ * Three reads fill it and each renders independently, so a slow or failed
+ * call leaves the rest of the page standing: `listOutreachCampaigns` for
+ * the table, `getOutreachSummary` for the pipeline, `listOutreachAccounts`
+ * for the rail and for the platform counts the New Campaign dialog shows.
+ *
+ * The page has no search field, theme button, bell or avatar — those are
+ * session controls and they live in the sidebar now, not on top of every
+ * page.
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  Plus,
-  Send,
-  Trash2,
-  Users,
+  ArrowLeft,
+  ArrowRight,
+  Copy,
+  Download,
+  Eye,
   FileText,
-  CheckCircle2,
-  XCircle,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Send,
+  Square,
+  Trash2,
   Upload,
+  UserMinus,
+  Users,
+  MessageCircle,
+  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-  listOutreachCampaigns,
   createOutreachCampaign,
   deleteOutreachCampaign,
-  listOutreachTemplates,
+  downloadOutreachResults,
+  getOutreachSummary,
   listOutreachAccounts,
+  listOutreachCampaigns,
+  listOutreachTemplates,
+  pauseOutreachCampaign,
+  resumeOutreachCampaign,
+  startOutreachCampaign,
+  stopOutreachCampaign,
+  type OutreachAccount,
   type OutreachCampaign,
   type OutreachTemplate,
-  type OutreachAccount,
-  setCampaignAttachment,
 } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { LABEL_WHEN_ROOM, ProgressBar, Select, StatusPill, apiErrorMessage, inputClass } from "./ui";
+import {
+  Avatar,
+  Card,
+  CardBody,
+  CardHead,
+  CAMPAIGN_TONE,
+  Chip,
+  ChipCount,
+  DotsMenu,
+  Empty,
+  FigureLine,
+  FigureStrong,
+  Legend,
+  Minis,
+  MONO,
+  n,
+  Note,
+  PageActions,
+  PageHead,
+  PageTitle,
+  PLATFORM_LABEL,
+  PrimaryButton,
+  Progress,
+  RailLink,
+  SelectChip,
+  Skeleton,
+  StackBar,
+  Tabs,
+  Tag,
+  TD,
+  TH,
+  TwoCol,
+  type Band,
+  type MenuItem,
+} from "@/components/kit";
+import { ConfirmDialog } from "@/components/kit/dialog";
+import { NewCampaignDialog } from "@/components/outreach/new-campaign-dialog";
+import { campaignPath } from "@/components/outreach/campaign-url";
+import { apiErrorMessage } from "@/components/kit/format";
+
+const ACTIVITY = {
+  message: { label: "Message", icon: MessageCircle },
+  follow: { label: "Follow", icon: Users },
+  unfollow: { label: "Unfollow", icon: UserMinus },
+  comment: { label: "Comment", icon: MessageSquare },
+} as const;
+
+const STATUS_TABS = ["all", "running", "paused", "draft", "stopped", "completed"] as const;
+
+const PLATFORM_FILTER = [
+  { key: "all", label: "All platforms" },
+  { key: "instagram", label: "Instagram" },
+  { key: "tiktok", label: "TikTok" },
+  { key: "x", label: "X" },
+];
+
+const SORTS = [
+  { key: "new", label: "Newest first" },
+  { key: "old", label: "Oldest first" },
+  { key: "targets", label: "Most targets" },
+  { key: "sent", label: "Most delivered" },
+];
+
+type Summary = {
+  targets: Record<string, number>;
+  total_targets: number;
+  attempted: number;
+  delivery_rate: number;
+};
+
+/**
+ * Campaigns per page.
+ *
+ * The campaign list used to render whole — fine at a dozen, a card the
+ * length of the page at two hundred. Eight keeps the table inside one
+ * screen alongside the pipeline cards and the filter bar, so the pager
+ * is in reach rather than stranded at the bottom of a list nobody
+ * scrolls. It also means the pager is there to be seen at the dozen
+ * campaigns this account actually has: a page size the list never
+ * reaches is a control nobody knows exists. The campaign detail page
+ * pages its targets at twenty, against a taller rail.
+ *
+ * Paging happens here, not on the server: the filters and the sort are
+ * already client-side over the full array. At a few thousand campaigns
+ * this wants `limit`/`offset` and the filters moved into SQL.
+ */
+const PAGE_SIZE = 8;
 
 export default function OutreachPage() {
-  const [campaigns, setCampaigns] = useState<OutreachCampaign[]>([]);
-  const [templates, setTemplates] = useState<OutreachTemplate[]>([]);
+  const router = useRouter();
+  const [campaigns, setCampaigns] = useState<OutreachCampaign[] | null>(null);
   const [accounts, setAccounts] = useState<OutreachAccount[]>([]);
+  const [templates, setTemplates] = useState<OutreachTemplate[]>([]);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [status, setStatus] = useState<string>("all");
+  const [platform, setPlatform] = useState("all");
+  const [sort, setSort] = useState("new");
+  const [page, setPage] = useState(0);
   const [showNew, setShowNew] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<{ id: number; name: string } | null>(
-    null,
-  );
+  const [confirmDelete, setConfirmDelete] = useState<OutreachCampaign | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const imageRef = useRef<HTMLInputElement>(null);
-  const [image, setImage] = useState<File | null>(null);
-  const [form, setForm] = useState({
-    name: "",
-    description: "",
-    message_template: "Hi {{username}}, we came across your content and wanted to reach out about {{offer}}.",
-    template_id: "",
-    offer: "",
-    platform: "tiktok",
-  });
+  const [busy, setBusy] = useState<number | null>(null);
 
-  const load = () => {
-    listOutreachCampaigns().then(setCampaigns).catch(() => toast.error("Failed to load campaigns"));
-    listOutreachTemplates().then(setTemplates).catch(() => {});
-    listOutreachAccounts().then(setAccounts).catch(() => {});
-  };
+  const loadCampaigns = () =>
+    listOutreachCampaigns()
+      .then(setCampaigns)
+      .catch(() => {
+        setCampaigns([]);
+        toast.error("Failed to load campaigns");
+      });
+
+  const loadSummary = () => getOutreachSummary().then(setSummary).catch(() => {});
 
   useEffect(() => {
-    load();
+    loadCampaigns();
+    loadSummary();
+    listOutreachAccounts().then(setAccounts).catch(() => {});
+    listOutreachTemplates().then(setTemplates).catch(() => {});
   }, []);
 
-  const handleCreate = async () => {
-    if (!form.name.trim()) return toast.error("Campaign name is required");
-    setSaving(true);
+  /* ---------------- pipeline ---------------- */
+
+  const t = summary?.targets ?? {};
+  const bands: Band[] = [
+    { label: "Queued", value: (t.queued ?? 0) + (t.processing ?? 0), color: "var(--chart-1)" },
+    { label: "Sent", value: t.sent ?? 0, color: "var(--chart-2)" },
+    {
+      label: "Held, skipped & failed",
+      value: (t.paused ?? 0) + (t.skipped ?? 0) + (t.failed ?? 0),
+      color: "var(--chart-3)",
+    },
+  ];
+  const rate = (summary?.delivery_rate ?? 0) * 100;
+
+  /* ---------------- accounts rail ---------------- */
+
+  const byPlatform = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const a of accounts) c[a.platform] = (c[a.platform] ?? 0) + 1;
+    return Object.entries(c).sort((a, b) => b[1] - a[1]);
+  }, [accounts]);
+  const enabledCount = accounts.filter((a) => a.enabled).length;
+  const hotCount = accounts.filter((a) => a.consecutive_errors > 0).length;
+
+  /* ---------------- table ---------------- */
+
+  const statusCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const x of campaigns ?? []) c[x.status] = (c[x.status] ?? 0) + 1;
+    return c;
+  }, [campaigns]);
+
+  const rows = useMemo(() => {
+    const list = (campaigns ?? []).filter(
+      (c) => (status === "all" || c.status === status) && (platform === "all" || c.platform === platform),
+    );
+    const by: Record<string, (a: OutreachCampaign, b: OutreachCampaign) => number> = {
+      new: (a, b) => b.created_at.localeCompare(a.created_at),
+      old: (a, b) => a.created_at.localeCompare(b.created_at),
+      targets: (a, b) => (b.total_targets ?? 0) - (a.total_targets ?? 0),
+      sent: (a, b) => (b.successful_count ?? 0) - (a.successful_count ?? 0),
+    };
+    return [...list].sort(by[sort]);
+  }, [campaigns, status, platform, sort]);
+
+  // Clamped rather than corrected: deleting the last campaign on the last
+  // page leaves `page` pointing past the end, and a render that fixes it
+  // by setting state paints an empty table first.
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const current = Math.min(page, pageCount - 1);
+  const from = current * PAGE_SIZE;
+  const shown = rows.slice(from, from + PAGE_SIZE);
+
+  /* ---------------- actions ---------------- */
+
+  /** Run controls. Each one refreshes both the row and the pipeline,
+   *  because starting a campaign moves targets out of `queued`. */
+  const run = async (c: OutreachCampaign, verb: "start" | "pause" | "resume" | "stop") => {
+    setBusy(c.id);
+    const call = { start: startOutreachCampaign, pause: pauseOutreachCampaign, resume: resumeOutreachCampaign, stop: stopOutreachCampaign }[verb];
     try {
-      const created = await createOutreachCampaign({
-        name: form.name.trim(),
-        description: form.description.trim() || undefined,
-        message_template: form.message_template,
-        template_id: form.template_id ? Number(form.template_id) : null,
-        template_vars: form.offer.trim() ? { offer: form.offer.trim() } : undefined,
-        platform: form.platform,
-      });
-      // The campaign has to exist before an image can hang off it, so this
-      // is a second call rather than part of the create.
-      if (image) {
-        try {
-          await setCampaignAttachment(created.id, image);
-        } catch (e) {
-          toast.error(
-            apiErrorMessage(e, "Campaign created, but the image did not attach")
-          );
-        }
-      }
-      setShowNew(false);
-      setImage(null);
-      setForm({ ...form, name: "", description: "", offer: "" });
-      load();
-      toast.success(`Campaign “${created.name}” created`);
+      await call(c.id);
+      await Promise.all([loadCampaigns(), loadSummary()]);
+      toast.success(`“${c.name}” ${verb === "stop" ? "stopped" : verb === "pause" ? "paused" : verb === "resume" ? "resumed" : "started"}`);
     } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to create campaign"));
+      toast.error(apiErrorMessage(e, `Could not ${verb} the campaign`));
     } finally {
-      setSaving(false);
+      setBusy(null);
     }
   };
 
-  const handleDelete = async () => {
+  const exportCsv = async (c: OutreachCampaign) => {
+    try {
+      const blob = await downloadOutreachResults(c.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${c.name.replace(/[^\w.-]+/g, "_")}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not export"));
+    }
+  };
+
+  /** A copy of the setup, never of the targets or the results — those
+   *  belong to the run that produced them. */
+  const duplicate = async (c: OutreachCampaign) => {
+    try {
+      const made = await createOutreachCampaign({
+        name: `${c.name} (copy)`,
+        description: c.description ?? undefined,
+        platform: c.platform,
+        activity: c.activity,
+        ...(c.activity === "message" ? { message_template: c.message_template, template_id: c.template_id } : {}),
+        ...(c.activity === "comment"
+          ? {
+              target_url: c.target_url ?? undefined,
+              comment_count: c.comment_count,
+              comment_variations: c.comment_variations,
+            }
+          : {}),
+        max_jobs: c.max_jobs,
+        max_jobs_per_account: c.max_jobs_per_account,
+        retry_limit: c.retry_limit,
+      });
+      await loadCampaigns();
+      toast.success(`“${made.name}” created — no targets copied`);
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not duplicate"));
+    }
+  };
+
+  const doDelete = async () => {
     if (!confirmDelete) return;
     setDeleting(true);
     try {
       await deleteOutreachCampaign(confirmDelete.id);
       setConfirmDelete(null);
-      load();
+      await Promise.all([loadCampaigns(), loadSummary()]);
       toast.success("Campaign deleted");
     } catch (e) {
       toast.error(apiErrorMessage(e, "Failed to delete"));
@@ -108,333 +300,344 @@ export default function OutreachPage() {
     }
   };
 
-  const enabledAccounts = accounts.filter((a) => a.enabled && a.status !== "paused").length;
+  /** What a row offers depends on where the campaign is. */
+  const rowMenu = (c: OutreachCampaign): MenuItem[] => {
+    const items: MenuItem[] = [{ label: "Open campaign", icon: Eye, href: campaignPath(c), kbd: "↵" }];
+    const runs: MenuItem[] = [];
+    if (c.status === "draft" || c.status === "stopped")
+      runs.push({ label: "Start campaign", icon: Play, onClick: () => run(c, "start"), disabled: busy === c.id });
+    if (c.status === "running")
+      runs.push(
+        { label: "Pause", icon: Pause, onClick: () => run(c, "pause"), disabled: busy === c.id },
+        { label: "Stop", icon: Square, onClick: () => run(c, "stop"), disabled: busy === c.id },
+      );
+    if (c.status === "paused")
+      runs.push(
+        { label: "Resume", icon: Play, onClick: () => run(c, "resume"), disabled: busy === c.id },
+        { label: "Stop", icon: Square, onClick: () => run(c, "stop"), disabled: busy === c.id },
+      );
+    if (runs.length) items.push("-", { label: "Run", group: true }, ...runs);
+    items.push(
+      "-",
+      { label: "Targets", group: true },
+      { label: "Import targets", icon: Upload, href: `${campaignPath(c)}?import=1` },
+      { label: "Export as CSV", icon: Download, onClick: () => exportCsv(c) },
+      "-",
+      { label: "Duplicate", icon: Copy, onClick: () => duplicate(c) },
+      { label: "Delete campaign", icon: Trash2, danger: true, onClick: () => setConfirmDelete(c) },
+    );
+    return items;
+  };
+
+  const loading = campaigns === null;
 
   return (
-    <div className="mx-auto max-w-6xl">
-      <div className="mb-6 md:mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Outreach</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Import creator lists, queue DMs, and watch them go out across your sending accounts.
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-          <Link
-            href="/outreach/accounts"
-            title="Accounts"
-            className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border px-3 lg:px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
-          >
-            <Users className="h-4 w-4" />
-            {/* Hidden only where the title and these share one line and
-                the labels push them onto three ragged rows. */}
-            <span className={LABEL_WHEN_ROOM}>Accounts</span>
-            <span className="rounded-full bg-muted px-1.5 text-[11px]">{enabledAccounts}</span>
-          </Link>
-          <Link
-            href="/outreach/templates"
-            title="Templates"
-            className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border px-3 lg:px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
-          >
-            <FileText className="h-4 w-4" />
-            <span className={LABEL_WHEN_ROOM}>Templates</span>
-          </Link>
-          <button
-            onClick={() => setShowNew(true)}
-            title="New campaign"
-            className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-lg bg-foreground px-4 lg:px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            <span className={LABEL_WHEN_ROOM}>New Campaign</span>
-          </button>
+    <div className="flex flex-col gap-4" data-metrics>
+      <PageHead>
+        <PageTitle
+          title="Outreach"
+          sub="Import creator lists, queue DMs, and watch them go out across your sending accounts."
+        />
+        <PageActions>
+          <Chip icon={Users} href="/outreach/accounts">
+            Accounts
+            <ChipCount>{accounts.length}</ChipCount>
+          </Chip>
+          <Chip icon={FileText} href="/outreach/templates">
+            Templates
+          </Chip>
+          <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>
+            New Campaign
+          </PrimaryButton>
+        </PageActions>
+      </PageHead>
+
+      <TwoCol
+        main={
+          // Both cards fill the row, so the pair ends level whichever of
+          // the two happens to be carrying more.
+          <Card className="flex flex-1 flex-col">
+            <CardHead
+              title="Target pipeline"
+              sub={
+                loading
+                  ? "Counting…"
+                  : `Every target across ${n(campaigns.length)} campaign${campaigns.length === 1 ? "" : "s"}, by state`
+              }
+              right={
+                <DotsMenu
+                  label="Target pipeline options"
+                  items={[
+                    { label: "Refresh counts", icon: RefreshCw, onClick: () => void loadSummary() },
+                    { label: "Manage accounts", icon: Users, href: "/outreach/accounts" },
+                  ]}
+                />
+              }
+            />
+            <CardBody className="flex flex-1 flex-col">
+              {summary ? (
+                <>
+                  <FigureLine value={n(summary.total_targets)}>
+                    targets · <FigureStrong>{rate.toFixed(1)}%</FigureStrong> of {n(summary.attempted)} attempted were
+                    delivered
+                  </FigureLine>
+                  <StackBar bands={bands} total={summary.total_targets} />
+                  <Legend bands={bands} />
+                  <Minis
+                    className="mt-auto"
+                    cells={[
+                      { label: "QUEUED", value: t.queued ?? 0 },
+                      { label: "SENT", value: t.sent ?? 0 },
+                      { label: "HELD", value: t.paused ?? 0 },
+                      { label: "SKIPPED", value: t.skipped ?? 0 },
+                      { label: "FAILED", value: t.failed ?? 0 },
+                    ]}
+                  />
+                </>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <Skeleton className="h-[34px] w-[260px]" />
+                  <Skeleton className="h-2.5 w-full" />
+                  <Skeleton className="h-[52px] w-full" />
+                </div>
+              )}
+            </CardBody>
+          </Card>
+        }
+        rail={
+          <Card className="flex flex-1 flex-col">
+            <CardHead
+              title="Sending accounts"
+              sub={`${enabledCount} enabled${hotCount ? ` · ${hotCount} with recent errors` : ""}`}
+              right={
+                <DotsMenu
+                  label="Sending accounts options"
+                  items={[
+                    { label: "Add account", icon: Plus, href: "/outreach/accounts?add=1" },
+                    { label: "Manage accounts", icon: Users, href: "/outreach/accounts" },
+                  ]}
+                />
+              }
+            />
+            <CardBody className="flex flex-1 flex-col pt-2.5">
+              {byPlatform.length === 0 ? (
+                <p className="py-1 text-[12.5px] leading-[1.55] text-subtle">
+                  No sending accounts yet. A campaign needs at least one enabled account to send from.
+                </p>
+              ) : (
+                byPlatform.map(([p, c]) => (
+                  <div key={p} className="flex items-center gap-[11px] border-b border-line-2 py-2 last:border-b-0">
+                    <Avatar platform={p} />
+                    <span className="text-[13px] font-semibold leading-normal text-foreground">
+                      {PLATFORM_LABEL[p] ?? p}
+                    </span>
+                    <span className="ml-auto text-[13px] font-extrabold tabular-nums leading-normal text-foreground">
+                      {c}
+                    </span>
+                  </div>
+                ))
+              )}
+              <RailLink icon={ArrowRight} href="/outreach/accounts" className="mt-auto">
+                Manage accounts
+              </RailLink>
+            </CardBody>
+          </Card>
+        }
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Tabs
+          value={status}
+          // A different filter is a different list. Page 4 of it may not
+          // exist, and page 4 of the old one is not where anyone wants to
+          // land, so every control that reshapes the list goes back to one.
+          onChange={(v) => {
+            setStatus(v);
+            setPage(0);
+          }}
+          items={STATUS_TABS.map((k) => ({
+            key: k,
+            label: k === "all" ? "All" : k[0].toUpperCase() + k.slice(1),
+            count: k === "all" ? (campaigns?.length ?? 0) : (statusCounts[k] ?? 0),
+          }))}
+        />
+        <div className="ml-auto flex items-center gap-2">
+          <SelectChip
+            label="Platform"
+            value={platform}
+            options={PLATFORM_FILTER}
+            onChange={(v) => {
+              setPlatform(v);
+              setPage(0);
+            }}
+          />
+          <SelectChip
+            label="Sort"
+            value={sort}
+            options={SORTS}
+            onChange={(v) => {
+              setSort(v);
+              setPage(0);
+            }}
+          />
         </div>
       </div>
 
-      {accounts.length === 0 && (
-        <div className="mb-6 rounded-xl border border-border bg-card p-4 text-sm">
-          <p className="font-medium">No sending accounts yet.</p>
-          <p className="mt-1 text-muted-foreground">
-            A campaign needs at least one enabled account to send from.{" "}
-            <Link href="/outreach/accounts" className="underline">
-              Add one
-            </Link>
-            .
-          </p>
-        </div>
-      )}
-
-      {campaigns.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border p-10 text-center">
-          <Send className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-3 text-sm font-medium">No campaigns yet</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Create one, import a list of profiles, then press Start.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {campaigns.map((c) => (
-            <div
-              key={c.id}
-              className="rounded-xl border border-border bg-card p-4 md:p-5 transition-colors hover:border-foreground/30"
-            >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      href={`/outreach/${c.id}`}
-                      className="truncate text-base font-semibold hover:underline"
-                    >
-                      {c.name}
-                    </Link>
-                    <StatusPill status={c.status} />
-                  </div>
-                  {c.description && (
-                    <p className="mt-1 line-clamp-1 text-sm text-muted-foreground">
-                      {c.description}
-                    </p>
-                  )}
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Created {new Date(c.created_at).toLocaleDateString()}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setConfirmDelete({ id: c.id, name: c.name })}
-                  aria-label={`Delete ${c.name}`}
-                  className="self-start rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Stat label="Targets" value={c.total_targets} />
-                <Stat label="Processed" value={c.processed_count} />
-                <Stat
-                  label="Successful"
-                  value={c.successful_count}
-                  icon={<CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />}
-                />
-                <Stat
-                  label="Failed"
-                  value={c.failed_count}
-                  icon={<XCircle className="h-3.5 w-3.5 text-destructive" />}
-                />
-              </div>
-
-              {/* A campaign with nothing in it needs a next step, not a 0%
-                  bar. The import lives on the campaign page, which isn't
-                  obvious from here. */}
-              {c.total_targets === 0 ? (
-                <Link
-                  href={`/outreach/${c.id}`}
-                  className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-4 py-3 text-sm transition-colors hover:border-foreground/40 hover:bg-muted/50"
-                >
-                  <span className="text-muted-foreground">
-                    No targets yet — open the campaign to import your list.
-                  </span>
-                  <span className="inline-flex shrink-0 items-center gap-1.5 font-medium">
-                    <Upload className="h-4 w-4" /> Import
-                  </span>
-                </Link>
-              ) : (
-                <div className="mt-4">
-                  <ProgressBar
-                    processed={c.processed_count}
-                    total={c.total_targets}
-                    successful={c.successful_count}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {showNew && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-          onClick={() => setShowNew(false)}
-        >
-          <div
-            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="mb-5 text-lg font-semibold">New Campaign</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Name</label>
-                <input
-                  className={inputClass}
-                  placeholder="e.g. Q3 creator outreach"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Image</label>
-                <input
-                  ref={imageRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/gif,image/webp"
-                  className="hidden"
-                  onChange={(e) => setImage(e.target.files?.[0] ?? null)}
-                />
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => imageRef.current?.click()}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
-                  >
-                    {image ? "Change image" : "Add image"}
-                  </button>
-                  {image && (
-                    <>
-                      <span className="truncate text-xs text-muted-foreground">
-                        {image.name}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImage(null);
-                          if (imageRef.current) imageRef.current.value = "";
-                        }}
-                        className="text-xs text-muted-foreground underline"
-                      >
-                        remove
-                      </button>
-                    </>
-                  )}
-                </div>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  Optional, sent with every message. A template with its own image
-                  fills this in automatically. Instagram only.
-                </p>
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Platform</label>
-                <Select
-                  value={form.platform}
-                  onChange={(e) => setForm({ ...form, platform: e.target.value })}
-                >
-                  <option value="tiktok">TikTok</option>
-                  <option value="instagram">Instagram</option>
-                  <option value="x">X (Twitter)</option>
-                </Select>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  Decides how profile URLs are read and which sending accounts can be
-                  assigned. It cannot be changed once targets are imported.
-                </p>
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Description</label>
-                <input
-                  className={inputClass}
-                  placeholder="Optional"
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                />
-              </div>
-              {templates.length > 0 && (
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium">Start from a template</label>
-                  <select
-                    className={inputClass}
-                    value={form.template_id}
-                    onChange={(e) => {
-                      const id = e.target.value;
-                      const chosen = templates.find((t) => String(t.id) === id);
-                      setForm({
-                        ...form,
-                        template_id: id,
-                        message_template: chosen ? chosen.body : form.message_template,
-                      });
-                    }}
-                  >
-                    <option value="">— none —</option>
-                    {templates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Message</label>
-                <textarea
-                  rows={4}
-                  className={inputClass}
-                  value={form.message_template}
-                  onChange={(e) => setForm({ ...form, message_template: e.target.value })}
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {"Use {{username}}, {{profile_url}}, {{campaign_name}}, {{account_name}} — plus any variable you define below."}
-                </p>
-              </div>
-              {form.message_template.includes("{{offer}}") && (
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium">
-                    {"Value for {{offer}}"}
-                  </label>
-                  <input
-                    className={inputClass}
-                    placeholder="e.g. our creator program"
-                    value={form.offer}
-                    onChange={(e) => setForm({ ...form, offer: e.target.value })}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button
-                onClick={() => setShowNew(false)}
-                className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium transition-colors hover:bg-muted"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreate}
-                disabled={saving}
-                className="min-h-[44px] rounded-lg bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                {saving ? "Creating…" : "Create campaign"}
-              </button>
-            </div>
+      <Card>
+        {loading ? (
+          <div className="flex flex-col gap-2 p-4">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-[57px] w-full" />
+            ))}
           </div>
-        </div>
-      )}
+        ) : rows.length === 0 ? (
+          <Empty
+            icon={Send}
+            title={campaigns.length === 0 ? "No campaigns yet" : "No campaigns in this state"}
+            action={
+              campaigns.length === 0 ? (
+                <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>
+                  New Campaign
+                </PrimaryButton>
+              ) : undefined
+            }
+          >
+            {campaigns.length === 0
+              ? "Create one, import a list of profiles, then press Start."
+              : "Change the filter, or start a new campaign."}
+          </Empty>
+        ) : (
+          <div className="overflow-x-auto px-1.5 pb-2 pt-4">
+            <table className="w-full table-fixed border-collapse">
+              <thead>
+                <tr>
+                  <th className={TH}>Campaign</th>
+                  <th className={`${TH} w-[118px]`}>Activity</th>
+                  <th className={`${TH} w-[92px] text-right`}>Targets</th>
+                  <th className={`${TH} w-[168px] pl-[18px]`}>Delivered</th>
+                  <th className={`${TH} w-[78px] text-right`}>Sent</th>
+                  <th className={`${TH} w-[74px] text-right`}>Failed</th>
+                  <th className={`${TH} w-[118px] pl-[18px]`}>Status</th>
+                  <th className={`${TH} w-[44px]`} />
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((c) => {
+                  const total = c.total_targets ?? 0;
+                  const ok = c.successful_count ?? 0;
+                  const act = ACTIVITY[c.activity] ?? ACTIVITY.message;
+                  return (
+                    <tr
+                      key={c.id}
+                      onClick={() => router.push(campaignPath(c))}
+                      className="cursor-pointer transition-colors last:[&>td]:border-b-0 hover:bg-secondary"
+                    >
+                      <td className={TD}>
+                        <div className="flex min-w-0 items-center gap-[11px]">
+                          <Avatar platform={c.platform} />
+                          <span className="flex min-w-0 flex-col gap-px">
+                            <span className="truncate font-semibold text-foreground">{c.name}</span>
+                            <span className="truncate text-[11px] leading-normal text-subtle">
+                              {c.description || `Created ${c.created_at.slice(0, 10)}`}
+                            </span>
+                          </span>
+                        </div>
+                      </td>
+                      <td className={TD}>
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold leading-normal text-muted-foreground">
+                          <act.icon className="h-[13px] w-[13px] text-subtle" />
+                          {act.label}
+                        </span>
+                      </td>
+                      <td className={`${TD} ${MONO} text-right`}>{n(total)}</td>
+                      <td className={`${TD} pl-[18px]`}>
+                        <Progress pct={total ? (ok / total) * 100 : 0} />
+                      </td>
+                      <td className={`${TD} ${MONO} text-right font-extrabold`}>{n(ok)}</td>
+                      <td className={`${TD} ${MONO} text-right text-subtle`}>{n(c.failed_count)}</td>
+                      <td className={`${TD} pl-[18px]`}>
+                        <Tag tone={CAMPAIGN_TONE[c.status] ?? "draft"}>
+                          {c.status[0].toUpperCase() + c.status.slice(1)}
+                        </Tag>
+                      </td>
+                      <td className={`${TD} text-right`} onClick={(e) => e.stopPropagation()}>
+                        <DotsMenu label={`Actions for ${c.name}`} items={rowMenu(c)} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-      <ConfirmModal
-        open={confirmDelete !== null}
-        onOpenChange={(open) => !open && setConfirmDelete(null)}
-        title="Delete campaign?"
-        description={`“${confirmDelete?.name}” and all of its targets, jobs and results will be removed. This cannot be undone.`}
-        confirmLabel="Delete"
-        variant="danger"
-        loading={deleting}
-        onConfirm={handleDelete}
+        {rows.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between border-t border-line-2 px-5 pb-4 pt-3 text-[11.5px] leading-normal text-subtle">
+            <span className="tabular-nums">
+              {(from + 1).toLocaleString()}&ndash;{Math.min(from + PAGE_SIZE, rows.length).toLocaleString()} of{" "}
+              {rows.length.toLocaleString()}
+            </span>
+            <span className="flex gap-[7px]">
+              <button
+                type="button"
+                aria-label="Previous page"
+                onClick={() => setPage(Math.max(0, current - 1))}
+                disabled={current === 0}
+                className="grid h-[30px] w-[30px] place-items-center rounded-[9px] border border-border bg-card text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-default disabled:opacity-40 disabled:hover:bg-card"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                aria-label="Next page"
+                onClick={() => setPage(current + 1)}
+                disabled={current + 1 >= pageCount}
+                className="grid h-[30px] w-[30px] place-items-center rounded-[9px] border border-border bg-card text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-default disabled:opacity-40 disabled:hover:bg-card"
+              >
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          </div>
+        )}
+      </Card>
+
+      <Note>
+        Delivered is measured against messages actually sent, not targets processed — a skipped or failed target is not
+        a delivery.
+      </Note>
+
+      <NewCampaignDialog
+        open={showNew}
+        onClose={() => setShowNew(false)}
+        accounts={accounts}
+        templates={templates}
+        onCreated={(c) => {
+          setShowNew(false);
+          toast.success(`Campaign “${c.name}” created`);
+          router.push(campaignPath(c));
+        }}
       />
-    </div>
-  );
-}
 
-function Stat({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: number;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-lg bg-muted/50 px-3 py-2">
-      <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
-        {icon}
-        {label}
-      </p>
-      <p className="mt-0.5 text-lg font-semibold tabular-nums">{value.toLocaleString()}</p>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={doDelete}
+        title="Delete campaign?"
+        confirmLabel="Delete campaign"
+        confirmText={confirmDelete?.name}
+        busy={deleting}
+        body={
+          <>
+            <b className="font-bold text-foreground">“{confirmDelete?.name}”</b> is removed for good, along with
+            everything it produced. This cannot be undone.
+          </>
+        }
+        bullets={[
+          `${n(confirmDelete?.total_targets)} imported targets, including the ${n(confirmDelete?.successful_count)} already delivered`,
+          "Every job, result and error message from its runs",
+          "Its entry in the audit log",
+        ]}
+      />
     </div>
   );
 }

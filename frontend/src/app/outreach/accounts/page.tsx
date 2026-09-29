@@ -1,227 +1,181 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+/**
+ * Sending accounts — one table, two filters.
+ *
+ * The page used to be one section per platform. A table with a platform
+ * filter says the same thing in less space and answers the question the
+ * sections could not: "which of my accounts, on any platform, are in
+ * trouble right now". The platform still matters — a campaign can only use
+ * accounts on its own platform — so it keeps its own filter row rather
+ * than being a column you have to read.
+ *
+ * The list re-reads itself every 15 seconds, because an account can pause
+ * itself while nobody is looking.
+ */
+
+import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
-  Plus,
-  Users,
-  Trash2,
+  FileText,
+  Info,
   KeyRound,
+  Pause,
   Pencil,
-  PlayCircle,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Shield,
+  Smartphone,
+  Timer,
+  Trash2,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-  listOutreachAccounts,
-  createOutreachAccount,
-  updateOutreachAccount,
-  testAccountProxy,
-  type ProxyCheck,
   deleteOutreachAccount,
-  setOutreachAccountSession,
+  listOutreachAccounts,
   resumeOutreachAccount,
+  updateOutreachAccount,
   type OutreachAccount,
-  startBrowserLogin,
-  getBrowserLoginState,
-  type BrowserLoginState,
 } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui/confirm-modal";
-import { SessionViewer } from "@/components/outreach/SessionViewer";
-import { LABEL_WHEN_ROOM, Modal, Panel, Select, StatusPill, Toggle, apiErrorMessage, inputClass, relativeTime } from "../ui";
+import {
+  Avatar,
+  BackLink,
+  Card,
+  CardBody,
+  CardHead,
+  Chip,
+  DotsMenu,
+  Empty,
+  FigureLine,
+  FigureStrong,
+  MenuItem,
+  Minis,
+  MONO,
+  n,
+  PageActions,
+  PageHead,
+  PageTitle,
+  PLATFORM_LABEL,
+  PlatformIcon,
+  PrimaryButton,
+  Tabs,
+  Tag,
+  TD,
+  TH,
+  Tone,
+  TwoCol,
+} from "@/components/kit";
+import { ConfirmDialog } from "@/components/kit/dialog";
+import {
+  AddAccountDialog,
+  SwitchToPhoneDialog,
+  ProxyDialog,
+  RenameAccountDialog,
+  SessionDialog,
+} from "@/components/outreach/account-dialogs";
+import { apiErrorMessage, relativeTime } from "@/components/kit/format";
 
 const MAX_ACCOUNTS = 20;
 
-/** The platforms an account can be on, in the order this page lists them.
- *  An account whose platform is not one of these is not dropped — it gets
- *  a section under its own name, so nothing can go missing from the page
- *  by not being recognised here. */
-const PLATFORMS = [
-  { id: "tiktok", label: "TikTok" },
-  { id: "instagram", label: "Instagram" },
-  { id: "x", label: "X (Twitter)" },
+/** Account status → the tone it wears. */
+const STATE_TONE: Record<string, Tone> = {
+  idle: "done",
+  active: "live",
+  paused: "pause",
+  error: "stop",
+};
+
+const STATE_TABS = [
+  { key: "all", label: "All" },
+  { key: "enabled", label: "Enabled" },
+  { key: "disabled", label: "Disabled" },
+  { key: "errors", label: "With errors" },
 ];
 
-const platformLabel = (id: string) =>
-  PLATFORMS.find((p) => p.id === id)?.label ?? id;
-
 export default function OutreachAccountsPage() {
-  const [accounts, setAccounts] = useState<OutreachAccount[]>([]);
-  const [showNew, setShowNew] = useState(false);
-  const [name, setName] = useState("");
-  const [platform, setPlatform] = useState("tiktok");
-  const [purpose, setPurpose] = useState("sending");
-  const [busy, setBusy] = useState(false);
+  const [accounts, setAccounts] = useState<OutreachAccount[] | null>(null);
+  const [state, setState] = useState("all");
+  const [platform, setPlatform] = useState("all");
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+
+  const [showAdd, setShowAdd] = useState(false);
   const [sessionFor, setSessionFor] = useState<OutreachAccount | null>(null);
+  const [sessionLive, setSessionLive] = useState(false);
   const [proxyFor, setProxyFor] = useState<OutreachAccount | null>(null);
-  const [proxyUrl, setProxyUrl] = useState("");
-  const [proxyCheck, setProxyCheck] = useState<ProxyCheck | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [sessionJson, setSessionJson] = useState("");
-  const [login, setLogin] = useState<BrowserLoginState | null>(null);
+  const [phoneFor, setPhoneFor] = useState<OutreachAccount | null>(null);
+  const [renameFor, setRenameFor] = useState<OutreachAccount | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<OutreachAccount | null>(null);
   const [deleting, setDeleting] = useState(false);
-  // Which row is being renamed, and what has been typed so far. The name is
-  // stored once and read live everywhere else, so a rename here is the same
-  // rename on every campaign page.
-  const [renamingId, setRenamingId] = useState<number | null>(null);
-  const [renameValue, setRenameValue] = useState("");
 
   const load = () =>
     listOutreachAccounts()
       .then(setAccounts)
-      .catch((e) => toast.error(apiErrorMessage(e, "Failed to load accounts")));
+      .catch((e) => {
+        setAccounts([]);
+        toast.error(apiErrorMessage(e, "Failed to load accounts"));
+      });
 
   useEffect(() => {
     load();
+    // An account can pause itself after repeated failures while nobody is
+    // looking, and that is exactly the thing this page exists to show.
     const iv = setInterval(load, 15000);
     return () => clearInterval(iv);
   }, []);
 
-  const handleCreate = async () => {
-    if (!name.trim()) return toast.error("Account name is required");
-    setBusy(true);
-    try {
-      await createOutreachAccount({ name: name.trim(), platform, purpose });
-      setName("");
-      setPlatform("tiktok");
-      setPurpose("sending");
-      setShowNew(false);
-      load();
-      toast.success("Account added");
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to add account"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Ask whether this host can open a login window, whenever the modal opens.
+  // `?add=1` opens the add dialog — that is how the outreach page's
+  // "Add account" arrives here.
   useEffect(() => {
-    if (!sessionFor) return setLogin(null);
-    let live = true;
-    getBrowserLoginState(sessionFor.id)
-      .then((s) => live && setLogin(s))
-      .catch(() => live && setLogin(null));
-    return () => {
-      live = false;
-    };
-  }, [sessionFor]);
+    if (new URLSearchParams(window.location.search).get("add") === "1") setShowAdd(true);
+  }, []);
 
-  // While a window is open, poll until it resolves. Signing in takes
-  // minutes, so the request that started it returned long ago.
-  useEffect(() => {
-    if (!sessionFor || !login?.running) return;
-    const iv = setInterval(async () => {
-      try {
-        const next = await getBrowserLoginState(sessionFor.id);
-        setLogin(next);
-        if (next.capture?.status === "saved") {
-          toast.success(next.capture.message);
-          load();
-          setSessionFor(null);
-        } else if (next.capture?.status === "failed") {
-          toast.error(next.capture.message);
-        }
-      } catch {
-        /* keep polling — a dropped poll is not a failed sign-in */
-      }
-    }, 2000);
-    return () => clearInterval(iv);
-  }, [sessionFor, login?.running]);
+  const all = accounts ?? [];
+  const enabled = all.filter((a) => a.enabled);
+  const disabled = all.filter((a) => !a.enabled);
+  const flagged = all.filter((a) => a.consecutive_errors > 0);
+  const sentTotal = all.reduce((s, a) => s + (a.messages_processed || 0), 0);
+  const errTotal = all.reduce((s, a) => s + (a.error_count || 0), 0);
 
-  const handleBrowserLogin = async () => {
-    if (!sessionFor) return;
+  const byPlatform = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const a of all) c[a.platform] = (c[a.platform] ?? 0) + 1;
+    return Object.entries(c).sort((x, y) => y[1] - x[1]);
+  }, [accounts]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return all.filter((a) => {
+      const okState =
+        state === "all" ||
+        (state === "errors" ? a.consecutive_errors > 0 : state === "enabled" ? a.enabled : !a.enabled);
+      const okPlatform = platform === "all" || a.platform === platform;
+      const okQuery = !q || a.name.toLowerCase().includes(q);
+      return okState && okPlatform && okQuery;
+    });
+  }, [accounts, state, platform, query]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---------------- actions ---------------- */
+
+  const patch = async (a: OutreachAccount, body: Parameters<typeof updateOutreachAccount>[1], msg: string) => {
     try {
-      const capture = await startBrowserLogin(sessionFor.id);
-      setLogin((prev) => (prev ? { ...prev, running: true, capture } : prev));
-      toast.success("A browser window is opening — sign in there");
+      await updateOutreachAccount(a.id, body);
+      await load();
+      toast.success(msg);
     } catch (e) {
-      toast.error(apiErrorMessage(e, "Could not open a sign-in window"));
+      toast.error(apiErrorMessage(e, "Could not update this account"));
     }
   };
 
-  const handlePurpose = async (account: OutreachAccount) => {
-    const next = account.purpose === "discovery" ? "sending" : "discovery";
-    try {
-      await updateOutreachAccount(account.id, { purpose: next });
-      load();
-      toast.success(
-        next === "discovery"
-          ? "Now used for finding profiles — it will not be asked to send"
-          : "Now used for sending messages"
-      );
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Could not change what this account is for"));
-    }
-  };
-
-  const startRename = (account: OutreachAccount) => {
-    setRenamingId(account.id);
-    setRenameValue(account.name);
-  };
-
-  const cancelRename = () => {
-    setRenamingId(null);
-    setRenameValue("");
-  };
-
-  const handleRename = async (account: OutreachAccount) => {
-    const next = renameValue.trim();
-    if (!next || next === account.name) return cancelRename();
-    try {
-      await updateOutreachAccount(account.id, { name: next });
-      cancelRename();
-      load();
-      toast.success(`Renamed to “${next}”`);
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Could not rename this account"));
-    }
-  };
-
-  const handleToggle = async (account: OutreachAccount) => {
-    try {
-      await updateOutreachAccount(account.id, { enabled: !account.enabled });
-      load();
-      toast.success(account.enabled ? "Account disabled" : "Account enabled");
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to update account"));
-    }
-  };
-
-  const handleResume = async (account: OutreachAccount) => {
-    try {
-      await resumeOutreachAccount(account.id);
-      load();
-      toast.success("Account resumed");
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to resume account"));
-    }
-  };
-
-  const handleSession = async () => {
-    if (!sessionFor) return;
-    setBusy(true);
-    try {
-      await setOutreachAccountSession(sessionFor.id, sessionJson);
-      setSessionFor(null);
-      setSessionJson("");
-      load();
-      toast.success("Session stored (encrypted)");
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Failed to store session"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDelete = async () => {
+  const doDelete = async () => {
     if (!confirmDelete) return;
     setDeleting(true);
     try {
       await deleteOutreachAccount(confirmDelete.id);
       setConfirmDelete(null);
-      load();
+      await load();
       toast.success("Account removed");
     } catch (e) {
       toast.error(apiErrorMessage(e, "Failed to remove account"));
@@ -230,457 +184,392 @@ export default function OutreachAccountsPage() {
     }
   };
 
-  // One section per platform, listed in PLATFORMS order, with anything
-  // unrecognised following it. Empty platforms are left out: a heading over
-  // no rows says nothing that the add button does not already say.
-  const groups = [
-    ...PLATFORMS.map((p) => p.id),
-    ...accounts
-      .map((a) => a.platform)
-      .filter((id) => !PLATFORMS.some((p) => p.id === id)),
-  ]
-    .filter((id, i, all) => all.indexOf(id) === i)
-    .map((id) => ({
-      id,
-      label: platformLabel(id),
-      rows: accounts.filter((a) => a.platform === id),
-    }))
-    .filter((g) => g.rows.length > 0);
+  const rowMenu = (a: OutreachAccount): MenuItem[] => [
+    // A phone account signs in on the phone, not here.
+    ...(a.via === "phone"
+      ? []
+      : [
+          {
+            label: a.has_session || a.session_reference ? "Re-login in browser" : "Sign in",
+            icon: KeyRound,
+            onClick: () => {
+              setSessionLive(true);
+              setSessionFor(a);
+            },
+          },
+        ]),
+    { label: "Rename", icon: Pencil, onClick: () => setRenameFor(a) },
+    { label: "Proxy", icon: Shield, onClick: () => setProxyFor(a) },
+    ...(a.platform === "tiktok"
+      ? [{ label: a.via === "phone" ? "Phone settings" : "Switch to phone", icon: Smartphone, onClick: () => setPhoneFor(a) }]
+      : []),
+    "-",
+    { label: "Sending", group: true },
+    {
+      label: a.enabled ? "Disable account" : "Enable account",
+      icon: a.enabled ? Pause : Play,
+      onClick: () => patch(a, { enabled: !a.enabled }, a.enabled ? "Account disabled" : "Account enabled"),
+    },
+    {
+      label: a.purpose === "discovery" ? "Use for sending" : "Use for finding profiles",
+      icon: Users,
+      onClick: () =>
+        patch(
+          a,
+          { purpose: a.purpose === "discovery" ? "sending" : "discovery" },
+          a.purpose === "discovery"
+            ? "Now used for sending messages"
+            : "Now used for finding profiles — it will not be asked to send",
+        ),
+    },
+    {
+      label: "Clear error count",
+      icon: Timer,
+      disabled: a.status !== "paused" && a.consecutive_errors === 0,
+      onClick: async () => {
+        try {
+          await resumeOutreachAccount(a.id);
+          await load();
+          toast.success("Account resumed");
+        } catch (e) {
+          toast.error(apiErrorMessage(e, "Failed to resume account"));
+        }
+      },
+    },
+    "-",
+    { label: "Remove account", icon: Trash2, danger: true, onClick: () => setConfirmDelete(a) },
+  ];
 
-  // Adding from inside a section starts on that section's platform, which
-  // is almost always the one being added to.
-  const openNew = (forPlatform?: string) => {
-    setPlatform(forPlatform ?? "tiktok");
-    setShowNew(true);
-  };
+  const loading = accounts === null;
+  const full = all.length >= MAX_ACCOUNTS;
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <Link
-        href="/outreach"
-        className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" /> Outreach
-      </Link>
+    <div className="flex flex-col gap-4" data-metrics>
+      <BackLink href="/outreach">Outreach</BackLink>
 
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Sending accounts</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {accounts.length} of {MAX_ACCOUNTS} accounts. Each worker runs an account in its
-            own isolated browser session.
-          </p>
+      <PageHead>
+        <PageTitle
+          title="Sending accounts"
+          sub="The accounts your campaigns send from. Each one logs in through a real browser session."
+        />
+        <PageActions>
+          <Chip icon={FileText} href="/outreach/templates">
+            Templates
+          </Chip>
+          <PrimaryButton
+            icon={Plus}
+            disabled={full}
+            title={full ? `The limit is ${MAX_ACCOUNTS} accounts` : undefined}
+            onClick={() => setShowAdd(true)}
+          >
+            Add account
+          </PrimaryButton>
+        </PageActions>
+      </PageHead>
+
+      <TwoCol
+        main={
+          <Card>
+            <CardHead
+              title="Capacity"
+              sub="What these accounts have carried, all time"
+              right={
+                <DotsMenu
+                  label="Capacity options"
+                  items={[
+                    { label: "Refresh", icon: RefreshCw, onClick: () => void load() },
+                    {
+                      label: "Clear all error counts",
+                      icon: Timer,
+                      disabled: flagged.length === 0,
+                      onClick: async () => {
+                        try {
+                          await Promise.all(flagged.map((a) => resumeOutreachAccount(a.id)));
+                          await load();
+                          toast.success(`${flagged.length} account${flagged.length === 1 ? "" : "s"} resumed`);
+                        } catch (e) {
+                          toast.error(apiErrorMessage(e, "Could not clear them all"));
+                        }
+                      },
+                    },
+                  ]}
+                />
+              }
+            />
+            <CardBody>
+              <FigureLine value={n(sentTotal)}>
+                messages sent · <FigureStrong>{n(errTotal)}</FigureStrong> failed tries along the way
+              </FigureLine>
+              <Minis
+                cells={[
+                  { label: "ACCOUNTS", value: all.length },
+                  { label: "ENABLED", value: enabled.length },
+                  { label: "DISABLED", value: disabled.length },
+                  { label: "IDLE", value: all.filter((a) => a.status === "idle").length },
+                  { label: "FLAGGED", value: flagged.length },
+                ]}
+              />
+              <p className="mt-4 flex items-start gap-[7px] text-[11px] leading-[1.5] text-subtle">
+                <Info className="mt-0.5 h-3 w-3 flex-none" />
+                A failed try is one attempt, not one lost target — a target that succeeds on its third go
+                counts two. An account auto-pauses after repeated failures, so one bad session cannot burn a
+                whole campaign; clearing its count puts it back in rotation.
+              </p>
+            </CardBody>
+          </Card>
+        }
+        rail={
+          <Card>
+            <CardHead
+              title="By platform"
+              sub="A campaign can only use accounts on its own platform"
+              right={
+                <DotsMenu
+                  label="By platform options"
+                  items={[{ label: "Add account", icon: Plus, onClick: () => setShowAdd(true) }]}
+                />
+              }
+            />
+            <CardBody className="pt-2.5">
+              {byPlatform.length === 0 ? (
+                <p className="py-1 text-[12.5px] leading-[1.55] text-subtle">No accounts yet.</p>
+              ) : (
+                byPlatform.map(([p, c]) => (
+                  <div key={p} className="flex items-center gap-[11px] border-b border-line-2 py-[9px] last:border-b-0">
+                    <Avatar platform={p} />
+                    <span className="text-[13px] font-semibold leading-normal text-foreground">
+                      {PLATFORM_LABEL[p] ?? p}
+                    </span>
+                    <span className="ml-auto text-[13px] font-extrabold tabular-nums leading-normal text-foreground">
+                      {c}
+                    </span>
+                  </div>
+                ))
+              )}
+            </CardBody>
+          </Card>
+        }
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Tabs
+          value={platform}
+          onChange={setPlatform}
+          items={[
+            { key: "all", label: "All", count: all.length },
+            ...byPlatform.map(([p, c]) => ({
+              key: p,
+              label: PLATFORM_LABEL[p] ?? p,
+              count: c,
+              icon: ({ className }: { className?: string }) => <PlatformIcon platform={p} className={className} />,
+            })),
+          ]}
+        />
+        <span className="h-6 w-px bg-border" />
+        <Tabs
+          value={state}
+          onChange={setState}
+          items={STATE_TABS.map((t) => ({
+            key: t.key,
+            label: t.label,
+            count:
+              t.key === "all"
+                ? all.length
+                : t.key === "enabled"
+                  ? enabled.length
+                  : t.key === "disabled"
+                    ? disabled.length
+                    : flagged.length,
+          }))}
+        />
+        <div className="ml-auto">
+          {searching || query ? (
+            <div className="flex items-center gap-[7px] rounded-[11px] border border-border bg-card px-[13px] py-2 shadow-card">
+              <Search className="h-3.5 w-3.5 flex-none text-subtle" />
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onBlur={() => !query && setSearching(false)}
+                placeholder="Search accounts"
+                className="w-[150px] border-0 bg-transparent text-[12.5px] leading-normal text-foreground outline-none placeholder:text-subtle"
+              />
+            </div>
+          ) : (
+            <Chip icon={Search} onClick={() => setSearching(true)}>
+              Search accounts
+            </Chip>
+          )}
         </div>
-        <button
-          onClick={() => openNew()}
-          disabled={accounts.length >= MAX_ACCOUNTS}
-          title="Add account"
-          className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-foreground px-4 lg:px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          <Plus className="h-4 w-4" />
-          <span className={LABEL_WHEN_ROOM}>Add account</span>
-        </button>
       </div>
 
-      {accounts.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border p-10 text-center">
-          <Users className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-3 text-sm font-medium">No sending accounts</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Add an account, then attach an authorized browser session to it.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {groups.map((group) => (
-            <Panel
-              key={group.id}
-              title={group.label}
-              // Keyed apart from the campaign page's panels: both write to
-              // one store, and "TikTok" is too ordinary a name to share.
-              memoryKey={`accounts:${group.id}`}
-              action={
-                <div className="flex items-center gap-2">
-                  <span className="tabular-nums text-xs text-muted-foreground">
-                    {group.rows.length}
-                  </span>
-                  <button
-                    onClick={() => openNew(group.id)}
-                    disabled={accounts.length >= MAX_ACCOUNTS}
-                    title={`Add a ${group.label} account`}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-                  >
-                    <Plus className="h-3.5 w-3.5" /> Add
-                  </button>
-                </div>
-              }
-            >
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[620px] text-sm">
-                  <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
-                    <tr className="border-b border-border">
-                      <th className="px-4 py-3 font-medium">Account</th>
-                      <th className="px-4 py-3 font-medium">Status</th>
-                      <th className="px-4 py-3 font-medium">Messages</th>
-                      <th className="px-4 py-3 font-medium">Last activity</th>
-                      <th className="px-4 py-3 font-medium">Enabled</th>
-                      <th className="px-4 py-3 font-medium" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.rows.map((a) => (
-                      <tr key={a.id} className="border-b border-border/60 last:border-0 align-top">
-                        <td className="px-4 py-3">
-                          {renamingId === a.id ? (
-                            <input
-                              autoFocus
-                              value={renameValue}
-                              onChange={(e) => setRenameValue(e.target.value)}
-                              onBlur={() => handleRename(a)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") handleRename(a);
-                                if (e.key === "Escape") cancelRename();
-                              }}
-                              aria-label={`Rename ${a.name}`}
-                              className={`${inputClass} h-8 w-44 py-1 font-medium`}
-                            />
-                          ) : (
-                            <button
-                              onClick={() => startRename(a)}
-                              title="Click to rename"
-                              className="group flex items-center gap-1.5 rounded font-medium hover:text-primary"
-                            >
-                              <span className="truncate">{a.name}</span>
-                              <Pencil className="h-3 w-3 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
-                            </button>
+      <Card>
+        {loading ? (
+          <div className="p-4 text-[12.5px] leading-normal text-subtle">Loading accounts…</div>
+        ) : rows.length === 0 ? (
+          <Empty
+            icon={Users}
+            title={all.length === 0 ? "No accounts yet" : "No accounts match"}
+            action={
+              all.length === 0 ? (
+                <PrimaryButton icon={Plus} onClick={() => setShowAdd(true)}>
+                  Add account
+                </PrimaryButton>
+              ) : undefined
+            }
+          >
+            {all.length === 0
+              ? "A campaign needs at least one enabled account to send from."
+              : "Nothing here on this platform in this state. Widen a filter, or add an account."}
+          </Empty>
+        ) : (
+          <div className="overflow-x-auto px-1.5 pb-2 pt-4">
+            <table className="w-full table-fixed border-collapse">
+              <thead>
+                <tr>
+                  <th className={TH}>Account</th>
+                  <th className={`${TH} w-[106px]`}>Platform</th>
+                  <th className={`${TH} w-[104px]`}>State</th>
+                  <th className={`${TH} w-[92px] text-right`}>Sent</th>
+                  <th className={`${TH} w-[124px] text-right`}>Failed tries</th>
+                  <th className={`${TH} w-[126px] pl-[18px]`}>Last active</th>
+                  <th className={`${TH} w-[74px]`}>Sending</th>
+                  <th className={`${TH} w-[44px]`} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((a) => {
+                  const hot = a.consecutive_errors > 0;
+                  return (
+                    <tr key={a.id} className="transition-colors last:[&>td]:border-b-0 hover:bg-secondary">
+                      <td className={TD}>
+                        <div className="flex min-w-0 items-center gap-[11px]">
+                          <Avatar platform={a.platform} />
+                          <span className="flex min-w-0 flex-col gap-px">
+                            <span className="truncate font-semibold text-foreground">{a.name}</span>
+                            <span className="truncate text-[11px] leading-normal text-subtle">
+                              {a.purpose === "discovery" ? "Finding profiles · " : ""}
+                              {a.via === "phone"
+                                ? phoneLine(a)
+                                : a.has_session || a.session_reference
+                                  ? a.session_reference || "session stored"
+                                  : "no session"}
+                            </span>
+                          </span>
+                        </div>
+                      </td>
+                      <td className={`${TD} text-xs font-semibold text-muted-foreground`}>
+                        {PLATFORM_LABEL[a.platform] ?? a.platform}
+                      </td>
+                      <td className={TD}>
+                        <Tag tone={a.enabled ? (STATE_TONE[a.status] ?? "queue") : "draft"}>
+                          {a.enabled ? a.status[0].toUpperCase() + a.status.slice(1) : "Off"}
+                        </Tag>
+                      </td>
+                      <td className={`${TD} ${MONO} text-right`}>{n(a.messages_processed)}</td>
+                      <td className={`${TD} text-right`}>
+                        <span
+                          className={`inline-flex flex-col items-end ${MONO} ${
+                            hot ? "font-bold text-bad" : "text-subtle"
+                          }`}
+                        >
+                          {n(a.error_count)}
+                          {hot && (
+                            <em className="font-sans text-[10px] font-semibold not-italic opacity-85">
+                              +{a.consecutive_errors} in a row
+                            </em>
                           )}
-                          <p className="text-xs text-muted-foreground">
-                            <button
-                              onClick={() => handlePurpose(a)}
-                              title={
-                                a.purpose === "discovery"
-                                  ? "Used for finding profiles. Click to use it for sending instead."
-                                  : "Used for sending. Click to use it for finding profiles instead."
-                              }
-                              className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide hover:bg-border"
-                            >
-                              {a.purpose === "discovery" ? "discovery" : "sending"}
-                            </button>{" "}
-                            ·{" "}
-                            {a.has_session ? (
-                              <>session stored {relativeTime(a.session_updated_at)}</>
-                            ) : (
-                              <span className="text-amber-600 dark:text-amber-400">no session</span>
-                            )}{" "}
-                            ·{" "}
-                            <button
-                              onClick={() => setProxyFor(a)}
-                              title={
-                                a.proxy
-                                  ? `Sends through ${a.proxy}. Click to change.`
-                                  : "Sends from this server's own address. Click to set a proxy."
-                              }
-                              className="rounded hover:text-foreground"
-                            >
-                              {a.proxy ? (
-                                <span className="text-muted-foreground">{a.proxy}</span>
-                              ) : (
-                                <span className="text-muted-foreground underline decoration-dotted">
-                                  no proxy
-                                </span>
-                              )}
-                            </button>
-                          </p>
-                        </td>
-                        <td className="px-4 py-3">
-                          <StatusPill status={a.status} />
-                          {a.paused_reason && (
-                            <p className="mt-1 max-w-[240px] text-xs text-amber-600 dark:text-amber-400">
-                              {a.paused_reason}
-                            </p>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 tabular-nums">{a.messages_processed}</td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {relativeTime(a.last_activity_at)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Toggle
-                            checked={a.enabled}
-                            onChange={() => handleToggle(a)}
-                            label={`${a.enabled ? "Disable" : "Enable"} ${a.name}`}
+                        </span>
+                      </td>
+                      <td className={`${TD} pl-[18px] text-xs text-subtle`}>{relativeTime(a.last_activity_at)}</td>
+                      <td className={TD}>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={a.enabled}
+                          aria-label={`${a.enabled ? "Disable" : "Enable"} ${a.name}`}
+                          onClick={() =>
+                            patch(a, { enabled: !a.enabled }, a.enabled ? "Account disabled" : "Account enabled")
+                          }
+                          className={`inline-flex h-[18px] w-8 items-center rounded-full p-0.5 transition-colors ${
+                            a.enabled ? "bg-chart-1" : "bg-border"
+                          }`}
+                        >
+                          <i
+                            className={`h-3.5 w-3.5 rounded-full bg-card shadow-[0_1px_2px_rgba(16,24,40,0.3)] transition-transform ${
+                              a.enabled ? "translate-x-[14px]" : ""
+                            }`}
                           />
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-end gap-1">
-                            {a.status === "paused" && (
-                              <button
-                                onClick={() => handleResume(a)}
-                                title="Clear auto-pause"
-                                className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                              >
-                                <PlayCircle className="h-4 w-4" />
-                              </button>
-                            )}
-                            <button
-                              onClick={() => {
-                                setSessionFor(a);
-                                setSessionJson("");
-                              }}
-                              title="Attach browser session"
-                              className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                            >
-                              <KeyRound className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => setConfirmDelete(a)}
-                              title="Remove account"
-                              className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-          ))}
-        </div>
-      )}
-
-      {showNew && (
-        <Modal onClose={() => setShowNew(false)} title="Add sending account">
-          <label className="mb-1.5 block text-sm font-medium">Name</label>
-          <input
-            className={inputClass}
-            placeholder="e.g. Sender 1"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <label className="mb-1.5 mt-4 block text-sm font-medium">Platform</label>
-          <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
-            <option value="tiktok">TikTok</option>
-            <option value="instagram">Instagram</option>
-            <option value="x">X (Twitter)</option>
-          </Select>
-          <label className="mb-1.5 mt-4 block text-sm font-medium">Used for</label>
-          <Select value={purpose} onChange={(e) => setPurpose(e.target.value)}>
-            <option value="sending">Sending messages</option>
-            <option value="discovery">Finding profiles</option>
-          </Select>
-          <p className="mt-2 text-xs text-muted-foreground">
-            A label for you — the account is authorized separately by attaching a browser
-            session. The platform cannot be changed later, and an account can only be
-            assigned to campaigns on the same platform.
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Keep these apart. Finding profiles means opening a great many pages in a
-            short time and is the likelier way to get an account restricted — it should
-            not be the account you send from. A discovery account is never leased to
-            send, and a sending account is never used to search.
-          </p>
-          <div className="mt-6 flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <button
-              onClick={() => setShowNew(false)}
-              className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCreate}
-              disabled={busy}
-              className="min-h-[44px] rounded-lg bg-foreground px-5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
-            >
-              {busy ? "Adding…" : "Add account"}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {sessionFor && (
-        <Modal
-          onClose={() => setSessionFor(null)}
-          wide={Boolean(login?.capture && !login.capture.done)}
-          title={`Attach a session to “${sessionFor.name}”`}
-        >
-          {login?.available && (
-            <div className="mb-4 flex min-h-0 flex-1 flex-col">
-              {login.capture && !login.capture.done ? (
-                login.capture.on_screen ? (
-                  <>
-                    <SessionViewer accountId={sessionFor.id} />
-                    <p className="mt-2 shrink-0 text-xs text-muted-foreground">
-                      Sign in above. Closes on its own when done.
-                    </p>
-                  </>
-                ) : (
-                  // Nowhere to stream from: the backend is on a machine
-                  // with no virtual display, so the sign-in window opened
-                  // there as a real window.
-                  <p className="text-sm text-muted-foreground">
-                    A sign-in window is open on the machine running the
-                    backend — sign in there. This closes on its own when
-                    it is done.
-                  </p>
-                )
-              ) : (
-                <button
-                  onClick={handleBrowserLogin}
-                  className="min-h-[44px] w-full rounded-lg bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
-                >
-                  Sign in to {sessionFor.platform}
-                </button>
-              )}
-              {login.capture?.status === "failed" && (
-                <p className="mt-2 text-xs text-red-500">{login.capture.message}</p>
-              )}
-            </div>
-          )}
-
-          <details className="mb-3 shrink-0">
-            <summary className="cursor-pointer text-xs text-muted-foreground">
-              Paste a session instead
-            </summary>
-            <textarea
-              rows={6}
-              className={`${inputClass} mt-2 font-mono text-xs`}
-              placeholder='{"cookies": [...], "origins": [...]}'
-              value={sessionJson}
-              onChange={(e) => setSessionJson(e.target.value)}
-            />
-          </details>
-          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <button
-              onClick={() => setSessionFor(null)}
-              className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSession}
-              disabled={busy || !sessionJson.trim()}
-              className="min-h-[44px] rounded-lg bg-foreground px-5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
-            >
-              {busy ? "Saving…" : "Store session"}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {proxyFor && (
-        <Modal
-          onClose={() => {
-            setProxyFor(null);
-            setProxyUrl("");
-            setProxyCheck(null);
-          }}
-          title={`Proxy for “${proxyFor.name}”`}
-        >
-          <p className="mb-3 text-xs text-muted-foreground">
-            Accounts without one all send from this server&rsquo;s address.
-          </p>
-          <input
-            className={`${inputClass} font-mono text-xs`}
-            placeholder="http://user:pass@host:port"
-            value={proxyUrl}
-            onChange={(e) => setProxyUrl(e.target.value)}
-          />
-          {proxyFor.proxy && !proxyUrl && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Currently <span className="font-mono">{proxyFor.proxy}</span>.
-              Leave blank and save to remove it.
-            </p>
-          )}
-          {proxyCheck && (
-            <div
-              className={`mt-3 rounded-lg border p-3 text-xs ${
-                proxyCheck.ok
-                  ? "border-emerald-500/40 bg-emerald-500/10"
-                  : "border-amber-500/40 bg-amber-500/10"
-              }`}
-            >
-              <p className="font-medium">{proxyCheck.detail}</p>
-              <p className="mt-1 text-muted-foreground">
-                Seen as <span className="font-mono">{proxyCheck.egress_ip}</span>
-                {" · this server is "}
-                <span className="font-mono">{proxyCheck.server_ip}</span>
-              </p>
-            </div>
-          )}
-          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <button
-              onClick={() => {
-                setProxyFor(null);
-                setProxyUrl("");
-                setProxyCheck(null);
-              }}
-              className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted"
-            >
-              Cancel
-            </button>
-            {/* Only worth offering once something is stored: it asks the
-                live proxy for the address the world sees. */}
-            {proxyFor.proxy && (
-              <button
-                onClick={async () => {
-                  setChecking(true);
-                  setProxyCheck(null);
-                  try {
-                    setProxyCheck(await testAccountProxy(proxyFor.id));
-                  } catch (e) {
-                    toast.error(apiErrorMessage(e, "The proxy did not answer"));
-                  } finally {
-                    setChecking(false);
-                  }
-                }}
-                disabled={checking}
-                className="min-h-[44px] rounded-lg border border-border px-5 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {checking ? "Checking…" : "Test"}
-              </button>
-            )}
-            <button
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await updateOutreachAccount(proxyFor.id, {
-                    proxy_url: proxyUrl.trim(),
-                  });
-                  toast.success(
-                    proxyUrl.trim() ? "Proxy saved" : "Proxy removed",
+                        </button>
+                      </td>
+                      <td className={`${TD} text-right`}>
+                        <DotsMenu label={`Actions for ${a.name}`} items={rowMenu(a)} />
+                      </td>
+                    </tr>
                   );
-                  setProxyFor(null);
-                  setProxyUrl("");
-                  setProxyCheck(null);
-                  await load();
-                } catch (e) {
-                  toast.error(apiErrorMessage(e, "Could not save that proxy"));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              disabled={busy}
-              className="min-h-[44px] rounded-lg bg-foreground px-5 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50"
-            >
-              {busy ? "Saving…" : "Save"}
-            </button>
+                })}
+              </tbody>
+            </table>
           </div>
-        </Modal>
-      )}
+        )}
+      </Card>
 
-      <ConfirmModal
+      <AddAccountDialog
+        open={showAdd}
+        onClose={() => setShowAdd(false)}
+        defaultPlatform={platform === "all" ? "tiktok" : platform}
+        onCreated={(made, signIn) => {
+          setShowAdd(false);
+          void load();
+          toast.success(`“${made.name}” added — it needs a session before it can send`);
+          // The account row has to exist before a session can hang off it,
+          // so step two starts here rather than inside the add dialog.
+          setSessionLive(signIn);
+          setSessionFor(made);
+        }}
+      />
+
+      <SessionDialog
+        account={sessionFor}
+        startLive={sessionLive}
+        onClose={() => setSessionFor(null)}
+        onSaved={load}
+      />
+
+      <ProxyDialog account={proxyFor} onClose={() => setProxyFor(null)} onSaved={load} />
+      <SwitchToPhoneDialog account={phoneFor} onClose={() => setPhoneFor(null)} onSaved={load} />
+
+      <RenameAccountDialog account={renameFor} onClose={() => setRenameFor(null)} onSaved={load} />
+
+      <ConfirmDialog
         open={confirmDelete !== null}
-        onOpenChange={(open) => !open && setConfirmDelete(null)}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={doDelete}
         title="Remove sending account?"
-        description={`“${confirmDelete?.name}” and its stored session will be deleted. Jobs already sent keep their history.`}
-        confirmLabel="Remove"
-        variant="danger"
-        loading={deleting}
-        onConfirm={handleDelete}
+        confirmLabel="Remove account"
+        busy={deleting}
+        body={
+          <>
+            <b className="font-bold text-foreground">“{confirmDelete?.name}”</b> and its stored session are deleted.
+            Campaigns it was assigned to keep running from whatever else is assigned.
+          </>
+        }
+        bullets={[
+          `Its ${n(confirmDelete?.messages_processed)} sent messages keep their history — nothing already delivered is undone`,
+          "The encrypted browser session is destroyed; signing in again means a fresh capture",
+          "Any campaign left with no eligible account will fail to start until one is assigned",
+        ]}
       />
     </div>
   );
+}
+
+/** Under a phone account's name: which TikTok user, and whether the app has linked it. */
+function phoneLine(a: OutreachAccount): string {
+  const who = a.device_handle ? `@${a.device_handle}` : "no username";
+  if (!a.companion_device) return `Phone · ${who} · waiting for the app to link it`;
+  if (!a.companion_seen_at) return `Phone · ${who} · linked`;
+  const mins = Math.max(0, Math.round((Date.now() - new Date(a.companion_seen_at).getTime()) / 60000));
+  const seen = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`;
+  return `Phone · ${who} · seen ${seen}`;
 }

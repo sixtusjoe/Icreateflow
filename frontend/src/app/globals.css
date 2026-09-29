@@ -18,7 +18,7 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -39,6 +39,11 @@
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
+  --color-subtle: var(--subtle);
+  --color-line-2: var(--line-2);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
+  --color-warn: var(--warn);
   --color-muted-foreground: var(--muted-foreground);
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -63,31 +68,55 @@
    LIGHT MODE — Clean, Apollo-inspired
    ============================================ */
 :root {
-  --background: oklch(0.97 0.005 90);
-  --foreground: oklch(0.12 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.12 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.12 0 0);
-  --primary: oklch(0.12 0 0);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.95 0.005 90);
-  --secondary-foreground: oklch(0.12 0 0);
-  --muted: oklch(0.93 0.005 90);
-  --muted-foreground: oklch(0.40 0 0);
-  --accent: oklch(0.12 0 0);
-  --accent-foreground: oklch(1 0 0);
+  /* Surfaces are a cool neutral ramp, not the previous warm one: the page
+     sits slightly darker than the cards so each card reads as a raised
+     sheet, which is what carries the layout now that most borders are
+     hairlines. Ink is three steps, not two — headings, body, and the
+     labels under a figure each need their own weight. */
+  --background: #eef0f4;          /* page, a touch darker than the cards */
+  --foreground: #0b0d12;          /* primary ink */
+  --card: #ffffff;
+  --card-foreground: #0b0d12;
+  --popover: #ffffff;
+  --popover-foreground: #0b0d12;
+  --primary: #0b0d12;             /* the brand's primary really is near-black */
+  --primary-foreground: #ffffff;
+  --secondary: #f7f8fa;
+  --secondary-foreground: #0b0d12;
+  --muted: #f2f4f8;               /* tile fills, track fills */
+  --muted-foreground: #5b6272;    /* secondary ink */
+  --subtle: #8b92a3;              /* tertiary ink — small labels, axes, captions */
+  --accent: #0b0d12;
+  --accent-foreground: #ffffff;
   --destructive: oklch(0.55 0.2 25);
-  --border: oklch(0.86 0.005 90);
-  --input: oklch(0.91 0.005 90);
+  --border: #e8eaf0;
+  --line-2: #f0f2f6;             /* the fainter rule: gridlines, row splits */
+  --input: #e2e5ed;
   --ring: oklch(0.12 0 0);
-  --chart-1: oklch(0.12 0 0);
-  --chart-2: oklch(0.35 0 0);
-  --chart-3: oklch(0.55 0 0);
+  /* Data colours, lime-led to match the brand. Validated for the CVD and
+     normal-vision separation floors and for contrast against the card
+     surface — do not hand-tune these without re-checking. The brand lime
+     itself (--lime) is far too light to sit on white as a data mark, so
+     chart-1 is the same hue stepped down for a light surface. */
+  --chart-1: #8a8a00;
+  --chart-2: #4a3aa7;
+  --chart-3: #eb6834;
+  /* Status ink. Reserved — never reused as a series colour. */
+  --good: #12A150;
+  --bad: #E5484D;
+  --warn: #B25E09;
   --chart-4: oklch(0.7 0 0);
   --chart-5: oklch(0.85 0 0);
   --radius: 0.75rem;
   --lime: oklch(0.85 0.2 110);
+  /* The floating sidebar's glass. Kept as tokens so the dark theme can
+     restate them rather than the component branching on theme. */
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --glass-shadow: 0 20px 50px -18px rgba(18, 24, 40, 0.35), 0 4px 14px -6px rgba(18, 24, 40, 0.14);
+  /* Every card carries this, not Tailwind's shadow-sm: a hairline plus a
+     wide, low-opacity lift, so a panel reads as raised off the wash. */
+  --card-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px -16px rgba(16, 24, 40, 0.18);
   --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.12 0 0);
   --sidebar-primary: oklch(0.12 0 0);
@@ -102,24 +131,36 @@
    DARK MODE
    ============================================ */
 .dark {
-  --background: oklch(0.13 0 0);
-  --foreground: oklch(0.93 0 0);
-  --card: oklch(0.17 0 0);
-  --card-foreground: oklch(0.93 0 0);
-  --popover: oklch(0.17 0 0);
-  --popover-foreground: oklch(0.93 0 0);
-  --primary: oklch(0.93 0 0);
-  --primary-foreground: oklch(0.13 0 0);
-  --secondary: oklch(0.2 0 0);
-  --secondary-foreground: oklch(0.93 0 0);
-  --muted: oklch(0.22 0 0);
-  --muted-foreground: oklch(0.55 0 0);
+  --background: #0c0e13;
+  --foreground: #f2f4f8;
+  --card: #15181f;
+  --card-foreground: #f2f4f8;
+  --popover: #1b1f28;
+  --popover-foreground: #f2f4f8;
+  --primary: #f2f4f8;
+  --primary-foreground: #0c0e13;
+  --secondary: #1b1f28;           /* the cool tile fill, not a neutral grey */
+  --secondary-foreground: #f2f4f8;
+  --muted: #1b1f28;
+  --muted-foreground: #a3abbd;
+  --subtle: #727a8c;
   --accent: oklch(0.93 0 0);
   --accent-foreground: oklch(0.13 0 0);
   --destructive: oklch(0.6 0.2 25);
-  --border: oklch(0.26 0 0);
+  --border: #242934;
+  --line-2: #1e232c;
   --input: oklch(0.22 0 0);
   --ring: oklch(0.93 0 0);
+  --glass: rgba(30, 35, 45, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --glass-shadow: 0 20px 50px -18px rgba(0, 0, 0, 0.7), 0 4px 14px -6px rgba(0, 0, 0, 0.5);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -16px rgba(0, 0, 0, 0.6);
+  --chart-1: #9a9b00;
+  --chart-2: #9085e9;
+  --chart-3: #d95926;
+  --good: #3DD68C;
+  --bad: #FF6369;
+  --warn: #F2A25C;
   --lime: oklch(0.85 0.2 110);
   --sidebar: oklch(0.13 0 0);
   --sidebar-foreground: oklch(0.93 0 0);
@@ -264,4 +305,77 @@ input[type="datetime-local"]::-webkit-date-and-time-value {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: oklch(0.6 0 0 / 50%);
+}
+
+/* Colour for the sidebar glass to refract. Fixed, behind everything, and
+   purely decorative — without it `backdrop-blur` has nothing to work with
+   and the panel reads as flat grey. */
+/* The design's type tuning — a single-storey g and a straighter R, which
+   is what brings Geist closest to the Söhne the mock was drawn in.
+   Without it every run of text sets ~1px narrower than the design. */
+body {
+  font-feature-settings: "cv01", "ss03";
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(42rem 30rem at -6% 8%, rgba(215, 215, 0, 0.34), transparent 60%),
+    radial-gradient(34rem 26rem at 8% 62%, rgba(154, 155, 0, 0.22), transparent 62%),
+    radial-gradient(30rem 24rem at 2% 104%, rgba(235, 104, 52, 0.16), transparent 60%),
+    radial-gradient(40rem 30rem at 96% 4%, rgba(215, 215, 0, 0.14), transparent 62%);
+  filter: saturate(1.15);
+}
+.dark body::before { opacity: 0.55; }
+
+
+/* The dashboard was drawn against the browser's default line-height.
+   Tailwind's arbitrary font-size utilities (`text-[27px]`) also pin a 1.5x
+   leading, which made a 27px figure 40.5px tall instead of 35px and grew
+   every card by 5-11px. Inside `[data-metrics]` the leading goes back to
+   `normal`, except where an explicit `leading-*` class says otherwise —
+   `:where()` keeps this at zero specificity so those still win. */
+@layer utilities {
+  .shadow-card { box-shadow: var(--card-shadow); }
+
+  [data-metrics]:not([class*="leading-"]),
+  [data-chrome]:not([class*="leading-"]),
+  [data-metrics] :where(*:not([class*="leading-"])),
+  [data-chrome] :where(*:not([class*="leading-"])) {
+    line-height: normal;
+  }
+}
+
+/* The assistant's star breathes rather than sitting still. */
+@keyframes twinkle {
+  0%, 100% { transform: scale(1) rotate(0deg); opacity: 1; }
+  50%      { transform: scale(1.07) rotate(6deg); opacity: 0.92; }
+}
+.animate-twinkle { animation: twinkle 3.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .animate-twinkle { animation: none; } }
+
+/* Help & Support — the assistant's floating pieces. `motion-safe:` on the
+   call sites already drops these for anyone who asked for less motion. */
+@keyframes pop {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes nudgein {
+  from { opacity: 0; transform: translateY(12px) scale(0.94); }
+  to   { opacity: 1; transform: none; }
+}
+/* the light travelling across the glass */
+@keyframes sweep {
+  0%        { left: -50%; }
+  20%, 100% { left: 120%; }
+}
+/* the ring off the bolt — it is listening */
+@keyframes halo {
+  0%        { transform: scale(0.8); opacity: 0.8; }
+  70%, 100% { transform: scale(1.2); opacity: 0; }
 }

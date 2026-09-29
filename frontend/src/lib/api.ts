@@ -50,7 +50,10 @@ export const confirmEmailChange = (code: string) =>
 
 // --- Admin ---
 export const getUsers = () => api.get("/api/admin/users").then((r) => r.data);
-export const updateUser = (id: number, data: { role?: string; status?: string; name?: string }) =>
+/** Name, role, status and the sign-in email — the four fields the users
+ *  table actually has that an admin can set. Phone, location, company and
+ *  time zone are not here because there are no columns for them. */
+export const updateUser = (id: number, data: { role?: string; status?: string; name?: string; email?: string }) =>
   api.put(`/api/admin/users/${id}`, data).then((r) => r.data);
 export const approveUser = (id: number) =>
   api.post(`/api/admin/users/${id}/approve`).then((r) => r.data);
@@ -116,6 +119,8 @@ export const getPosts = (params?: { brand_id?: number; date?: string }) =>
   api.get("/api/posts", { params }).then((r) => r.data);
 export const getPost = (id: number) =>
   api.get(`/api/posts/${id}`).then((r) => r.data);
+export const duplicatePost = (id: number) =>
+  api.post(`/api/posts/${id}/duplicate`).then((r) => r.data);
 export const deletePost = (id: number) =>
   api.delete(`/api/posts/${id}`).then((r) => r.data);
 
@@ -558,6 +563,12 @@ export type TikTokSettingsPatch = {
   tiktok_title?: string;
 };
 
+/** The output row for one account on one post, created if the build has
+ *  not made it yet — TikTok's settings live on it and are chosen before
+ *  the files exist. */
+export const ensureOutput = (postId: number, accountId: number) =>
+  api.post(`/api/posts/${postId}/accounts/${accountId}/output`).then((r) => r.data);
+
 export const updateOutputTiktokSettings = (
   output_id: number,
   data: TikTokSettingsPatch,
@@ -698,7 +709,7 @@ export type OutreachCampaign = {
   platform: string;
   /** What the campaign does: message each target, follow them, or leave
    *  comments on one video. */
-  activity: "message" | "follow" | "comment";
+  activity: "message" | "follow" | "unfollow" | "comment";
   /** Comment campaigns only: the video, how many comments, and the lines
    *  to draw from. Empty on the other two. */
   target_url: string | null;
@@ -714,6 +725,15 @@ export type OutreachCampaign = {
   max_jobs_per_account: number | null;
   retry_limit: number | null;
   progress: number;
+  /** Set when a *platform* limit paused this campaign, and until when. A
+   *  pause by the operator leaves both null — that was a decision, not a
+   *  timer, and nothing resumes it automatically. */
+  paused_until?: string | null;
+  /** What the platform actually said, verbatim. */
+  paused_reason?: string | null;
+  /** The platform refused this campaign's current message. It stays paused
+   *  until the message is changed; start and resume refuse until then. */
+  message_refused?: boolean;
   /** An image sent with every message. The path itself never leaves the API. */
   has_attachment?: boolean;
   attachment_name?: string | null;
@@ -740,6 +760,16 @@ export type OutreachAccount = {
   purpose?: string;
   /** Host and user of this account's proxy — never the password. */
   proxy: string | null;
+  /** The phone (adb serial) that does this account's TikTok follows. */
+  device_serial?: string | null;
+  /** The handle TikTok on that phone must be signed in as. */
+  device_handle?: string | null;
+  /** Whether the server's browser or the user's phone app does this account's work. */
+  via?: "browser" | "phone";
+  /** The ICREATEFLOW phone app linked to this account, if any — an install id. */
+  companion_device?: string | null;
+  /** When that phone last asked for work. */
+  companion_seen_at?: string | null;
 };
 
 export type OutreachTarget = {
@@ -801,6 +831,16 @@ export type OutreachAudit = {
 // Campaigns
 export const listOutreachCampaigns = (): Promise<OutreachCampaign[]> =>
   api.get("/api/outreach/campaigns").then((r) => r.data);
+
+/** Everything the dashboard needs about outreach that the campaign list
+ *  cannot answer: lead count, the chosen window of sends, and the weekday
+ *  split. One round trip, scoped to the caller by the server.
+ *
+ *  `days` moves `daily_sends` and `range` only — the target counts, the
+ *  delivery rate and the weekday split are all-time whatever is passed.
+ *  The server accepts 7, 14, 30 or 90 and rejects anything else. */
+export const getOutreachSummary = (days = 14) =>
+  api.get("/api/outreach/summary", { params: { days } }).then((r) => r.data);
 export const createOutreachCampaign = (data: {
   name: string;
   description?: string;
@@ -808,6 +848,12 @@ export const createOutreachCampaign = (data: {
   template_id?: number | null;
   template_vars?: Record<string, string>;
   platform?: string;
+  /** What the campaign does. The server validates a message template for
+   *  "message" only, and ignores the comment fields unless "comment". */
+  activity?: "message" | "follow" | "unfollow" | "comment";
+  target_url?: string;
+  comment_count?: number;
+  comment_variations?: string[];
   max_jobs?: number | null;
   max_jobs_per_account?: number | null;
   retry_limit?: number | null;
@@ -823,7 +869,7 @@ export const updateOutreachCampaign = (
     name: string;
     description: string;
     message_template: string;
-    activity: "message" | "follow" | "comment";
+    activity: "message" | "follow" | "unfollow" | "comment";
     target_url: string;
     comment_count: number;
     comment_variations: string[];
@@ -873,11 +919,28 @@ export const stopOutreachCampaign = (id: number) =>
   api.post(`/api/outreach/campaigns/${id}/stop`).then((r) => r.data);
 export const retryOutreachFailed = (id: number) =>
   api.post(`/api/outreach/campaigns/${id}/retry-failed`).then((r) => r.data);
+/**
+ * The unfollow campaign for everyone this follow campaign followed, oldest
+ * follow first. Made once; later calls add only the people followed since.
+ */
+export const unfollowEveryoneFollowed = (
+  id: number,
+): Promise<{ campaign: OutreachCampaign; people: number; created: boolean }> =>
+  api.post(`/api/outreach/campaigns/${id}/unfollow-followed`).then((r) => r.data);
 export const outreachExportUrl = (id: number) =>
   `${api.defaults.baseURL}/api/outreach/campaigns/${id}/export.csv`;
-export const downloadOutreachResults = (id: number) =>
+export const downloadOutreachResults = (
+  id: number,
+  /** Narrow the export: statuses (comma-separated), a row cap, and whether
+   *  the bookkeeping columns are wanted. Omitting all three is the whole
+   *  list, which is what this did before the options existed. */
+  params?: { status?: string; limit?: number; links_only?: boolean },
+) =>
   api
-    .get(`/api/outreach/campaigns/${id}/export.csv`, { responseType: "blob" })
+    .get(`/api/outreach/campaigns/${id}/export.csv`, {
+      responseType: "blob",
+      params,
+    })
     .then((r) => r.data as Blob);
 
 export const assignOutreachAccount = (campaignId: number, accountId: number) =>
@@ -932,6 +995,14 @@ export interface ProxyCheck {
   ok: boolean;
   detail: string;
 }
+export interface ConnectedPhones {
+  /** False when the machine running the worker has no adb at all. */
+  adb: boolean;
+  phones: { serial: string; model: string; state: string }[];
+}
+/** Android phones plugged into the machine running the worker. */
+export const listOutreachDevices = (): Promise<ConnectedPhones> =>
+  api.get(`/api/outreach/devices`).then((r) => r.data);
 /** Prove the proxy carries traffic and changes the address. */
 export const testAccountProxy = (id: number): Promise<ProxyCheck> =>
   api.post(`/api/outreach/accounts/${id}/proxy/test`).then((r) => r.data);
@@ -998,14 +1069,12 @@ export interface LeadSearchAccount {
   id: number;
   name: string;
   used_today: number;
-  remaining_today: number;
 }
 export interface LeadSearchAvailability {
   available: boolean;
   unavailable_reason: string | null;
   busy: boolean;
   accounts: LeadSearchAccount[];
-  daily_cap: number;
   max_per_search: number;
 }
 export interface LeadSearchRun {
@@ -1046,6 +1115,8 @@ export const startLeadSearch = (
     account_id?: number;
     include_commenters: boolean;
     include_likers: boolean;
+    /** Open the "View N replies" threads under each comment. */
+    include_replies?: boolean;
     enrich_profiles: boolean;
   }
 ): Promise<LeadSearchRun> =>
@@ -1132,6 +1203,10 @@ export const updateOutreachAccount = (
     session_reference?: string;
     /** scheme://user:pass@host:port. Blank clears it. Never returned. */
     proxy_url?: string;
+    /** Blank clears either. */
+    device_serial?: string;
+    device_handle?: string;
+    via?: "browser" | "phone";
   },
 ): Promise<OutreachAccount> =>
   api.put(`/api/outreach/accounts/${id}`, data).then((r) => r.data);
