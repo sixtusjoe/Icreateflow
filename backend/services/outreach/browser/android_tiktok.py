@@ -519,7 +519,7 @@ class AndroidTikTokFollower:
             return MessageResult.failure(
                 RESULT_CHALLENGE_REQUIRED,
                 "TikTok on the phone is showing a verification puzzle — "
-                "solve it on the phone, then resume the account")
+                "solve it on the phone")
         if view.login_wall:
             self._identity.pop(adb.serial, None)
             return MessageResult.failure(
@@ -619,7 +619,7 @@ class AndroidTikTokFollower:
             return MessageResult.failure(
                 RESULT_CHALLENGE_REQUIRED,
                 "TikTok on the phone is showing a verification puzzle — "
-                "solve it on the phone, then resume the account",
+                "solve it on the phone",
                 screenshot=await self._evidence(adb, username, "challenge"))
         if view.login_wall:
             self._identity.pop(adb.serial, None)
