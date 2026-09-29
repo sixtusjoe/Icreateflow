@@ -1732,8 +1732,8 @@ class PlaywrightMessenger:
                         RESULT_CHALLENGE_REQUIRED,
                         "TikTok is asking this account to pass a verification "
                         "puzzle. Nothing is wrong with the target — a person has "
-                        "to solve it: Accounts → this account → Re-login in "
-                        "browser opens it",
+                        "to clear it: Accounts → this account → Re-login in "
+                        "browser, sign in again, and solve any puzzle it shows",
                         url=url,
                         screenshot=await self._save_debug_shot(
                             page, target_username, "challenge"
@@ -1880,8 +1880,9 @@ class PlaywrightMessenger:
                     return MessageResult.failure(
                         RESULT_CHALLENGE_REQUIRED,
                         "A verification puzzle appeared after clicking Message. "
-                        "The target is fine — a person has to solve it: "
-                        "Accounts → this account → Re-login in browser opens it",
+                        "The target is fine — a person has to clear it: "
+                        "Accounts → this account → Re-login in browser, sign in "
+                        "again, and solve any puzzle it shows",
                         url=page.url,
                         screenshot=await self._save_debug_shot(
                             page, target_username, "challenge"
