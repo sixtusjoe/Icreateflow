@@ -64,6 +64,14 @@ PLATFORMS: dict[str, dict[str, str]] = {
     },
 }
 
+#: Where "Open signed-in browser" lands: the inbox, because that is where
+#: a message campaign met its verification puzzle.
+OPEN_URLS: dict[str, str] = {
+    "tiktok": "https://www.tiktok.com/messages",
+    "x": "https://x.com/messages",
+    "instagram": "https://www.instagram.com/direct/inbox/",
+}
+
 POLL_SECONDS = 2
 #: Consecutive failed cookie reads tolerated before calling the window gone.
 #: The read races navigation, and signing in is all navigation.
@@ -259,8 +267,15 @@ def is_running(account_id: int) -> bool:
     return task is not None and not task.done()
 
 
-def start(account: dict[str, Any], timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Capture:
+def start(account: dict[str, Any], timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+          reuse: bool = False) -> Capture:
     """Open a login window for this account and return immediately.
+
+    `reuse` opens the account's *saved* session instead of a sign-in page —
+    already signed in, at the inbox — so a person can clear a verification
+    puzzle as that account without signing in again (the operator's ask,
+    2026-09-29: Re-login only ever showed a login page). It saves what the
+    window holds when the person closes it.
 
     Raises ValueError when the platform has no login flow, or a capture is
     already running for this account — two windows for one account would
@@ -272,16 +287,50 @@ def start(account: dict[str, Any], timeout_seconds: int = DEFAULT_TIMEOUT_SECOND
         raise ValueError(f"No login flow for platform {platform!r}.")
     if is_running(account_id):
         raise ValueError("A sign-in window is already open for this account.")
+    if reuse and not (account.get("session_state_encrypted") or "").strip():
+        raise ValueError("This account has no saved session to open — sign in instead.")
 
     capture = Capture(account_id=account_id, platform=platform)
     _CAPTURES[account_id] = capture
     _TASKS[account_id] = asyncio.create_task(
-        _run(account, capture, timeout_seconds)
+        _run(account, capture, timeout_seconds, reuse)
     )
     return capture
 
 
-async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) -> None:
+async def _hold_open(browser, context, spec: dict[str, str], name: str,
+                     timeout_seconds: int) -> Optional[dict]:
+    """Keep the signed-in window until the person closes it; return what it
+    holds then, or None if it ended signed out.
+
+    The state is read while the window is still there — once it is closed
+    there is nothing left to read — and kept only while the session cookie
+    is present, so a window that was signed out is never saved over a
+    working session.
+    """
+    latest: Optional[dict] = None
+    waited = 0
+    while waited < timeout_seconds:
+        if not browser.is_connected() or not context.pages:
+            break
+        try:
+            cookies = await context.cookies()
+            signed_in = any(
+                c.get("name") == spec["cookie"] and (c.get("value") or "").strip()
+                and spec["domain"] in (c.get("domain") or "") for c in cookies)
+            latest = await context.storage_state() if signed_in else None
+        except Exception:  # noqa: BLE001 — closing mid-read; keep the last good read
+            if not browser.is_connected() or not context.pages:
+                break
+        await asyncio.sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+    print(f"[outreach] signed-in window for {name} ended after {waited}s — "
+          f"{'saving it' if latest else 'signed out, nothing saved'}", flush=True)
+    return latest
+
+
+async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int,
+               reuse: bool = False) -> None:
     """Drive the window, then store what it produced."""
     account_id = int(account["id"])
     spec = PLATFORMS[capture.platform]
@@ -350,25 +399,40 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
                 headless=headless, args=list(CHROMIUM_ARGS),
                 env={**os.environ, **(screen.env if screen else {})},
             )
-            context = await browser.new_context(**context_options(proxy))
+            options = context_options(proxy)
+            if reuse:
+                options["storage_state"] = json.loads(
+                    decrypt_session(account.get("session_state_encrypted")))
+            context = await browser.new_context(**options)
             page = await context.new_page()
-            await open_login_page(page, spec["login_url"], capture.platform)
+            if reuse:
+                await open_login_page(page, OPEN_URLS[capture.platform], capture.platform)
+                capture.status = STATUS_WAITING
+                capture.message = (
+                    f"A browser window is open, signed in as “{name}”. Solve any "
+                    f"puzzle it shows, then close the window — the session is "
+                    f"saved when you do."
+                )
+                state = await _hold_open(browser, context, spec, name, timeout_seconds)
+            else:
+                await open_login_page(page, spec["login_url"], capture.platform)
 
-            capture.status = STATUS_WAITING
-            capture.message = (
-                f"A browser window is open at {capture.platform}. Sign in as "
-                f"“{name}” — this closes and saves by itself once you are in."
-            )
+                capture.status = STATUS_WAITING
+                capture.message = (
+                    f"A browser window is open at {capture.platform}. Sign in as "
+                    f"“{name}” — this closes and saves by itself once you are in."
+                )
 
             waited = 0
             blips = 0
-            print(
-                f"[outreach] sign-in window open for {name} ({capture.platform}) "
-                f"via {proxy.safe if proxy else 'this server’s own address'} "
-                f"— waiting up to {timeout_seconds // 60} minutes",
-                flush=True,
-            )
-            while waited < timeout_seconds:
+            if not reuse:
+                print(
+                    f"[outreach] sign-in window open for {name} ({capture.platform}) "
+                    f"via {proxy.safe if proxy else 'this server’s own address'} "
+                    f"— waiting up to {timeout_seconds // 60} minutes",
+                    flush=True,
+                )
+            while not reuse and waited < timeout_seconds:
                 if not browser.is_connected():
                     print(
                         f"[outreach] sign-in window for {name} disconnected after "
@@ -433,8 +497,11 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
                 await asyncio.sleep(POLL_SECONDS)
                 waited += POLL_SECONDS
 
-            await context.close()
-            await browser.close()
+            try:
+                await context.close()
+                await browser.close()
+            except Exception:  # noqa: BLE001 — a window the person closed is already gone
+                pass
     except asyncio.CancelledError:
         finish(STATUS_FAILED, "Sign-in was cancelled.")
         raise
@@ -467,6 +534,10 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         # port for the life of the process.
         await display_pool.release(screen)
 
+    if state is None and reuse:
+        finish(STATUS_FAILED, "The window ended signed out, so nothing was saved — "
+                              "sign in again instead.")
+        return
     if state is None:
         finish(
             STATUS_FAILED,
@@ -481,7 +552,8 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
             database,
             account_id,
             session_state_encrypted=encrypt_session(json.dumps(state)),
-            session_reference=f"browser-login/account-{account_id}",
+            session_reference=(f"browser-open/account-{account_id}" if reuse
+                               else f"browser-login/account-{account_id}"),
             session_updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             status=ACCOUNT_IDLE,
             paused_reason=None,
@@ -490,7 +562,7 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
         await db.log_outreach_audit(
             database, "account.session_set", "account", account_id,
             detail=(
-                f"captured in a browser window, "
+                f"{'saved from the signed-in window' if reuse else 'captured in a browser window'}, "
                 f"{len(state.get('cookies') or [])} cookie(s)"
             ),
         )
@@ -502,6 +574,8 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int) 
 
     finish(
         STATUS_SAVED,
-        f"Signed in and stored — {len(state.get('cookies') or [])} cookies, encrypted.",
+        (f"Saved — {len(state.get('cookies') or [])} cookies, encrypted. Resume the "
+         f"campaign when you're ready." if reuse else
+         f"Signed in and stored — {len(state.get('cookies') or [])} cookies, encrypted."),
         cookies=len(state.get("cookies") or []),
     )

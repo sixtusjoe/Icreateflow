@@ -210,6 +210,8 @@ export function SessionDialog({
   const [json, setJson] = useState("");
   const [way, setWay] = useState<"live" | "paste">("live");
   const [busy, setBusy] = useState(false);
+  // Which window was opened: a sign-in page, or the saved session itself.
+  const [opened, setOpened] = useState<"signin" | "saved">("signin");
 
   // Ask whether this host can open a login window, whenever it opens.
   useEffect(() => {
@@ -252,10 +254,25 @@ export function SessionDialog({
     if (!account) return;
     try {
       const capture = await startBrowserLogin(account.id);
+      setOpened("signin");
       setLogin((prev) => (prev ? { ...prev, running: true, capture } : prev));
       toast.success("A browser window is opening — sign in there");
     } catch (e) {
       toast.error(apiErrorMessage(e, "Could not open a sign-in window"));
+    }
+  };
+
+  // The saved session, already signed in, at the inbox — where a message
+  // campaign met its verification puzzle. Saved when the window is closed.
+  const openSaved = async () => {
+    if (!account) return;
+    try {
+      const capture = await startBrowserLogin(account.id, true);
+      setOpened("saved");
+      setLogin((prev) => (prev ? { ...prev, running: true, capture } : prev));
+      toast.success("A signed-in window is opening — solve any puzzle, then close it");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not open the signed-in window"));
     }
   };
 
@@ -339,8 +356,9 @@ export function SessionDialog({
                 // no virtual display, so the sign-in window opened there as
                 // a real window.
                 <p className="text-[12.5px] leading-[1.55] text-muted-foreground">
-                  A sign-in window is open on the machine running the backend — sign in there. This closes on its own
-                  when it is done.
+                  {opened === "saved"
+                    ? login!.capture!.message
+                    : "A sign-in window is open on the machine running the backend — sign in there. This closes on its own when it is done."}
                 </p>
               )
             ) : (
@@ -379,6 +397,9 @@ export function SessionDialog({
         <GhostButton onClick={onClose} disabled={busy}>
           {streaming ? "Close" : "Cancel"}
         </GhostButton>
+        {login?.available && way === "live" && !streaming && account?.has_session && (
+          <GhostButton onClick={openSaved}>Open signed-in browser</GhostButton>
+        )}
         {login?.available && way === "live" && !streaming ? (
           <PrimaryButton icon={Shield} onClick={openSignIn}>
             Open sign-in

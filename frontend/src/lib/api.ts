@@ -983,8 +983,10 @@ export interface BrowserLoginState {
   capture: BrowserLoginCapture | null;
 }
 /** Open a real login window on the machine running the backend. */
-export const startBrowserLogin = (id: number): Promise<BrowserLoginCapture> =>
-  api.post(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);
+/** `reuse`: open the account's saved session, already signed in, instead of
+ *  a sign-in page — to clear a verification puzzle as that account. */
+export const startBrowserLogin = (id: number, reuse = false): Promise<BrowserLoginCapture> =>
+  api.post(`/api/outreach/accounts/${id}/session/browser`, null, { params: reuse ? { reuse: true } : {} }).then((r) => r.data);
 /** Poll a sign-in in progress — it takes minutes, so it is not a request. */
 export const getBrowserLoginState = (id: number): Promise<BrowserLoginState> =>
   api.get(`/api/outreach/accounts/${id}/session/browser`).then((r) => r.data);

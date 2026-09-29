@@ -1841,7 +1841,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
 
     @router.post("/accounts/{account_id}/session/browser")
     async def start_browser_login(
-        account_id: int, user: dict = Depends(get_current_user)
+        account_id: int, reuse: bool = False, user: dict = Depends(get_current_user)
     ):
         """Open a real login window so the operator can sign in by hand.
 
@@ -1862,8 +1862,10 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         finally:
             await database.close()
 
+        # `?reuse=true`: open the saved session, signed in, instead of a
+        # sign-in page — to clear a verification puzzle as the account.
         try:
-            capture = session_capture.start(account)
+            capture = session_capture.start(account, reuse=reuse)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return capture.to_dict()
