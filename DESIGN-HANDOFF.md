@@ -286,7 +286,8 @@ there would be the page size wearing the costume of a count.
 | `/clipping` `/clipping/[slug]` `/clipping/audio-to-video` | **Untouched** | old design; also the source of the pre-existing lint errors |
 | `/admin` `/admin/users` `/admin/users/[id]` `/admin/approvals` `/admin/assistant` | **Done** | new admin rail |
 | `/admin/tools` | **Moved, not redesigned** | the old 13-tab page; Overview and Users tabs removed, heading now "Everything else" |
-| `/login` `/register` `/` `/terms` `/privacy` `/oauth/callback` | **Out of scope so far** | |
+| `/login` `/register` | **Done** | `(auth)` route group sharing one layout (`components/auth/`), so the photo stage persists across the tab switch. Email + password only — the backend has no Apple/Google sign-in, so no buttons for them. The stage's cards are illustrations and `aria-hidden`; only the week strip is real dates |
+| `/` `/terms` `/privacy` `/oauth/callback` | **Out of scope so far** | |
 
 ### Alignment: the three rows left ragged on purpose
 
