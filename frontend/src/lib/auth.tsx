@@ -11,6 +11,9 @@ interface User {
   status: string;
   created_at: string;
   last_login: string | null;
+  /** Whether the app may email them. /api/auth/me returns it; the Account
+   *  page switches it. */
+  email_notifications?: boolean;
 }
 
 interface AuthContextType {

@@ -282,7 +282,7 @@ there would be the page size wearing the costume of a count.
 | `/posts` `/posts/new` `/brands` `/music` `/schedule` `/settings` `/help` | **Done** | kit, bare shell |
 | `/outreach` `/outreach/[id]` `/outreach/accounts` `/outreach/templates` | **Done** | kit, bare shell |
 | `/dashboard` | **Redesigned, not converted** | Bespoke components, imports nothing from the kit, and is **not** in `REDESIGNED` — so it still carries `TopBar`. Reconciling this is open work |
-| `/account` | **Untouched** | old design, TopBar |
+| `/account` | **Done** | kit, bare shell. The user's half of what the admin user page manages: name, profile details (`user_settings`), email via code to the current address, password, email switch, self-delete. Role/status read-only |
 | `/clipping` `/clipping/[slug]` `/clipping/audio-to-video` | **Untouched** | old design; also the source of the pre-existing lint errors |
 | `/admin` `/admin/users` `/admin/users/[id]` `/admin/approvals` `/admin/assistant` | **Done** | new admin rail |
 | `/admin/tools` | **Moved, not redesigned** | the old 13-tab page; Overview and Users tabs removed, heading now "Everything else" |

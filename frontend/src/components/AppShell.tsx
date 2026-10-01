@@ -30,7 +30,7 @@ const NO_ASSISTANT = ["/dashboard", "/account", "/oauth", "/admin"];
  *  sidebar for exactly those routes, and nothing is duplicated on either
  *  kind of page. When the last page is converted, `TopBar` goes and the
  *  sidebar carries them everywhere. */
-const REDESIGNED = ["/outreach", "/music", "/schedule", "/posts", "/brands", "/settings", "/help", "/admin"];
+const REDESIGNED = ["/outreach", "/music", "/schedule", "/posts", "/brands", "/settings", "/help", "/admin", "/account"];
 
 /** The admin area, which swaps the rail rather than adding to it.
  *
