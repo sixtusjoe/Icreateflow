@@ -5,14 +5,16 @@
  * form — the photo keeps its zoom and the cards keep their place instead of
  * re-entering on every tab press.
  *
- * There is no theme switch here, matching every other redesigned page, and
- * no Apple or Google buttons: the backend has email-and-password sign-in
+ * Unlike the app's redesigned pages, this one carries a light/dark switch:
+ * there is no sidebar here to hold one, and a visitor who is not signed in
+ * has no settings page to set it from. There are no Apple or Google buttons: the backend has email-and-password sign-in
  * only, and a button for a provider that does not exist teaches people a
  * way in that is not there.
  */
 import Link from "next/link";
 import Logo from "@/components/Logo";
 import AuthStage from "./AuthStage";
+import ThemeSwitch from "./ThemeSwitch";
 import s from "./auth.module.css";
 
 export default function AuthShell({ year, children }: { year: number; children: React.ReactNode }) {
@@ -20,10 +22,13 @@ export default function AuthShell({ year, children }: { year: number; children: 
     <div className={s.page}>
     <main className={s.frame}>
       <section className={s.side}>
-        <Link href="/" className={s.brand} aria-label="Icreateflow home">
-          <Logo size={26} radius={7} />
-          <b>Icreateflow</b>
-        </Link>
+        <div className={s.top}>
+          <Link href="/" className={s.brand} aria-label="Icreateflow home">
+            <Logo size={26} radius={7} />
+            <b>Icreateflow</b>
+          </Link>
+          <ThemeSwitch />
+        </div>
 
         <div className={s.center}>
           <div className={s.panel}>{children}</div>

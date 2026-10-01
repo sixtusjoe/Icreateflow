@@ -100,7 +100,7 @@ export default function RegisterPage() {
       <form className={`${s.form} ${s.stag}`} onSubmit={handleSubmit}>
         {error && <AuthError key={error + String(busy)}>{error}</AuthError>}
         <Field id="rn" label="Full name">
-          <TextInput id="rn" value={name} onChange={(e) => setName(e.target.value)} required autoFocus placeholder="Your name" autoComplete="name" />
+          <TextInput id="rn" value={name} onChange={(e) => setName(e.target.value)} required placeholder="Your name" autoComplete="name" />
         </Field>
         <Field id="re" label="Email">
           <TextInput id="re" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@studio.com" autoComplete="email" />

@@ -137,7 +137,7 @@ export default function LoginPage() {
         <form className={`${s.form} ${s.stag}`} onSubmit={(e) => { e.preventDefault(); sendCode(); }}>
           {error && <AuthError warn={error.warn}>{error.text}</AuthError>}
           <Field id="fe" label="Email">
-            <TextInput id="fe" type="email" value={fpEmail} onChange={(e) => setFpEmail(e.target.value)} required autoFocus
+            <TextInput id="fe" type="email" value={fpEmail} onChange={(e) => setFpEmail(e.target.value)} required
               placeholder="you@studio.com" autoComplete="email" />
           </Field>
           <Cta type="submit" busy={busy}>Send code</Cta>
@@ -158,7 +158,7 @@ export default function LoginPage() {
             <div className={s.otp} onPaste={pasteCode}>
               {digits.map((d, i) => (
                 <input key={i} ref={(el) => { boxes.current[i] = el; }} value={d} inputMode="numeric" maxLength={1}
-                  autoComplete={i === 0 ? "one-time-code" : "off"} autoFocus={i === 0} aria-label={`Digit ${i + 1}`}
+                  autoComplete={i === 0 ? "one-time-code" : "off"} aria-label={`Digit ${i + 1}`}
                   className={d ? s.filled : ""} onChange={(e) => setDigit(i, e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Backspace" && !d) boxes.current[i - 1]?.focus(); }} />
               ))}
@@ -200,7 +200,7 @@ export default function LoginPage() {
       <form className={`${s.form} ${s.stag}`} onSubmit={handleLogin}>
         {error && <AuthError key={error.text + String(busy)} warn={error.warn}>{error.text}</AuthError>}
         <Field id="le" label="Email">
-          <TextInput id="le" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus
+          <TextInput id="le" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
             placeholder="you@studio.com" autoComplete="email" />
         </Field>
         <Field id="lp" label="Password" action={
