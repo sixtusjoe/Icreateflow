@@ -4461,16 +4461,37 @@ async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, a
     )
 
 
+#: The only folders /api/files may serve from. Stored paths look like
+#: "uploads/brand/post_19/slide_01.jpg", or are relative to one of these.
+_SERVABLE_ROOTS = ("uploads", "output", "music")
+
+
+def _servable(file_path: str) -> Optional[Path]:
+    """The file a stored path names, if it is inside a servable folder.
+
+    This route used to open whatever path it was given, relative to the
+    backend's own folder and with no sign-in, so /api/files/.env returned
+    the server's secrets and /api/files/main.py its source. Every candidate
+    is now resolved — which folds away `..` and follows symlinks — and kept
+    only if it lands inside uploads, output or music.
+    """
+    roots = [Path(r).resolve() for r in _SERVABLE_ROOTS]
+    for candidate in [Path(file_path), *(Path(r) / file_path for r in _SERVABLE_ROOTS)]:
+        try:
+            real = candidate.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if real.is_file() and any(real.is_relative_to(root) for root in roots):
+            return real
+    return None
+
+
 @app.get("/api/files/{file_path:path}")
 async def serve_file(file_path: str, for_: Optional[int] = Query(None, alias="for")):
-    full_path = Path(file_path)
-    if not full_path.exists():
-        for base in [Path("uploads"), Path("output"), Path("music")]:
-            candidate = base / file_path
-            if candidate.exists():
-                full_path = candidate
-                break
-    if not full_path.exists():
+    full_path = _servable(file_path)
+    if full_path is None:
+        # The same answer for "outside the folders" and "not there", so the
+        # route cannot be used to probe what exists elsewhere on the server.
         raise HTTPException(404, "File not found")
 
     # When ?for={account_seed} is set AND this is a video, return a
