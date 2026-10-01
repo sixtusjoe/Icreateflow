@@ -35,8 +35,20 @@ export const authLogin = (email: string, password: string) =>
 export const authRegister = (email: string, password: string, name: string) =>
   api.post("/api/auth/register", { email, password, name }).then((r) => r.data);
 export const authMe = () => api.get("/api/auth/me").then((r) => r.data);
-export const updateProfile = (data: { name?: string; email?: string }) =>
+/** Name and the email switch. Not the address: that moves only through
+ *  requestEmailChange / confirmEmailChange, and the endpoint refuses it. */
+export const updateProfile = (data: { name?: string; email_notifications?: boolean }) =>
   api.put("/api/auth/profile", data).then((r) => r.data);
+/** Deletes the signed-in account and everything it owns. Needs the
+ *  current password; refused for the last admin. */
+export const deleteMyAccount = (password: string) =>
+  api.delete("/api/auth/me", { data: { password } }).then((r) => r.data);
+
+/** Profile details with no column of their own. Each is a `user_settings`
+ *  row the user writes with updateUserSetting; an admin reads them with
+ *  getAdminUserProfile. */
+export const PROFILE_KEYS = ["profile_phone", "profile_location", "profile_company", "profile_timezone"] as const;
+export type ProfileKey = (typeof PROFILE_KEYS)[number];
 export const changePassword = (current_password: string, new_password: string) =>
   api.put("/api/auth/password", { current_password, new_password }).then((r) => r.data);
 export const forgotPassword = (email: string) =>
@@ -50,11 +62,14 @@ export const confirmEmailChange = (code: string) =>
 
 // --- Admin ---
 export const getUsers = () => api.get("/api/admin/users").then((r) => r.data);
-/** Name, role, status and the sign-in email — the four fields the users
- *  table actually has that an admin can set. Phone, location, company and
- *  time zone are not here because there are no columns for them. */
+/** Name, role, status, the sign-in email and the email switch — what the
+ *  users table has that an admin can set. Phone, location, company and time
+ *  zone are the user's own (see PROFILE_KEYS); an admin reads them with
+ *  getAdminUserProfile and cannot change them. */
 export const updateUser = (id: number, data: { role?: string; status?: string; name?: string; email?: string }) =>
   api.put(`/api/admin/users/${id}`, data).then((r) => r.data);
+export const getAdminUserProfile = (id: number): Promise<Record<ProfileKey, string>> =>
+  api.get(`/api/admin/users/${id}/profile`).then((r) => r.data);
 export const approveUser = (id: number) =>
   api.post(`/api/admin/users/${id}/approve`).then((r) => r.data);
 export const getSiteConfig = () => api.get("/api/admin/site-config").then((r) => r.data);

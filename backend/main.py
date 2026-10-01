@@ -308,7 +308,18 @@ class AuthLogin(BaseModel):
 
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
+    # Accepted only so an old client gets a sentence back instead of a
+    # silent drop: the address changes through the emailed-code flow
+    # (/api/users/me/request-email-change), never here. See update_profile.
     email: Optional[str] = None
+    # The user's own switch for the one column the unsubscribe link flips.
+    # Without it, unsubscribing was a one-way door.
+    email_notifications: Optional[bool] = None
+
+class AccountDelete(BaseModel):
+    # The current password, so a stolen session token alone cannot erase
+    # an account.
+    password: str
 
 class PasswordChange(BaseModel):
     current_password: str
@@ -604,12 +615,14 @@ async def update_profile(data: ProfileUpdate, user: dict = Depends(get_current_u
         updates = {}
         if data.name is not None:
             updates["name"] = data.name.strip()
-        if data.email is not None:
-            email = data.email.lower().strip()
-            existing = await db.get_user_by_email(database, email)
-            if existing and existing["id"] != user["id"]:
-                raise HTTPException(400, "Email already taken")
-            updates["email"] = email
+        # This endpoint used to set the address directly, which made the
+        # emailed-code check on the email-change flow optional: any caller
+        # holding a session could skip it. Sending the address it already
+        # has is harmless; anything else is refused.
+        if data.email is not None and data.email.lower().strip() != user["email"]:
+            raise HTTPException(400, "Change your email from the Account page — we send a code to your current address first")
+        if data.email_notifications is not None:
+            updates["email_notifications"] = data.email_notifications
         if updates:
             await db.update_user(database, user["id"], **updates)
         updated = await db.get_user(database, user["id"])
@@ -759,6 +772,50 @@ async def confirm_email_change(data: ConfirmEmailChangeRequest, user: dict = Dep
         )
         await database.commit()
         return {"ok": True}
+    finally:
+        await database.close()
+
+
+@app.delete("/api/auth/me")
+async def delete_my_account(data: AccountDelete, user: dict = Depends(get_current_user)):
+    """A user deleting their own account — the same cascade an admin runs."""
+    if not verify_password(data.password, user["password_hash"]):
+        raise HTTPException(400, "That password is not right")
+    database = await db.get_db()
+    try:
+        # The last admin cannot leave: nobody would be left to approve
+        # signups or reach the admin area.
+        if user["role"] == "admin":
+            cur = await database.execute(
+                "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND id != ?", (user["id"],)
+            )
+            if int(dict(await cur.fetchone())["n"]) == 0:
+                raise HTTPException(400, "You are the only admin. Make someone else an admin first")
+        await _delete_account(database, user["id"])
+        return {"ok": True}
+    finally:
+        await database.close()
+
+
+#: The profile details a user sets on their Account page. There are no
+#: columns for these; they live in `user_settings`, which already cascades
+#: on delete, and the user writes them through PUT /api/user-settings.
+PROFILE_SETTING_KEYS = ("profile_phone", "profile_location", "profile_company", "profile_timezone")
+
+
+@app.get("/api/admin/users/{user_id}/profile")
+async def admin_user_profile(user_id: int, admin: dict = Depends(admin_required)):
+    """The profile details one user has set — read-only for an admin.
+
+    Only the profile keys: user_settings also holds that person's own API
+    keys, which an admin has no reason to read.
+    """
+    database = await db.get_db()
+    try:
+        if not await db.get_user(database, user_id):
+            raise HTTPException(404, "User not found")
+        saved = await db.get_user_settings(database, user_id)
+        return {k: saved.get(k, "") for k in PROFILE_SETTING_KEYS}
     finally:
         await database.close()
 
@@ -1112,6 +1169,61 @@ async def admin_variation_health(admin: dict = Depends(admin_required)):
         await database.close()
 
 
+async def _delete_account(database, user_id: int) -> None:
+    """Delete one account and everything it owns, in one commit.
+
+    Shared by the admin delete and a user deleting themselves, so the two
+    can never drift: a table added to one and not the other would leave
+    a person undeletable from one side with a foreign-key error.
+    """
+    # Find and cascade-delete user's brands (cascades to accounts/posts/slides/variations/outputs)
+    brands_cur = await database.execute("SELECT id FROM brands WHERE user_id = ?", (user_id,))
+    for b in await brands_cur.fetchall():
+        bid = b["id"]
+        posts_cur = await database.execute("SELECT id FROM posts WHERE brand_id = ?", (bid,))
+        for p in await posts_cur.fetchall():
+            pid = p["id"]
+            slides_cur = await database.execute("SELECT id FROM slides WHERE post_id = ?", (pid,))
+            for s in await slides_cur.fetchall():
+                await database.execute("DELETE FROM variations WHERE slide_id = ?", (s["id"],))
+            await database.execute("DELETE FROM slides WHERE post_id = ?", (pid,))
+            await database.execute("DELETE FROM outputs WHERE post_id = ?", (pid,))
+        await database.execute("DELETE FROM posts WHERE brand_id = ?", (bid,))
+        await database.execute("DELETE FROM accounts WHERE brand_id = ?", (bid,))
+    await database.execute("DELETE FROM brands WHERE user_id = ?", (user_id,))
+
+    # Artists, and the clipping side under them. Every child of `artists`
+    # carries ON DELETE CASCADE, so the database removes campaigns,
+    # variations, clips, audio and clip_posts on its own.
+    await database.execute("DELETE FROM artists WHERE user_id = ?", (user_id,))
+
+    # Outreach. These rows are foreign keys to users.id with no ON DELETE
+    # rule, so leaving them behind does not orphan them — it makes the
+    # whole delete fail with a foreign-key violation and a 500 the caller
+    # cannot act on. A person with a campaign was undeletable.
+    #
+    # Order matters, and it is the order of the arrows: leads hang off
+    # searches, targets and jobs off campaigns, and both of those point at
+    # sending accounts. Campaigns before accounts means nothing is still
+    # referring to an account when it goes.
+    #
+    # A campaign that is running right now is included. The worker may be
+    # holding one of its jobs; that job's row disappears underneath it and
+    # the claim fails harmlessly on write-back. Being mid-run is a thing to
+    # say on the confirm dialog, not a reason to refuse the delete.
+    await database.execute("DELETE FROM outreach_leads WHERE user_id = ?", (user_id,))
+    await database.execute("DELETE FROM outreach_lead_searches WHERE user_id = ?", (user_id,))
+    await database.execute("DELETE FROM outreach_campaigns WHERE user_id = ?", (user_id,))
+    await database.execute("DELETE FROM outreach_sending_accounts WHERE user_id = ?", (user_id,))
+    await database.execute("DELETE FROM outreach_templates WHERE user_id = ?", (user_id,))
+
+    await database.execute("DELETE FROM music_tracks WHERE user_id = ?", (user_id,))
+    await database.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+    await database.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    # One commit, so either the whole account goes or none of it does.
+    await database.commit()
+
+
 @app.delete("/api/admin/users/{user_id}")
 async def admin_delete_user(user_id: int, admin: dict = Depends(admin_required)):
     if user_id == admin["id"]:
@@ -1121,53 +1233,7 @@ async def admin_delete_user(user_id: int, admin: dict = Depends(admin_required))
         target = await db.get_user(database, user_id)
         if not target:
             raise HTTPException(404, "User not found")
-
-        # Find and cascade-delete user's brands (cascades to accounts/posts/slides/variations/outputs)
-        brands_cur = await database.execute("SELECT id FROM brands WHERE user_id = ?", (user_id,))
-        for b in await brands_cur.fetchall():
-            bid = b["id"]
-            posts_cur = await database.execute("SELECT id FROM posts WHERE brand_id = ?", (bid,))
-            for p in await posts_cur.fetchall():
-                pid = p["id"]
-                slides_cur = await database.execute("SELECT id FROM slides WHERE post_id = ?", (pid,))
-                for s in await slides_cur.fetchall():
-                    await database.execute("DELETE FROM variations WHERE slide_id = ?", (s["id"],))
-                await database.execute("DELETE FROM slides WHERE post_id = ?", (pid,))
-                await database.execute("DELETE FROM outputs WHERE post_id = ?", (pid,))
-            await database.execute("DELETE FROM posts WHERE brand_id = ?", (bid,))
-            await database.execute("DELETE FROM accounts WHERE brand_id = ?", (bid,))
-        await database.execute("DELETE FROM brands WHERE user_id = ?", (user_id,))
-
-        # Artists, and the clipping side under them. Every child of `artists`
-        # carries ON DELETE CASCADE, so the database removes campaigns,
-        # variations, clips, audio and clip_posts on its own.
-        await database.execute("DELETE FROM artists WHERE user_id = ?", (user_id,))
-
-        # Outreach. These rows are foreign keys to users.id with no ON DELETE
-        # rule, so leaving them behind does not orphan them — it makes the
-        # whole delete fail with a foreign-key violation and a 500 the caller
-        # cannot act on. A person with a campaign was undeletable.
-        #
-        # Order matters, and it is the order of the arrows: leads hang off
-        # searches, targets and jobs off campaigns, and both of those point at
-        # sending accounts. Campaigns before accounts means nothing is still
-        # referring to an account when it goes.
-        #
-        # A campaign that is running right now is included. The worker may be
-        # holding one of its jobs; that job's row disappears underneath it and
-        # the claim fails harmlessly on write-back. Being mid-run is a thing to
-        # say on the confirm dialog, not a reason to refuse the delete.
-        await database.execute("DELETE FROM outreach_leads WHERE user_id = ?", (user_id,))
-        await database.execute("DELETE FROM outreach_lead_searches WHERE user_id = ?", (user_id,))
-        await database.execute("DELETE FROM outreach_campaigns WHERE user_id = ?", (user_id,))
-        await database.execute("DELETE FROM outreach_sending_accounts WHERE user_id = ?", (user_id,))
-        await database.execute("DELETE FROM outreach_templates WHERE user_id = ?", (user_id,))
-
-        await database.execute("DELETE FROM music_tracks WHERE user_id = ?", (user_id,))
-        await database.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
-        await database.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        # One commit, so either the whole account goes or none of it does.
-        await database.commit()
+        await _delete_account(database, user_id)
         return {"ok": True}
     finally:
         await database.close()

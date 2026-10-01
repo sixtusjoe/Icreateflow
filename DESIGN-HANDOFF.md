@@ -405,8 +405,9 @@ work someone has to decide on:
 - Admin password reset endpoint(s) and token invalidation.
 - Admin-scoped repair endpoints — the existing ones are `_own_account` /
   `_scope` gated, so an admin cannot run them for someone else.
-- Profile columns (phone, location, company, timezone) — or `user_settings`
-  rows — plus a `PUT` that accepts them.
+- ~~Profile columns~~ — done as `user_settings` rows (`PROFILE_KEYS`): the
+  user writes them from Account, an admin reads them via
+  `GET /api/admin/users/{id}/profile`. Admin cannot change them, by design.
 - Subscriptions/payments tables, a provider webhook, and an AI usage log.
   Until these exist the whole "Plan & payment" card is `sample`.
 - Assistant thread/message tables and a model behind the Ask panel.

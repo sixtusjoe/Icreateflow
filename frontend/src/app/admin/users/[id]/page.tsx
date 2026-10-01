@@ -16,6 +16,7 @@ import {
   getUsers, updateUser, approveUser, deleteAdminUser,
   getAdminBrands, getAdminPosts, getAdminAccounts, getAdminMusic, getAdminArtists,
   listOutreachCampaigns, listOutreachAccounts, listOutreachAudit,
+  getAdminUserProfile, type ProfileKey,
 } from "@/lib/api";
 
 /**
@@ -25,12 +26,11 @@ import {
  * person, with the half that has no endpoint behind it drawn and tagged
  * rather than quietly missing.
  *
- * Profile fields are the clearest case. The users table is id, email,
- * password_hash, name, role, status, created_at, last_login,
- * email_notifications and an unsubscribe token. There is no phone, no
- * location, no company and no time zone — so those controls are a proposal
- * and the note at the foot says which of the two ways to store them is
- * cheaper.
+ * Phone, location, company and time zone have no columns on users. They
+ * are the person's own, set on their Account page and kept as rows in
+ * user_settings; this page reads them through
+ * GET /api/admin/users/{id}/profile and shows them read-only, because what
+ * someone says about themselves is theirs to change.
  */
 
 type Row = Record<string, unknown>;
@@ -64,6 +64,7 @@ export default function AdminUserPage() {
   const [camps, setCamps] = useState<Row[]>([]);
   const [senders, setSenders] = useState<Row[]>([]);
   const [audit, setAudit] = useState<Row[]>([]);
+  const [profile, setProfile] = useState<Record<ProfileKey, string> | null>(null);
 
   // The form. Seeded once the person lands, and only what the schema has.
   const [form, setForm] = useState({ name: "", email: "", role: "user", status: "active", email_notifications: true });
@@ -89,6 +90,7 @@ export default function AdminUserPage() {
         }
       })
       .catch(() => setMissing(true));
+    getAdminUserProfile(id).then(setProfile).catch(() => {});
     getAdminBrands().then((r: Row[]) => setBrands(r.filter((b) => nOf(b, "user_id") === id))).catch(() => {});
     getAdminPosts({ user_id: id }).then(setPosts).catch(() => {});
     getAdminAccounts().then((r: Row[]) => setPostAccts(r.filter((a) => nOf(a, "user_id") === id))).catch(() => {});
@@ -290,13 +292,13 @@ export default function AdminUserPage() {
               </div>
             </div>
             <div className="grid gap-3.5 sm:grid-cols-2">
-              <Dead label="Phone" tag="no column" placeholder="+44 …" />
-              <Dead label="Location" tag="no column" placeholder="City, country" />
+              <Theirs label="Phone" value={profile?.profile_phone} />
+              <Theirs label="Location" value={profile?.profile_location} />
             </div>
             <div className="grid gap-3.5 sm:grid-cols-2">
-              <Dead label="Company" tag="no column" placeholder="Their company" />
-              <Dead label="Time zone" tag="no column" placeholder="Europe/London"
-                    hint="Brands carry their own time zone for posting; this one is the person's." />
+              <Theirs label="Company" value={profile?.profile_company} />
+              <Theirs label="Time zone" value={profile?.profile_timezone}
+                      hint="Brands carry their own time zone for posting; this one is the person's." />
             </div>
             <div>
               <FieldLabel>Email notifications</FieldLabel>
@@ -306,14 +308,13 @@ export default function AdminUserPage() {
                 onChange={(v) => setForm({ ...form, email_notifications: v === "on" })}
               />
               <Why>
-                The one field in this card that is real: <span className={MONO}>users.email_notifications</span>,
-                with an unsubscribe token beside it. Off means the app sends them nothing at all.
+                <span className={MONO}>users.email_notifications</span>. Off means the app sends them nothing
+                at all; they can switch it themselves on their Account page, as well as through the unsubscribe link.
               </Why>
             </div>
             <div className="mt-auto pt-1 text-[11px] leading-[1.55] text-subtle">
-              The four greyed fields have nowhere to be stored. The users table is id, email, password hash,
-              name, role, status, created&nbsp;at, last&nbsp;login, email notifications and an unsubscribe token
-              — nothing else.
+              Phone, location, company and time zone are theirs: they set them on their Account page, and you
+              can read them here but not change them. Name, email and the email switch are yours to change too.
             </div>
           </CardBody>
         </Card>
@@ -543,11 +544,9 @@ export default function AdminUserPage() {
 
       <Note>
         Delete always wins: the endpoint clears the outreach and clipping rows as part of the same
-        transaction, so a campaign being active is not a veto. The profile fields have two homes to choose
-        between: columns on <span className={MONO}>users</span>, which means a migration; or rows in{" "}
-        <span className={MONO}>user_settings</span>, the key/value table that already exists and already
-        cascades on delete. Either way <span className={MONO}>PUT /api/admin/users/{"{id}"}</span> has to
-        accept more than it does — today it takes name, role, status and email, and drops everything else.
+        transaction, so a campaign being active is not a veto. It is the same cascade a person runs when
+        they delete their own account from the Account page. Their profile details live in{" "}
+        <span className={MONO}>user_settings</span>, which cascades with the account.
       </Note>
 
       {confirm && (
@@ -613,6 +612,20 @@ function Dead({ label, tag, placeholder, hint, button }: {
           className="mt-1.5 w-full cursor-default rounded-[11px] border border-border bg-secondary px-3 py-2 text-[12.5px] text-subtle opacity-70 outline-none"
         />
       )}
+      {hint && <div className="mt-1 text-[11px] leading-[1.5] text-subtle">{hint}</div>}
+    </div>
+  );
+}
+
+/** A detail the person set about themselves: shown, not editable here. */
+function Theirs({ label, value, hint }: { label: string; value?: string; hint?: string }) {
+  return (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <div className={`mt-1.5 w-full rounded-[11px] border border-border bg-secondary px-3 py-2 text-[12.5px] ${
+        value ? "text-foreground" : "text-subtle"}`}>
+        {value || "Not set"}
+      </div>
       {hint && <div className="mt-1 text-[11px] leading-[1.5] text-subtle">{hint}</div>}
     </div>
   );
