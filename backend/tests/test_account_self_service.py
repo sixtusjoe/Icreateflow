@@ -23,6 +23,7 @@ MINE = (
     "self-leave@example.com", "self-wrongpw@example.com", "self-lastadmin@example.com",
     "self-profile@example.com", "self-avatar@example.com", "self-avatar2@example.com",
     "self-avatar3@example.com", "self-avatar4@example.com", "self-avatar5@example.com",
+    "self-avatar6@example.com",
 )
 PASSWORD = "correct horse"
 
@@ -203,3 +204,34 @@ async def test_deleting_an_account_deletes_its_picture(database, avatar_dir):
     url = (await main.upload_avatar(_upload(_png()), user=me))["avatar_url"]
     await main.delete_my_account(main.AccountDelete(password=PASSWORD), user=me)
     assert not (avatar_dir / url.rsplit("/", 1)[-1]).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_picture_over_2mb_is_refused(database, avatar_dir):
+    me = await _me(database, "self-avatar6@example.com")
+    with pytest.raises(HTTPException) as e:
+        await main.upload_avatar(_upload(b"\0" * (2 * 1024 * 1024 + 1)), user=me)
+    assert e.value.status_code == 400 and "2 MB" in e.value.detail
+    assert list(avatar_dir.iterdir()) == []
+
+
+# ------------------------------------------------------------ /api/files
+
+@pytest.mark.parametrize("path", [
+    ".env", "main.py", "../backend/main.py", "uploads/../.env", "uploads/../../etc/passwd", "/etc/passwd",
+])
+def test_the_file_route_serves_nothing_outside_its_folders(path):
+    """It used to hand out the server's own .env and source code."""
+    assert main._servable(path) is None
+
+
+def test_the_file_route_still_serves_uploads(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uploads" / "brand").mkdir(parents=True)
+    (tmp_path / "uploads" / "brand" / "slide.jpg").write_bytes(b"x")
+    (tmp_path / ".env").write_text("SECRET=1")
+    # Stored form, and the form relative to the folder.
+    assert main._servable("uploads/brand/slide.jpg") is not None
+    assert main._servable("brand/slide.jpg") is not None
+    assert main._servable(".env") is None
+    assert main._servable("uploads/../.env") is None

@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Logo from "@/components/Logo";
-import { getOutreachSummary } from "@/lib/api";
+import { avatarSrc, getOutreachSummary } from "@/lib/api";
 
 const mainLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -340,9 +340,15 @@ export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl, se
                 href="/account"
                 className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] px-1.5 py-1.5 transition-colors hover:bg-white/55 dark:hover:bg-white/[0.07]"
               >
-                <span className="grid h-[31px] w-[31px] flex-none place-items-center rounded-full border-2 border-card bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] text-[13px] font-bold text-[#7a4a1e]">
-                  {user.name?.charAt(0).toUpperCase() || "U"}
-                </span>
+                {/* Their picture from the Account page, else the letter. */}
+                {avatarSrc(user.avatar_url) ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- served by the API, not this app
+                  <img src={avatarSrc(user.avatar_url)} alt="" className="h-[31px] w-[31px] flex-none rounded-full border-2 border-card object-cover" />
+                ) : (
+                  <span className="grid h-[31px] w-[31px] flex-none place-items-center rounded-full border-2 border-card bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] text-[13px] font-bold text-[#7a4a1e]">
+                    {user.name?.charAt(0).toUpperCase() || "U"}
+                  </span>
+                )}
                 <span className="flex min-w-0 flex-col">
                   <span className="truncate text-[12.5px] font-bold leading-tight text-foreground">
                     {user.name || "Account"}

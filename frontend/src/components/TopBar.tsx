@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Search, Sun, Moon, Bell, User, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { avatarSrc } from "@/lib/api";
 
 export default function TopBar() {
   const { user, logout } = useAuth();
@@ -74,10 +75,16 @@ export default function TopBar() {
         <div className="relative" ref={wrap}>
           <button onClick={() => setMenuOpen((v) => !v)}
             className="flex items-center rounded-full" aria-haspopup="menu" aria-expanded={menuOpen}>
-            <span className="grid h-[37px] w-[37px] place-items-center rounded-full border-2 border-card
-                             bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] text-[14px] font-bold text-[#7a4a1e] shadow-card">
-              {user.name?.charAt(0).toUpperCase() || "U"}
-            </span>
+            {avatarSrc(user.avatar_url) ? (
+              // eslint-disable-next-line @next/next/no-img-element -- served by the API, not this app
+              <img src={avatarSrc(user.avatar_url)} alt="Your account"
+                className="h-[37px] w-[37px] rounded-full border-2 border-card object-cover shadow-card" />
+            ) : (
+              <span className="grid h-[37px] w-[37px] place-items-center rounded-full border-2 border-card
+                               bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] text-[14px] font-bold text-[#7a4a1e] shadow-card">
+                {user.name?.charAt(0).toUpperCase() || "U"}
+              </span>
+            )}
           </button>
           {menuOpen && (
             <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-[184px] rounded-[14px] border border-border bg-popover p-1.5

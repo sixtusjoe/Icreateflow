@@ -48,6 +48,8 @@ type Row = Record<string, unknown>;
 type Form = { name: string } & Record<ProfileKey, string>;
 const EMPTY: Form = { name: "", profile_phone: "", profile_location: "", profile_company: "", profile_timezone: "" };
 const CODE_LIFETIME_MS = 15 * 60 * 1000;
+/** Matches AVATAR_MAX_BYTES on the server. */
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
 /* ------------------------------------------------------------------ clock */
 
@@ -336,6 +338,11 @@ function AvatarBox({ letter, src, onChange }: { letter: string; src?: string; on
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    // The server refuses past this too; saying so here saves the upload.
+    if (file.size > AVATAR_MAX_BYTES) {
+      toast.error("That picture is over 2 MB. Try a smaller one.");
+      return;
+    }
     setBusy(true);
     try {
       onChange((await uploadAvatar(file)).avatar_url);
@@ -374,7 +381,8 @@ function AvatarBox({ letter, src, onChange }: { letter: string; src?: string; on
         </span>
       )}
       <button type="button" onClick={() => input.current?.click()} disabled={busy}
-        aria-label={src ? "Change profile picture" : "Add a profile picture"} title={src ? "Change picture" : "Add a picture"}
+        aria-label={src ? "Change profile picture" : "Add a profile picture"}
+        title={src ? "Change picture (JPG, PNG, WebP or GIF, up to 2 MB)" : "Add a picture (JPG, PNG, WebP or GIF, up to 2 MB)"}
         className="absolute -bottom-1.5 -right-1.5 grid h-7 w-7 place-items-center rounded-full border-[3px] border-card bg-foreground text-background shadow-[0_4px_10px_-4px_rgba(0,0,0,0.4)] transition-transform hover:scale-110">
         <Camera className="h-3 w-3" strokeWidth={2.4} />
       </button>
