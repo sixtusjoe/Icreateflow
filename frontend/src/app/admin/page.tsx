@@ -12,7 +12,7 @@ import {
 import { Bars, Funnel, Gauge, Mini, Spark, Stack, TwoLine, num, pc, type Tone } from "@/components/admin/charts";
 import { Initial, RolePill, Sub } from "@/components/admin/ui";
 import {
-  getAdminStats, getUsers, getAdminErrorLogs, getOAuthApps, getAdminBrands,
+  getAdminStats, getUsers, avatarSrc, getAdminErrorLogs, getOAuthApps, getAdminBrands,
   getAdminPosts, getAdminAccounts, getAdminArtists, getOutreachSummary,
   listOutreachAccounts, listOutreachCampaigns,
 } from "@/lib/api";
@@ -521,7 +521,7 @@ export default function AdminOverviewPage() {
                       <tr key={s(u, "id")}>
                         <td className={TD}>
                           <Link href={`/admin/users/${s(u, "id")}`} className="flex items-center gap-2.5">
-                            <Initial name={s(u, "name")} size={32} />
+                            <Initial name={s(u, "name")} size={32} src={avatarSrc(u.avatar_url)} />
                             <span className="flex min-w-0 flex-col">
                               <span className="truncate font-semibold text-foreground">{s(u, "name")}</span>
                               <span className="truncate text-[10.5px] text-subtle">{s(u, "email")}</span>

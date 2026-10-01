@@ -21,7 +21,8 @@ from services.auth import hash_password
 MINE = (
     "self-quiet@example.com", "self-email@example.com", "self-moved@example.com",
     "self-leave@example.com", "self-wrongpw@example.com", "self-lastadmin@example.com",
-    "self-profile@example.com",
+    "self-profile@example.com", "self-avatar@example.com", "self-avatar2@example.com",
+    "self-avatar3@example.com", "self-avatar4@example.com", "self-avatar5@example.com",
 )
 PASSWORD = "correct horse"
 
@@ -125,3 +126,80 @@ async def test_an_admin_reads_only_the_profile_keys(database):
         "profile_company": "",
         "profile_timezone": "Africa/Lagos",
     }
+
+
+# ---------------------------------------------------------------- avatar
+
+def _upload(data: bytes, name="me.png"):
+    import io
+    from starlette.datastructures import UploadFile
+    return UploadFile(io.BytesIO(data), filename=name)
+
+
+def _png(w=900, h=600):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (200, 240, 60)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def avatar_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "AVATAR_DIR", tmp_path)
+    return tmp_path
+
+
+@pytest.mark.asyncio
+async def test_a_picture_is_cropped_square_and_shown_to_admins(database, avatar_dir):
+    from PIL import Image
+    me = await _me(database, "self-avatar@example.com")
+
+    out = await main.upload_avatar(_upload(_png()), user=me)
+
+    name = out["avatar_url"].rsplit("/", 1)[-1]
+    assert out["avatar_url"].startswith("/files/uploads/avatars/")
+    with Image.open(avatar_dir / name) as img:
+        assert img.size == (512, 512) and img.format == "WEBP"
+    listed = [u for u in await db.get_users(database) if u["id"] == me["id"]][0]
+    assert listed["avatar_url"] == out["avatar_url"]
+
+
+@pytest.mark.asyncio
+async def test_replacing_or_removing_a_picture_deletes_the_old_file(database, avatar_dir):
+    me = await _me(database, "self-avatar2@example.com")
+    first = (await main.upload_avatar(_upload(_png()), user=me))["avatar_url"]
+    second = (await main.upload_avatar(_upload(_png(300, 300)), user=me))["avatar_url"]
+
+    assert first != second
+    assert not (avatar_dir / first.rsplit("/", 1)[-1]).exists()
+
+    await main.remove_avatar(user=me)
+    assert not (avatar_dir / second.rsplit("/", 1)[-1]).exists()
+    assert (await db.get_user_settings(database, me["id"]))["profile_avatar"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_is_not_a_picture_is_refused(database, avatar_dir):
+    me = await _me(database, "self-avatar3@example.com")
+    for junk in (b"<svg onload=alert(1)>", b"not an image at all"):
+        with pytest.raises(HTTPException) as e:
+            await main.upload_avatar(_upload(junk, "x.svg"), user=me)
+        assert e.value.status_code == 400
+    assert list(avatar_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_the_picture_cannot_be_set_through_plain_settings(database):
+    """Otherwise it could point at any address an admin's browser would load."""
+    me = await _me(database, "self-avatar4@example.com")
+    with pytest.raises(HTTPException):
+        await main.update_user_settings(main.SettingUpdate(key="profile_avatar", value="https://evil.example/x.png"), user=me)
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_account_deletes_its_picture(database, avatar_dir):
+    me = await _me(database, "self-avatar5@example.com")
+    url = (await main.upload_avatar(_upload(_png()), user=me))["avatar_url"]
+    await main.delete_my_account(main.AccountDelete(password=PASSWORD), user=me)
+    assert not (avatar_dir / url.rsplit("/", 1)[-1]).exists()

@@ -1774,6 +1774,12 @@ async def get_users(db: Connection):
             # reads from has to carry it. Never the password hash or the
             # unsubscribe token: one is a secret and the other is a key.
             User.email_notifications,
+            # Their profile picture, so every admin list can show the face
+            # rather than the letter. A user_settings row, not a column.
+            select(UserSetting.value)
+            .where(UserSetting.user_id == User.id, UserSetting.key == "profile_avatar")
+            .scalar_subquery()
+            .label("avatar_url"),
         ).order_by(User.created_at.desc())
     )
     return _rows(result.mappings().all())

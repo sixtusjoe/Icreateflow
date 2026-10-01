@@ -605,7 +605,85 @@ async def login(data: AuthLogin):
 
 @app.get("/api/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
-    return user_safe(user)
+    out = user_safe(user)
+    database = await db.get_db()
+    try:
+        out["avatar_url"] = (await db.get_user_settings(database, user["id"])).get(AVATAR_KEY, "")
+    finally:
+        await database.close()
+    return out
+
+
+#: The profile picture: a user_settings row holding the picture's path under
+#: the /files/uploads static mount. No column, so no migration, and it goes
+#: with the account on delete like every other user_settings row.
+AVATAR_KEY = "profile_avatar"
+AVATAR_DIR = Path("uploads") / "avatars"
+AVATAR_MAX_BYTES = 8 * 1024 * 1024
+AVATAR_SIZE = 512
+
+
+def _avatar_file(url: str) -> Optional[Path]:
+    """The file behind a stored avatar path, if it is one of ours."""
+    name = url.rsplit("/", 1)[-1] if url.startswith("/files/uploads/avatars/") else ""
+    return AVATAR_DIR / name if name and "/" not in name and name not in (".", "..") else None
+
+
+@app.post("/api/auth/avatar")
+async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Set your profile picture.
+
+    The upload is opened with Pillow rather than trusted by its content
+    type, then cropped square and re-encoded as a 512px WebP — so what is
+    served is always a small, plain image, never the bytes that were sent
+    (no SVG, no script, no metadata).
+    """
+    from PIL import Image, ImageOps, UnidentifiedImageError
+    import io
+
+    raw = await file.read(AVATAR_MAX_BYTES + 1)
+    if len(raw) > AVATAR_MAX_BYTES:
+        raise HTTPException(400, "That picture is over 8 MB. Try a smaller one.")
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(400, "That file is not a picture we can read. Use a JPG, PNG, WebP or GIF.")
+
+    img = ImageOps.exif_transpose(img).convert("RGBA")
+    img = ImageOps.fit(img, (AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    # A fresh name every time, so a browser never shows the old picture
+    # from its cache.
+    name = f"{user['id']}-{secrets.token_hex(6)}.webp"
+    img.save(AVATAR_DIR / name, "WEBP", quality=86)
+    url = f"/files/uploads/avatars/{name}"
+
+    database = await db.get_db()
+    try:
+        old = (await db.get_user_settings(database, user["id"])).get(AVATAR_KEY, "")
+        await db.set_user_setting(database, user["id"], AVATAR_KEY, url)
+    finally:
+        await database.close()
+    old_file = _avatar_file(old)
+    if old_file and old_file.exists():
+        old_file.unlink()
+    return {"avatar_url": url}
+
+
+@app.delete("/api/auth/avatar")
+async def remove_avatar(user: dict = Depends(get_current_user)):
+    """Back to the letter."""
+    database = await db.get_db()
+    try:
+        old = (await db.get_user_settings(database, user["id"])).get(AVATAR_KEY, "")
+        await db.set_user_setting(database, user["id"], AVATAR_KEY, "")
+    finally:
+        await database.close()
+    old_file = _avatar_file(old)
+    if old_file and old_file.exists():
+        old_file.unlink()
+    return {"avatar_url": ""}
 
 
 @app.put("/api/auth/profile")
@@ -1176,6 +1254,8 @@ async def _delete_account(database, user_id: int) -> None:
     can never drift: a table added to one and not the other would leave
     a person undeletable from one side with a foreign-key error.
     """
+    avatar = _avatar_file((await db.get_user_settings(database, user_id)).get(AVATAR_KEY, ""))
+
     # Find and cascade-delete user's brands (cascades to accounts/posts/slides/variations/outputs)
     brands_cur = await database.execute("SELECT id FROM brands WHERE user_id = ?", (user_id,))
     for b in await brands_cur.fetchall():
@@ -1222,6 +1302,9 @@ async def _delete_account(database, user_id: int) -> None:
     await database.execute("DELETE FROM users WHERE id = ?", (user_id,))
     # One commit, so either the whole account goes or none of it does.
     await database.commit()
+    # The picture is a file, not a row; it goes once the rows are gone.
+    if avatar and avatar.exists():
+        avatar.unlink()
 
 
 @app.delete("/api/admin/users/{user_id}")
@@ -4748,6 +4831,11 @@ async def get_user_settings(user: dict = Depends(get_current_user)):
 
 @app.put("/api/user-settings")
 async def update_user_settings(data: SettingUpdate, user: dict = Depends(get_current_user)):
+    # The picture is set only by uploading one, which re-encodes it. Writing
+    # the key here would let anyone point it at an outside address that
+    # every admin's browser then fetches.
+    if data.key == AVATAR_KEY:
+        raise HTTPException(400, "Upload a picture instead")
     database = await db.get_db()
     try:
         await db.set_user_setting(database, user["id"], data.key, data.value)

@@ -16,7 +16,7 @@ import {
   getUsers, updateUser, approveUser, deleteAdminUser,
   getAdminBrands, getAdminPosts, getAdminAccounts, getAdminMusic, getAdminArtists,
   listOutreachCampaigns, listOutreachAccounts, listOutreachAudit,
-  getAdminUserProfile, type ProfileKey,
+  getAdminUserProfile, type ProfileKey, avatarSrc,
 } from "@/lib/api";
 
 /**
@@ -241,7 +241,7 @@ export default function AdminUserPage() {
 
       <Card>
         <div className="flex flex-wrap items-center gap-3 px-5 pb-3.5 pt-[18px]">
-          <Initial name={s(person, "name")} size={46} />
+          <Initial name={s(person, "name")} size={46} src={avatarSrc(person.avatar_url)} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
               <b className="text-[17px] font-extrabold tracking-[-0.02em] text-foreground">{s(person, "name")}</b>

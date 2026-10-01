@@ -41,6 +41,18 @@ export const updateProfile = (data: { name?: string; email_notifications?: boole
   api.put("/api/auth/profile", data).then((r) => r.data);
 /** Deletes the signed-in account and everything it owns. Needs the
  *  current password; refused for the last admin. */
+/** Upload a profile picture; the server crops it square and re-encodes it. */
+export const uploadAvatar = (file: File): Promise<{ avatar_url: string }> => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post("/api/auth/avatar", form).then((r) => r.data);
+};
+export const removeAvatar = (): Promise<{ avatar_url: string }> =>
+  api.delete("/api/auth/avatar").then((r) => r.data);
+/** A stored avatar path (`/files/uploads/avatars/…`) as a URL the browser
+ *  can load, or undefined when there is no picture. */
+export const avatarSrc = (path?: unknown) =>
+  typeof path === "string" && path ? `${api.defaults.baseURL}${path}` : undefined;
 export const deleteMyAccount = (password: string) =>
   api.delete("/api/auth/me", { data: { password } }).then((r) => r.data);
 

@@ -13,7 +13,7 @@ import {
 import { ConfirmDialog } from "@/components/kit/dialog";
 import { Initial, RolePill, Stat, STATUS_TONE } from "@/components/admin/ui";
 import {
-  getUsers, updateUser, approveUser, deleteAdminUser,
+  getUsers, updateUser, approveUser, deleteAdminUser, avatarSrc,
   getAdminBrands, getAdminPosts, listOutreachCampaigns,
 } from "@/lib/api";
 
@@ -227,7 +227,7 @@ export default function AdminUsersPage() {
                       <tr key={id} className="group">
                         <td className={TD}>
                           <Link href={`/admin/users/${id}`} className="flex items-center gap-2.5">
-                            <Initial name={s(u, "name")} size={32} />
+                            <Initial name={s(u, "name")} size={32} src={avatarSrc(u.avatar_url)} />
                             <span className="flex min-w-0 flex-col">
                               <span className="truncate font-semibold text-foreground">{s(u, "name")}</span>
                               <span className="truncate text-[10.5px] text-subtle">{s(u, "email")}</span>

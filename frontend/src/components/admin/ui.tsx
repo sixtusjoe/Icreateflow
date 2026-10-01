@@ -76,7 +76,14 @@ export function Stat({
 }
 
 /** The person's initial, as an avatar. */
-export function Initial({ name, size = 36 }: { name: string; size?: number }) {
+export function Initial({ name, size = 36, src }: { name: string; size?: number; src?: string }) {
+  if (src) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- served by the API, not this app
+      <img src={src} alt="" width={size} height={size}
+        className="flex-none rounded-[11px] object-cover" style={{ width: size, height: size }} />
+    );
+  }
   return (
     <span
       className="grid flex-none place-items-center rounded-[11px] bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] font-extrabold text-[#7a4a1e]"

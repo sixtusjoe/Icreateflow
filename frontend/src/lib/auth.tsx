@@ -14,6 +14,8 @@ interface User {
   /** Whether the app may email them. /api/auth/me returns it; the Account
    *  page switches it. */
   email_notifications?: boolean;
+  /** Path to their profile picture, or "" for the letter. */
+  avatar_url?: string;
 }
 
 interface AuthContextType {

@@ -12,6 +12,9 @@
  * columns: they are `user_settings` rows (PROFILE_KEYS) that the admin page
  * reads back read-only.
  *
+ * The letter box takes a profile picture (camera button). The server crops
+ * and re-encodes it; the admin lists and user page show the same picture.
+ *
  * Left out on purpose: plan and payment (the admin card is invented sample
  * data, and showing a user a made-up bill is worse than nothing), stuck
  * work and audit history (admin tools), and "sign out everywhere" (sign-ins
@@ -23,11 +26,12 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { Check, Eye, EyeOff, Info, LogOut, Mail, Trash2 } from "lucide-react";
+import { Camera, Check, Eye, EyeOff, Info, Loader2, LogOut, Mail, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 import {
   PROFILE_KEYS, type ProfileKey,
+  avatarSrc, removeAvatar, uploadAvatar,
   changePassword, confirmEmailChange, deleteMyAccount, getBrands, getPosts, getStats,
   getUserSettings, listOutreachAccounts, listOutreachCampaigns, requestEmailChange,
   updateProfile, updateUserSetting,
@@ -190,12 +194,11 @@ export default function AccountPage() {
       {/* ------------------------------------------------------------ who */}
       <Card>
         <div className="flex flex-wrap items-center gap-4 p-5">
-          <span className="relative grid h-16 w-16 flex-none place-items-center rounded-[20px] bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] text-[26px] font-extrabold text-[#7a4a1e]">
-            {(form.name || user.name || "?").trim().charAt(0).toUpperCase()}
-            {status === "active" && (
-              <span className="absolute -bottom-[3px] -right-[3px] h-4 w-4 rounded-full border-[3px] border-card bg-good" />
-            )}
-          </span>
+          <AvatarBox
+            letter={(form.name || user.name || "?").trim().charAt(0).toUpperCase()}
+            src={avatarSrc(user.avatar_url)}
+            onChange={(avatar_url) => updateUser({ ...user, avatar_url })}
+          />
           <div className="min-w-0">
             <h2 className="flex flex-wrap items-center gap-2.5 text-[20px] font-extrabold tracking-[-0.025em] text-foreground">
               {form.name || user.name}
@@ -319,6 +322,70 @@ export default function AccountPage() {
         }
       />
     </>
+  );
+}
+
+/* ------------------------------------------------------------ avatar box */
+
+/** The letter box, or their picture, with a camera button to change it. */
+function AvatarBox({ letter, src, onChange }: { letter: string; src?: string; onChange: (url: string) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      onChange((await uploadAvatar(file)).avatar_url);
+      toast.success("Profile picture updated");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "That picture did not upload."));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    setBusy(true);
+    try {
+      onChange((await removeAvatar()).avatar_url);
+      toast.success("Profile picture removed");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "That did not go through."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="group relative h-16 w-16 flex-none">
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element -- served by the API, not this app
+        <img src={src} alt="Your profile picture" className="h-16 w-16 rounded-[20px] object-cover" />
+      ) : (
+        <span className="grid h-16 w-16 place-items-center rounded-[20px] bg-[linear-gradient(140deg,#ffd7a8,#f6a97a)] text-[26px] font-extrabold text-[#7a4a1e]">
+          {letter}
+        </span>
+      )}
+      {busy && (
+        <span className="absolute inset-0 grid place-items-center rounded-[20px] bg-black/45 text-white">
+          <Loader2 className="h-5 w-5 animate-spin" />
+        </span>
+      )}
+      <button type="button" onClick={() => input.current?.click()} disabled={busy}
+        aria-label={src ? "Change profile picture" : "Add a profile picture"} title={src ? "Change picture" : "Add a picture"}
+        className="absolute -bottom-1.5 -right-1.5 grid h-7 w-7 place-items-center rounded-full border-[3px] border-card bg-foreground text-background shadow-[0_4px_10px_-4px_rgba(0,0,0,0.4)] transition-transform hover:scale-110">
+        <Camera className="h-3 w-3" strokeWidth={2.4} />
+      </button>
+      {src && !busy && (
+        <button type="button" onClick={remove} aria-label="Remove profile picture" title="Remove picture"
+          className="absolute -right-1.5 -top-1.5 grid h-6 w-6 place-items-center rounded-full border-2 border-card bg-secondary text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-bad focus-visible:opacity-100 group-hover:opacity-100">
+          <X className="h-3 w-3" strokeWidth={2.6} />
+        </button>
+      )}
+      <input ref={input} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={pick} />
+    </span>
   );
 }
 
