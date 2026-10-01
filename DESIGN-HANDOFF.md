@@ -55,7 +55,7 @@ re-stated after being broken.
 | Rule | Why it exists |
 |---|---|
 | **Nothing is committed** — not to local, not to git | The user reviews first |
-| **Do not touch the logo** | Stated flatly, twice |
+| **Do not touch the logo** | Stated flatly, twice. One change made at the owner's request (2026-10-01): the tile is near-black in both themes, no longer white in dark |
 | **One page at a time, with user verification between each** | Nothing moves on until they have looked at the last thing |
 | **Design a preview first, then wire it** — *"this is the main reason why we design before wiring!!"* | A wired page is expensive to argue with; an HTML preview is cheap |
 | **When wiring a preview: "copy all the test pages as it is and implement it… check every single line of change we did on the test"** | The preview is the spec, not a mood board |

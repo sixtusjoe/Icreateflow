@@ -24,9 +24,7 @@ export default function AuthShell({ year, children }: { year: number; children: 
       <section className={s.side}>
         <div className={s.top}>
           <Link href="/" className={s.brand} aria-label="Icreateflow home">
-            {/* The light-theme tile in both themes: Logo flips its tile with the
-              theme, and the white tile read poorly on the dark frame. */}
-          <Logo size={26} radius={7} className="bg-[#0b0d12]!" />
+            <Logo size={26} radius={7} />
             <b>Icreateflow</b>
           </Link>
           <ThemeSwitch />

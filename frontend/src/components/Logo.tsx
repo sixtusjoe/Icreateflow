@@ -1,8 +1,9 @@
 /**
  * Icreateflow mark — a lime broadcast signal (dot + three radiating arcs)
- * on the brand's foreground-colored rounded tile. The tile flips with the
- * theme (black in dark mode, near-black in light mode) because it uses
- * `bg-foreground`; the mark itself stays lime in both modes.
+ * on a near-black rounded tile. The tile is the same in both themes: it
+ * used to be `bg-foreground`, which turned it white in dark mode, and the
+ * lime mark on white read poorly — the owner asked for the light-theme
+ * tile everywhere (2026-10-01).
  */
 export default function Logo({
   size = 32,
@@ -31,7 +32,7 @@ export default function Logo({
 
   return (
     <div
-      className={`inline-flex shrink-0 items-center justify-center bg-foreground ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center bg-[#0b0d12] ${className}`}
       style={{ width: size, height: size, borderRadius: r }}
       aria-label="Icreateflow"
     >
