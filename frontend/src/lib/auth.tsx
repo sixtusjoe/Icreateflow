@@ -79,6 +79,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .finally(() => setIsLoading(false));
   }, []);
 
+  // The check above runs once, when the app first loads. A visitor who is
+  // already on a public page and follows a link to a signed-in one (the
+  // home page's "Help & Support", say) never re-ran it, and the shell drew
+  // nothing for them. Every route change is checked here instead.
+  useEffect(() => {
+    if (!isLoading && !user && !PUBLIC_PATHS.includes(pathname)) {
+      router.replace("/login");
+    }
+  }, [isLoading, user, pathname, router]);
+
   const login = async (email: string, password: string) => {
     const res = await fetch(`${API_URL}/api/auth/login`, {
       method: "POST",

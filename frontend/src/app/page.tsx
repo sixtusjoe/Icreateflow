@@ -18,6 +18,7 @@ import MarketingShell from "@/components/marketing/MarketingShell";
 import HeroStack from "@/components/marketing/HeroStack";
 import Pricing from "@/components/marketing/Pricing";
 import { Icon } from "@/components/marketing/Sprite";
+import { FAQ } from "@/components/marketing/faq";
 
 const PLATFORMS: [string, string][] = [
   ["tt", "TikTok"], ["yt", "YouTube Shorts"], ["ig", "Instagram Reels"], ["fb", "Facebook"], ["xx", "X"],
@@ -49,13 +50,7 @@ const VERTICALS: { title: string; desc: string; icon: React.ReactNode }[] = [
     icon: <path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7z" /> },
 ];
 
-const FAQ: [string, string][] = [
-  ["Do I need my own accounts?", "Yes. Icreateflow posts from TikTok, YouTube, Instagram and Facebook accounts you connect — your network, your audience. Nothing is posted from accounts you don't control."],
-  ["What stops platforms flagging the posts as duplicates?", "Each handle gets its own variation — different overlays, captions and, for brand slides, different generated faces — so every post reads as original."],
-  ["What happens when the view target is hit?", "Posting stops on its own. If the catalog runs out first, the campaign pauses and picks up again as soon as you add clips or sync another Drive folder."],
-  ["Why does TikTok outreach run from a phone?", "TikTok quietly discards follows made from a browser. The Icreateflow Android app does that work from your own phone, where follows actually stick."],
-  ["Can I start right away?", "Sign up and an admin reviews the account, and we email you the moment you're in."],
-];
+
 
 function Ico({ children, size = 19 }: { children: React.ReactNode; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">{children}</svg>;

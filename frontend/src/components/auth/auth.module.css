@@ -1,4 +1,7 @@
-/* The auth pages — /login and /register — carried over from the approved
+/* Colour budget, as on the home page: about 80% neutral, 15% dark (the
+   photo), 5% lime — the main button and the live dots, nothing else.
+
+   The auth pages — /login and /register — carried over from the approved
    HTML preview rule for rule. App tokens (--card, --border, --subtle, --good,
    --bad, --warn, --lime, --card-shadow) come from globals.css; the handful
    below are auth-only and are restated for .dark rather than computed. */
@@ -9,15 +12,18 @@
 .page {
   padding: 14px;
   min-height: 100vh;
+  /* Solid, to cover the app-wide lime wash (body::before in globals.css),
+     which is there for the signed-in sidebar's glass and would otherwise
+     tint this margin around the frame. */
+  background: var(--background);
 }
 .frame {
   --frame: #f8f9fb;
-  --wash: radial-gradient(120% 70% at 0% 100%, color-mix(in oklch, var(--lime) 30%, transparent) 0%, transparent 60%),
-    radial-gradient(80% 50% at 30% 110%, color-mix(in oklch, var(--lime) 18%, transparent) 0%, transparent 70%);
+  --wash: radial-gradient(120% 70% at 0% 100%, rgba(11, 13, 18, 0.045) 0%, transparent 60%);
   --field: #ffffff;
-  --field-ring: color-mix(in oklch, var(--lime) 55%, transparent);
+  --field-ring: rgba(11, 13, 18, 0.1);
   --seg: #e9ecf2;
-  --lime-ink: #5f6b00;
+  --lime-ink: #0b0d12;
 
   position: relative;
   min-height: calc(100vh - 28px);
@@ -35,10 +41,11 @@
 }
 :global(.dark) .frame {
   --frame: #12151b;
-  --wash: radial-gradient(120% 70% at 0% 100%, color-mix(in oklch, var(--lime) 14%, transparent) 0%, transparent 60%);
+  --wash: radial-gradient(120% 70% at 0% 100%, rgba(255, 255, 255, 0.035) 0%, transparent 60%);
+  --field-ring: rgba(255, 255, 255, 0.12);
   --field: #1a1e26;
   --seg: #1b1f28;
-  --lime-ink: var(--lime);
+  --lime-ink: #f2f4f8;
 }
 .frame::before {
   content: "";
@@ -241,7 +248,7 @@
   color: var(--subtle);
 }
 .inp input:focus {
-  box-shadow: 0 0 0 4px var(--field-ring), inset 0 0 0 1px color-mix(in oklch, var(--lime) 80%, #000);
+  box-shadow: 0 0 0 4px var(--field-ring), inset 0 0 0 1px var(--subtle);
 }
 .hasBtn input {
   padding-right: 54px;
@@ -311,7 +318,7 @@
   gap: 10px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 10px 24px -12px color-mix(in oklch, var(--lime) 90%, #000), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  box-shadow: 0 10px 24px -14px rgba(11, 13, 18, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.5);
   transition: transform 0.15s, filter 0.2s;
 }
 .cta:hover {
@@ -331,7 +338,7 @@
   height: 30px;
   border-radius: 999px;
   background: #0b0d12;
-  color: var(--lime);
+  color: #fff;
   transition: transform 0.3s;
 }
 .cta:hover .arr {
@@ -442,7 +449,7 @@
   transition: box-shadow 0.2s, transform 0.2s;
 }
 .otp input:focus {
-  box-shadow: 0 0 0 4px var(--field-ring), inset 0 0 0 1px color-mix(in oklch, var(--lime) 80%, #000);
+  box-shadow: 0 0 0 4px var(--field-ring), inset 0 0 0 1px var(--subtle);
   transform: translateY(-1px);
 }
 .otp input.filled {
@@ -484,7 +491,7 @@
   color: var(--warn);
 }
 .badgeOk {
-  background: color-mix(in oklch, var(--lime) 35%, transparent);
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
   color: var(--lime-ink);
 }
 .ring {
@@ -633,7 +640,7 @@
   width: 60%;
   height: 50%;
   border-radius: 50%;
-  background: radial-gradient(closest-side, color-mix(in oklch, var(--lime) 30%, transparent), transparent);
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.12), transparent);
   filter: blur(30px);
   mix-blend-mode: screen;
   animation: breathe 7s ease-in-out infinite;
@@ -826,7 +833,7 @@
 .num small {
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--lime);
+  color: rgba(255, 255, 255, 0.7);
   letter-spacing: 0;
 }
 .sub {
@@ -847,7 +854,7 @@
   transition: height 0.9s cubic-bezier(0.2, 0.9, 0.2, 1);
 }
 .bars i:last-child {
-  background: var(--lime);
+  background: #fff;
 }
 
 /* card 3 — week strip */
@@ -899,7 +906,7 @@
   width: 4px;
   height: 4px;
   border-radius: 9px;
-  background: var(--lime);
+  background: rgba(255, 255, 255, 0.8);
   transform: translateX(-50%);
 }
 .dOn .pip {
@@ -911,8 +918,8 @@
   bottom: 0;
   width: calc(100% / 7);
   border-radius: 14px;
-  background: var(--lime);
-  box-shadow: 0 6px 18px -6px color-mix(in oklch, var(--lime) 80%, transparent);
+  background: #fff;
+  box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.5);
   transition: left 0.7s cubic-bezier(0.2, 0.9, 0.2, 1);
 }
 .hatch {
@@ -957,7 +964,7 @@
 .fill {
   height: 100%;
   border-radius: 9px;
-  background: linear-gradient(90deg, #8a8a00, oklch(0.85 0.2 110));
+  background: #0b0d12;
   transition: width 0.25s linear;
 }
 .clips {
@@ -981,7 +988,7 @@
   position: absolute;
   left: 50%;
   top: 50%;
-  border-left: 7px solid oklch(0.85 0.2 110);
+  border-left: 7px solid #fff;
   border-top: 5px solid transparent;
   border-bottom: 5px solid transparent;
   transform: translate(-40%, -50%);

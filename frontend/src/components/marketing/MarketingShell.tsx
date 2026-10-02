@@ -11,6 +11,7 @@ import "./marketing.css";
 import Sprite, { Icon } from "./Sprite";
 import ThemeSwitch from "./ThemeSwitch";
 import Effects from "./Effects";
+import HelpChat from "./HelpChat";
 
 // Read outside render (react-hooks/purity forbids the clock in render).
 function currentYear() {
@@ -22,6 +23,7 @@ export default function MarketingShell({ children }: { children: React.ReactNode
     <div className="mk">
       <Sprite />
       <Effects />
+      <HelpChat />
 
       <div className="announce">
         New — Outreach: reply, follow and message from your own accounts, on autopilot.{" "}

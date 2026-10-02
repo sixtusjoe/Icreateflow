@@ -51,7 +51,7 @@ export default function AuthStage() {
 /* ---------------------------------------------------------------- */
 
 const POSTS = [
-  { t: "Studio session — teaser", s: "Today · 6:30 pm", p: ["tiktok", "instagram"], bg: "linear-gradient(135deg,#d4f33d,#5f7a00)" },
+  { t: "Studio session — teaser", s: "Today · 6:30 pm", p: ["tiktok", "instagram"], bg: "linear-gradient(135deg,#3a3f4b,#0b0d12)" },
   { t: "“Night Drive” lyric clip", s: "Tomorrow · 9:00 am", p: ["instagram", "x"], bg: "linear-gradient(135deg,#9a8cf0,#3b2f8f)" },
   { t: "Behind the mix, part 2", s: "Fri · 7:15 pm", p: ["tiktok", "x", "instagram"], bg: "linear-gradient(135deg,#f6a27a,#a8401b)" },
 ];
@@ -245,7 +245,7 @@ function FollowersCard() {
   return (
     <div className={`${s.g} ${s.c5}`}>
       <div className={s.ava}>
-        <i style={{ background: "oklch(0.85 0.2 110)" }}>JM</i>
+        <i style={{ background: "#e7e9ee" }}>JM</i>
         <i style={{ background: "#c9c2f0" }}>KA</i>
         <i style={{ background: "#f4b69c" }}>TS</i>
       </div>
