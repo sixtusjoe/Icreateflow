@@ -287,7 +287,8 @@ there would be the page size wearing the costume of a count.
 | `/admin` `/admin/users` `/admin/users/[id]` `/admin/approvals` `/admin/assistant` | **Done** | new admin rail |
 | `/admin/tools` | **Moved, not redesigned** | the old 13-tab page; Overview and Users tabs removed, heading now "Everything else" |
 | `/login` `/register` | **Done** | `(auth)` route group sharing one layout (`components/auth/`), so the photo stage persists across the tab switch. Email + password only — the backend has no Apple/Google sign-in, so no buttons for them. The stage's cards are illustrations and `aria-hidden`; only the week strip is real dates |
-| `/` `/terms` `/privacy` `/oauth/callback` | **Out of scope so far** | |
+| `/` `/terms` `/privacy` | **Done** | `components/marketing/` — scoped global sheet under `.mk` in Tailwind's components layer; Funnel Display for headings (`--font-display`). Colour budget ~80% neutral / 15% dark / 5% lime. Pricing is placeholder and tagged so; nothing behind it yet |
+| `/oauth/callback` | **Out of scope so far** | |
 
 ### Alignment: the three rows left ragged on purpose
 

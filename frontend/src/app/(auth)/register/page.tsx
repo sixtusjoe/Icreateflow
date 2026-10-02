@@ -10,7 +10,8 @@
  * The only password rule the backend enforces is six characters. The meter
  * colours past that to nudge towards longer passwords but never blocks one.
  */
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Check, Mail } from "lucide-react";
 import { useAuth } from "@/lib/auth";
@@ -34,10 +35,21 @@ function strength(p: string) {
   return { lit: p ? Math.max(n, 1) : 0, colour, note };
 }
 
+// useSearchParams needs a Suspense boundary, or the route cannot prerender.
 export default function RegisterPage() {
+  return (
+    <Suspense>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const { register } = useAuth();
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  // The home page hero sends its email field here as ?email=, so what the
+  // visitor typed is already in the box.
+  const [email, setEmail] = useState(useSearchParams().get("email") ?? "");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");

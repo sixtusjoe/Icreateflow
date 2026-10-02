@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Funnel_Display, Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
@@ -16,6 +16,15 @@ const geistSans = Geist({
 
 const geistMono = Geist_Mono({
   variable: "--font-mono",
+  subsets: ["latin"],
+});
+
+// Funnel Display, for the public site's big headings only (marketing.css
+// reads it as --font-display). Chosen by the owner over Bricolage
+// Grotesque, Space Grotesk and a Geist + serif pairing; body text stays
+// Geist everywhere.
+const funnelDisplay = Funnel_Display({
+  variable: "--font-display",
   subsets: ["latin"],
 });
 
@@ -101,7 +110,7 @@ export default async function RootLayout({
   const cfg = await fetchPublicConfig();
 
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning data-scroll-behavior="smooth">
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${funnelDisplay.variable}`} suppressHydrationWarning data-scroll-behavior="smooth">
       <head>
         <Script id="theme-init" strategy="beforeInteractive">{`
           (function(){try{var t=localStorage.getItem('theme');if(t!=='light')document.documentElement.classList.add('dark')}catch(e){document.documentElement.classList.add('dark')}})()
