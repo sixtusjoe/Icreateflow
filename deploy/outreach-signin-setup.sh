@@ -96,7 +96,9 @@ for _ in $(seq 1 30); do
     curl -s -o /dev/null http://127.0.0.1:8100/api/auth/me && break
     sleep 1
 done
-code=$(curl -s -o /dev/null -w '%{http_code}' \
+# --http1.1: browsers open websockets over HTTP/1.1; over HTTP/2 Apache
+# cannot upgrade and answers 404 even when everything is right.
+code=$(curl --http1.1 -s -o /dev/null -w '%{http_code}' \
     -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
     -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
     https://icreateflow.com/api/outreach/accounts/1/session/stream)
