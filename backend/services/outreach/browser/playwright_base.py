@@ -305,6 +305,12 @@ OVERLAY_DISMISS = (
 #: turn it off. These are the fastest way to tell a changed selector from a
 #: blocked account without watching a live browser.
 DEBUG_DIR = os.environ.get("ICREATE_OUTREACH_DEBUG_DIR", "outreach-debug")
+#: Kept for callers that still pass it explicitly. The sender no longer
+#: uses it by default: it claimed a Mac and Chrome 125 while the browser's
+#: other signals said Linux and Chromium 141 — and, hidden, "HeadlessChrome"
+#: — and the sign-in window that made the session said Linux 141 too.
+#: TikTok saw a session hop between two devices and asked for a puzzle on
+#: every send (2026-10-04). See `_identity`.
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -500,7 +506,9 @@ class PlaywrightMessenger:
         self,
         headless: Optional[bool] = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
-        user_agent: str = DEFAULT_USER_AGENT,
+        #: None: the browser's own identity (see `_identity`). Pass one only
+        #: to pin it, as the tests do.
+        user_agent: Optional[str] = None,
         #: Extra environment for the browser process. A watched run uses it
         #: to put this browser on a screen of its own, rather than on the
         #: one display every visible browser used to share.
@@ -519,6 +527,9 @@ class PlaywrightMessenger:
         self._on_disconnect = on_disconnect
         self._timeout = timeout_ms
         self._user_agent = user_agent
+        #: What a hidden browser reports once its "HeadlessChrome" is
+        #: renamed; read from the browser itself at launch.
+        self._own_agent: Optional[str] = None
         self._playwright = None
         self._browser = None
         #: account_id → BrowserContext. The isolation guarantee.
@@ -568,6 +579,28 @@ class PlaywrightMessenger:
             # browser that was not there, until the API was restarted.
             # Forgetting it here is what lets the next job open a fresh one.
             self._browser.on("disconnected", self._browser_gone)
+            if self._headless and self._user_agent is None:
+                self._own_agent = await self._identity()
+
+    async def _identity(self) -> Optional[str]:
+        """The browser's real user agent, minus the word that gives it away.
+
+        A visible browser needs nothing: what it reports is true, and it is
+        what the sign-in window reported when the session was made. A
+        hidden one says "HeadlessChrome", which sites refuse on sight, so
+        that word — and only that — is replaced. Platform and version stay
+        the browser's own, so they agree with everything else it reports.
+        """
+        try:
+            context = await self._browser.new_context()
+            try:
+                page = await context.new_page()
+                agent = await page.evaluate("navigator.userAgent")
+            finally:
+                await context.close()
+        except Exception:  # noqa: BLE001 — fall back to the browser's own
+            return None
+        return str(agent).replace("HeadlessChrome", "Chrome")
 
     def _browser_gone(self, _browser: Any = None) -> None:
         """Forget a browser that has gone, and say so once.
@@ -620,11 +653,15 @@ class PlaywrightMessenger:
                 return context
 
             await self.startup()
+            # The same window the sign-in browser opens (session_capture.
+            # context_options), so a session meets the size it was made in.
             options: dict[str, Any] = {
-                "user_agent": self._user_agent,
-                "viewport": {"width": 1280, "height": 900},
+                "viewport": {"width": 1280, "height": 860},
                 "locale": "en-US",
             }
+            agent = self._user_agent or self._own_agent
+            if agent:
+                options["user_agent"] = agent
             # Playwright wants the credentials apart from the host. Passed
             # whole they are ignored, every request goes out
             # unauthenticated, and the proxy's 407 surfaces as a page that

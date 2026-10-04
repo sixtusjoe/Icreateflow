@@ -298,6 +298,18 @@ def start(account: dict[str, Any], timeout_seconds: int = DEFAULT_TIMEOUT_SECOND
     return capture
 
 
+async def _log_tab(tab: Any, name: str, platform: str) -> None:
+    """Log a tab the site opened, once it knows where it is going."""
+    try:
+        if await tab.opener() is None:
+            return  # our own tab, not one the site opened
+        await tab.wait_for_load_state("domcontentloaded", timeout=15000)
+    except Exception:  # noqa: BLE001 — closed early; log what we have
+        pass
+    print(f"[outreach] {platform} window for {name} opened a new tab: "
+          f"{(tab.url or '')[:200]}", flush=True)
+
+
 async def _hold_open(browser, context, spec: dict[str, str], name: str,
                      timeout_seconds: int) -> Optional[dict]:
     """Keep the signed-in window until the person closes it; return what it
@@ -404,6 +416,12 @@ async def _run(account: dict[str, Any], capture: Capture, timeout_seconds: int,
                 options["storage_state"] = json.loads(
                     decrypt_session(account.get("session_state_encrypted")))
             context = await browser.new_context(**options)
+            # Say where every extra tab goes. Instagram's signed-in window
+            # was reported opening a Facebook tab that a plain load of the
+            # same session never did (2026-10-04), so it comes from
+            # something done in the window; this names it next time.
+            context.on("page", lambda tab: asyncio.ensure_future(
+                _log_tab(tab, name, capture.platform)))
             page = await context.new_page()
             if reuse:
                 await open_login_page(page, OPEN_URLS[capture.platform], capture.platform)

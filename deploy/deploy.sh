@@ -99,6 +99,14 @@ systemctl restart icreateflow-frontend
 # nothing is lost and nothing is sent twice.
 OUTREACH_UNITS=$(systemctl list-units --state=active --plain --no-legend \
     'icreateflow-outreach-worker@*' 2>/dev/null | awk '{print $1}')
+# The unit file ships with the code: only outreach-setup.sh used to copy
+# it, so a change to it never reached a box that was already set up.
+WORKER_UNIT=/etc/systemd/system/icreateflow-outreach-worker@.service
+if [ -f "$WORKER_UNIT" ] && ! cmp -s "$SRC/deploy/systemd/icreateflow-outreach-worker.service" "$WORKER_UNIT"; then
+    echo "==> Installing the updated outreach worker unit"
+    cp "$SRC/deploy/systemd/icreateflow-outreach-worker.service" "$WORKER_UNIT"
+    systemctl daemon-reload
+fi
 if [ -n "$OUTREACH_UNITS" ]; then
     echo "==> Restarting outreach workers"
     # shellcheck disable=SC2086

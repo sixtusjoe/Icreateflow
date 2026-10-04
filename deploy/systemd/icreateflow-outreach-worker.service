@@ -25,7 +25,11 @@ EnvironmentFile=/srv/icreateflow/backend/.env
 # Chromium lives in an app-owned path, not root's ~/.cache — the service user
 # has to be able to read it. `deploy/outreach-setup.sh` populates this.
 Environment=PLAYWRIGHT_BROWSERS_PATH=/srv/icreateflow/pw-browsers
-ExecStart=/srv/icreateflow/venv/bin/python scripts/outreach_worker.py --worker-id %H-%i
+# On a virtual screen of its own, so the browser can run visibly — the
+# same browser, same identity, as the sign-in window that made the session.
+# Hidden, Chromium calls itself "HeadlessChrome" and TikTok answers with a
+# puzzle on every send. Visible or hidden is still the admin switch.
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x900x24 -nolisten tcp" /srv/icreateflow/venv/bin/python scripts/outreach_worker.py --worker-id %H-%i
 # SIGTERM stops the loop cleanly; a job still in flight keeps its lease and
 # is requeued by the reaper, so a restart never loses or double-sends a target.
 KillSignal=SIGTERM
