@@ -382,40 +382,5 @@
 }
 
 
-/* ---------- chat button + panel (HelpChat.tsx) ---------- */
-.mk .chatw{position:fixed;right:22px;bottom:22px;z-index:80;display:flex;flex-direction:column;align-items:flex-end;gap:14px}
-.mk .chatb{position:relative;width:58px;height:58px;border-radius:99px;background:var(--fg);color:var(--bg);display:grid;place-items:center;cursor:pointer;
-  box-shadow:0 18px 40px -14px rgba(11,13,18,.55),0 0 0 1px color-mix(in srgb,var(--fg) 10%,transparent);transition:transform .2s}
-.mk .chatb:hover{transform:translateY(-2px) scale(1.04)}
-.mk .chatb .dot{position:absolute;top:6px;right:6px;width:11px;height:11px;border-radius:99px;background:var(--lime);border:2px solid var(--fg)}
-.mk .chatp{width:min(384px,calc(100vw - 32px));max-height:min(600px,calc(100vh - 120px));display:flex;flex-direction:column;border-radius:24px;overflow:hidden;
-  background:color-mix(in srgb,var(--card) 88%,transparent);border:1px solid var(--line);backdrop-filter:blur(22px) saturate(1.5);
-  box-shadow:0 40px 80px -30px rgba(11,13,18,.55);animation:mk-cin .45s cubic-bezier(.2,.9,.2,1) both;transform-origin:bottom right}
-.mk .chath{display:flex;align-items:center;gap:12px;padding:16px 16px 14px;border-bottom:1px solid var(--line)}
-.mk .chath .tile{width:36px;height:36px;border-radius:11px}
-.mk .chath b{display:block;font-size:15px;font-weight:700;letter-spacing:-.01em}
-.mk .chath small{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
-.mk .chath button{margin-left:auto;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:var(--muted);cursor:pointer}
-.mk .chath button:hover{background:color-mix(in srgb,var(--fg) 6%,transparent);color:var(--fg)}
-.mk .chatl{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;min-height:220px}
-.mk .cm{max-width:86%;padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.5;animation:mk-cin .35s cubic-bezier(.2,.9,.2,1) both}
-.mk .cm.bot{background:color-mix(in srgb,var(--fg) 6%,transparent);border-bottom-left-radius:6px;align-self:flex-start}
-.mk .cm.me{background:var(--fg);color:var(--bg);border-bottom-right-radius:6px;align-self:flex-end}
-.mk .cm.typing{display:flex;gap:4px;padding:14px}
-.mk .cm.typing i{width:6px;height:6px;border-radius:9px;background:var(--subtle);animation:mk-blink 1s infinite}
-.mk .cm.typing i:nth-child(2){animation-delay:.15s}.mk .cm.typing i:nth-child(3){animation-delay:.3s}
-.mk .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:2px}
-.mk .chips button{font-size:13px;font-weight:500;text-align:left;padding:8px 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);cursor:pointer;transition:border-color .2s,background .2s}
-.mk .chips button:hover{border-color:var(--fg)}
-.mk .chatf{display:flex;align-items:flex-end;gap:8px;margin:0 12px;padding:6px 6px 6px 14px;border-radius:16px;border:1px solid var(--line);background:var(--card)}
-.mk .chatf textarea{flex:1;resize:none;border:0;outline:none;background:none;font:inherit;font-size:14px;padding:8px 0;max-height:120px;color:var(--fg)}
-.mk .chatf textarea::placeholder{color:var(--subtle)}
-.mk .chatf button{width:36px;height:36px;border-radius:11px;background:var(--fg);color:var(--bg);display:grid;place-items:center;cursor:pointer;flex:none}
-.mk .chatf button:disabled{opacity:.3;cursor:default}
-.mk .chatx{padding:10px 16px 14px;font-size:11.5px;color:var(--subtle);text-align:center}
-.mk .chatx b{color:var(--muted);font-weight:600}
-.mk .chatx a{color:var(--fg);font-weight:600;text-decoration:underline;text-underline-offset:2px}
-@keyframes mk-blink{50%{opacity:.25}}
-@media (max-width:600px){.mk .chatw{right:14px;bottom:14px}}
 
 }

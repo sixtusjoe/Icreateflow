@@ -11,7 +11,7 @@ import "./marketing.css";
 import Sprite, { Icon } from "./Sprite";
 import ThemeSwitch from "./ThemeSwitch";
 import Effects from "./Effects";
-import HelpChat from "./HelpChat";
+import PublicAssistant from "./PublicAssistant";
 
 // Read outside render (react-hooks/purity forbids the clock in render).
 function currentYear() {
@@ -20,10 +20,10 @@ function currentYear() {
 
 export default function MarketingShell({ children }: { children: React.ReactNode }) {
   return (
+    <>
     <div className="mk">
       <Sprite />
       <Effects />
-      <HelpChat />
 
       <div className="announce">
         New — Outreach: reply, follow and message from your own accounts, on autopilot.{" "}
@@ -99,5 +99,9 @@ export default function MarketingShell({ children }: { children: React.ReactNode
         </div>
       </footer>
     </div>
+    {/* Outside .mk, so the public pages' own button and input resets cannot
+        reach it — it should render exactly as it does inside the app. */}
+    <PublicAssistant />
+    </>
   );
 }

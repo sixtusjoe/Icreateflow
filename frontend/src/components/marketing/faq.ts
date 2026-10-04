@@ -1,6 +1,6 @@
 /**
  * The questions people ask before their first drop. One list, read by the
- * home page's FAQ and by the chat panel's quick answers, so the two can
+ * home page's FAQ and by the assistant's "Try asking" list, so the two can
  * never say different things.
  */
 export const FAQ: [string, string][] = [
@@ -10,7 +10,3 @@ export const FAQ: [string, string][] = [
   ["Why does TikTok outreach run from a phone?", "TikTok quietly discards follows made from a browser. The Icreateflow Android app does that work from your own phone, where follows actually stick."],
   ["Can I start right away?", "Sign up and an admin reviews the account, and we email you the moment you're in."],
 ];
-
-/** Where the chat panel sends a typed question — the support address the
- *  Terms already give. */
-export const SUPPORT_EMAIL = "support@icreateflow.com";

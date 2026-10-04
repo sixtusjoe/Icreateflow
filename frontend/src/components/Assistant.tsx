@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, Info, Send, X, Zap } from "lucide-react";
 import { Tag } from "@/components/kit";
 
-type Blurb = {
+export type Blurb = {
   /** The nudge headline. */
   title: string;
   /** The nudge body, typed in. The note is a fixed 216px square, which fits
@@ -384,7 +384,17 @@ function Nudge({ blurb, onOpen, onDismiss }: { blurb: Blurb; onOpen: () => void;
   );
 }
 
-function Panel({ blurb, onClose }: { blurb: Blurb; onClose: () => void }) {
+/** The panel's header. The signed-in pages use the default; the public
+ *  pages pass their own, because a visitor has no workspace to read. */
+export type Head = { title: string; tag: string; sub: string };
+
+const WORKSPACE_HEAD: Head = {
+  title: "Ask about this workspace",
+  tag: "Admins",
+  sub: "It reads your brands, posts and settings — not a manual",
+};
+
+function Panel({ blurb, head, onClose }: { blurb: Blurb; head: Head; onClose: () => void }) {
   const [line, setLine] = useState(0);
   const [draft, setDraft] = useState("");
   const { shown, done } = useTypewriter(blurb.panel[line % blurb.panel.length], 900);
@@ -419,8 +429,8 @@ function Panel({ blurb, onClose }: { blurb: Blurb; onClose: () => void }) {
         <span className="row-span-2 grid h-[30px] w-[30px] flex-none place-items-center rounded-[10px] bg-primary text-primary-foreground">
           <Zap className="h-[15px] w-[15px]" />
         </span>
-        <span className="min-w-0 text-[13px] font-semibold">Ask about this workspace</span>
-        <Tag tone="draft">Admins</Tag>
+        <span className="min-w-0 text-[13px] font-semibold">{head.title}</span>
+        <Tag tone="draft">{head.tag}</Tag>
         <button
           type="button"
           aria-label="Close the assistant"
@@ -430,7 +440,7 @@ function Panel({ blurb, onClose }: { blurb: Blurb; onClose: () => void }) {
           <X className="h-3 w-3" strokeWidth={2.4} />
         </button>
         <span className="col-start-2 col-end-[-1] text-[10.5px] leading-[1.4] text-subtle">
-          It reads your brands, posts and settings — not a manual
+          {head.sub}
         </span>
       </div>
 
@@ -493,8 +503,16 @@ function Panel({ blurb, onClose }: { blurb: Blurb; onClose: () => void }) {
   );
 }
 
-export default function Assistant({ route }: { route: string }) {
-  const blurb = blurbFor(route);
+export default function Assistant({
+  route,
+  blurb = blurbFor(route),
+  head = WORKSPACE_HEAD,
+}: {
+  route: string;
+  /** What to say on this route. Defaults to the signed-in pages' write-ups. */
+  blurb?: Blurb;
+  head?: Head;
+}) {
   const [open, setOpen] = useState(false);
   const [nudge, setNudge] = useState(false);
   // Per route: a "go away" on Posts is about the note on Posts. AppShell
@@ -567,7 +585,7 @@ export default function Assistant({ route }: { route: string }) {
     <>
       {nudge && !open && <Nudge blurb={blurb} onOpen={openPanel} onDismiss={dismiss} />}
       {open ? (
-        <Panel blurb={blurb} onClose={() => setOpen(false)} />
+        <Panel blurb={blurb} head={head} onClose={() => setOpen(false)} />
       ) : (
         <button
           type="button"
