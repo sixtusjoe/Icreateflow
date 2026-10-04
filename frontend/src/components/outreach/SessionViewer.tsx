@@ -50,6 +50,7 @@ export function SessionViewer({
   onError?: (message: string) => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
+  const frame = useRef<HTMLDivElement>(null);
   const typing = useRef<HTMLTextAreaElement>(null);
   const rfbRef = useRef<{ sendKey: (k: number, c: string | null, d?: boolean) => void } | null>(null);
   const [state, setState] = useState<"connecting" | "live" | "lost">("connecting");
@@ -120,6 +121,39 @@ export function SessionViewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
 
+  // Leaving the browser's full screen (Escape, a swipe, the browser's own
+  // control) leaves the expanded view with it, so the two never disagree.
+  useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement) setExpanded(false);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  /** Expand into the browser's real full screen — no address bar, no tabs.
+   *  Where that is refused (iPhone Safari allows it only for video), the
+   *  viewer still covers the whole page, as it did before. */
+  const toggleExpanded = useCallback(async () => {
+    if (expanded) {
+      setExpanded(false);
+      if (document.fullscreenElement) {
+        try {
+          await document.exitFullscreen();
+        } catch {
+          /* already out */
+        }
+      }
+      return;
+    }
+    setExpanded(true);
+    try {
+      await frame.current?.requestFullscreen?.();
+    } catch {
+      /* not allowed here: the page-sized view stands in */
+    }
+  }, [expanded]);
+
   /** Raise the on-screen keyboard.
    *
    *  noVNC focuses its `<canvas>`, and a canvas never opens one — browsers
@@ -145,6 +179,7 @@ export function SessionViewer({
 
   return (
     <div
+      ref={frame}
       className={
         expanded
           ? "fixed inset-0 z-[60] flex flex-col bg-black"
@@ -164,7 +199,7 @@ export function SessionViewer({
         )}
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={toggleExpanded}
           aria-label={expanded ? "Exit full screen" : "Full screen"}
           className="rounded-md bg-black/60 p-2 text-white backdrop-blur hover:bg-black/80"
         >
