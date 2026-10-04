@@ -391,3 +391,14 @@ body::before {
     font-size: 16px !important;
   }
 }
+
+/* An expanded sign-in viewer covers the screen with `position: fixed`, but a
+   backdrop-filter on an ancestor makes that ancestor its containing block, so
+   inside the glass dialog it only covered the dialog. While one is expanded
+   the dialog drops its blur and clipping. See SessionViewer. */
+html[data-viewer-expanded] [role="dialog"],
+html[data-viewer-expanded] [role="dialog"] > div {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  overflow: visible !important;
+}

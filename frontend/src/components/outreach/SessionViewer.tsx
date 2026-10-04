@@ -38,6 +38,12 @@ function keysymFor(ch: string): number {
   return cp >= 0x20 && cp <= 0xff ? cp : 0x01000000 | cp;
 }
 
+/** The element in full screen, standard or (older Safari) webkit-prefixed. */
+function fullscreenElement(): Element | null {
+  const doc = document as Document & { webkitFullscreenElement?: Element | null };
+  return doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
 export function SessionViewer({
   accountId,
   campaignId,
@@ -123,13 +129,26 @@ export function SessionViewer({
 
   // Leaving the browser's full screen (Escape, a swipe, the browser's own
   // control) leaves the expanded view with it, so the two never disagree.
+  // Older Safari only speaks the webkit-prefixed version.
   useEffect(() => {
     const onChange = () => {
-      if (!document.fullscreenElement) setExpanded(false);
+      if (!fullscreenElement()) setExpanded(false);
     };
     document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
+    document.addEventListener("webkitfullscreenchange", onChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("webkitfullscreenchange", onChange);
+    };
   }, []);
+
+  // The page-sized fallback needs the dialog around it to stop trapping it
+  // (globals.css, data-viewer-expanded).
+  useEffect(() => {
+    if (!expanded) return;
+    document.documentElement.setAttribute("data-viewer-expanded", "");
+    return () => document.documentElement.removeAttribute("data-viewer-expanded");
+  }, [expanded]);
 
   /** Expand into the browser's real full screen — no address bar, no tabs.
    *  Where that is refused (iPhone Safari allows it only for video), the
@@ -137,9 +156,10 @@ export function SessionViewer({
   const toggleExpanded = useCallback(async () => {
     if (expanded) {
       setExpanded(false);
-      if (document.fullscreenElement) {
+      if (fullscreenElement()) {
         try {
-          await document.exitFullscreen();
+          const doc = document as Document & { webkitExitFullscreen?: () => Promise<void> | void };
+          await (doc.exitFullscreen ? doc.exitFullscreen() : doc.webkitExitFullscreen?.());
         } catch {
           /* already out */
         }
@@ -147,8 +167,10 @@ export function SessionViewer({
       return;
     }
     setExpanded(true);
+    const el = frame.current as (HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> | void }) | null;
     try {
-      await frame.current?.requestFullscreen?.();
+      // Called before any await, so it still counts as the tap that asked.
+      await (el?.requestFullscreen ? el.requestFullscreen() : el?.webkitRequestFullscreen?.());
     } catch {
       /* not allowed here: the page-sized view stands in */
     }
