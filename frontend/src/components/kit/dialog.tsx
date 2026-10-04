@@ -63,10 +63,10 @@ export function Dialog({
       aria-modal="true"
       aria-label={label}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-[rgba(11,13,18,0.34)] p-6 backdrop-blur-[7px] dark:bg-black/50"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-[rgba(11,13,18,0.34)] p-6 backdrop-blur-[7px] max-sm:p-3 dark:bg-black/50"
     >
       <div
-        className={`relative flex max-h-[calc(100vh-48px)] w-full flex-col overflow-hidden rounded-[22px] border
+        className={`relative flex max-h-[calc(100dvh-48px)] max-sm:max-h-[calc(100dvh-24px)] w-full flex-col overflow-hidden rounded-[22px] border
                     border-[rgba(255,255,255,0.75)] bg-[rgba(255,255,255,0.84)] backdrop-blur-[28px] backdrop-saturate-[1.85]
                     shadow-[0_34px_80px_-24px_rgba(16,24,40,0.45),0_6px_20px_-8px_rgba(16,24,40,0.2),inset_0_1px_0_rgba(255,255,255,0.7)]
                     dark:border-white/10 dark:bg-[rgba(24,28,37,0.86)]
@@ -118,7 +118,7 @@ export function DialogHead({
 }
 
 export function DialogBody({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`relative overflow-y-auto px-[22px] pb-1 pt-[18px] ${className}`}>{children}</div>;
+  return <div className={`relative min-h-0 overflow-y-auto px-[22px] pb-1 pt-[18px] ${className}`}>{children}</div>;
 }
 
 /**

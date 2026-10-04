@@ -328,7 +328,7 @@ function Nudge({ blurb, onOpen, onDismiss }: { blurb: Blurb; onOpen: () => void;
     <div
       role="status"
       onClick={onOpen}
-      className="fixed bottom-[78px] right-[22px] z-[60] flex h-[216px] w-[216px] cursor-pointer flex-col rounded-[20px] border border-white/[0.16] p-[15px] text-left
+      className="fixed bottom-[78px] right-[22px] z-[25] flex h-[216px] max-md:hidden w-[216px] cursor-pointer flex-col rounded-[20px] border border-white/[0.16] p-[15px] text-left
                  bg-[linear-gradient(152deg,color-mix(in_srgb,var(--primary)_94%,transparent),color-mix(in_srgb,var(--primary)_86%,transparent))]
                  shadow-[0_22px_48px_-16px_rgba(11,13,18,0.5),inset_0_1px_0_rgba(255,255,255,0.18)]
                  backdrop-blur-[24px] backdrop-saturate-[1.8]
@@ -591,10 +591,10 @@ export default function Assistant({
           type="button"
           aria-label="Ask the assistant"
           onClick={openPanel}
-          className="fixed bottom-[22px] right-[22px] z-[60] flex items-center gap-2 rounded-full bg-primary px-[17px] py-3 text-[12.5px] font-bold text-primary-foreground shadow-[0_12px_26px_-10px_rgba(11,13,18,0.6)] transition-[filter] hover:brightness-110"
+          className="fixed bottom-[22px] right-[22px] z-[25] flex items-center gap-2 rounded-full bg-primary px-[17px] py-3 max-md:bottom-4 max-md:right-4 max-md:p-3 text-[12.5px] font-bold text-primary-foreground shadow-[0_12px_26px_-10px_rgba(11,13,18,0.6)] transition-[filter] hover:brightness-110"
         >
           <Zap className="h-[15px] w-[15px]" />
-          Ask
+          <span className="max-md:sr-only">Ask</span>
         </button>
       )}
     </>

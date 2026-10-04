@@ -110,7 +110,7 @@ export default function AppShell({ children, logoUrl }: { children: React.ReactN
       {/* Mobile backdrop */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/50 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-30 bg-black/25 md:hidden"
           onClick={() => setMobileOpen(false)}
           aria-hidden="true"
         />

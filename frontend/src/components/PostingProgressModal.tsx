@@ -112,7 +112,7 @@ export function PostingProgressModal({
       {/* TikTok cap-error retry options modal */}
       {capRetry && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-background p-6 shadow-xl">
+          <div className="max-h-[calc(100dvh-2rem)] w-full max-w-sm overflow-y-auto rounded-2xl bg-background p-6 shadow-xl">
             <h3 className="text-base font-semibold">Retry TikTok post</h3>
             <p className="mt-2 text-sm text-muted-foreground">
               This account has hit TikTok's active user cap. Choose how to retry:

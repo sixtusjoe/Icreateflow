@@ -512,12 +512,12 @@ export default function OutreachPage() {
               <thead>
                 <tr>
                   <th className={TH}>Campaign</th>
-                  <th className={`${TH} w-[118px]`}>Activity</th>
-                  <th className={`${TH} w-[92px] text-right`}>Targets</th>
-                  <th className={`${TH} w-[168px] pl-[18px]`}>Delivered</th>
-                  <th className={`${TH} w-[78px] text-right`}>Sent</th>
-                  <th className={`${TH} w-[74px] text-right`}>Failed</th>
-                  <th className={`${TH} w-[118px] pl-[18px]`}>Status</th>
+                  <th className={`${TH} w-[118px] max-md:hidden`}>Activity</th>
+                  <th className={`${TH} w-[92px] text-right max-md:hidden`}>Targets</th>
+                  <th className={`${TH} w-[168px] pl-[18px] max-md:w-[132px] max-md:pl-2`}>Delivered</th>
+                  <th className={`${TH} w-[78px] text-right max-md:hidden`}>Sent</th>
+                  <th className={`${TH} w-[74px] text-right max-md:hidden`}>Failed</th>
+                  <th className={`${TH} w-[118px] pl-[18px] max-md:hidden`}>Status</th>
                   <th className={`${TH} w-[44px]`} />
                 </tr>
               </thead>
@@ -537,25 +537,32 @@ export default function OutreachPage() {
                           <Avatar platform={c.platform} />
                           <span className="flex min-w-0 flex-col gap-px">
                             <span className="truncate font-semibold text-foreground">{c.name}</span>
-                            <span className="truncate text-[11px] leading-normal text-subtle">
+                            <span className="truncate text-[11px] leading-normal text-subtle max-md:hidden">
                               {c.description || `Created ${c.created_at.slice(0, 10)}`}
+                            </span>
+                            {/* Phones drop the Activity and Status columns, so both ride under the name. */}
+                            <span className="mt-1 flex items-center gap-1.5 md:hidden">
+                              <Tag tone={CAMPAIGN_TONE[c.status] ?? "draft"}>
+                                {c.status[0].toUpperCase() + c.status.slice(1)}
+                              </Tag>
+                              <act.icon className="h-[13px] w-[13px] flex-none text-subtle" aria-label={act.label} />
                             </span>
                           </span>
                         </div>
                       </td>
-                      <td className={TD}>
+                      <td className={`${TD} max-md:hidden`}>
                         <span className="inline-flex items-center gap-1.5 text-xs font-semibold leading-normal text-muted-foreground">
                           <act.icon className="h-[13px] w-[13px] text-subtle" />
                           {act.label}
                         </span>
                       </td>
-                      <td className={`${TD} ${MONO} text-right`}>{n(total)}</td>
-                      <td className={`${TD} pl-[18px]`}>
+                      <td className={`${TD} ${MONO} text-right max-md:hidden`}>{n(total)}</td>
+                      <td className={`${TD} pl-[18px] max-md:pl-2`}>
                         <Progress pct={total ? (ok / total) * 100 : 0} />
                       </td>
-                      <td className={`${TD} ${MONO} text-right font-extrabold`}>{n(ok)}</td>
-                      <td className={`${TD} ${MONO} text-right text-subtle`}>{n(c.failed_count)}</td>
-                      <td className={`${TD} pl-[18px]`}>
+                      <td className={`${TD} ${MONO} text-right font-extrabold max-md:hidden`}>{n(ok)}</td>
+                      <td className={`${TD} ${MONO} text-right text-subtle max-md:hidden`}>{n(c.failed_count)}</td>
+                      <td className={`${TD} pl-[18px] max-md:hidden`}>
                         <Tag tone={CAMPAIGN_TONE[c.status] ?? "draft"}>
                           {c.status[0].toUpperCase() + c.status.slice(1)}
                         </Tag>

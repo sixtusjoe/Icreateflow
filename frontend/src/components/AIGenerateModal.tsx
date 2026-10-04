@@ -88,7 +88,7 @@ export function AIGenerateModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-2xl bg-background shadow-2xl ring-1 ring-border">
+      <div className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-background shadow-2xl ring-1 ring-border">
 
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-5 py-4">

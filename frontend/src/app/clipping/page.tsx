@@ -106,7 +106,7 @@ export default function ClippingPage() {
           onClick={() => setShowNew(false)}
         >
           <div
-            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl"
+            className="w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-2xl bg-card p-5 md:p-6 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="mb-5 text-lg font-semibold">New Artist</h2>

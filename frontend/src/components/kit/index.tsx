@@ -842,7 +842,7 @@ export function Minis({
 
 export function Progress({ pct }: { pct: number }) {
   return (
-    <div className="flex min-w-[132px] items-center gap-[9px]">
+    <div className="flex min-w-[132px] items-center gap-[9px] max-md:min-w-0">
       <div className="h-[5px] flex-1 overflow-hidden rounded-full bg-border">
         <i className="block h-full rounded-full bg-chart-1" style={{ width: `${Math.min(100, pct).toFixed(1)}%` }} />
       </div>

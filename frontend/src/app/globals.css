@@ -379,3 +379,15 @@ body::before {
   0%        { transform: scale(0.8); opacity: 0.8; }
   70%, 100% { transform: scale(1.2); opacity: 0; }
 }
+
+/* iPhones zoom in on any text field under 16px when it is tapped, and stay
+   zoomed after the keyboard closes — and after the next page loads, which
+   is why the dashboard opened zoomed after signing in. On touch screens
+   every field is 16px, so there is nothing to zoom to. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

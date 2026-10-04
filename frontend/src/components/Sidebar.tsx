@@ -201,10 +201,13 @@ export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl, se
         // shows through. `backdrop-blur` needs something to blur, which is
         // why the shell paints a soft wash behind it.
         "fixed z-40 flex flex-col transition-transform duration-200 md:transition-all",
-        "left-0 top-0 h-screen border-r border-border bg-background",
-        "md:left-[18px] md:top-[18px] md:h-[calc(100vh-36px)] md:rounded-[26px] md:border",
-        "md:bg-[var(--glass)] md:backdrop-blur-[26px] md:backdrop-saturate-[1.9]",
-        "md:border-[var(--glass-border)] md:shadow-[var(--glass-shadow)]",
+        // The phone drawer is the same glass as the desktop panel.
+        "left-0 top-0 h-dvh border-r",
+        "md:left-[18px] md:top-[18px] md:h-[calc(100dvh-36px)] md:rounded-[26px] md:border",
+        "bg-[var(--glass)] backdrop-blur-[26px] backdrop-saturate-[1.9]",
+        // over a whole page of text, the phone drawer needs more frost to stay readable
+        "max-md:bg-[color-mix(in_srgb,var(--background)_80%,transparent)] max-md:backdrop-blur-[30px]",
+        "border-[var(--glass-border)] shadow-[var(--glass-shadow)]",
         // Mobile: fixed 280px width, slide in/out
         "w-[280px]",
         mobileOpen ? "translate-x-0" : "-translate-x-full",
@@ -379,8 +382,10 @@ export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl, se
 
       {/* Upgrade card. It is dropped entirely when collapsed — a 60px rail
           has no room for it. */}
+      {/* On a phone shorter than ~760px it would push the links and the
+          account row out of the drawer, so it is left off there. */}
       {!collapsed && (
-        <div className="relative z-10 px-3 pb-4 pt-3">
+        <div className="relative z-10 px-3 pb-4 pt-3 max-md:[@media(max-height:760px)]:hidden">
           <div className="relative overflow-hidden rounded-[18px] p-4 text-white shadow-[0_12px_26px_-14px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.16)]
                           [background:linear-gradient(160deg,#1c1f27_0%,#0b0d12_52%,#15180f_100%)]
                           dark:border dark:border-lime/[0.34]">

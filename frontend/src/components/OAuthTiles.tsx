@@ -239,7 +239,7 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
 
       {pick ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-xl border border-border bg-background p-4 shadow-xl">
+          <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-background p-4 shadow-xl">
             <h3 className="text-sm font-semibold">Pick a Page for this variation</h3>
             <p className="mt-1 text-xs text-muted-foreground">
               You granted multiple Pages / Instagram accounts. Pick the one that belongs to <b>this</b> variation. Each variation needs its own connection — repeat for the others.
