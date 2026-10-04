@@ -1,15 +1,11 @@
 /**
  * The frame of the public pages — announcement bar, nav, footer — around
  * home, Terms and Privacy, built from the approved preview.
- *
- * Nav items are plain links to the home page's sections. The preview drew
- * a chevron beside two of them; there are no menus behind them, and a
- * chevron promises one, so they are left off.
  */
 import Link from "next/link";
 import "./marketing.css";
 import Sprite, { Icon } from "./Sprite";
-import ThemeSwitch from "./ThemeSwitch";
+import Nav from "./Nav";
 import Effects from "./Effects";
 import PublicAssistant from "./PublicAssistant";
 
@@ -26,31 +22,12 @@ export default function MarketingShell({ children }: { children: React.ReactNode
       <Effects />
 
       <div className="announce">
-        New — Outreach: reply, follow and message from your own accounts, on autopilot.{" "}
-        <Link href="/#outreach">See how it works →</Link>
+        <span className="long">New — Outreach: reply, follow and message from your own accounts, on autopilot. </span>
+        <span className="short">New — Outreach on autopilot. </span>
+        <Link href="/#outreach"><span className="long">See how it works</span><span className="short">See how</span> →</Link>
       </div>
 
-      <header className="nav">
-        <div className="wrap">
-          <Link className="logo" href="/" aria-label="Icreateflow home">
-            <span className="tile"><Icon id="mark" size={24} /></span><b>Icreateflow</b>
-          </Link>
-          <ul>
-            <li><Link href="/#platform">Platform</Link></li>
-            <li><Link href="/#who">Who it&apos;s for</Link></li>
-            <li><Link href="/#how">How it works</Link></li>
-            <li><Link href="/#pricing">Pricing</Link></li>
-            <li><Link href="/#faq">FAQ</Link></li>
-          </ul>
-          <div className="right">
-            <ThemeSwitch />
-            <Link className="btn btn-ghost" href="/login">Log in</Link>
-            <Link className="btn btn-ink" href="/register">
-              <span className="long">Launch a campaign</span><span className="short">Start</span>
-            </Link>
-          </div>
-        </div>
-      </header>
+      <Nav />
 
       {children}
 
