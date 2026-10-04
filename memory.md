@@ -24,7 +24,7 @@ Multi-account social-media auto-poster. Two completely separate pipelines:
 **Do NOT conflate the three pipelines** — they share auth and the artist/variation model but otherwise nothing.
 
 Stack: FastAPI 0.135 + Postgres 16 + asyncpg backend, Next.js 16 (Turbopack) frontend,
-gunicorn **`-w 1`** + uvicorn worker, Apache reverse proxy, all on one VPS at `icreateflow.com` (`95.111.228.80`).
+gunicorn **`-w 1`** + uvicorn worker, Apache reverse proxy, all on one VPS at `icreateflow.com` (`147.93.182.253`).
 
 ---
 
@@ -657,7 +657,7 @@ That's it. ship.sh pushes to GitHub, waits for propagation, updates the server's
 ### SSH to server
 
 ```bash
-ssh root@95.111.228.80
+ssh root@147.93.182.253
 ```
 
 ### View logs
@@ -699,7 +699,7 @@ Admin UI: `POST /api/admin/clip-posts/audit-deleted`
 
 CLI:
 ```bash
-ssh root@95.111.228.80 'sudo -u icreateflow bash -c "
+ssh root@147.93.182.253 'sudo -u icreateflow bash -c "
   set -a; source /srv/icreateflow/backend/.env; set +a
   cd /srv/icreateflow/backend
   /srv/icreateflow/venv/bin/python -c \"

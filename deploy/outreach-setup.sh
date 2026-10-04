@@ -5,8 +5,8 @@
 # Run ON THE SERVER, as root, AFTER a normal `bash deploy/ship.sh` has put the
 # outreach code on the box:
 #
-#     ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-setup.sh'
-#     ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-setup.sh 3'   # 3 workers
+#     ssh root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-setup.sh'
+#     ssh root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-setup.sh 3'   # 3 workers
 #
 # What it does:
 #   1. Installs Playwright into the existing venv.

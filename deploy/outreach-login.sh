@@ -2,8 +2,8 @@
 #
 # Sign a sending account into its platform, from the server.
 #
-#     ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-login.sh'      # list accounts
-#     ssh -t root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-login.sh 3' # sign in account 3
+#     ssh root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-login.sh'      # list accounts
+#     ssh -t root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-login.sh 3' # sign in account 3
 #
 # Opens a real browser on a virtual display, exposes it over VNC bound to
 # localhost, and waits for you to sign in. Once it sees you're logged in it
@@ -17,7 +17,7 @@
 #
 # To reach the browser, open a second terminal ON YOUR MAC and run:
 #
-#     ssh -N -L 5900:localhost:5900 root@95.111.228.80
+#     ssh -N -L 5900:localhost:5900 root@147.93.182.253
 #     open vnc://localhost:5900
 #
 # (macOS Screen Sharing is built in — no software to install.)

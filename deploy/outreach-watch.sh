@@ -2,7 +2,7 @@
 #
 # Watch one outreach send happen, live.
 #
-#     ssh -t root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-watch.sh'
+#     ssh -t root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-watch.sh'
 #
 # Runs exactly one queued job with the browser visible on a virtual display,
 # served over VNC, so you can watch it load the profile, click Message, type

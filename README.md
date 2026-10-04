@@ -7,7 +7,7 @@ A multi-user SaaS platform for content creators. The platform has **two distinct
 - **Audio-to-Video** — Karaoke-style music video creator. Upload a music track, Whisper transcribes it, split into 1/3/5 clips, edit lyrics in the Overlay Studio (4 templates, karaoke/scroll modes), export as 9:16 MP4 with synced lyrics, assign to a variation for posting.
 - **Outreach** — Multi-account DM campaigns. Import a list of TikTok profiles, write a `{{variable}}` message template, and let a Postgres-backed job queue hand targets to up to 20 sending accounts, each driven in its own isolated browser session. Live progress, retries, per-account auto-pause, audit log.
 
-Production: **icreateflow.com** (`95.111.228.80`) — Postgres + FastAPI + Next.js 16 on a single VPS, fronted by Apache.
+Production: **icreateflow.com** (`147.93.182.253`) — Postgres + FastAPI + Next.js 16 on a single VPS, fronted by Apache.
 
 For deep operational internals (background loops, data model, lessons, runbook), see [`memory.md`](memory.md).
 
@@ -187,7 +187,7 @@ Frontend: `frontend/src/app/outreach/`. Admin controls: `/admin → Outreach`.
 | Media | ffmpeg (video), Pillow (overlays), yt-dlp (TikTok import fallback) |
 | Email | Python smtplib (SMTP, configured in admin `site_config`) |
 | Server | gunicorn + uvicorn worker (`-w 1`), Apache reverse proxy, systemd |
-| OS | AlmaLinux 9 (production) — Linux/macOS for development |
+| OS | Ubuntu 22.04 + Virtualmin (production, since Oct 2026) — Linux/macOS for development |
 
 ---
 
@@ -315,12 +315,12 @@ This script:
 
 ```bash
 bash deploy/sync.sh                          # rsync code to server
-ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/server-setup.sh'
+ssh root@147.93.182.253 'bash /srv/icreateflow/src/deploy/server-setup.sh'
 ```
 
 Then enable SSL:
 ```bash
-ssh root@95.111.228.80 'certbot --apache -d icreateflow.com -d www.icreateflow.com \
+ssh root@147.93.182.253 'certbot --apache -d icreateflow.com -d www.icreateflow.com \
     --non-interactive --agree-tos --email admin@icreateflow.com --redirect'
 ```
 
@@ -329,7 +329,7 @@ ssh root@95.111.228.80 'certbot --apache -d icreateflow.com -d www.icreateflow.c
 After the first `ship.sh` that carries the outreach code:
 
 ```bash
-ssh root@95.111.228.80 'bash /srv/icreateflow/src/deploy/outreach-setup.sh 2'
+ssh root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-setup.sh 2'
 ```
 
 That generates `ICREATE_OUTREACH_SECRET` into the backend `.env` if it isn't there yet (so session encryption is independent of your JWT secret), installs Playwright, downloads Chromium and its system libraries into `/srv/icreateflow/pw-browsers` (app-owned, so the `icreateflow` service user can read it), installs the `icreateflow-outreach-worker@` template unit, enables the requested number of workers, and launches a real headless Chromium as the service user to prove it works. Re-runnable; pass a different number to scale.
@@ -341,7 +341,7 @@ Workers claim jobs and accounts in Postgres, so any number of instances is safe.
 ### Logs
 
 ```bash
-ssh root@95.111.228.80
+ssh root@147.93.182.253
 journalctl -u icreateflow-backend -f
 journalctl -u icreateflow-frontend -f
 journalctl -u 'icreateflow-outreach-worker@*' -f
