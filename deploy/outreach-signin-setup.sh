@@ -20,6 +20,7 @@
 #      x11vnc runs without a password, reachable by anything on the box.
 #   5. Apache carrying the websocket upgrade on /api/. Without it the stream
 #      answers 404 and the page shows nothing.
+#   6. A writable settings folder for the visible browser (see below).
 #
 # Backs up what it edits to /root/config-backups/. Safe to re-run.
 #
@@ -58,6 +59,19 @@ fi
 if ! grep -q '^PLAYWRIGHT_BROWSERS_PATH=' "$ENV_FILE"; then
     echo "PLAYWRIGHT_BROWSERS_PATH=$APP_DIR/pw-browsers" >> "$ENV_FILE"
     echo "==> Pointed the backend at the installed Chromium"
+fi
+
+# A visible Chromium writes its settings and crash database under $HOME,
+# and the backend unit makes home read-only (ProtectHome). It crashes at
+# launch with "chrome_crashpad_handler: --database is required" (SIGTRAP).
+# The hidden browser the workers use never touches it, which is why sends
+# worked while sign-in did not.
+CHROME_HOME=$APP_DIR/.chrome-home
+mkdir -p "$CHROME_HOME/config" "$CHROME_HOME/cache"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$CHROME_HOME"
+if ! grep -q '^XDG_CONFIG_HOME=' "$ENV_FILE"; then
+    printf 'XDG_CONFIG_HOME=%s/config\nXDG_CACHE_HOME=%s/cache\n' "$CHROME_HOME" "$CHROME_HOME" >> "$ENV_FILE"
+    echo "==> Gave the browser a writable settings folder"
 fi
 
 # --- 4. viewer password ----------------------------------------------------

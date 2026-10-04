@@ -132,11 +132,15 @@ export function DialogBody({ children, className = "" }: { children: React.React
  */
 export function DialogFoot({ note, children }: { note?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="relative mt-auto flex items-center gap-3 px-[22px] pb-5 pt-4">
+    // Wraps rather than overflows: three buttons do not fit a phone's width
+    // in one row, and the last one ran off the dialog's edge.
+    <div className="relative mt-auto flex flex-wrap items-center justify-end gap-3 px-[22px] pb-5 pt-4">
       {note && (
         <span className="mr-auto min-w-0 text-[11.5px] leading-[1.45] text-subtle">{note}</span>
       )}
-      <span className={`flex flex-none items-center gap-[9px] ${note ? "" : "ml-auto"}`}>{children}</span>
+      <span className={`flex max-w-full flex-wrap items-center justify-end gap-[9px] ${note ? "" : "ml-auto"}`}>
+        {children}
+      </span>
     </div>
   );
 }
