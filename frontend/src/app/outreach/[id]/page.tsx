@@ -890,9 +890,9 @@ export default function OutreachCampaignPage() {
                         <tr>
                           <th className={TH}>Target</th>
                           <th className={`${TH} w-[118px]`}>State</th>
-                          <th className={`${TH} w-[150px]`}>Account</th>
-                          <th className={`${TH} w-[82px] text-right`}>Tries</th>
-                          <th className={`${TH} w-[132px] pl-[18px]`}>Last activity</th>
+                          <th className={`${TH} w-[150px] max-md:hidden`}>Account</th>
+                          <th className={`${TH} w-[82px] text-right max-md:hidden`}>Tries</th>
+                          <th className={`${TH} w-[132px] pl-[18px] max-md:hidden`}>Last activity</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -922,11 +922,11 @@ export default function OutreachCampaignPage() {
                                 {t.status[0].toUpperCase() + t.status.slice(1)}
                               </Tag>
                             </td>
-                            <td className={`${TD} text-xs text-muted-foreground`}>
+                            <td className={`${TD} text-xs text-muted-foreground max-md:hidden`}>
                               {t.assigned_account_id ? (accountsById.get(t.assigned_account_id)?.name ?? "—") : "—"}
                             </td>
-                            <td className={`${TD} ${MONO} text-right`}>{t.attempts}</td>
-                            <td className={`${TD} pl-[18px] text-xs text-subtle`}>
+                            <td className={`${TD} ${MONO} text-right max-md:hidden`}>{t.attempts}</td>
+                            <td className={`${TD} pl-[18px] text-xs text-subtle max-md:hidden`}>
                               {when(t.sent_at || t.last_attempt_at)}
                             </td>
                           </tr>

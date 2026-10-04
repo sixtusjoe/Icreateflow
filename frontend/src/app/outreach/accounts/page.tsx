@@ -428,12 +428,12 @@ export default function OutreachAccountsPage() {
               <thead>
                 <tr>
                   <th className={TH}>Account</th>
-                  <th className={`${TH} w-[106px]`}>Platform</th>
-                  <th className={`${TH} w-[104px]`}>State</th>
-                  <th className={`${TH} w-[92px] text-right`}>Sent</th>
-                  <th className={`${TH} w-[124px] text-right`}>Failed tries</th>
-                  <th className={`${TH} w-[126px] pl-[18px]`}>Last active</th>
-                  <th className={`${TH} w-[74px]`}>Sending</th>
+                  <th className={`${TH} w-[106px] max-md:hidden`}>Platform</th>
+                  <th className={`${TH} w-[104px] max-md:w-[92px]`}>State</th>
+                  <th className={`${TH} w-[92px] text-right max-md:hidden`}>Sent</th>
+                  <th className={`${TH} w-[124px] text-right max-md:hidden`}>Failed tries</th>
+                  <th className={`${TH} w-[126px] pl-[18px] max-md:hidden`}>Last active</th>
+                  <th className={`${TH} w-[74px] max-md:w-[58px]`}>Sending</th>
                   <th className={`${TH} w-[44px]`} />
                 </tr>
               </thead>
@@ -455,10 +455,14 @@ export default function OutreachAccountsPage() {
                                   ? a.session_reference || "session stored"
                                   : "no session"}
                             </span>
+                            {/* Phones drop the Sent and Failed columns, so the counts ride under the name. */}
+                            <span className={`truncate text-[11px] leading-normal md:hidden ${hot ? "font-semibold text-bad" : "text-subtle"}`}>
+                              {n(a.messages_processed)} sent · {n(a.error_count)} failed
+                            </span>
                           </span>
                         </div>
                       </td>
-                      <td className={`${TD} text-xs font-semibold text-muted-foreground`}>
+                      <td className={`${TD} text-xs font-semibold text-muted-foreground max-md:hidden`}>
                         {PLATFORM_LABEL[a.platform] ?? a.platform}
                       </td>
                       <td className={TD}>
@@ -466,8 +470,8 @@ export default function OutreachAccountsPage() {
                           {a.enabled ? a.status[0].toUpperCase() + a.status.slice(1) : "Off"}
                         </Tag>
                       </td>
-                      <td className={`${TD} ${MONO} text-right`}>{n(a.messages_processed)}</td>
-                      <td className={`${TD} text-right`}>
+                      <td className={`${TD} ${MONO} text-right max-md:hidden`}>{n(a.messages_processed)}</td>
+                      <td className={`${TD} text-right max-md:hidden`}>
                         <span
                           className={`inline-flex flex-col items-end ${MONO} ${
                             hot ? "font-bold text-bad" : "text-subtle"
@@ -481,7 +485,7 @@ export default function OutreachAccountsPage() {
                           )}
                         </span>
                       </td>
-                      <td className={`${TD} pl-[18px] text-xs text-subtle`}>{relativeTime(a.last_activity_at)}</td>
+                      <td className={`${TD} pl-[18px] text-xs text-subtle max-md:hidden`}>{relativeTime(a.last_activity_at)}</td>
                       <td className={TD}>
                         <button
                           type="button"

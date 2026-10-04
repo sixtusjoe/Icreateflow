@@ -473,7 +473,7 @@ export default function AdminUserPage() {
                       <td className={`${TD} w-[132px] whitespace-nowrap`}>
                         <span className={MONO}>{s(a, "created_at").slice(0, 16).replace("T", " ")}</span>
                       </td>
-                      <td className={`${TD} w-[150px] truncate text-[11.5px] text-muted-foreground`}>
+                      <td className={`${TD} w-[150px] truncate text-[11.5px] text-muted-foreground max-md:hidden`}>
                         {s(a, "action")}
                       </td>
                       {/* A browser error arrives here as a wrapped call log
@@ -482,6 +482,7 @@ export default function AdminUserPage() {
                           the error log already keeps. */}
                       <td className={`${TD} text-[12px] text-muted-foreground`}>
                         <span className="line-clamp-2 break-words">
+                          <b className="font-semibold md:hidden">{s(a, "action")} · </b>
                           {s(a, "detail") || `${s(a, "entity_type")} ${s(a, "entity_id")}`}
                         </span>
                       </td>
