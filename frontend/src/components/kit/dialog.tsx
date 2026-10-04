@@ -125,10 +125,10 @@ export function DialogBody({ children, className = "" }: { children: React.React
  * The footer. `note` sits hard left and pushes the buttons right, which
  * is where a caveat about what the primary action will do belongs.
  *
- * The buttons never give up width: they are `flex-none` and the note is
- * the only thing allowed to shrink or wrap. Without that, a long note
- * squeezed the primary button until its label broke over two lines and
- * the whole footer grew a row.
+ * A button never shrinks, so a long note cannot squeeze the primary
+ * button until its label breaks over two lines. When the buttons do not
+ * fit side by side (three of them on a phone), they wrap to a new row
+ * instead of running off the dialog's edge.
  */
 export function DialogFoot({ note, children }: { note?: React.ReactNode; children: React.ReactNode }) {
   return (

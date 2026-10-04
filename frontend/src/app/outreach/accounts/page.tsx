@@ -67,7 +67,7 @@ import {
   Tone,
   TwoCol,
 } from "@/components/kit";
-import { ConfirmDialog } from "@/components/kit/dialog";
+import { ConfirmDialog, Dialog, DialogBody, DialogFoot, DialogHead } from "@/components/kit/dialog";
 import {
   AddAccountDialog,
   SwitchToPhoneDialog,
@@ -245,6 +245,7 @@ export default function OutreachAccountsPage() {
 
   return (
     <div className="flex flex-col gap-4" data-metrics>
+      <DesktopHint />
       <BackLink href="/outreach">Outreach</BackLink>
 
       <PageHead>
@@ -577,4 +578,37 @@ function phoneLine(a: OutreachAccount): string {
   const mins = Math.max(0, Math.round((Date.now() - new Date(a.companion_seen_at).getTime()) / 60000));
   const seen = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`;
   return `Phone · ${who} · seen ${seen}`;
+}
+
+/** Signing an account in streams a whole browser into a dialog, which is
+ *  cramped on a phone. Said once per visit: closed, it stays closed until
+ *  the browser tab is. */
+function DesktopHint() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let seen = false;
+    try {
+      seen = sessionStorage.getItem("outreach_desktop_hint") === "1";
+    } catch {}
+    // Browser-only facts, read after hydration like the sidebar's.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!seen && window.matchMedia("(max-width: 767px)").matches) setOpen(true);
+  }, []);
+  const close = () => {
+    setOpen(false);
+    try {
+      sessionStorage.setItem("outreach_desktop_hint", "1");
+    } catch {}
+  };
+  return (
+    <Dialog open={open} onClose={close} label="Best on desktop" size="sm">
+      <DialogHead title="Best on a computer" onClose={close} />
+      <DialogBody>
+        <p className="text-sm text-muted-foreground">For best experience, open in a desktop browser.</p>
+      </DialogBody>
+      <DialogFoot>
+        <PrimaryButton onClick={close}>Got it</PrimaryButton>
+      </DialogFoot>
+    </Dialog>
+  );
 }
