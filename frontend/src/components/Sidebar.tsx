@@ -201,6 +201,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl, se
         // shows through. `backdrop-blur` needs something to blur, which is
         // why the shell paints a soft wash behind it.
         "fixed z-40 flex flex-col transition-transform duration-200 md:transition-all",
+        // On a phone the whole drawer scrolls as one column, so on a short
+        // screen nothing is hidden or squeezed: links, account and the card.
+        "max-md:overflow-y-auto max-md:overscroll-contain max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden",
         // The phone drawer is the same glass as the desktop panel.
         "left-0 top-0 h-dvh border-r",
         "md:left-[18px] md:top-[18px] md:h-[calc(100dvh-36px)] md:rounded-[26px] md:border",
@@ -270,7 +273,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl, se
                      dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.10),rgba(255,255,255,0))] md:block" />
 
       {/* Navigation */}
-      <nav className="relative z-10 flex-1 overflow-y-auto px-3 py-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <nav className="relative z-10 flex-1 overflow-y-auto px-3 py-3 max-md:flex-none max-md:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <NavSection title="" links={mainLinks} pathname={pathname} collapsed={collapsed} done={done} />
         <NavSection title="Library" links={libraryLinks} pathname={pathname} collapsed={collapsed} done={done} />
         <NavSection title="Workspace" links={settingLinks} pathname={pathname} collapsed={collapsed} done={done} />
@@ -382,10 +385,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose, logoUrl, se
 
       {/* Upgrade card. It is dropped entirely when collapsed — a 60px rail
           has no room for it. */}
-      {/* On a phone shorter than ~760px it would push the links and the
-          account row out of the drawer, so it is left off there. */}
       {!collapsed && (
-        <div className="relative z-10 px-3 pb-4 pt-3 max-md:[@media(max-height:760px)]:hidden">
+        <div className="relative z-10 px-3 pb-4 pt-3">
           <div className="relative overflow-hidden rounded-[18px] p-4 text-white shadow-[0_12px_26px_-14px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.16)]
                           [background:linear-gradient(160deg,#1c1f27_0%,#0b0d12_52%,#15180f_100%)]
                           dark:border dark:border-lime/[0.34]">
