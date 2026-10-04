@@ -190,6 +190,15 @@ systemctl restart icreateflow-backend   # clears process-level flag immediately
 
 ## The sign-in browser stream (websocket)
 
+**Set it all up with one script** (display tools, the switch in `.env`, the
+backend's Chromium path, the viewer password file, Apache's websocket):
+
+    ssh root@147.93.182.253 'bash /srv/icreateflow/src/deploy/outreach-signin-setup.sh'
+
+It ends by checking the stream answers 403. The notes below explain why.
+On Apache 2.4.47+ the script adds `upgrade=websocket` to the existing
+`ProxyPass /api/` line instead of the rewrite described here.
+
 Connecting an account shows the server's sign-in browser in the page, over a
 websocket at `/api/outreach/accounts/<id>/session/stream`. Apache has to
 carry that, and the obvious way does not work:
@@ -215,8 +224,9 @@ To check it: a handshake with no ticket should answer **403**, not 404.
 404 means the rewrite is not firing and the request is being proxied as
 HTTP; 403 means it reached the websocket route and was properly refused.
 
-The display and VNC it renders are `icreateflow-xvfb.service` and
-`icreateflow-x11vnc.service`. VNC binds `127.0.0.1` only — a ticket from the
-API is the sole route in, and it is single-use with a 60-second life.
-`ICREATE_OUTREACH_LOCAL_BROWSER=1` and `DISPLAY=:99` must be set for the
-backend, or the feature reports itself switched off.
+Each sign-in gets its own Xvfb display and loopback-only x11vnc, started
+and stopped by the backend (`services/outreach/display_pool.py`); there are
+no display services to run. A ticket from the API is the sole route in, and
+it is single-use with a 60-second life. The backend needs the local-browser
+flag and `PLAYWRIGHT_BROWSERS_PATH` in its `.env`, or the feature reports
+itself switched off or cannot find Chromium.

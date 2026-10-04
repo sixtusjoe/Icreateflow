@@ -287,6 +287,11 @@ CAMPAIGN_ATTENTION_RESULTS = frozenset({
 #: use either — the same text is refused again when it runs out. So the
 #: campaign stays paused, with the platform's reason on it, until its
 #: message is changed; `routers/outreach.py:_preflight` holds it to that.
+#:
+#: Not every refusal is the words, though (2026-10-04: RealMic had a plain
+#: test message refused too). An account refused on two different messages
+#: is being refused itself; the runner says so and does not hold the
+#: campaign to new wording (`runner._pause_campaign_for_refusal`).
 CAMPAIGN_STOP_RESULTS = frozenset({
     RESULT_MESSAGE_REFUSED,
 })

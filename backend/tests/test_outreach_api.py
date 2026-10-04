@@ -885,6 +885,62 @@ async def test_a_refused_message_pauses_the_campaign_until_the_wording_changes(
     assert after["paused_reason"] is None and after["message_refused"] is False
 
 
+async def test_an_account_refused_on_two_different_messages_is_the_account(
+        client, database, account_factory, settings):
+    """RealMic had campaign 14 refused, the wording was changed, and that
+    was refused too; a plain test message to the operator was then refused
+    the same way. The app kept saying "change the wording". Two different
+    messages refused from one account means TikTok is refusing the account."""
+    from services.outreach import runner
+    from services.outreach.browser.mock import MockMessenger
+    from services.outreach.constants import RESULT_MESSAGE_REFUSED
+
+    account = await account_factory()
+    cid = (await client.post("/api/outreach/campaigns", json={
+        "name": "C", "message_template": "First wording",
+    })).json()["id"]
+    await client.post(f"/api/outreach/campaigns/{cid}/import-text",
+                      json={"content": "username\nalice\nbob\ncarol\n"})
+    assert (await client.post(f"/api/outreach/campaigns/{cid}/start")).status_code == 200
+
+    refusing = MockMessenger(default=(RESULT_MESSAGE_REFUSED, "refused"))
+    worker = runner.OutreachWorker(worker_id="t", driver=refusing, once=True)
+    assert await worker.process_one(settings) is True
+
+    # One refusal can't tell the words from the account, and says so.
+    first = (await client.get(f"/api/outreach/campaigns/{cid}")).json()["campaign"]
+    assert first["message_refused"] is True and first["account_refused"] is False
+    assert "account is fine" not in first["paused_reason"]
+    assert "wording or" in first["paused_reason"]
+
+    await client.put(f"/api/outreach/campaigns/{cid}",
+                     json={"message_template": "Second wording"})
+    assert (await client.post(f"/api/outreach/campaigns/{cid}/resume")).status_code == 200
+    assert await worker.process_one(settings) is True
+
+    # Refused again on different words: it's the account.
+    second = (await client.get(f"/api/outreach/campaigns/{cid}")).json()["campaign"]
+    assert second["status"] == "paused"
+    assert second["account_refused"] is True and second["message_refused"] is False
+    assert "refusing that account" in second["paused_reason"]
+    progress = (await client.get(f"/api/outreach/campaigns/{cid}/progress")).json()
+    assert progress["account_refused"] is True
+    # Still not paused: nothing pauses an account.
+    row = dict(await db.get_sending_account(database, account["id"]))
+    assert row["status"] != "paused"
+
+    # Nothing holds the campaign to new words, and the resume clears the flag.
+    resumed = await client.post(f"/api/outreach/campaigns/{cid}/resume")
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["campaign"]["account_refused"] is False
+
+    # A delivered message clears the account's record.
+    sending = runner.OutreachWorker(worker_id="t2", driver=MockMessenger(), once=True)
+    assert await sending.process_one(settings) is True
+    row = dict(await db.get_sending_account(database, account["id"]))
+    assert row["refused_template"] is None
+
+
 # --- unfollow campaigns ----------------------------------------------------
 
 

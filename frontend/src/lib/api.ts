@@ -761,6 +761,9 @@ export type OutreachCampaign = {
   /** The platform refused this campaign's current message. It stays paused
    *  until the message is changed; start and resume refuse until then. */
   message_refused?: boolean;
+  /** The platform refused a different message from the same sending
+   *  account too, so it is refusing the account, not the words. */
+  account_refused?: boolean;
   /** An image sent with every message. The path itself never leaves the API. */
   has_attachment?: boolean;
   attachment_name?: string | null;

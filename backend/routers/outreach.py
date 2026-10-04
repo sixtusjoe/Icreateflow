@@ -354,6 +354,8 @@ def _campaign_public(row: dict) -> dict:
     # message" prompt waits for.
     refused = out.pop("refused_template", None)
     out["message_refused"] = bool(refused) and refused == (out.get("message_template") or "")
+    # The platform is refusing the sending account itself, whatever it says.
+    out["account_refused"] = bool(out.pop("refused_account_id", None))
     # Stored as JSON, handed over as a list — the client should not have to
     # know which of those it is getting, and a string arriving where a list
     # is expected crashes the page that renders it.
@@ -773,6 +775,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 "message_refused": bool(campaign.get("refused_template"))
                 and campaign.get("refused_template")
                 == (campaign.get("message_template") or ""),
+                "account_refused": bool(campaign.get("refused_account_id")),
                 "target_counts": counts,
                 "success_outcomes": await _success_outcomes(database, campaign_id),
                 "recent_jobs": [_tag_utc(dict(j)) for j in jobs],
@@ -1194,7 +1197,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             # clearing that nobody was waiting on.
             await db.update_outreach_campaign(
                 database, campaign_id, paused_until=None, paused_reason=None,
-                refused_template=None)
+                refused_template=None, refused_account_id=None)
             await db.log_outreach_audit(
                 database, AUDIT_CAMPAIGN_STARTED, "campaign", campaign_id,
                 user_id=user["id"],
@@ -1242,7 +1245,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             # after somebody had already dealt with it.
             await db.update_outreach_campaign(
                 database, campaign_id, paused_until=None, paused_reason=None,
-                refused_template=None)
+                refused_template=None, refused_account_id=None)
             await db.log_outreach_audit(
                 database, AUDIT_CAMPAIGN_RESUMED, "campaign", campaign_id,
                 user_id=user["id"],

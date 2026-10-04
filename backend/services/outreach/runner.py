@@ -624,6 +624,14 @@ class OutreachWorker:
         if result.success:
             await job_queue.complete_job(database, job, result.status)
             await account_mgr.record_success(database, account_id)
+            if (campaign.get("activity") or "message") == "message":
+                # A message got through, so whatever was refused before was
+                # the words, and the account starts clean.
+                await database.session.execute(
+                    text("UPDATE outreach_sending_accounts SET refused_template = NULL "
+                         " WHERE id = :id AND refused_template IS NOT NULL"),
+                    {"id": account_id})
+                await database.session.commit()
             return
 
         if result.status == RESULT_FOLLOW_DISCARDED and not await self._drop_streak(
@@ -682,10 +690,12 @@ class OutreachWorker:
             return
 
         if result.status in CAMPAIGN_STOP_RESULTS:
-            # The words were refused, not the account. This target is done
-            # with — the same text to the same person is refused again — and
-            # the campaign stops until someone changes what it says. The
-            # account is not charged: it goes on serving other campaigns.
+            # The platform refused the message. That is either the words or
+            # the account, and one refusal cannot tell which:
+            # `_pause_campaign_for_refusal` decides from the account's last
+            # refused message. Either way this target is done with, the
+            # campaign stops, and the account is not paused (constants.py,
+            # "Nothing pauses an account").
             decision = await job_queue.fail_job(
                 database, job, campaign, result.status, result.error, settings
             )
@@ -702,7 +712,7 @@ class OutreachWorker:
                 level="warning",
             )
             await self._pause_campaign_for_refusal(
-                database, campaign, target, result)
+                database, campaign, account, target, result)
             return
 
         decision = await job_queue.fail_job(
@@ -864,46 +874,81 @@ class OutreachWorker:
         print(f"[outreach] campaign {campaign_id} paused — {reason}", flush=True)
 
     async def _pause_campaign_for_refusal(
-        self, database, campaign: dict, target: dict, result: Any,
+        self, database, campaign: dict, account: dict, target: dict, result: Any,
     ) -> None:
         """Stop the campaign because the platform refused its message.
 
-        No deadline: a clock would resume it onto the same words, which are
-        refused again. The refused text is recorded so the campaign cannot
-        be started on it again (see `_preflight`), and the reason is written
-        for the campaign page — the platform's own sentence where the driver
-        read one, not our paraphrase.
+        A refusal is the words or the account, and one refusal cannot say
+        which: TikTok shows the same "may be in violation of our Community
+        Guidelines" notice for both. The account remembers the message it
+        was last refused on. Refused again on a *different* message, it is
+        the account: changing the wording will not help, so the campaign is
+        not held to new words and the reason says so (2026-10-04: a plain
+        test message from RealMic was refused exactly like the campaign's).
+        Otherwise the refused text is recorded so the campaign cannot be
+        started on it again (see `_preflight`).
 
-        A limit pause already on the campaign is overridden: a limit clears
-        itself, a refusal does not, and resuming on the clock would send the
-        refused text again. A refusal already recorded is kept — the first
-        one is the one the operator should read.
+        No deadline: a clock would resume it onto the same refusal. A limit
+        pause already on the campaign is overridden: a limit clears itself,
+        a refusal does not. A refusal already recorded is kept, because the
+        first one is the one the operator should read.
         """
         campaign_id = int(campaign["id"])
+        account_id = int(account["id"])
         who = target.get("username") or "a target"
+        sender = account.get("name") or f"account #{account_id}"
+        current = campaign.get("message_template") or ""
         said = (result.detail or {}).get("platform_said")
-        reason = (
-            f"TikTok refused to deliver this campaign's message to @{who}"
+        platform = "TikTok" if (campaign.get("platform") or "tiktok") == "tiktok" \
+            else "The platform"
+
+        row = (await database.session.execute(
+            text("SELECT refused_template FROM outreach_sending_accounts WHERE id = :id"),
+            {"id": account_id},
+        )).first()
+        before = row[0] if row else None
+        account_refused = bool(before) and before != current
+
+        refused = (
+            f"{platform} refused to deliver this campaign's message to @{who}"
             + (f": \u201c{said}\u201d" if said else
                " \u2014 it said the message may break its Community Guidelines")
-            + ". Nothing reached them. The account is fine; the wording is "
-            "what was refused, so change the message before resuming."
-        )[:1000]
-        if (campaign.get("platform") or "tiktok") != "tiktok":
-            reason = reason.replace("TikTok", "The platform")
+            + ". Nothing reached them. "
+        )
+        if account_refused:
+            reason = refused + (
+                f"{platform} also refused a different message from {sender}, so it "
+                f"is refusing that account, not these words. Changing the message "
+                f"will not help; send with another account."
+            )
+        else:
+            reason = refused + (
+                f"It is either the wording or {platform} restricting {sender}. "
+                f"Change the message and resume; if the new one is refused too, "
+                f"it is the account."
+            )
+        reason = reason[:1000]
 
+        await database.session.execute(
+            text("UPDATE outreach_sending_accounts SET refused_template = :t WHERE id = :id"),
+            {"id": account_id, "t": current},
+        )
         applied = (await database.session.execute(
             text(
                 "UPDATE outreach_campaigns "
                 "   SET status = :paused, paused_until = NULL, "
                 "       paused_reason = :reason, "
-                "       refused_template = message_template, "
+                "       refused_template = CASE WHEN CAST(:acct AS BOOLEAN) THEN NULL "
+                "                               ELSE message_template END, "
+                "       refused_account_id = CASE WHEN CAST(:acct AS BOOLEAN) "
+                "                                 THEN CAST(:aid AS INTEGER) END, "
                 "       updated_at = (NOW() AT TIME ZONE 'UTC') "
                 " WHERE id = :cid "
                 "   AND (status <> :paused OR paused_until IS NOT NULL) "
                 "RETURNING id"
             ),
-            {"cid": campaign_id, "paused": CAMPAIGN_PAUSED, "reason": reason},
+            {"cid": campaign_id, "paused": CAMPAIGN_PAUSED, "reason": reason,
+             "acct": account_refused, "aid": account_id},
         )).first()
         await database.session.commit()
         if not applied:

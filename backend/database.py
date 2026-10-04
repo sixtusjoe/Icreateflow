@@ -695,6 +695,11 @@ class OutreachCampaign(Base):
     #: campaign cannot be restarted on the same words. Cleared when the
     #: campaign next starts with different ones.
     refused_template: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: Set instead of `refused_template` when the refusal was the sending
+    #: account's, not the words': that account had already been refused on
+    #: a different message. Changing the wording will not help, so nothing
+    #: holds the campaign to it. Cleared when the campaign next starts.
+    refused_account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     #: For an unfollow campaign made by "Unfollow everyone it followed": the
     #: follow campaign it undoes. One per follow campaign — clicking again
     #: adds the newly followed to it instead of making another.
@@ -759,6 +764,10 @@ class SendingAccount(Base):
     consecutive_errors: Mapped[int] = mapped_column(Integer, server_default="0")
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paused_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: The campaign message the platform last refused from this account.
+    #: A refusal on a *different* message means the platform is refusing
+    #: the account, whatever it says. Cleared by the next delivered message.
+    refused_template: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
@@ -1641,6 +1650,8 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         ("outreach_sending_accounts", "via", "TEXT NOT NULL DEFAULT 'browser'"),
         ("outreach_companion_tasks", "message", "TEXT"),
         ("outreach_campaigns", "source_campaign_id", "INTEGER"),
+        ("outreach_campaigns", "refused_account_id", "INTEGER"),
+        ("outreach_sending_accounts", "refused_template", "TEXT"),
 )
 
 

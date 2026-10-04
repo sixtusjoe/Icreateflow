@@ -175,21 +175,36 @@ const when = (s: string | null | undefined) => (s ? relativeTime(s) : "—");
  *  a tab left open overnight would otherwise show a countdown that ran out
  *  hours ago, or never.
  */
-function RefusedNotice({ reason, stillRefused }: { reason: string; stillRefused: boolean }) {
+function RefusedNotice({
+  reason,
+  stillRefused,
+  accountRefused,
+}: {
+  reason: string;
+  stillRefused: boolean;
+  accountRefused: boolean;
+}) {
+  const red = stillRefused || accountRefused;
   return (
     <div
       className={`mb-4 rounded-xl border p-4 ${
-        stillRefused ? "border-red-500/40 bg-red-500/10" : "border-border bg-muted/40"
+        red ? "border-red-500/40 bg-red-500/10" : "border-border bg-muted/40"
       }`}
     >
       <p className="text-sm font-medium">
-        {stillRefused ? "Paused — the message was refused" : "Message changed — ready to resume"}
+        {accountRefused
+          ? "Paused — the platform is refusing this sending account"
+          : stillRefused
+            ? "Paused — the message was refused"
+            : "Message changed — ready to resume"}
       </p>
       <p className="mt-1 text-sm text-muted-foreground">{reason}</p>
       <p className="mt-1 text-xs text-muted-foreground">
-        {stillRefused
-          ? "The sending account was not paused and keeps working for other campaigns. This campaign will not start again on the same words — edit the message, then resume."
-          : "The new wording has not been tried yet. Resume when you are ready."}
+        {accountRefused
+          ? "A different message from the same account was refused too, so editing the wording will not help. Give the campaign another account, then resume."
+          : stillRefused
+            ? "This could be the wording or the account. The campaign will not start again on the same words — edit the message, then resume. If the new message is refused too, the account is the problem."
+            : "The new wording has not been tried yet. Resume when you are ready."}
       </p>
     </div>
   );
@@ -357,6 +372,7 @@ export default function OutreachCampaignPage() {
                   paused_until: p.paused_until,
                   paused_reason: p.paused_reason,
                   message_refused: p.message_refused,
+                  account_refused: p.account_refused,
                 },
                 target_counts: p.target_counts,
                 success_outcomes: p.success_outcomes,
@@ -828,7 +844,11 @@ export default function OutreachCampaignPage() {
             {/* A refusal has a reason and no clock — it waits for the words
                 to change, not for time to pass. */}
             {c.status === "paused" && !c.paused_until && c.paused_reason ? (
-              <RefusedNotice reason={c.paused_reason} stillRefused={!!c.message_refused} />
+              <RefusedNotice
+                reason={c.paused_reason}
+                stillRefused={!!c.message_refused}
+                accountRefused={!!c.account_refused}
+              />
             ) : null}
 
             <Card>
