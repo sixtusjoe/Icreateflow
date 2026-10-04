@@ -387,7 +387,7 @@
   .mk .nav .right .btn{padding:0 14px}
   .mk section.s{padding:80px 0}
   .mk .nav .right .btn-ghost{display:none}
-  .mk .stack{display:grid;grid-template-columns:1fr;gap:14px;width:auto;height:auto;max-width:none}
+  .mk .stack{display:grid;grid-template-columns:1fr;gap:14px;width:auto;height:auto;max-width:none;margin-inline:0}
   .mk .stack .g{position:relative;inset:auto;width:auto;rotate:none;padding:16px 18px}
   .mk .gA, .mk .gC, .mk .gE{display:none}
   .mk .hero .wrap{padding-top:36px;padding-bottom:64px;gap:36px}
