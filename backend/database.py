@@ -985,6 +985,11 @@ class OutreachJob(Base):
     # the queue, so a killed worker never strands a target.
     worker_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lease_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # What a processing job is doing right now ("opening_profile",
+    # "typing", "sending"…), reported by the driver for the campaign page.
+    # Cleared when the job is claimed again.
+    step: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    step_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     # Retry backoff — a job is only claimable once NOW() >= run_after.
     run_after: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.current_timestamp())
@@ -1651,6 +1656,8 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         ("outreach_companion_tasks", "message", "TEXT"),
         ("outreach_campaigns", "source_campaign_id", "INTEGER"),
         ("outreach_campaigns", "refused_account_id", "INTEGER"),
+        ("outreach_jobs", "step", "TEXT"),
+        ("outreach_jobs", "step_at", "TIMESTAMP"),
         ("outreach_sending_accounts", "refused_template", "TEXT"),
 )
 

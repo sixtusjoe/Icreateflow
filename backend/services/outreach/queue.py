@@ -226,6 +226,7 @@ async def claim_job(
                    worker_id = :worker_id,
                    attempts = attempts + 1,
                    started_at = {UTC_NOW},
+                   step = NULL, step_at = NULL,
                    lease_expires_at = {UTC_NOW} + (:lease * INTERVAL '1 second'),
                    error_message = NULL,
                    updated_at = {UTC_NOW}

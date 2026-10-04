@@ -1657,6 +1657,22 @@ class PlaywrightMessenger:
 
     # --- the one method the pipeline calls -------------------------------
 
+    @staticmethod
+    async def _step(target: dict[str, Any], step: str) -> None:
+        """Tell whoever is watching which step this job is on.
+
+        The runner puts an `on_step` callback on the target so the campaign
+        page can show "Typing…" live instead of a quiet page. Purely a
+        report: a failure to record it must never cost the send.
+        """
+        report = target.get("on_step")
+        if report is None:
+            return
+        try:
+            await report(step)
+        except Exception:  # noqa: BLE001 — reporting is best effort
+            pass
+
     async def send_message(
         self, account: dict[str, Any], target: dict[str, Any], message: str
     ) -> MessageResult:
@@ -1680,6 +1696,7 @@ class PlaywrightMessenger:
             page = await self._page_for(account)
 
             # 1-2. Navigate to the target profile.
+            await self._step(target, "opening_profile")
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
             except PlaywrightTimeout:
@@ -1779,9 +1796,11 @@ class PlaywrightMessenger:
 
             # 2c. Follow first, where the platform asks for it.
             if self.FOLLOW_BEFORE_MESSAGE:
+                await self._step(target, "following_first")
                 await self._follow_first(page, target_username)
 
             # 3-4. Is the messaging interface available, and open it.
+            await self._step(target, "opening_chat")
             message_button = await self._first_visible_tiered(
                 page, self.SELECTORS["message_button"], timeout_ms=MESSAGE_BUTTON_MS
             )
@@ -1930,6 +1949,7 @@ class PlaywrightMessenger:
             # stale between being found and being clicked then costs half a
             # minute per target. Seen in production as
             # "TimeoutError: Locator.click: Timeout 30000ms".
+            await self._step(target, "typing")
             for attempt in range(TYPE_ATTEMPTS):
                 if attempt:
                     # Clear whatever landed first. Without this a retry
@@ -1976,6 +1996,7 @@ class PlaywrightMessenger:
                     )
 
             # 6. Submit.
+            await self._step(target, "sending")
             send_button = await self._first_visible(page, self.SELECTORS["send_button"], timeout_ms=4000)
             if send_button is None or not await self._click(
                 page, send_button, "send-button", target_username
@@ -1985,6 +2006,7 @@ class PlaywrightMessenger:
                 await page.keyboard.press("Enter")
 
             # 7. Verify.
+            await self._step(target, "checking")
             #
             # The test is: the composer is now EMPTY, and the message text is
             # still somewhere on the page. Together those mean the text moved
@@ -2147,12 +2169,14 @@ class PlaywrightMessenger:
             from playwright.async_api import TimeoutError as PlaywrightTimeout
 
             page = await self._page_for(account)
+            await self._step(target, "opening_profile")
             try:
                 await page.goto(url, wait_until="domcontentloaded",
                                 timeout=self._timeout)
             except PlaywrightTimeout:
                 return MessageResult.failure(
                     RESULT_NAVIGATION_TIMEOUT, f"Timed out loading {url}", url=url)
+            await self._step(target, "following")
 
             await self._dismiss_overlays(page)
             state = control = None
@@ -2303,12 +2327,14 @@ class PlaywrightMessenger:
             from playwright.async_api import TimeoutError as PlaywrightTimeout
 
             page = await self._page_for(account)
+            await self._step(target, "opening_profile")
             try:
                 await page.goto(url, wait_until="domcontentloaded",
                                 timeout=self._timeout)
             except PlaywrightTimeout:
                 return MessageResult.failure(
                     RESULT_NAVIGATION_TIMEOUT, f"Timed out loading {url}", url=url)
+            await self._step(target, "unfollowing")
             await self._dismiss_overlays(page)
 
             state = control = None
@@ -2778,6 +2804,7 @@ class PlaywrightMessenger:
             from playwright.async_api import TimeoutError as PlaywrightTimeout
 
             page = await self._page_for(account)
+            await self._step(target, "opening_video")
             try:
                 await page.goto(url, wait_until="domcontentloaded",
                                 timeout=self._timeout)
@@ -2865,6 +2892,7 @@ class PlaywrightMessenger:
 
             # Typed, not assigned: a DraftJS editor has no value, and Post
             # stays disabled until it sees real input events.
+            await self._step(target, "typing")
             typed = False
             for _ in range(TYPE_ATTEMPTS):
                 await self._type_message(page, box, text_to_post)
@@ -2878,6 +2906,7 @@ class PlaywrightMessenger:
                     screenshot=await self._save_debug_shot(
                         page, slot, "reply-not-typed"))
 
+            await self._step(target, "posting")
             submit = await self._first_visible(
                 page, self.SELECTORS["comment_post"], timeout_ms=3000)
             if submit is not None:

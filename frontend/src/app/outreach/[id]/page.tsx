@@ -136,6 +136,160 @@ type Detail = {
 
 type Activity3 = "message" | "follow" | "unfollow" | "comment";
 
+/** What a running campaign is doing this second (the progress poll's `live`). */
+type LiveNow = {
+  jobs: {
+    id: number;
+    step: string | null;
+    step_at: string | null;
+    started_at: string | null;
+    username: string;
+    account_name: string | null;
+    account_via: string | null;
+  }[];
+  next_send_at: string | null;
+  last: { status: string; result_status: string | null; completed_at: string; username: string } | null;
+};
+
+/** The steps each kind of job goes through, in order, as the driver reports them. */
+const LIVE_STEPS: Record<Activity3, { key: string; label: string }[]> = {
+  message: [
+    { key: "opening_profile", label: "Opening profile" },
+    { key: "opening_chat", label: "Clicking Message" },
+    { key: "typing", label: "Typing" },
+    { key: "sending", label: "Sending" },
+    { key: "checking", label: "Checking delivery" },
+  ],
+  follow: [
+    { key: "opening_profile", label: "Opening profile" },
+    { key: "following", label: "Following" },
+  ],
+  unfollow: [
+    { key: "opening_profile", label: "Opening profile" },
+    { key: "unfollowing", label: "Unfollowing" },
+  ],
+  comment: [
+    { key: "opening_video", label: "Opening the video" },
+    { key: "typing", label: "Typing" },
+    { key: "posting", label: "Posting" },
+  ],
+};
+
+/** The headline for a step, said about the person. */
+function stepSentence(step: string | null, who: string): string {
+  switch (step) {
+    case "opening_profile": return `Opening ${who}’s profile`;
+    case "following_first": return `Following ${who} first`;
+    case "opening_chat": return `Clicking Message on ${who}’s profile`;
+    case "typing": return `Typing the message to ${who}`;
+    case "sending": return `Sending to ${who}`;
+    case "checking": return `Checking it reached ${who}`;
+    case "following": return `Following ${who}`;
+    case "unfollowing": return `Unfollowing ${who}`;
+    case "opening_video": return "Opening the video";
+    case "posting": return "Posting the comment";
+    case "on_phone": return `Handed to the phone — it’s working on ${who}`;
+    default: return `Starting the browser for ${who}`;
+  }
+}
+
+const DONE_VERB: Record<Activity3, string> = {
+  message: "Sent to",
+  follow: "Followed",
+  unfollow: "Unfollowed",
+  comment: "Commented for",
+};
+
+function secondsSince(iso: string | null, now: number): number {
+  return iso ? Math.max(0, Math.floor((now - new Date(iso).getTime()) / 1000)) : 0;
+}
+
+function LiveCard({ live, activity }: { live: LiveNow | null; activity: Activity3 }) {
+  // One clock for the elapsed and countdown figures between the 3s polls.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const steps = LIVE_STEPS[activity];
+  const jobs = live?.jobs ?? [];
+  const wait = live?.next_send_at ? Math.ceil((new Date(live.next_send_at).getTime() - now) / 1000) : 0;
+  const last = live?.last;
+
+  return (
+    <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.06] p-4" aria-live="polite">
+      <div className="flex items-center gap-2">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-60 motion-safe:animate-ping" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+        </span>
+        <p className="text-sm font-semibold">Running now</p>
+      </div>
+
+      {jobs.length === 0 ? (
+        <p className="mt-2 text-sm text-muted-foreground">
+          {wait > 0
+            ? `Resting between sends — next one in ${wait}s.`
+            : "Picking the next person…"}
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-col gap-3">
+          {jobs.map((j) => {
+            const who = `@${j.username}`;
+            const at = steps.findIndex((st) => st.key === (j.step === "following_first" ? "opening_profile" : j.step));
+            return (
+              <div key={j.id} className="min-w-0">
+                <p className="text-sm font-medium">
+                  {stepSentence(j.step, who)}
+                  <span className="font-normal text-muted-foreground">
+                    {" "}· {secondsSince(j.step_at ?? j.started_at, now)}s
+                  </span>
+                </p>
+                {j.account_name && (
+                  <p className="text-xs text-muted-foreground">from {j.account_name}</p>
+                )}
+                {j.step !== "on_phone" && (
+                  <ol className="mt-2 flex flex-wrap gap-1.5">
+                    {steps.map((st, i) => {
+                      const state = i < at ? "done" : i === at ? "now" : "todo";
+                      return (
+                        <li
+                          key={st.key}
+                          className={`rounded-full border px-2.5 py-0.5 text-[11.5px] ${
+                            state === "done"
+                              ? "border-emerald-500/40 bg-emerald-500/15 text-foreground"
+                              : state === "now"
+                                ? "border-emerald-500 bg-emerald-500 font-semibold text-white motion-safe:animate-pulse"
+                                : "border-border text-muted-foreground"
+                          }`}
+                        >
+                          {state === "done" ? "✓ " : ""}
+                          {st.label}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {last && (
+        <p className="mt-3 border-t border-emerald-500/20 pt-2 text-xs text-muted-foreground">
+          Last:{" "}
+          {last.status === "succeeded"
+            ? `${DONE_VERB[activity]} @${last.username}`
+            : `didn’t reach @${last.username}${last.result_status ? ` (${last.result_status.replace(/_/g, " ")})` : ""}`}
+          {" "}· {relativeTime(last.completed_at)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const TARGET_TABS = ["all", "queued", "processing", "sent", "failed", "skipped", "paused"] as const;
 /**
  * Rows per page.
@@ -264,6 +418,7 @@ export default function OutreachCampaignPage() {
   const id = campaignIdFromParam(params?.id);
 
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [live, setLive] = useState<LiveNow | null>(null);
   const [targets, setTargets] = useState<OutreachTarget[]>([]);
   const [targetTab, setTargetTab] = useState<string>("all");
   const [targetPage, setTargetPage] = useState(0);
@@ -380,6 +535,7 @@ export default function OutreachCampaignPage() {
               }
             : prev,
         );
+        setLive(p.live ?? null);
         if (p.status !== "running") await loadDetail();
         await loadTargets();
       } catch {
@@ -838,6 +994,7 @@ export default function OutreachCampaignPage() {
               </CardBody>
             </Card>
 
+            {c.status === "running" ? <LiveCard live={live} activity={activity} /> : null}
             {c.status === "paused" && c.paused_until ? (
               <LimitCountdown until={c.paused_until} reason={c.paused_reason} />
             ) : null}

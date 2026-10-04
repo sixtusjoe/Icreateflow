@@ -754,6 +754,65 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         )).all()
         return {str(r): int(n) for r, n in rows}
 
+    async def _live_now(database, campaign: dict) -> dict[str, Any]:
+        """What a running campaign is doing this second, for the page.
+
+        `jobs`: every job being worked on, with the person, the account and
+        the step its driver last reported. `next_send_at`: with nothing in
+        hand, when the soonest account comes off its rest between sends —
+        the gap that otherwise looks like the campaign has stalled.
+        """
+        rows = (await database.session.execute(
+            text(
+                "SELECT j.id, j.step, j.step_at, j.started_at, t.username, "
+                "       a.name AS account_name, a.via AS account_via "
+                "  FROM outreach_jobs j "
+                "  JOIN outreach_targets t ON t.id = j.target_id "
+                "  LEFT JOIN outreach_sending_accounts a ON a.id = j.sending_account_id "
+                " WHERE j.campaign_id = :cid AND j.status = 'processing' "
+                " ORDER BY j.started_at"
+            ),
+            {"cid": campaign["id"]},
+        )).mappings().all()
+        jobs = [_tag_utc(dict(r)) for r in rows]
+        last = (await database.session.execute(
+            text(
+                "SELECT j.status, j.result_status, j.completed_at, t.username "
+                "  FROM outreach_jobs j "
+                "  JOIN outreach_targets t ON t.id = j.target_id "
+                " WHERE j.campaign_id = :cid AND j.completed_at IS NOT NULL "
+                " ORDER BY j.completed_at DESC LIMIT 1"
+            ),
+            {"cid": campaign["id"]},
+        )).mappings().first()
+        next_send_at = None
+        if campaign.get("status") == "running" and not jobs:
+            settings = await cfg.get_all(database)
+            assigned = await db.get_campaign_account_ids(database, campaign["id"])
+            params: dict[str, Any] = {
+                "platform": campaign.get("platform") or "tiktok",
+                "gap": int(settings["outreach_min_send_interval_seconds"]),
+                "uid": campaign.get("user_id"),
+            }
+            scope = "a.user_id = :uid" if campaign.get("user_id") is not None else "TRUE"
+            if assigned:
+                params.update({f"a{i}": v for i, v in enumerate(assigned)})
+                scope += f" AND a.id IN ({', '.join(f':a{i}' for i in range(len(assigned)))})"
+            row = (await database.session.execute(
+                text(
+                    "SELECT MIN(a.last_activity_at) + (:gap * INTERVAL '1 second') "
+                    "  FROM outreach_sending_accounts a "
+                    " WHERE a.platform = :platform AND a.enabled = TRUE "
+                    f"  AND a.status = 'idle' AND {scope}"
+                ),
+                params,
+            )).first()
+            due = row[0] if row else None
+            if due is not None and due > datetime.now(timezone.utc).replace(tzinfo=None):
+                next_send_at = _tag_utc({"t": due})["t"]
+        return {"jobs": jobs, "next_send_at": next_send_at,
+                "last": _tag_utc(dict(last)) if last else None}
+
     @router.get("/campaigns/{campaign_id}/progress")
     async def campaign_progress(campaign_id: int, user: dict = Depends(get_current_user)):
         """Small payload for the dashboard's live poll."""
@@ -779,6 +838,7 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 "target_counts": counts,
                 "success_outcomes": await _success_outcomes(database, campaign_id),
                 "recent_jobs": [_tag_utc(dict(j)) for j in jobs],
+                "live": await _live_now(database, campaign),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         finally:

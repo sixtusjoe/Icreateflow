@@ -453,6 +453,7 @@ class OutreachWorker:
         if ((following or unfollowing or messaging) and companion.uses_phone_app(account)
                 and self._driver is None and not self._pinned_driver(settings)):
             try:
+                await self._step_reporter(int(job["id"]))("on_phone")
                 result = await companion.relay(
                     database, account, job, target,
                     companion.ACTION_MESSAGE if messaging
@@ -484,6 +485,7 @@ class OutreachWorker:
             "device_serial": account.get("device_serial"),
             "device_handle": account.get("device_handle"),
         }
+        on_step = self._step_reporter(int(job["id"]))
         # Bound before the try: the `finally` reads it, and a cancellation
         # can reach that block without the assignment having run.
         result: Optional[MessageResult] = None
@@ -514,6 +516,7 @@ class OutreachWorker:
                 )
 
                 result = await driver.comment_on_video(payload, {
+                    "on_step": on_step,
                     "username": target["username"],
                     "profile_url": (
                         campaign.get("target_url") or target["profile_url"]
@@ -542,6 +545,7 @@ class OutreachWorker:
                 act = driver.follow_target if following else driver.unfollow_target
                 try:
                     result = await asyncio.wait_for(act(payload, {
+                        "on_step": on_step,
                         "username": target["username"],
                         "profile_url": target["profile_url"],
                     }), BROWSER_ACTION_SECONDS)
@@ -557,6 +561,7 @@ class OutreachWorker:
                 result = await driver.send_message(
                     payload,
                     {
+                        "on_step": on_step,
                         "username": target["username"],
                         "profile_url": target["profile_url"],
                         "follow_wait_seconds": int(
@@ -872,6 +877,29 @@ class OutreachWorker:
             user_id=campaign.get("user_id"), detail=reason,
         )
         print(f"[outreach] campaign {campaign_id} paused — {reason}", flush=True)
+
+    @staticmethod
+    def _step_reporter(job_id: int):
+        """A callback the driver calls as it works ("typing", "sending").
+
+        Written to the job so the campaign page can show what is happening
+        right now: the worker is a separate process, so the page cannot ask
+        it directly. Own connection, because the driver calls this in the
+        middle of the job's own work.
+        """
+        async def report(step: str) -> None:
+            conn = await db.get_db()
+            try:
+                await conn.session.execute(
+                    text("UPDATE outreach_jobs "
+                         "   SET step = :step, step_at = (NOW() AT TIME ZONE 'UTC') "
+                         " WHERE id = :id AND status = 'processing'"),
+                    {"id": job_id, "step": step[:40]},
+                )
+                await conn.session.commit()
+            finally:
+                await conn.close()
+        return report
 
     async def _pause_campaign_for_refusal(
         self, database, campaign: dict, account: dict, target: dict, result: Any,

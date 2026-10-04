@@ -941,6 +941,49 @@ async def test_an_account_refused_on_two_different_messages_is_the_account(
     assert row["refused_template"] is None
 
 
+# --- the campaign page shows what a send is doing -------------------------
+
+
+async def test_the_progress_poll_shows_the_step_a_send_is_on(
+        client, database, account_factory, settings):
+    """A running campaign looked dormant: the page only heard about a send
+    once it had finished. The driver now reports each step, and the poll
+    carries it while the job is in hand."""
+    from services.outreach import runner
+    from services.outreach.browser.mock import MockMessenger
+
+    await account_factory(name="Sender")
+    cid = (await client.post("/api/outreach/campaigns", json={
+        "name": "C", "message_template": "Hi there",
+    })).json()["id"]
+    await client.post(f"/api/outreach/campaigns/{cid}/import-text",
+                      json={"content": "username\nalice\nbob\n"})
+    assert (await client.post(f"/api/outreach/campaigns/{cid}/start")).status_code == 200
+
+    seen = {}
+
+    async def mid_send(account, target, message):
+        await target["on_step"]("typing")
+        seen["live"] = (await client.get(
+            f"/api/outreach/campaigns/{cid}/progress")).json()["live"]
+        return "sent"
+
+    worker = runner.OutreachWorker(
+        worker_id="t", driver=MockMessenger(handler=mid_send), once=True)
+    assert await worker.process_one(settings) is True
+
+    [job] = seen["live"]["jobs"]
+    assert job["step"] == "typing"
+    assert job["account_name"] == "Sender"
+    assert job["username"] in ("alice", "bob")
+
+    # Between sends: nothing in hand, and the last result is there.
+    after = (await client.get(f"/api/outreach/campaigns/{cid}/progress")).json()["live"]
+    assert after["jobs"] == []
+    assert after["last"]["username"] == job["username"]
+    assert after["last"]["status"] == "succeeded"
+
+
 # --- unfollow campaigns ----------------------------------------------------
 
 
