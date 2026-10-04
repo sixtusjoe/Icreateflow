@@ -915,6 +915,11 @@ export default function OutreachCampaignPage() {
                                 >
                                   {t.error_message || t.profile_url.replace("https://www.", "")}
                                 </span>
+                                {/* Phones drop the Account, Tries and Last activity columns, so they ride here. */}
+                                <span className="truncate text-[11px] leading-normal text-subtle md:hidden">
+                                  {t.assigned_account_id ? (accountsById.get(t.assigned_account_id)?.name ?? "—") : "—"} ·{" "}
+                                  {t.attempts} {t.attempts === 1 ? "try" : "tries"} · {when(t.sent_at || t.last_attempt_at)}
+                                </span>
                               </div>
                             </td>
                             <td className={TD}>

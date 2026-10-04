@@ -591,10 +591,10 @@ export default function Assistant({
           type="button"
           aria-label="Ask the assistant"
           onClick={openPanel}
-          className="fixed bottom-[22px] right-[22px] z-[25] flex items-center gap-2 rounded-full bg-primary px-[17px] py-3 max-md:bottom-4 max-md:right-4 max-md:p-3 text-[12.5px] font-bold text-primary-foreground shadow-[0_12px_26px_-10px_rgba(11,13,18,0.6)] transition-[filter] hover:brightness-110"
+          className="fixed bottom-[22px] right-[22px] z-[25] flex items-center gap-2 rounded-full bg-primary px-[17px] py-3 max-md:bottom-4 max-md:right-4 text-[12.5px] font-bold text-primary-foreground shadow-[0_12px_26px_-10px_rgba(11,13,18,0.6)] transition-[filter] hover:brightness-110"
         >
           <Zap className="h-[15px] w-[15px]" />
-          <span className="max-md:sr-only">Ask</span>
+          Ask
         </button>
       )}
     </>

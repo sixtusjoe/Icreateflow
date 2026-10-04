@@ -457,7 +457,8 @@ export default function OutreachAccountsPage() {
                             </span>
                             {/* Phones drop the Sent and Failed columns, so the counts ride under the name. */}
                             <span className={`truncate text-[11px] leading-normal md:hidden ${hot ? "font-semibold text-bad" : "text-subtle"}`}>
-                              {n(a.messages_processed)} sent · {n(a.error_count)} failed
+                              {PLATFORM_LABEL[a.platform] ?? a.platform} · {n(a.messages_processed)} sent · {n(a.error_count)} failed
+                              {hot ? ` (+${a.consecutive_errors} in a row)` : ""} · {relativeTime(a.last_activity_at)}
                             </span>
                           </span>
                         </div>

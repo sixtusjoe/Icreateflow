@@ -537,7 +537,7 @@ export default function OutreachPage() {
                           <Avatar platform={c.platform} />
                           <span className="flex min-w-0 flex-col gap-px">
                             <span className="truncate font-semibold text-foreground">{c.name}</span>
-                            <span className="truncate text-[11px] leading-normal text-subtle max-md:hidden">
+                            <span className="truncate text-[11px] leading-normal text-subtle">
                               {c.description || `Created ${c.created_at.slice(0, 10)}`}
                             </span>
                             {/* Phones drop the Activity and Status columns, so both ride under the name. */}
@@ -546,6 +546,9 @@ export default function OutreachPage() {
                                 {c.status[0].toUpperCase() + c.status.slice(1)}
                               </Tag>
                               <act.icon className="h-[13px] w-[13px] flex-none text-subtle" aria-label={act.label} />
+                            </span>
+                            <span className="truncate text-[11px] leading-normal text-subtle md:hidden">
+                              {n(total)} targets · {n(ok)} sent · {n(c.failed_count)} failed
                             </span>
                           </span>
                         </div>
