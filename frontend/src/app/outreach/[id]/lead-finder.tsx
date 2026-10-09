@@ -96,7 +96,9 @@ export function LeadFinderDialog({
     getLeadSearchAvailability(platform)
       .then((a) => {
         setAvailability(a);
-        if (a.accounts[0]) setAccountId(a.accounts[0].id);
+        // The first account not already busy searching.
+        const free = a.accounts.find((x) => !x.busy) ?? a.accounts[0];
+        if (free) setAccountId(free.id);
       })
       .catch(() => setAvailability(null));
   }, [platform, open]);
@@ -248,12 +250,15 @@ export function LeadFinderDialog({
                         key={a.id}
                         checked={a.id === accountId}
                         onChange={() => setAccountId(a.id)}
+                        disabled={a.busy}
                       >
                         <span className="truncate text-[13px] font-semibold leading-normal text-foreground">
                           {a.name}
                         </span>
                         <span className="truncate text-[11px] leading-normal text-subtle">
-                          {n(a.used_today)} opened in the last 24 hours
+                          {a.busy
+                            ? "Running a search right now"
+                            : `${n(a.used_today)} opened in the last 24 hours`}
                         </span>
                       </Radio>
                     ))}
@@ -493,7 +498,7 @@ export function LeadFinderDialog({
           <DialogFoot
             note={
               step === 0 && availability?.busy
-                ? "Another search is already running."
+                ? availability.busy_reason ?? "No search can start right now."
                 : step === 1
                   ? "You can close this — the search keeps going."
                   : undefined
@@ -507,7 +512,7 @@ export function LeadFinderDialog({
                   onClick={handleStart}
                   disabled={busy || !canStart || availability?.busy}
                 >
-                  {availability?.busy ? "Another search is running" : "Find profiles"}
+                  {availability?.busy ? "Can’t start yet" : "Find profiles"}
                 </PrimaryButton>
               </>
             )}

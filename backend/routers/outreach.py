@@ -2180,10 +2180,18 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                 f"with its purpose set to discovery, then sign it in — "
                 f"harvesting should never run on the account you send from."
             )
+        busy_reason = discovery.why_not_now(accounts, settings) if accounts else None
+        busy_ids = discovery.busy_account_ids()
+        for b in budgets:
+            b["busy"] = int(b["id"]) in busy_ids
         return {
             "available": reason is None,
             "unavailable_reason": reason,
-            "busy": discovery.any_running(),
+            # True only when no new search can start at all; a busy account
+            # is reported on the account, and another one can be used.
+            "busy": busy_reason is not None,
+            "busy_reason": busy_reason,
+            "running": discovery.running_count(),
             "accounts": budgets,
             "max_per_search": int(settings["outreach_discovery_max_per_search"]),
         }
@@ -2217,10 +2225,18 @@ def build_router(get_current_user, admin_required) -> APIRouter:
                     f"No {platform} discovery account is connected. Add one "
                     f"with purpose 'discovery' and sign it in first.",
                 )
-            account = next(
-                (a for a in accounts if a["id"] == data.account_id), accounts[0]
-            )
             settings = await cfg.get_all(database)
+            # Asked first, before a search row exists: refusing after the
+            # insert left a "queued" search behind that nothing would run.
+            not_now = discovery.why_not_now(accounts, settings)
+            if not_now:
+                raise HTTPException(409, not_now)
+            busy = discovery.busy_account_ids()
+            free = [a for a in accounts if int(a["id"]) not in busy]
+            # The one asked for if it is free, otherwise any free one.
+            account = next(
+                (a for a in free if a["id"] == data.account_id), free[0]
+            )
 
             row = (await database.session.execute(
                 text(

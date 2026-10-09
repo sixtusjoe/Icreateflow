@@ -1101,11 +1101,17 @@ export interface LeadSearchAccount {
   id: number;
   name: string;
   used_today: number;
+  /** Running a search right now; another account can still start one. */
+  busy?: boolean;
 }
 export interface LeadSearchAvailability {
   available: boolean;
   unavailable_reason: string | null;
+  /** No new search can start at all right now — `busy_reason` says why. */
   busy: boolean;
+  busy_reason?: string | null;
+  /** Searches running on this server now. */
+  running?: number;
   accounts: LeadSearchAccount[];
   max_per_search: number;
 }

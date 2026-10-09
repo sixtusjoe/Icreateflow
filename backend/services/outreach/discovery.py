@@ -199,6 +199,10 @@ class Run:
 _RUNS: dict[int, Run] = {}
 _TASKS: dict[int, asyncio.Task] = {}
 _CANCELLED: set[int] = set()
+#: search_id → the discovery account it browses as. One account never runs
+#: two searches: they would share its session and look like one person in
+#: two places at once.
+_ACCOUNT_OF: dict[int, int] = {}
 
 
 def _started(run: "Run") -> datetime:
@@ -257,6 +261,28 @@ def is_running(search_id: int) -> bool:
 
 def any_running() -> bool:
     return any(t is not None and not t.done() for t in _TASKS.values())
+
+
+def running_count() -> int:
+    return sum(1 for t in _TASKS.values() if t is not None and not t.done())
+
+
+def busy_account_ids() -> set[int]:
+    """Discovery accounts in the middle of a search right now."""
+    return {aid for sid, aid in _ACCOUNT_OF.items() if is_running(sid)}
+
+
+def why_not_now(accounts: list[dict[str, Any]], settings: dict[str, Any]) -> Optional[str]:
+    """Why no new search can start this moment, or None if one can."""
+    limit = int(settings["outreach_discovery_max_concurrent"])
+    if running_count() >= limit:
+        return (f"{limit} search{'es are' if limit != 1 else ' is'} already running, "
+                f"the most this server runs at once. Wait for one to finish.")
+    busy = busy_account_ids()
+    if accounts and all(int(a["id"]) in busy for a in accounts):
+        return ("Every discovery account is already running a search. Wait for "
+                "one to finish, or add another discovery account.")
+    return None
 
 
 #: How long a cancelled run is given to stop by itself before the task is
@@ -380,15 +406,21 @@ async def discovery_accounts(database, platform: str, user_id: Optional[int]) ->
 def start(search: dict[str, Any], account: dict[str, Any], settings: dict[str, Any]) -> Run:
     """Begin a search. Returns immediately; poll `status_for`.
 
-    Raises ValueError when another search is already browsing — two of
-    these at once is twice the footprint for no more speed, and they would
-    be sharing one account's session.
+    Several run at once, but never two on one account — they would share
+    its session — and never more than the server's limit, because each one
+    is a browser of its own. Raises ValueError when either would be broken.
     """
     search_id = int(search["id"])
-    if any_running():
-        raise ValueError("A lead search is already running. Wait for it to finish.")
+    limit = int(settings["outreach_discovery_max_concurrent"])
+    if running_count() >= limit:
+        raise ValueError(f"{limit} searches are already running. Wait for one to finish.")
+    if int(account["id"]) in busy_account_ids():
+        raise ValueError(
+            f"{account.get('name') or 'That account'} is already running a search. "
+            f"Wait for it to finish, or use another discovery account.")
 
     run = Run(search_id=search_id, wanted=int(search.get("wanted") or 0))
+    _ACCOUNT_OF[search_id] = int(account["id"])
     _RUNS[search_id] = run
     _CANCELLED.discard(search_id)
     _TASKS[search_id] = asyncio.create_task(_run(search, account, settings, run))
