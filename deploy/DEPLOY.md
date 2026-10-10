@@ -179,7 +179,7 @@ Browser cache. Hard refresh: `Cmd + Shift + R` (Chrome/Edge Mac).
 ```bash
 ssh root@147.93.182.253 'cd /srv/icreateflow/src && git log --oneline -1'
 # Compare with: git log --oneline -1
-# If behind: cd /Users/mac/Desktop/Zagged && bash deploy/ship.sh
+# If behind: cd /Users/macbook/Desktop/Zagged && bash deploy/ship.sh
 ```
 
 **YouTube quota exhausted (view polling stopped)**

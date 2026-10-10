@@ -362,7 +362,7 @@ trusting the guard silently.
 The scratchpad is **wiped between sessions** — assume it is empty. Four
 files reconstruct it:
 
-- **`mint.py`** — loads `/Users/mac/icreateflow-local/backend/.env` into the
+- **`mint.py`** — loads `/Users/macbook/icreateflow-local/backend/.env` into the
   environment, imports `database` and `services.auth.create_access_token`,
   selects the lowest-id admin, and writes `{token, id, email, name, role}` as
   `token.json`. Read-only by intent; it exists only so you do not need a

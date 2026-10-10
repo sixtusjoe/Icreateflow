@@ -12,7 +12,7 @@
 #
 set -euo pipefail
 
-BACKEND="${ICREATE_LOCAL_BACKEND:-/Users/mac/icreateflow-local/backend}"
+BACKEND="${ICREATE_LOCAL_BACKEND:-/Users/macbook/icreateflow-local/backend}"
 
 if lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port 8000 is already serving — nothing started."
