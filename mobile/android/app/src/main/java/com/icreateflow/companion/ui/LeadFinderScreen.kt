@@ -159,8 +159,12 @@ fun LeadFinderScreen(
             delay(2_000)
             try {
                 val p = progressOf(Api.leadSearch(token, id))
+                // Results first: marking it done ends this loop (it's keyed on
+                // `running`), and once cancelled the results never arrived —
+                // a finished search showed Set up instead of Review.
+                if (p.done) { loadLeads(id); refreshPending() }
                 progress = p
-                if (p.done) { loadLeads(id); refreshPending(); break }
+                if (p.done) break
             } catch (e: Api.ApiError) {
                 if (e.status == 401) { onSignedOut(); break }
                 // A dropped poll is not a failed search.

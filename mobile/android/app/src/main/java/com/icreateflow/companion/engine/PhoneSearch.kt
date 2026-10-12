@@ -74,6 +74,12 @@ object PhoneSearch {
         if (_state.value.running || FollowJobs.state.value.on) return false
         val app = ctx.applicationContext
         _state.value = State(true, searchId, "Starting…", 0, wanted)
+        // A search runs for minutes: a screen left to time out locks the
+        // phone and stops the reading, as campaign work found before.
+        @Suppress("DEPRECATION")
+        val wake = app.getSystemService(android.os.PowerManager::class.java)
+            .newWakeLock(android.os.PowerManager.SCREEN_DIM_WAKE_LOCK, "icf:search")
+            .apply { acquire(60 * 60_000L) }
         job = scope.launch {
             val (status, message) = try {
                 run(app, token, searchId, videos, replies)
@@ -84,6 +90,7 @@ object PhoneSearch {
                 "failed" to "The phone stopped: ${e.message ?: "something went wrong"}"
             }
             say(message)
+            if (wake.isHeld) wake.release()
             // On its own scope: this one may be cancelled.
             CoroutineScope(Dispatchers.Main).launch {
                 runCatching { Api.finishPhoneSearch(token, searchId, status, message) }
