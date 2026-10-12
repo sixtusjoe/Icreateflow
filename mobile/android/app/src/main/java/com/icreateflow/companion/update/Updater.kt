@@ -119,6 +119,7 @@ object Updater {
 
     /** "Update now": install what's downloaded, whatever else is going on. */
     fun installNow(ctx: Context) {
+        askedToAllow = false
         if (_state.value.phase == Phase.Ready || _state.value.phase == Phase.Failed && file != null) install(ctx)
     }
 
@@ -178,6 +179,19 @@ object Updater {
 
     private fun install(ctx: Context) {
         val apk = file ?: return
+        // Ask for "install unknown apps" before the install, not during it:
+        // left to the installer's own prompt, going to Settings and back
+        // can cancel the waiting install (it did on a Galaxy Z Flip3).
+        // Back from Settings, the next resume finds it Ready and installs.
+        if (Build.VERSION.SDK_INT >= 26 && !ctx.packageManager.canRequestPackageInstalls()) {
+            _state.value = _state.value.copy(phase = Phase.Ready,
+                error = "Allow installs from ICREATEFLOW, then come back to finish the update.")
+            if (!askedToAllow) {
+                askedToAllow = true
+                openAllowSetting(ctx)
+            }
+            return
+        }
         _state.value = _state.value.copy(phase = Phase.Installing, error = null)
         try {
             val installer = ctx.packageManager.packageInstaller
@@ -201,6 +215,16 @@ object Updater {
         } catch (e: Exception) {
             Log.w(TAG, "install failed", e)
             failed(e.message ?: "Android wouldn't take the update.")
+        }
+    }
+
+    /** Opened by itself once per run of the app; after that only from "Update now". */
+    private var askedToAllow = false
+
+    private fun openAllowSetting(ctx: Context) {
+        runCatching {
+            ctx.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                android.net.Uri.parse("package:${ctx.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
 

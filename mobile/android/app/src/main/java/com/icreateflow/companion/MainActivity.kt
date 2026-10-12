@@ -315,7 +315,7 @@ private fun UpdateBanner() {
     val version = s.release?.versionName.orEmpty()
     val (line, action) = when (s.phase) {
         Updater.Phase.Downloading -> "Downloading version $version… ${(s.progress * 100).toInt()}%" to null
-        Updater.Phase.Ready -> "Version $version is ready. It installs once campaign work is off." to "Update now"
+        Updater.Phase.Ready -> (s.error ?: "Version $version is ready. It installs once campaign work is off.") to "Update now"
         Updater.Phase.Installing -> "Installing version $version — the app will close and update." to null
         Updater.Phase.Failed -> if (s.release != null) (s.error ?: "The update didn't go through.") to "Try again" else return
         else -> return
