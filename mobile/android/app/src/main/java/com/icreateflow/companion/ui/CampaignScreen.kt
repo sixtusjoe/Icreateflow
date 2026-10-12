@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.PersonSearch
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
@@ -74,6 +75,15 @@ import java.time.OffsetDateTime
 @Composable
 fun CampaignScreen(token: String, id: Int, onBack: () -> Unit, onSignedOut: () -> Unit) {
     val t = LocalTokens.current
+    // The finder replaces this screen rather than sitting on it; everything
+    // below is loaded afresh on the way back, so imported targets show.
+    var finding by remember { mutableStateOf<Campaign?>(null) }
+    var imported by remember { mutableStateOf<String?>(null) }
+    finding?.let { c ->
+        LeadFinderScreen(token, c, onBack = { finding = null },
+            onImported = { imported = it; finding = null }, onSignedOut = onSignedOut)
+        return
+    }
     BackHandler(onBack = onBack)
     var detail by remember { mutableStateOf<CampaignDetail?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -122,9 +132,9 @@ fun CampaignScreen(token: String, id: Int, onBack: () -> Unit, onSignedOut: () -
 
     val c = detail?.campaign
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    // The "People" heading's position: back link, header, controls, the
-    // message when shown, outcomes when shown.
-    val peopleIndex = 3 + (if (c != null && c.activity == "message" && !c.messageTemplate.isNullOrBlank()) 1 else 0) + if (c != null && c.activity in setOf("follow", "unfollow") &&
+    // The "People" heading's position: back link, header, controls, Find
+    // profiles, the message when shown, outcomes when shown.
+    val peopleIndex = 4 + (if (c != null && c.activity == "message" && !c.messageTemplate.isNullOrBlank()) 1 else 0) + if (c != null && c.activity in setOf("follow", "unfollow") &&
         detail!!.successOutcomes.isNotEmpty()) 1 else 0
     var paged by remember { mutableStateOf(false) }
     LaunchedEffect(page) {
@@ -163,6 +173,18 @@ fun CampaignScreen(token: String, id: Int, onBack: () -> Unit, onSignedOut: () -
             Controls(c.status, acting, actionError,
                 onAct = { if (it == "resume" && cooling != null) confirmEarly = cooling else act(it) },
                 onStop = { confirmStop = true })
+        }
+        item {
+            Column {
+                RunButton("Find profiles", Icons.Outlined.PersonSearch, primary = false, busy = false,
+                    Modifier.fillMaxWidth()) { imported = null; finding = c }
+                imported?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Box(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(t.good.copy(alpha = 0.08f)).padding(12.dp),
+                    ) { Text(it, style = Type.small, color = t.ink) }
+                }
+            }
         }
         if (c.activity == "message" && !c.messageTemplate.isNullOrBlank()) item { MessageCard(c) }
         val outcomes = detail!!.successOutcomes

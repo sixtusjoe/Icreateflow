@@ -56,3 +56,6 @@ backend/music/
 # Local dev env (secrets, never commit)
 local-env.sh
 backend/outreach-debug/
+
+# Published phone-app builds (served by /api/public/app/…)
+app-releases/

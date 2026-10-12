@@ -51,6 +51,8 @@ import com.icreateflow.companion.ui.LocalTokens
 import com.icreateflow.companion.ui.Sheet
 import com.icreateflow.companion.ui.SignInScreen
 import com.icreateflow.companion.ui.Type
+import com.icreateflow.companion.update.Updater
+import androidx.lifecycle.lifecycleScope
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,6 +76,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Every open asks whether there's a newer build (at most every ten minutes).
+        lifecycleScope.launch { com.icreateflow.companion.update.Updater.run(this@MainActivity) }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
@@ -169,6 +177,7 @@ private fun Home(token: String, name: String?, email: String?, onSignOut: () -> 
     }
     Column(Modifier.fillMaxSize().background(t.page)) {
         TopBar()
+        UpdateBanner()
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.Campaigns -> if (open == null) {
@@ -268,7 +277,63 @@ private fun AccountScreen(name: String?, email: String?, onSignOut: () -> Unit) 
             ) { Text("Sign out", style = Type.cardTitle) }
         }
         Spacer(Modifier.height(12.dp))
-        Text("Version ${BuildConfig.VERSION_NAME}", style = Type.small, color = t.inkSubtle,
-            modifier = Modifier.padding(horizontal = 4.dp))
+        val update by Updater.state.collectAsState()
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val scope = androidx.compose.runtime.rememberCoroutineScope()
+        val status = when (update.phase) {
+            Updater.Phase.Checking -> "Checking for updates…"
+            Updater.Phase.UpToDate -> "Up to date"
+            Updater.Phase.Downloading, Updater.Phase.Ready, Updater.Phase.Installing ->
+                "Version ${update.release?.versionName} is on its way"
+            Updater.Phase.Failed -> update.error ?: "The update didn't go through"
+            Updater.Phase.Idle -> null
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Version ${BuildConfig.VERSION_NAME}", style = Type.small, color = t.inkSubtle)
+                if (status != null) Text(status, style = Type.small, color = t.inkSubtle)
+            }
+            Text("Check for updates", style = Type.small, color = t.ink,
+                modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                    .clickable { scope.launch { Updater.run(ctx, force = true) } }.padding(6.dp))
+        }
+    }
+}
+
+/**
+ * Only while something is happening with an update — never a standing
+ * "you're up to date". The download and the install run by themselves;
+ * the button is for when the phone is doing campaign work, which an
+ * install would cut short, so it waits to be asked.
+ */
+@Composable
+private fun UpdateBanner() {
+    val t = LocalTokens.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val s by Updater.state.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val version = s.release?.versionName.orEmpty()
+    val (line, action) = when (s.phase) {
+        Updater.Phase.Downloading -> "Downloading version $version… ${(s.progress * 100).toInt()}%" to null
+        Updater.Phase.Ready -> "Version $version is ready. It installs once campaign work is off." to "Update now"
+        Updater.Phase.Installing -> "Installing version $version — the app will close and update." to null
+        Updater.Phase.Failed -> if (s.release != null) (s.error ?: "The update didn't go through.") to "Try again" else return
+        else -> return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(RoundedCornerShape(12.dp))
+            .background(t.card).border(1.dp, t.border, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(line, style = Type.small, color = t.ink, modifier = Modifier.weight(1f))
+        if (action != null) {
+            Spacer(Modifier.width(10.dp))
+            Text(action, style = Type.small, color = t.onPrimary,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(t.primary)
+                    .clickable {
+                        if (s.phase == Updater.Phase.Failed) scope.launch { Updater.run(ctx, force = true) }
+                        else Updater.installNow(ctx)
+                    }.padding(horizontal = 12.dp, vertical = 7.dp))
+        }
     }
 }

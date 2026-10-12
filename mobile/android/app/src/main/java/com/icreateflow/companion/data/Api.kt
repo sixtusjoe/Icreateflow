@@ -162,7 +162,136 @@ object Api {
     suspend fun campaigns(token: String): List<Campaign> =
         json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Campaign.serializer()),
             call(get("/api/outreach/campaigns", token)))
+
+    // --- lead discovery: the website's "Find profiles" ---------------------
+
+    suspend fun leadAvailability(token: String, platform: String): LeadAvailability =
+        json.decodeFromString(LeadAvailability.serializer(),
+            call(get("/api/outreach/leads/availability?platform=$platform", token)))
+
+    suspend fun startLeadSearch(token: String, campaignId: Int, body: LeadSearchBody): LeadRun =
+        json.decodeFromString(LeadRun.serializer(),
+            call(post("/api/outreach/campaigns/$campaignId/leads/search",
+                json.encodeToString(LeadSearchBody.serializer(), body), token)))
+
+    suspend fun leadSearch(token: String, searchId: Int): LeadSearchState =
+        json.decodeFromString(LeadSearchState.serializer(),
+            call(get("/api/outreach/leads/searches/$searchId", token)))
+
+    suspend fun cancelLeadSearch(token: String, searchId: Int) {
+        call(post("/api/outreach/leads/searches/$searchId/cancel", "{}", token))
+    }
+
+    suspend fun leads(token: String, searchId: Int): List<Lead> =
+        json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Lead.serializer()),
+            call(get("/api/outreach/leads/searches/$searchId/leads", token)))
+
+    /** Found by earlier searches and in no campaign — searches skip them as already found. */
+    suspend fun pendingLeads(token: String, platform: String): List<Lead> =
+        json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Lead.serializer()),
+            call(get("/api/outreach/leads/pending?platform=$platform", token)))
+
+    suspend fun importLeads(token: String, campaignId: Int, leadIds: List<Int>, campaignIds: List<Int>): LeadImported =
+        json.decodeFromString(LeadImported.serializer(),
+            call(post("/api/outreach/campaigns/$campaignId/leads/import",
+                json.encodeToString(LeadImportBody.serializer(),
+                    LeadImportBody(leadIds, campaignIds.takeIf { it.isNotEmpty() })), token)))
 }
+
+@Serializable
+data class LeadAvailability(
+    val available: Boolean = false,
+    @SerialName("unavailable_reason") val unavailableReason: String? = null,
+    /** True only when no new search can start at all. */
+    val busy: Boolean = false,
+    @SerialName("busy_reason") val busyReason: String? = null,
+    val accounts: List<DiscoveryAccount> = emptyList(),
+    @SerialName("max_per_search") val maxPerSearch: Int = 300,
+)
+
+@Serializable
+data class DiscoveryAccount(
+    val id: Int,
+    val name: String = "",
+    @SerialName("used_today") val usedToday: Int = 0,
+    val busy: Boolean = false,
+)
+
+@Serializable
+data class LeadSearchBody(
+    val niche: String = "",
+    @SerialName("seed_accounts") val seedAccounts: String? = null,
+    val location: String? = null,
+    val interests: String? = null,
+    val wanted: Int = 50,
+    val platform: String,
+    @SerialName("account_id") val accountId: Int? = null,
+    @SerialName("include_commenters") val commenters: Boolean = true,
+    @SerialName("include_likers") val likers: Boolean = false,
+    @SerialName("include_replies") val replies: Boolean = true,
+    @SerialName("enrich_profiles") val enrich: Boolean = false,
+)
+
+/** A search in progress, as the process running it reports it. */
+@Serializable
+data class LeadRun(
+    @SerialName("search_id") val searchId: Int,
+    val status: String = "queued",
+    val message: String = "",
+    val found: Int = 0,
+    val wanted: Int = 0,
+    val done: Boolean = false,
+)
+
+/** The search's own row — all there is once the process that ran it is gone. */
+@Serializable
+data class StoredSearch(
+    val id: Int,
+    val status: String = "queued",
+    val message: String? = null,
+    val found: Int? = null,
+    val wanted: Int = 0,
+)
+
+@Serializable
+data class LeadSearchState(
+    val search: StoredSearch,
+    val run: LeadRun? = null,
+    val running: Boolean = false,
+)
+
+@Serializable
+data class Lead(
+    val id: Int,
+    val username: String = "",
+    val followers: Int? = null,
+    @SerialName("profile_url") val profileUrl: String? = null,
+    @SerialName("display_name") val displayName: String? = null,
+    val bio: String? = null,
+    val source: String? = null,
+    val score: Int? = null,
+    val reason: String? = null,
+    @SerialName("imported_at") val importedAt: String? = null,
+)
+
+@Serializable
+data class LeadImportBody(
+    @SerialName("lead_ids") val leadIds: List<Int>,
+    @SerialName("campaign_ids") val campaignIds: List<Int>? = null,
+)
+
+@Serializable
+data class LeadImported(
+    val ready: Int = 0,
+    val campaigns: List<LeadImportedTo>? = null,
+)
+
+@Serializable
+data class LeadImportedTo(
+    @SerialName("campaign_id") val campaignId: Int,
+    @SerialName("campaign_name") val campaignName: String = "",
+    val ready: Int = 0,
+)
 
 @Serializable
 data class LoginBody(val email: String, val password: String)

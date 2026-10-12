@@ -48,6 +48,16 @@ class Session(private val prefs: android.content.SharedPreferences) {
         get() = prefs.getString("server", null)
         set(v) = prefs.edit().apply { if (v == null) remove("server") else putString("server", v) }.apply()
 
+    /**
+     * The last discovery search started from a campaign, so the finder can
+     * pick it back up — a search takes minutes, and the app is closed in that
+     * time far more often than a browser tab.
+     */
+    fun searchFor(campaignId: Int): Int? = prefs.getInt("search_$campaignId", 0).takeIf { it > 0 }
+
+    fun setSearchFor(campaignId: Int, searchId: Int?) =
+        prefs.edit().apply { if (searchId == null) remove("search_$campaignId") else putInt("search_$campaignId", searchId) }.apply()
+
     fun clear() {
         val handle = tiktokHandle
         val device = deviceId

@@ -5,6 +5,7 @@ import os
 import sys
 import shutil
 import json
+import re
 import secrets
 import asyncio
 import traceback
@@ -911,6 +912,58 @@ async def public_config():
         }
     finally:
         await database.close()
+
+
+#: Published phone-app builds: `<package>.json` and the APK it names, one
+#: pair per app (the store build and the review build are separate apps).
+#: Outside backend/ on purpose — deploy.sh wipes that directory each time,
+#: and a release has to outlive the deploys after it.
+APP_RELEASES_DIR = Path(
+    os.environ.get("ICREATE_APP_RELEASES_DIR")
+    or Path(__file__).resolve().parent.parent / "app-releases"
+)
+_APP_PACKAGE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
+
+
+def _app_release(package: str) -> dict:
+    if not _APP_PACKAGE.match(package):
+        raise HTTPException(404, "No such app")
+    try:
+        manifest = json.loads((APP_RELEASES_DIR / f"{package}.json").read_text())
+    except (OSError, ValueError):
+        raise HTTPException(404, "No release published for this app")
+    apk = APP_RELEASES_DIR / Path(str(manifest.get("apk") or "")).name
+    if not apk.is_file():
+        raise HTTPException(404, "No release published for this app")
+    manifest["_path"] = apk
+    return manifest
+
+
+@app.get("/api/public/app/{package}")
+async def app_latest_release(package: str):
+    """The newest published build of the phone app — what it checks on open.
+
+    Public: the app asks before anyone has signed in, and an APK is no
+    secret — it is what we hand out to install in the first place.
+    """
+    m = _app_release(package)
+    return {
+        "version_code": int(m.get("version_code") or 0),
+        "version_name": str(m.get("version_name") or ""),
+        "notes": str(m.get("notes") or ""),
+        "sha256": str(m.get("sha256") or ""),
+        "size": m["_path"].stat().st_size,
+        "url": f"/api/public/app/{package}/apk",
+    }
+
+
+@app.get("/api/public/app/{package}/apk")
+async def app_download(package: str):
+    m = _app_release(package)
+    return FileResponse(
+        m["_path"], media_type="application/vnd.android.package-archive",
+        filename=f"icreateflow-{m.get('version_name') or 'latest'}.apk",
+    )
 
 
 @app.get("/api/auth/unsubscribe")
