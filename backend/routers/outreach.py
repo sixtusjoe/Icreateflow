@@ -231,6 +231,37 @@ class LeadImport(BaseModel):
     campaign_ids: Optional[list[int]] = None
 
 
+class PhoneSearchCreate(BaseModel):
+    """A search the phone app runs in the TikTok app, reading commenters."""
+
+    #: TikTok video links, one per line (share links are fine).
+    videos: str
+    wanted: int = 50
+    include_replies: bool = True
+    device_id: Optional[str] = None
+
+
+class PhoneLead(BaseModel):
+    username: str
+    display_name: Optional[str] = None
+    bio: Optional[str] = None
+    followers: Optional[int] = None
+    #: The video it was read from.
+    source: Optional[str] = None
+
+
+class PhoneLeads(BaseModel):
+    #: Empty is a progress report: it still updates the message and says
+    #: whether to stop.
+    leads: list[PhoneLead] = []
+    message: Optional[str] = None
+
+
+class PhoneSearchFinish(BaseModel):
+    status: str
+    message: Optional[str] = None
+
+
 class AccountSession(BaseModel):
     #: Playwright storage_state JSON, as a string or an object.
     session_state: Any
@@ -2351,6 +2382,146 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             finally:
                 await database.close()
         return {"ok": True, "was_running": was_running}
+
+    # ---- searches the phone app runs, in the TikTok app itself ----------
+    #
+    # The phone does the reading — opens each video's comments in TikTok,
+    # opens every commenter's profile for the @handle the list doesn't
+    # show — and reports here as it goes. The server keeps the books: the
+    # search row, who is already known, when to stop. Review and import
+    # are the ordinary endpoints above, unchanged.
+
+    @router.post("/campaigns/{campaign_id}/leads/phone-search")
+    async def start_phone_search(
+        campaign_id: int, data: PhoneSearchCreate,
+        user: dict = Depends(get_current_user),
+    ):
+        videos = [
+            v for v in re.split(r"[\s,]+", data.videos or "")
+            if discovery._POST_URL.search(v) and "tiktok.com" in v.lower()
+        ]
+        if not videos:
+            raise HTTPException(400, "Paste at least one TikTok video link.")
+        database = await db.get_db()
+        try:
+            campaign = await _own_campaign(database, campaign_id, user)
+            if (campaign.get("platform") or "") != "tiktok":
+                raise HTTPException(400, "Searching on the phone reads TikTok, so it needs a TikTok campaign.")
+            wanted = max(1, min(int(data.wanted or 50), 1000))
+            message = "Starting on the phone…"
+            row = (await database.session.execute(
+                text(
+                    "INSERT INTO outreach_lead_searches "
+                    "  (user_id, campaign_id, platform, niche, seed_accounts, wanted, "
+                    "   include_commenters, include_replies, enrich_profiles, status, "
+                    "   message, started_at) "
+                    "VALUES (:uid, :cid, 'tiktok', '', :seeds, :wanted, TRUE, :replies, "
+                    "        TRUE, :status, :message, (NOW() AT TIME ZONE 'UTC')) "
+                    "RETURNING id"
+                ),
+                {
+                    "uid": user["id"], "cid": campaign_id, "seeds": "\n".join(videos),
+                    "wanted": wanted, "replies": bool(data.include_replies),
+                    "status": discovery.STATUS_RUNNING, "message": message,
+                },
+            )).first()
+            await database.session.commit()
+        finally:
+            await database.close()
+        return {
+            "search_id": int(row[0]), "status": discovery.STATUS_RUNNING,
+            "message": message, "found": 0, "wanted": wanted, "done": False,
+            "videos": videos,
+        }
+
+    async def _phone_search(database, search_id: int, user: dict) -> dict:
+        row = (await database.session.execute(
+            text(
+                "SELECT * FROM outreach_lead_searches "
+                " WHERE id = :id AND (user_id = :uid OR :uid IS NULL)"
+            ),
+            {"id": search_id, "uid": _scope(user)},
+        )).mappings().first()
+        if not row:
+            raise HTTPException(404, "No such search.")
+        return dict(row)
+
+    @router.post("/leads/searches/{search_id}/phone-leads")
+    async def phone_search_leads(
+        search_id: int, data: PhoneLeads, user: dict = Depends(get_current_user),
+    ):
+        """Bank what the phone found; say which were new and whether to go on.
+
+        "New" is the same rule a server search keeps: nobody this person
+        has found before or already has in a campaign. Only new ones count
+        towards what was asked for.
+        """
+        database = await db.get_db()
+        try:
+            search = await _phone_search(database, search_id, user)
+            # Stopped from the website or the app: take nothing more, and
+            # tell the phone, which asks with every report.
+            if search["status"] != discovery.STATUS_RUNNING:
+                return {"taken": [], "found": int(search.get("found") or 0), "stop": True}
+            known = {u.lower() for u in await discovery.already_known(
+                database, search.get("user_id"), "tiktok")}
+            taken: list[str] = []
+            fresh = []
+            for lead in data.leads:
+                name = lead.username.strip().lstrip("@")
+                if not name or name.lower() in known:
+                    continue
+                known.add(name.lower())
+                taken.append(name)
+                fresh.append({
+                    "username": name, "profile_url": f"https://www.tiktok.com/@{name}",
+                    "display_name": lead.display_name, "bio": lead.bio,
+                    "followers": lead.followers, "source": lead.source,
+                })
+            if fresh:
+                await discovery._store_leads(database, search_id, search.get("user_id"), "tiktok", fresh)
+            found = int((await database.session.execute(
+                text("SELECT COUNT(*) FROM outreach_leads WHERE search_id = :id"), {"id": search_id},
+            )).scalar() or 0)
+            await database.session.execute(
+                text(
+                    "UPDATE outreach_lead_searches "
+                    "   SET found = :found, visited = visited + :seen, "
+                    "       message = COALESCE(:message, message), updated_at = NOW() "
+                    " WHERE id = :id"
+                ),
+                {"id": search_id, "found": found, "seen": len(data.leads),
+                 "message": (data.message or None) and data.message[:1000]},
+            )
+            await database.session.commit()
+        finally:
+            await database.close()
+        return {"taken": taken, "found": found, "stop": found >= int(search.get("wanted") or 0)}
+
+    @router.post("/leads/searches/{search_id}/phone-finish")
+    async def phone_search_finish(
+        search_id: int, data: PhoneSearchFinish, user: dict = Depends(get_current_user),
+    ):
+        status = data.status if data.status in (
+            discovery.STATUS_DONE, discovery.STATUS_FAILED, discovery.STATUS_CANCELLED,
+        ) else discovery.STATUS_DONE
+        database = await db.get_db()
+        try:
+            await _phone_search(database, search_id, user)
+            # Only a search still going: a Stop pressed meanwhile keeps its own word.
+            await database.session.execute(
+                text(
+                    "UPDATE outreach_lead_searches "
+                    "   SET status = :status, message = COALESCE(:message, message), "
+                    "       finished_at = (NOW() AT TIME ZONE 'UTC'), updated_at = NOW() "
+                    " WHERE id = :id AND status IN ('queued', 'running')"
+                ),
+                {"id": search_id, "status": status, "message": (data.message or None) and data.message[:1000]},
+            )
+            await database.session.commit()
+        finally:
+            await database.close()
+        return {"ok": True}
 
     @router.get("/leads/searches/{search_id}/leads")
     async def list_leads(

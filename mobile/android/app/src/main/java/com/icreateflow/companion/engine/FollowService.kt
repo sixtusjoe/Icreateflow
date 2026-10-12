@@ -89,7 +89,27 @@ class FollowService : AccessibilityService() {
         if (!ok && cont.isActive) cont.resume(false)
     }
 
+    /** A finger dragged from one point to another — scrolling a list. */
+    suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, ms: Long = 400): Boolean = suspendCancellableCoroutine { cont ->
+        val path = Path().apply { moveTo(x1.toFloat(), y1.toFloat()); lineTo(x2.toFloat(), y2.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, ms))
+            .build()
+        val ok = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) { if (cont.isActive) cont.resume(true) }
+            override fun onCancelled(g: GestureDescription?) { if (cont.isActive) cont.resume(false) }
+        }, null)
+        if (!ok && cont.isActive) cont.resume(false)
+    }
+
     fun back() = performGlobalAction(GLOBAL_ACTION_BACK)
+
+    /** Open a TikTok link (a video, a share link) in TikTok, as a fresh task. */
+    fun openLink(url: String) {
+        val pkg = installedTikTok(this) ?: return
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(pkg)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+    }
 
     /**
      * Type into TikTok's text box (the lowest one on screen — the chat's

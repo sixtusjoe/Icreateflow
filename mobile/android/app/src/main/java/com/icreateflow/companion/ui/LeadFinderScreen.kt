@@ -53,6 +53,9 @@ import com.icreateflow.companion.data.Lead
 import com.icreateflow.companion.data.LeadAvailability
 import com.icreateflow.companion.data.LeadSearchBody
 import com.icreateflow.companion.data.LeadSearchState
+import com.icreateflow.companion.engine.FollowService
+import com.icreateflow.companion.engine.PhoneSearch
+import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -85,6 +88,11 @@ fun LeadFinderScreen(
     var error by remember { mutableStateOf<String?>(null) }
 
     var mode by remember { mutableStateOf("seeds") }
+    // TikTok can also be read by this phone, in the TikTok app itself.
+    val phoneOk = platform == "tiktok"
+    var phoneVideos by remember { mutableStateOf("") }
+    val phoneRun by PhoneSearch.state.collectAsState()
+    val ctx = LocalContext.current
     var seeds by remember { mutableStateOf("") }
     var niche by remember { mutableStateOf("") }
     var location by remember { mutableStateOf("") }
@@ -124,6 +132,8 @@ fun LeadFinderScreen(
         try {
             val a = Api.leadAvailability(token, platform)
             availability = a
+            // No server discovery here: the phone can still read TikTok itself.
+            if (!a.available && phoneOk) mode = "phone"
             wanted = wanted.coerceAtMost(a.maxPerSearch.toFloat())
             accountId = (a.accounts.firstOrNull { !it.busy } ?: a.accounts.firstOrNull())?.id
             campaigns = runCatching { Api.campaigns(token).filter { it.platform == platform } }.getOrDefault(emptyList())
@@ -163,6 +173,24 @@ fun LeadFinderScreen(
         busy = true; error = null
         scope.launch {
             try {
+                if (mode == "phone") {
+                    if (FollowService.instance == null) {
+                        error = "Turn on the phone service first (Phone tab) — it is what reads TikTok."
+                        return@launch
+                    }
+                    val run = Api.startPhoneSearch(token, campaign.id, phoneVideos.trim(), wanted.roundToInt(), replies,
+                        session.deviceId)
+                    if (!PhoneSearch.start(ctx, token, run.searchId, run.videos, run.wanted, replies)) {
+                        Api.finishPhoneSearch(token, run.searchId, "cancelled", "Campaign work was on, so the phone didn't search.")
+                        error = "Turn off campaign work on the Phone tab first — the phone does one thing at a time."
+                        return@launch
+                    }
+                    session.setSearchFor(campaign.id, run.searchId)
+                    leads = emptyList(); chosen = emptySet()
+                    searchId = run.searchId
+                    progress = SearchProgress(run.status, run.message, run.found, run.wanted, false)
+                    return@launch
+                }
                 val run = Api.startLeadSearch(token, campaign.id, LeadSearchBody(
                     niche = if (mode == "niche") niche.trim() else "",
                     seedAccounts = if (mode == "seeds") seeds.trim().ifEmpty { null } else null,
@@ -183,6 +211,7 @@ fun LeadFinderScreen(
 
     fun stop() {
         val id = searchId ?: return
+        if (phoneRun.running && phoneRun.searchId == id) PhoneSearch.stop()
         scope.launch {
             try { Api.cancelLeadSearch(token, id) } catch (e: Api.ApiError) { fail(e) }
         }
@@ -253,7 +282,7 @@ fun LeadFinderScreen(
                 item { Text("Loading…", style = Type.body, color = t.inkMuted, modifier = Modifier.padding(4.dp)) }
                 return@LazyColumn
             }
-            if (a == null || !a.available) {
+            if ((a == null || !a.available) && !phoneOk) {
                 item {
                     Sheet(Modifier.fillMaxWidth()) {
                         Text("Discovery isn't available", style = Type.cardTitle, color = t.ink)
@@ -271,7 +300,7 @@ fun LeadFinderScreen(
                     progress?.takeIf { it.done && it.message.isNotBlank() }?.let { last ->
                         item { Note(last.message, if (last.status == "failed") t.bad else t.warn) }
                     }
-                    if (a.accounts.isNotEmpty()) item {
+                    if (mode != "phone" && a != null && a.accounts.isNotEmpty()) item {
                         Sheet(Modifier.fillMaxWidth()) {
                             Text("SEARCH FROM", style = Type.label, color = t.inkSubtle)
                             Spacer(Modifier.height(8.dp))
@@ -292,9 +321,22 @@ fun LeadFinderScreen(
                         Sheet(Modifier.fillMaxWidth()) {
                             Text("WHERE TO LOOK", style = Type.label, color = t.inkSubtle)
                             Spacer(Modifier.height(8.dp))
-                            Segment(listOf("seeds" to "Posts or accounts", "niche" to "By description"), mode) { mode = it }
+                            Segment(buildList {
+                                if (a?.available == true) { add("seeds" to "Posts"); add("niche" to "Description") }
+                                if (phoneOk) add("phone" to "On this phone")
+                            }, mode) { mode = it }
                             Spacer(Modifier.height(12.dp))
-                            if (mode == "seeds") {
+                            if (mode == "phone") {
+                                Field(phoneVideos, { phoneVideos = it }, SEED_EXAMPLE.getValue("tiktok"), lines = 3)
+                                Spacer(Modifier.height(6.dp))
+                                Text("TikTok video links, one per line. This phone opens each video's comments in your " +
+                                    "TikTok app and opens every commenter's profile for their @handle — about 20 a minute. " +
+                                    "It only reads: nothing is followed, liked or messaged. People who keep their profile " +
+                                    "view history on will see your account visited them.", style = Type.small, color = t.inkSubtle)
+                                Spacer(Modifier.height(8.dp))
+                                ChoiceRow(replies, title = "Open the reply threads",
+                                    sub = "Where most of a busy video's people are") { replies = !replies }
+                            } else if (mode == "seeds") {
                                 Field(seeds, { seeds = it }, SEED_EXAMPLE[platform] ?: SEED_EXAMPLE.getValue("tiktok"), lines = 3)
                                 Spacer(Modifier.height(6.dp))
                                 Text(seedHint(seeds, replies), style = Type.small, color = t.inkSubtle)
@@ -325,7 +367,8 @@ fun LeadFinderScreen(
                                 Text("HOW MANY", style = Type.label, color = t.inkSubtle, modifier = Modifier.weight(1f))
                                 Text(groupThousands(wanted.roundToInt()), style = Type.title, color = t.ink)
                             }
-                            val max = a.maxPerSearch.coerceAtLeast(20).toFloat()
+                            val cap = a?.maxPerSearch ?: 300
+                            val max = cap.coerceAtLeast(20).toFloat()
                             Slider(
                                 value = wanted, onValueChange = { wanted = (it / 10).roundToInt() * 10f },
                                 valueRange = 10f..max,
@@ -335,7 +378,7 @@ fun LeadFinderScreen(
                                     inactiveTickColor = androidx.compose.ui.graphics.Color.Transparent,
                                 ),
                             )
-                            Text("Up to ${groupThousands(a.maxPerSearch)} per search. A search runs until the " +
+                            Text("Up to ${groupThousands(cap)} per search. A search runs until the " +
                                 "platform stops it.", style = Type.small, color = t.inkSubtle)
                         }
                     }
@@ -357,7 +400,8 @@ fun LeadFinderScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(Modifier.size(22.dp), color = t.chart1, trackColor = t.tile, strokeWidth = 2.5.dp)
                                 Spacer(Modifier.width(12.dp))
-                                Text(p.message.ifBlank { "Starting…" }, style = Type.cardTitle, color = t.ink)
+                                val mine = phoneRun.running && phoneRun.searchId == searchId
+                                Text((if (mine) phoneRun.line else p.message).ifBlank { "Starting…" }, style = Type.cardTitle, color = t.ink)
                             }
                             Spacer(Modifier.height(16.dp))
                             Progress(if (p.wanted > 0) p.found.toFloat() / p.wanted else 0f)
@@ -368,7 +412,9 @@ fun LeadFinderScreen(
                                 Figure("LEFT", (p.wanted - p.found).coerceAtLeast(0))
                             }
                             Spacer(Modifier.height(14.dp))
-                            Text("This runs on the server and takes minutes. You can leave this screen or close " +
+                            Text(if (phoneRun.searchId == searchId) "This phone is reading TikTok — leave it on TikTok and " +
+                                "unlocked until it finishes. It comes back here by itself when it's done."
+                                else "This runs on the server and takes minutes. You can leave this screen or close " +
                                 "the app — the search keeps going, and the results are waiting here when it finishes.",
                                 style = Type.small, color = t.inkSubtle)
                         }
@@ -415,15 +461,16 @@ fun LeadFinderScreen(
         // The step's buttons stay in reach however long the list is.
         Column(Modifier.fillMaxWidth().background(t.page).padding(horizontal = 16.dp, vertical = 8.dp)) {
             error?.let { Note(it, t.bad); Spacer(Modifier.height(8.dp)) }
-            if (!resolving && a != null && a.available) when (step) {
+            if (!resolving && (a?.available == true || phoneOk)) when (step) {
                 0 -> {
-                    if (a.busy) {
-                        Text(a.busyReason ?: "No search can start right now.", style = Type.small, color = t.inkMuted)
+                    val serverBusy = mode != "phone" && a?.busy == true
+                    if (serverBusy) {
+                        Text(a?.busyReason ?: "No search can start right now.", style = Type.small, color = t.inkMuted)
                         Spacer(Modifier.height(8.dp))
                     }
-                    val ready = if (mode == "seeds") seeds.isNotBlank() else niche.isNotBlank()
-                    Pill(if (a.busy) "Can't start yet" else if (busy) "Starting…" else "Find profiles",
-                        primary = true, enabled = ready && !busy && !a.busy) { start() }
+                    val ready = when (mode) { "phone" -> phoneVideos.isNotBlank(); "seeds" -> seeds.isNotBlank(); else -> niche.isNotBlank() }
+                    Pill(if (serverBusy) "Can't start yet" else if (busy) "Starting…" else "Find profiles",
+                        primary = true, enabled = ready && !busy && !serverBusy) { start() }
                 }
                 1 -> Pill("Stop the search", primary = false, enabled = true) { stop() }
                 else -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

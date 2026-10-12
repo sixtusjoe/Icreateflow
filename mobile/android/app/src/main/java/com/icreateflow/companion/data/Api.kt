@@ -191,6 +191,24 @@ object Api {
         json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Lead.serializer()),
             call(get("/api/outreach/leads/pending?platform=$platform", token)))
 
+    // A search this phone runs in the TikTok app: the server keeps the books.
+
+    suspend fun startPhoneSearch(token: String, campaignId: Int, videos: String, wanted: Int, replies: Boolean,
+                                 device: String): PhoneSearchStarted =
+        json.decodeFromString(PhoneSearchStarted.serializer(),
+            call(post("/api/outreach/campaigns/$campaignId/leads/phone-search",
+                json.encodeToString(PhoneSearchBody.serializer(), PhoneSearchBody(videos, wanted, replies, device)), token)))
+
+    suspend fun reportPhoneLeads(token: String, searchId: Int, leads: List<PhoneLead>, message: String?): PhoneLeadsTaken =
+        json.decodeFromString(PhoneLeadsTaken.serializer(),
+            call(post("/api/outreach/leads/searches/$searchId/phone-leads",
+                json.encodeToString(PhoneLeadsBody.serializer(), PhoneLeadsBody(leads, message)), token)))
+
+    suspend fun finishPhoneSearch(token: String, searchId: Int, status: String, message: String) {
+        call(post("/api/outreach/leads/searches/$searchId/phone-finish",
+            json.encodeToString(PhoneFinishBody.serializer(), PhoneFinishBody(status, message)), token))
+    }
+
     suspend fun importLeads(token: String, campaignId: Int, leadIds: List<Int>, campaignIds: List<Int>): LeadImported =
         json.decodeFromString(LeadImported.serializer(),
             call(post("/api/outreach/campaigns/$campaignId/leads/import",
@@ -428,3 +446,39 @@ data class ResultBody(
     val error: String? = null,
     val detail: Map<String, String> = emptyMap(),
 )
+
+@Serializable
+data class PhoneSearchBody(
+    val videos: String,
+    val wanted: Int,
+    @SerialName("include_replies") val replies: Boolean,
+    @SerialName("device_id") val deviceId: String,
+)
+
+@Serializable
+data class PhoneSearchStarted(
+    @SerialName("search_id") val searchId: Int,
+    val status: String = "running",
+    val message: String = "",
+    val found: Int = 0,
+    val wanted: Int = 0,
+    /** The links the server accepted, in order. */
+    val videos: List<String> = emptyList(),
+)
+
+@Serializable
+data class PhoneLead(
+    val username: String,
+    @SerialName("display_name") val displayName: String? = null,
+    val followers: Int? = null,
+    val source: String? = null,
+)
+
+@Serializable
+data class PhoneLeadsBody(val leads: List<PhoneLead>, val message: String? = null)
+
+@Serializable
+data class PhoneLeadsTaken(val taken: List<String> = emptyList(), val found: Int = 0, val stop: Boolean = false)
+
+@Serializable
+data class PhoneFinishBody(val status: String, val message: String)
