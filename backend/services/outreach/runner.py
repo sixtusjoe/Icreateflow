@@ -1048,6 +1048,7 @@ class OutreachWorker:
             database = await db.get_db()
             try:
                 settings = await cfg.get_all(database)
+                await account_mgr.expire_dead_workers(database)
                 await job_queue.reap_stale_jobs(database, settings)
                 await account_mgr.release_expired_leases(database, settings)
                 await resume_cooled_down(database)
@@ -1163,6 +1164,7 @@ async def maintenance_pass() -> None:
     try:
         database = await db.get_db()
         settings = await cfg.get_all(database)
+        await account_mgr.expire_dead_workers(database)
         await job_queue.reap_stale_jobs(database, settings)
         await account_mgr.release_expired_leases(database, settings)
         await resume_cooled_down(database)

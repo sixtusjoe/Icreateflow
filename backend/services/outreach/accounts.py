@@ -497,6 +497,49 @@ async def resume_account(database, account_id: int) -> None:
     )
 
 
+async def expire_dead_workers(database) -> int:
+    """End the leases of workers on this machine that are definitely gone.
+
+    A deploy restarts the workers, and one stopped mid-job left its job
+    `processing` and its account `active` until the ten-minute lease ran
+    out — ten minutes of a phone asking for follows and getting none, after
+    every deploy (2026-10-13). `worker_is_gone` answers exactly for this
+    host, so those leases can end now: the job's lease is marked expired,
+    for `reap_stale_jobs` to requeue as it would have anyway, and the
+    account goes back to the pool. Leases held by other machines are left
+    to expire, as before. Returns how many jobs it freed.
+    """
+    session = database.session
+    held = (await session.execute(text(
+        "SELECT id, worker_id, sending_account_id FROM outreach_jobs "
+        " WHERE status = 'processing' AND worker_id IS NOT NULL"
+    ))).all()
+    dead = [r for r in held if worker_is_gone(r[1])]
+    if not dead:
+        await session.commit()
+        return 0
+    job_ids = [int(r[0]) for r in dead]
+    account_ids = sorted({int(r[2]) for r in dead if r[2] is not None})
+    await session.execute(text(
+        f"UPDATE outreach_jobs SET lease_expires_at = {UTC_NOW} - INTERVAL '1 second' "
+        f" WHERE id = ANY(:ids) AND status = 'processing'"
+    ), {"ids": job_ids})
+    # A follow it handed the phone and never collected: take it back unless
+    # the phone already has it, so the requeued job doesn't make a twin.
+    await session.execute(text(
+        f"UPDATE outreach_companion_tasks SET status = 'expired', finished_at = {UTC_NOW} "
+        f" WHERE job_id = ANY(:ids) AND status = 'pending'"
+    ), {"ids": job_ids})
+    if account_ids:
+        await session.execute(text(
+            f"UPDATE outreach_sending_accounts SET status = :idle, updated_at = {UTC_NOW} "
+            f" WHERE id = ANY(:ids) AND status = :active"
+        ), {"ids": account_ids, "idle": ACCOUNT_IDLE, "active": ACCOUNT_ACTIVE})
+    await session.commit()
+    print(f"[outreach] freed {len(job_ids)} job(s) held by stopped workers", flush=True)
+    return len(job_ids)
+
+
 async def release_expired_leases(database, settings: dict[str, Any]) -> int:
     """Return accounts whose worker died mid-job to the pool.
 

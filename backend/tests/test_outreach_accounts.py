@@ -544,3 +544,41 @@ async def test_a_phone_account_has_its_own_send_gap(
     # And the phone's own gap is honoured when it has one.
     held = dict(paced, outreach_phone_min_send_interval_seconds=3600)
     assert await account_mgr.lease_account(database, campaign, held) is None
+
+
+async def test_a_stopped_workers_job_and_account_are_freed_at_once(database, seeded, settings):
+    """A deploy restarts the workers; one stopped mid-job held its account
+    for the whole ten-minute lease. A worker on this machine that is gone
+    is known to be gone, so its hold ends now."""
+    import socket
+    from services.outreach import queue as job_queue
+
+    job = (await database.session.execute(text(
+        "SELECT id, target_id FROM outreach_jobs WHERE campaign_id = :c ORDER BY id LIMIT 1"),
+        {"c": seeded["campaign"]["id"]})).first()
+    dead = f"{socket.gethostname()}:999999:gone"   # no such pid
+    alive = f"{socket.gethostname()}:{os.getpid()}:me"
+    await database.session.execute(text(
+        "UPDATE outreach_jobs SET status = 'processing', worker_id = :w, sending_account_id = :a, "
+        "  lease_expires_at = (NOW() AT TIME ZONE 'UTC') + INTERVAL '10 minutes' WHERE id = :id"),
+        {"w": dead, "a": seeded["account"]["id"], "id": job[0]})
+    await database.session.execute(text(
+        "UPDATE outreach_sending_accounts SET status = 'active', "
+        "  last_activity_at = (NOW() AT TIME ZONE 'UTC') WHERE id = :a"), {"a": seeded["account"]["id"]})
+    await database.session.commit()
+
+    assert await account_mgr.expire_dead_workers(database) == 1
+    await job_queue.reap_stale_jobs(database, settings)
+    row = (await database.session.execute(text(
+        "SELECT status, worker_id FROM outreach_jobs WHERE id = :id"), {"id": job[0]})).first()
+    assert tuple(row) == ("queued", None)
+    account = await db.get_sending_account(database, seeded["account"]["id"])
+    assert account["status"] != "active"
+
+    # A worker that is still running keeps what it holds.
+    await database.session.execute(text(
+        "UPDATE outreach_jobs SET status = 'processing', worker_id = :w, "
+        "  lease_expires_at = (NOW() AT TIME ZONE 'UTC') + INTERVAL '10 minutes' WHERE id = :id"),
+        {"w": alive, "id": job[0]})
+    await database.session.commit()
+    assert await account_mgr.expire_dead_workers(database) == 0
