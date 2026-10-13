@@ -132,7 +132,7 @@ class MainActivity : ComponentActivity() {
                 android.util.Log.i(com.icreateflow.companion.engine.FollowService.TAG, "open refused: service off")
             } else {
                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-                    val v = com.icreateflow.companion.engine.Follower.open(svc, who.removePrefix("@"))
+                    val v = com.icreateflow.companion.engine.Follower.confirm(svc, who.removePrefix("@"))
                     android.util.Log.i(com.icreateflow.companion.engine.FollowService.TAG,
                         "opened @$who: handle=${v.handle} state=${v.state} message=${v.message != null}")
                 }

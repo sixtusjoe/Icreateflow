@@ -56,6 +56,14 @@ object Follower {
     private const val SEARCH_TAPS = 2
     private const val SEARCH_OPEN_MS = 10_000L
     private const val STEADY_MS = 600L
+    /**
+     * How long a confirming reopen is watched after it loads (see `confirm`).
+     * The cached "Following" flipped to "Follow" ~1 s after load in three
+     * runs of three (2026-10-13); 3 s leaves room, and only a kept follow
+     * waits it all out — a drop ends the watch the moment it shows.
+     */
+    private const val CONFIRM_SETTLE_MS = 3_000L
+    private const val SETTLE_POLL_MS = 250L
     private const val FEED_SETTLE_MS = 4_000L
     /** How long a confirmed identity is trusted before it is checked again. */
     private const val IDENTITY_TTL_MS = 10 * 60_000L
@@ -86,6 +94,39 @@ object Follower {
         Log.i(FollowService.TAG, "link didn't open @$handle (${if (byLink.feed) "For You feed" else "no profile"}) — searching")
         delay(RETRY_OPEN_MS)
         return bySearch(svc, handle) ?: byLink
+    }
+
+    /**
+     * Reopen a profile just followed and read what TikTok *settles* on.
+     *
+     * The reopened page is drawn from TikTok's cache first and corrected
+     * from its server a moment later. Measured 2026-10-13 on the Z Flip3,
+     * with the account at its follow limit: the first loaded frame said
+     * "Following" for a follow TikTok had already thrown away, and a read
+     * seconds later said "Follow". Taking the first frame, the confirm
+     * passed 9 of 11 dropped follows, and the campaign ran on past the
+     * limit. So: keep reading for CONFIRM_SETTLE_MS once it has loaded, and
+     * a single "Follow" in that window is the answer — a cache can show
+     * "Following" for a dropped follow, never "Follow" for a kept one.
+     */
+    internal suspend fun confirm(svc: FollowService, who: String, note: (String) -> Unit = {}): ProfileView {
+        val start = System.currentTimeMillis()
+        var view = open(svc, who)
+        if (!sameHandle(view.handle, who) || view.state == null) return view
+        note("Reopened: ${view.state} — watching it settle")
+        val until = System.currentTimeMillis() + CONFIRM_SETTLE_MS
+        while (System.currentTimeMillis() < until) {
+            delay(SETTLE_POLL_MS)
+            val next = readProfile(svc.snapshot())
+            if (!sameHandle(next.handle, who) || next.state == null) continue
+            if (next.state != view.state) {
+                Log.i(FollowService.TAG, "confirm @$who: ${view.state} → ${next.state} " +
+                    "at +${System.currentTimeMillis() - start}ms")
+            }
+            view = next
+            if (view.state == "can_follow") break
+        }
+        return view
     }
 
     /** The profile through search; null if search itself didn't come up. */
@@ -306,7 +347,7 @@ object Follower {
             say("Waiting ${recheckMs / 1000}s, then reopening @$who…", null)
             delay(recheckMs)
         } else say("Reopening @$who…", null)
-        val again = open(svc, who)
+        val again = confirm(svc, who) { line -> say(line, null) }
         val counts = "followers ${before.followers ?: "?"} → ${again.followers ?: "?"}"
         val detail = mapOf("followers_before" to (before.followers ?: ""), "followers_after" to (again.followers ?: ""))
         return when {
