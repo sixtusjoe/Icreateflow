@@ -173,6 +173,13 @@ class OutreachWorker:
         #: has left against a window the operator has closed.
         on_browser_lost: Optional[Any] = None,
     ):
+        # Always host:pid:name, so `accounts.worker_is_gone` can tell when
+        # this process has stopped. The server's workers are started with
+        # a bare name (`--worker-id server.icreateflow.com-1`), and with no
+        # pid in it a worker a deploy had stopped could never be known to
+        # be gone — its account sat held for the whole lease (2026-10-13).
+        if worker_id and ":" not in worker_id:
+            worker_id = f"{socket.gethostname()}:{os.getpid()}:{worker_id}"
         self.worker_id = worker_id or default_worker_id()
         self.driver_name = driver_name
         self._driver = driver

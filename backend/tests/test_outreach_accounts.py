@@ -582,3 +582,13 @@ async def test_a_stopped_workers_job_and_account_are_freed_at_once(database, see
         {"w": alive, "id": job[0]})
     await database.session.commit()
     assert await account_mgr.expire_dead_workers(database) == 0
+
+
+def test_a_named_worker_can_still_be_known_to_be_gone():
+    """The server starts workers with a bare name; it must carry the pid."""
+    from services.outreach import runner
+    worker = runner.OutreachWorker(worker_id="server.icreateflow.com-1", once=True)
+    host, pid, name = worker.worker_id.split(":")
+    assert (host, int(pid), name) == (socket.gethostname(), os.getpid(), "server.icreateflow.com-1")
+    assert account_mgr.worker_is_gone(worker.worker_id) is False
+    assert account_mgr.worker_is_gone(f"{host}:999999:{name}") is True
