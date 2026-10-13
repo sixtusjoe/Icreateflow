@@ -208,7 +208,11 @@ class FollowJobsService : Service() {
         private const val POLL_MS = 5_000L
         private const val RETRY_MS = 15_000L
         private const val BETWEEN_MS = 2_000L
-        /** A job's reopen comes quickly; the server paces follows, not this. */
-        private const val JOB_RECHECK_MS = 3_000L
+        /**
+         * No wait before a job's confirming reopen: the reopen itself is the
+         * check, and the 3 s it used to wait were dead time on every follow
+         * (operator, 2026-10-13). The server paces follows, not this.
+         */
+        private const val JOB_RECHECK_MS = 0L
     }
 }
