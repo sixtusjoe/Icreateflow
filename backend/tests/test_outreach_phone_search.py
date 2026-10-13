@@ -107,8 +107,12 @@ async def test_another_user_cannot_report_into_your_search(client, database):
     sid = (await _start(client, await _campaign(client)))["search_id"]
     from services.auth import hash_password
     import database as db
-    other = await db.create_user(database, "someone-else@example.com", hash_password("y" * 12), "Other")
-    _as(dict(await db.get_user(database, other)))
+    # Users outlive a test run here (only outreach tables are wiped).
+    other = await db.get_user_by_email(database, "someone-else@example.com")
+    if not other:
+        other = await db.get_user(database, await db.create_user(
+            database, "someone-else@example.com", hash_password("y" * 12), "Other"))
+    _as(dict(other))
     res = await client.post(f"/api/outreach/leads/searches/{sid}/phone-leads",
                             json={"leads": [{"username": "amy"}]})
     assert res.status_code == 404

@@ -38,6 +38,8 @@ from services.outreach.browser import MessageResult
 from services.outreach.constants import (
     ACCOUNT_VIA_BROWSER,
     ACCOUNT_VIA_PHONE,
+    CAMPAIGN_PAUSED,
+    CAMPAIGN_RUNNING,
     PHONE_PLATFORMS,
     RESULT_ALREADY_FOLLOWING,
     RESULT_CHALLENGE_REQUIRED,
@@ -193,6 +195,60 @@ async def relay(database, account: dict, job: Optional[dict], target: dict,
                     "switch on Take follows — the follow will be tried again",
                     task_id=task_id)
             # The phone claimed it in the same instant: keep waiting.
+
+
+#: How relay() words "the phone wasn't there" — the reasons a campaign
+#: takes its short break for when the phone isn't linked or isn't asking.
+#: Kept beside the messages they match: change one, change the other.
+PHONE_ABSENT_REASONS = (
+    "This account is switched to phone, but no phone has linked it yet",
+    "The phone is linked but has no TikTok handle",
+    "The phone didn't pick up the follow",
+    "The phone took the follow but never reported back",
+)
+
+
+async def wake_campaigns(database, device_id: str, linked: bool = False) -> list[int]:
+    """Restart campaigns resting only because this phone wasn't there.
+
+    A campaign whose follows found no phone takes a ten-minute break
+    (runner.PHONE_BREAK_SECONDS). Once the phone links, or asks for work,
+    that reason is gone — but the break used to run its full ten minutes
+    anyway: the phone took the one or two follows already in flight and
+    then sat "waiting for follows" while the campaign waited out a clock
+    that no longer meant anything (2026-10-13, campaign 29).
+
+    Only those reasons, only TikTok campaigns this phone's accounts serve
+    (named on the campaign, or eligible because it names none), and only a
+    break with a clock — a pause someone pressed is never undone here.
+    Resumed exactly as an expired break is (queue.resume_limited_campaigns).
+    """
+    session = database.session
+    # Asking for work proves the phone is there, not that it can finish a
+    # follow: "took it but never reported back" keeps its break unless the
+    # phone is linked afresh, or a stuck phone would loop with no rest.
+    reasons = PHONE_ABSENT_REASONS if linked else PHONE_ABSENT_REASONS[:3]
+    likes = " OR ".join(f"c.paused_reason LIKE :r{i}" for i in range(len(reasons)))
+    params: dict[str, Any] = {f"r{i}": f"{r}%" for i, r in enumerate(reasons)}
+    params.update({"dev": device_id, "running": CAMPAIGN_RUNNING, "paused": CAMPAIGN_PAUSED})
+    rows = (await session.execute(text(
+        f"UPDATE outreach_campaigns c "
+        f"   SET status = :running, paused_until = NULL, paused_reason = NULL, "
+        f"       updated_at = {UTC_NOW} "
+        f" WHERE c.status = :paused AND c.paused_until IS NOT NULL "
+        f"   AND c.paused_until > {UTC_NOW} AND c.platform = 'tiktok' AND ({likes}) "
+        f"   AND EXISTS ( "
+        f"       SELECT 1 FROM outreach_sending_accounts a "
+        f"        WHERE a.companion_device = :dev AND a.platform = 'tiktok' "
+        f"          AND (a.user_id = c.user_id OR c.user_id IS NULL) "
+        f"          AND (EXISTS (SELECT 1 FROM outreach_campaign_accounts ca "
+        f"                        WHERE ca.campaign_id = c.id AND ca.sending_account_id = a.id) "
+        f"               OR NOT EXISTS (SELECT 1 FROM outreach_campaign_accounts ca "
+        f"                               WHERE ca.campaign_id = c.id))) "
+        f"RETURNING c.id"
+    ), params)).all()
+    await session.commit()
+    return [int(r[0]) for r in rows]
 
 
 async def _expire(session, task_id: int, expected: str) -> bool:

@@ -1605,6 +1605,8 @@ def build_router(get_current_user, admin_required) -> APIRouter:
             await db.log_outreach_audit(
                 database, AUDIT_ACCOUNT_UPDATED, "account", data.account_id,
                 user_id=user["id"], detail=f"phone app linked for follows as @{handle}")
+            # Linked now: a break taken because no phone was linked is over.
+            await companion.wake_campaigns(database, device, linked=True)
             return {"ok": True}
         finally:
             await database.close()
@@ -1632,7 +1634,12 @@ def build_router(get_current_user, admin_required) -> APIRouter:
         device = _device(data.device_id)
         database = await db.get_db()
         try:
-            return {"task": await companion.claim(database, device, _scope(user))}
+            task = await companion.claim(database, device, _scope(user))
+            # Asking for work is the phone being there: end any break taken
+            # because it wasn't, instead of letting it sit out the clock.
+            if task is None:
+                await companion.wake_campaigns(database, device)
+            return {"task": task}
         finally:
             await database.close()
 

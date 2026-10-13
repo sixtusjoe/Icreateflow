@@ -436,3 +436,78 @@ async def test_a_phone_account_unfollows_its_own_follows_through_the_phone(
     assert task["action"] == "unfollow" and task["username"] == followed[0]
     targets = await db.get_outreach_targets(database, unfollow["id"])
     assert [t["status"] for t in targets] == [TARGET_SENT]
+
+
+# --- a break taken because the phone wasn't there ends when it is ------------
+#
+# 2026-10-13, campaign 29: the worker found no linked phone and gave the
+# campaign its ten-minute break; the phone was linked a minute later, did the
+# follows already in flight, then sat "waiting for follows" for the rest of
+# the ten minutes. It looked frozen after one follow.
+
+NO_PHONE = ("This account is switched to phone, but no phone has linked it yet — open the "
+            "ICREATEFLOW app, Phone tab, and link it — its follows wait until then")
+NOT_PICKED_UP = ("The phone didn't pick up the follow — open ICREATEFLOW on the phone, "
+                 "switch on Take follows — the follow will be tried again")
+STUCK = ("The phone took the follow but never reported back — check the ICREATEFLOW app "
+         "on the phone — the follow will be tried again")
+
+
+async def _rest(database, campaign_id, reason, clock=True):
+    await database.session.execute(text(
+        "UPDATE outreach_campaigns SET status = 'paused', paused_reason = :r, "
+        "  paused_until = CASE WHEN :clock THEN (NOW() AT TIME ZONE 'UTC') + INTERVAL '9 minutes' END "
+        "WHERE id = :id"), {"r": reason, "clock": clock, "id": campaign_id})
+    await database.session.commit()
+
+
+async def _status(database, campaign_id):
+    return (await db.get_outreach_campaign(database, campaign_id))["status"]
+
+
+async def test_linking_the_phone_ends_the_break_for_no_phone(client, follow_run, database):
+    cid, aid = follow_run["campaign"]["id"], follow_run["account"]["id"]
+    await db.update_sending_account(database, aid, companion_device=None)
+    await _rest(database, cid, NO_PHONE)
+    res = await client.post("/api/outreach/companion/link",
+                            json={"device_id": PHONE, "account_id": aid, "handle": "lancastar"})
+    assert res.status_code == 200
+    campaign = await db.get_outreach_campaign(database, cid)
+    assert campaign["status"] == "running" and campaign["paused_until"] is None
+
+
+async def test_asking_for_work_ends_a_break_for_a_phone_that_wasnt_asking(client, follow_run, database):
+    cid = follow_run["campaign"]["id"]
+    await _rest(database, cid, NOT_PICKED_UP)
+    assert (await client.post("/api/outreach/companion/next", json={"device_id": PHONE})).status_code == 200
+    assert await _status(database, cid) == "running"
+
+
+async def test_a_phone_that_got_stuck_keeps_its_break_until_it_is_linked_again(client, follow_run, database):
+    """Asking proves it's there, not that it can finish a follow."""
+    cid, aid = follow_run["campaign"]["id"], follow_run["account"]["id"]
+    await _rest(database, cid, STUCK)
+    await client.post("/api/outreach/companion/next", json={"device_id": PHONE})
+    assert await _status(database, cid) == "paused"
+    await client.post("/api/outreach/companion/link",
+                      json={"device_id": PHONE, "account_id": aid, "handle": "lancastar"})
+    assert await _status(database, cid) == "running"
+
+
+async def test_other_pauses_are_left_alone(client, follow_run, database):
+    cid = follow_run["campaign"]["id"]
+    # TikTok's own limit: a real clock, not about the phone.
+    await _rest(database, cid, "The Follow button on @x did not change — the account has most likely hit its follow limit")
+    await client.post("/api/outreach/companion/next", json={"device_id": PHONE})
+    assert await _status(database, cid) == "paused"
+    # A pause someone pressed has no clock, whatever it says.
+    await _rest(database, cid, NO_PHONE, clock=False)
+    await client.post("/api/outreach/companion/next", json={"device_id": PHONE})
+    assert await _status(database, cid) == "paused"
+
+
+async def test_another_phone_does_not_wake_this_campaign(client, follow_run, database):
+    cid = follow_run["campaign"]["id"]
+    await _rest(database, cid, NOT_PICKED_UP)
+    await client.post("/api/outreach/companion/next", json={"device_id": OTHER_PHONE})
+    assert await _status(database, cid) == "paused"
