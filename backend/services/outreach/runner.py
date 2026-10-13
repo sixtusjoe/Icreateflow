@@ -776,7 +776,7 @@ class OutreachWorker:
             if self.once:
                 return
             if not did_work:
-                await self._sleep(settings["outreach_worker_idle_seconds"])
+                await self._sleep(await idle_seconds(settings))
 
     async def _pause_campaign_for_limit(
         self, database, campaign: dict, result: Any,
@@ -1205,6 +1205,24 @@ _LOCAL_WORKER: dict[str, Any] = {
 }
 
 
+async def idle_seconds(settings: dict[str, Any]) -> int:
+    """How long a worker with nothing to do waits before looking again.
+
+    The configured idle, except while a phone is asking for work: then
+    companion.PHONE_IDLE_S, so the phone's next follow is handed out
+    within a second of its account being free, not up to ten.
+    """
+    idle = int(settings["outreach_worker_idle_seconds"])
+    if idle <= companion.PHONE_IDLE_S:
+        return idle
+    database = await db.get_db()
+    try:
+        asking = await companion.phone_asking(database)
+    finally:
+        await database.close()
+    return companion.PHONE_IDLE_S if asking else idle
+
+
 async def _idle(stopping: asyncio.Event, seconds: int) -> None:
     """Wait, but wake the moment the sender is told to stop.
 
@@ -1259,7 +1277,7 @@ async def _local_slot(worker: "OutreachWorker", stopping: asyncio.Event) -> None
             if not did_work:
                 # Nothing free — most often the other slot holds the only
                 # account that can run. Idling is the whole answer.
-                await _idle(stopping, int(settings["outreach_worker_idle_seconds"]))
+                await _idle(stopping, await idle_seconds(settings))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — one bad job must not end

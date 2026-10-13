@@ -32,6 +32,11 @@ SPEC: dict[str, tuple[int, int, int]] = {
     "outreach_retry_backoff_seconds": (300, 5, 86_400),
     # Minimum gap between two sends from the same account.
     "outreach_min_send_interval_seconds": (15, 0, 3600),
+    # The same gap for accounts the phone app works. The phone takes about
+    # five seconds a follow on its own (open, tap, reopen to confirm), and
+    # the operator wants the next profile open within five seconds of a
+    # confirmed follow (2026-10-13) — so no extra gap by default.
+    "outreach_phone_min_send_interval_seconds": (0, 0, 3600),
     # Follow the target, wait, then message on a later pass. 0 disables it.
     "outreach_follow_wait_seconds": (0, 0, 86400),
     # Follow a profile that shows no Message button, then look again. Some

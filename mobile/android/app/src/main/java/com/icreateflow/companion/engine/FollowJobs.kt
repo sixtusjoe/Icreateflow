@@ -205,7 +205,8 @@ class FollowJobsService : Service() {
     companion object {
         private const val CHANNEL = "follows"
         private const val NOTE_ID = 7
-        private const val POLL_MS = 5_000L
+        /** How often to ask for work: the next follow should open within ~5 s of the last. */
+        private const val POLL_MS = 2_000L
         private const val RETRY_MS = 15_000L
         private const val BETWEEN_MS = 2_000L
         /**

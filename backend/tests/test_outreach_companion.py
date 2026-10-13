@@ -511,3 +511,10 @@ async def test_another_phone_does_not_wake_this_campaign(client, follow_run, dat
     await _rest(database, cid, NOT_PICKED_UP)
     await client.post("/api/outreach/companion/next", json={"device_id": OTHER_PHONE})
     assert await _status(database, cid) == "paused"
+
+
+async def test_workers_look_again_sooner_while_a_phone_is_asking(follow_run, database):
+    settings = dict(follow_run["settings"], outreach_worker_idle_seconds=10)
+    assert await runner.idle_seconds(settings) == 10  # linked, but not asking yet
+    await companion.claim(database, PHONE, None)      # the phone asks
+    assert await runner.idle_seconds(settings) == companion.PHONE_IDLE_S

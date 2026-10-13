@@ -116,6 +116,7 @@ async def lease_account(
     """
     lease_seconds = int(settings["outreach_job_lease_seconds"])
     cooldown = int(settings["outreach_min_send_interval_seconds"])
+    phone_cooldown = int(settings.get("outreach_phone_min_send_interval_seconds", cooldown))
     per_account_cap = cfg.campaign_limit(
         campaign, settings, "max_jobs_per_account", "outreach_max_jobs_per_account"
     )
@@ -126,6 +127,7 @@ async def lease_account(
         "campaign_id": campaign["id"],
         "lease": lease_seconds,
         "cooldown": cooldown,
+        "phone_cooldown": phone_cooldown,
         "cap": per_account_cap,
         "active": ACCOUNT_ACTIVE,
         "paused": ACCOUNT_PAUSED,
@@ -169,9 +171,11 @@ async def lease_account(
                   AND (a.status <> :active
                        OR a.last_activity_at IS NULL
                        OR a.last_activity_at < {UTC_NOW} - (:lease * INTERVAL '1 second'))
-                  -- per-account send cooldown
+                  -- per-account send cooldown; phone accounts have their own
                   AND (a.last_activity_at IS NULL
-                       OR a.last_activity_at < {UTC_NOW} - (:cooldown * INTERVAL '1 second'))
+                       OR a.last_activity_at < {UTC_NOW} - ((CASE WHEN COALESCE(a.via, 'browser') = :phone
+                                                                  THEN CAST(:phone_cooldown AS INTEGER) ELSE CAST(:cooldown AS INTEGER) END)
+                                                            * INTERVAL '1 second'))
                   -- per-account job cap for this campaign
                   AND (
                         SELECT COUNT(*) FROM outreach_jobs j

@@ -197,6 +197,34 @@ async def relay(database, account: dict, job: Optional[dict], target: dict,
             # The phone claimed it in the same instant: keep waiting.
 
 
+#: How soon a worker looks again for work while a phone is asking for it.
+PHONE_IDLE_S = 1
+#: "Asking": seen within this long. claim() writes the time at most every
+#: SEEN_EVERY_S, so this has to be comfortably more than that.
+ASKING_WITHIN_S = 2 * SEEN_EVERY_S
+
+
+async def phone_asking(database) -> bool:
+    """Whether any phone has asked for work in the last minute.
+
+    A worker with nothing to do sleeps outreach_worker_idle_seconds (ten by
+    default) before looking again. Fine for the browser, but for a phone
+    waiting on its next follow it was up to ten seconds of nothing after
+    every confirmed follow; the operator's bar is five (2026-10-13). So
+    while a phone is there, workers look again every PHONE_IDLE_S.
+    """
+    try:
+        row = (await database.session.execute(text(
+            f"SELECT 1 FROM outreach_sending_accounts "
+            f" WHERE via = :phone AND enabled = TRUE AND companion_device IS NOT NULL "
+            f"   AND companion_seen_at > {UTC_NOW} - (:within * INTERVAL '1 second') LIMIT 1"
+        ), {"phone": ACCOUNT_VIA_PHONE, "within": ASKING_WITHIN_S})).first()
+        await database.session.commit()
+        return row is not None
+    except Exception:  # noqa: BLE001 — only a pace hint; never stop a worker
+        return False
+
+
 #: How relay() words "the phone wasn't there" — the reasons a campaign
 #: takes its short break for when the phone isn't linked or isn't asking.
 #: Kept beside the messages they match: change one, change the other.

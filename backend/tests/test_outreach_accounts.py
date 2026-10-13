@@ -518,3 +518,29 @@ async def test_a_busy_day_no_longer_stops_an_account(
 
     why = await account_mgr.explain_no_account(database, campaign, stale)
     assert "24 hours" not in why, f"the cap is still being explained: {why!r}"
+
+
+async def test_a_phone_account_has_its_own_send_gap(
+    database, campaign_factory, account_factory, settings
+):
+    """The phone paces itself (~5 s a follow), so its gap is separate and
+    short; a browser account on the same settings still waits its own."""
+    campaign = await campaign_factory()
+    await db.update_outreach_campaign(database, campaign["id"], activity="follow")
+    campaign = dict(await db.get_outreach_campaign(database, campaign["id"]))
+    phone = await account_factory(name="Phone")
+    await db.update_sending_account(database, phone["id"], via="phone",
+                                    companion_device="phone-1", device_handle="me")
+    paced = dict(settings, outreach_min_send_interval_seconds=3600,
+                 outreach_phone_min_send_interval_seconds=0)
+
+    leased = await account_mgr.lease_account(database, campaign, paced)
+    assert leased["id"] == phone["id"]
+    await account_mgr.release_account(database, leased["id"])
+    # Just used, but the phone's gap is 0: free again at once.
+    assert (await account_mgr.lease_account(database, campaign, paced))["id"] == phone["id"]
+    await account_mgr.release_account(database, phone["id"])
+
+    # And the phone's own gap is honoured when it has one.
+    held = dict(paced, outreach_phone_min_send_interval_seconds=3600)
+    assert await account_mgr.lease_account(database, campaign, held) is None
