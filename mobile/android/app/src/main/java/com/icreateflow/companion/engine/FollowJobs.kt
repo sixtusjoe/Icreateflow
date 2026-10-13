@@ -52,13 +52,35 @@ object FollowJobs {
     internal val _state = MutableStateFlow(State())
 
     fun start(ctx: Context) {
+        wanted(ctx, true)
         val intent = Intent(ctx, FollowJobsService::class.java)
         if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(intent) else ctx.startService(intent)
     }
 
     fun stop(ctx: Context) {
+        wanted(ctx, false)
         ctx.stopService(Intent(ctx, FollowJobsService::class.java))
     }
+
+    /**
+     * Back on if the person left it on. An update ends this process, and
+     * Android doesn't restart the service by itself, so after every update
+     * follows silently stopped until someone noticed and switched them back
+     * on (2026-10-13). Called when the app is updated and when it opens.
+     */
+    fun resume(ctx: Context) {
+        if (_state.value.on || !prefs(ctx).getBoolean(WANTED, false)) return
+        runCatching {
+            val intent = Intent(ctx, FollowJobsService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(intent) else ctx.startService(intent)
+        }.onFailure { Log.w(FollowService.TAG, "couldn't restart campaign work", it) }
+    }
+
+    // Its own file: signing out clears the session's, and this is the
+    // phone's setting, not the sign-in's.
+    private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences("jobs", Context.MODE_PRIVATE)
+    private fun wanted(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean(WANTED, on).apply()
+    private const val WANTED = "take_follows"
 }
 
 class FollowJobsService : Service() {

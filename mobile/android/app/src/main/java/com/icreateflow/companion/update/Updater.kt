@@ -253,7 +253,11 @@ class UpdateReceiver : BroadcastReceiver() {
                     else intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Android wouldn't install the update.",
                 )
             }
-            Intent.ACTION_MY_PACKAGE_REPLACED -> updated(ctx)
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                updated(ctx)
+                // Campaign work, if it was on: the update ended it.
+                FollowJobs.resume(ctx)
+            }
         }
     }
 

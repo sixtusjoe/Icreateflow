@@ -80,6 +80,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Campaign work back on if it was left on (an update, or Android, ended it).
+        com.icreateflow.companion.engine.FollowJobs.resume(this)
         // Every open asks whether there's a newer build (at most every ten minutes).
         lifecycleScope.launch { com.icreateflow.companion.update.Updater.run(this@MainActivity) }
     }
