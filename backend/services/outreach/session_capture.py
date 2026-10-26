@@ -56,7 +56,11 @@ PLATFORMS: dict[str, dict[str, str]] = {
         "domain": "x.com",
     },
     "instagram": {
-        "login_url": "https://www.instagram.com/accounts/login/",
+        # The home page, not /accounts/login/: from this server's address
+        # that page answers 429 with an empty body, while the home page
+        # serves the same sign-in form when signed out (measured
+        # 2026-10-26 in the server's own Chromium).
+        "login_url": "https://www.instagram.com/",
         # Instagram's session cookie. `csrftoken` is set before sign-in, so
         # it proves nothing; this one only appears once authenticated.
         "cookie": "sessionid",
