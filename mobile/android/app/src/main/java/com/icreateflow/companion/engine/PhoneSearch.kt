@@ -15,6 +15,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /**
@@ -66,6 +71,12 @@ object PhoneSearch {
 
     private val COMMENTS_HEADER = Regex("""^[\d.,]+\s*[KMB]?\s+comments?$""", RegexOption.IGNORE_CASE)
     private val INVISIBLE = Regex("[\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufffc]")
+    private val VIDEO_LINK = Regex("""tiktok\.com/@[^/?]+/video/\d+""", RegexOption.IGNORE_CASE)
+    /** Reads where a share link points without following it. */
+    private val redirects = OkHttpClient.Builder()
+        .followRedirects(false).followSslRedirects(false)
+        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS)
+        .build()
 
     fun stop() { job?.cancel() }
 
@@ -134,7 +145,7 @@ object PhoneSearch {
         svc: FollowService, token: String, searchId: Int, url: String, label: String, replies: Boolean,
         opened: MutableSet<String>,
     ): Boolean {
-        svc.openLink(url)
+        svc.openLink(fullLink(url))
         // The comment button, as soon as the video is up — the feed can move on.
         var button: Node? = null
         val until = System.currentTimeMillis() + SHEET_WAIT_MS
@@ -212,6 +223,27 @@ object PhoneSearch {
             if (names(svc.snapshot(), top, floor).all { clean(it.text) in opened }) quiet++ else quiet = 0
         }
         return false
+    }
+
+    /**
+     * A share link (vm.tiktok.com/…, tiktok.com/t/…) as the video's own
+     * link. TikTok opens a share link as a random For You video with the
+     * shared one in a small card on top, and the comment button found is
+     * the one underneath — measured 2026-10-18. The full link opens the
+     * video itself. The link as given when it can't be worked out.
+     */
+    private suspend fun fullLink(url: String): String = withContext(Dispatchers.IO) {
+        if (VIDEO_LINK.containsMatchIn(url)) return@withContext url
+        var at = url
+        repeat(4) {
+            val next = runCatching {
+                redirects.newCall(Request.Builder().url(at).head().build()).execute()
+                    .use { res -> res.header("Location")?.let { at.toHttpUrl().resolve(it)?.toString() } }
+            }.getOrNull() ?: return@withContext url
+            if (VIDEO_LINK.containsMatchIn(next)) return@withContext next.substringBefore('?')
+            at = next
+        }
+        url
     }
 
     /** The sheet's "330 comments" header, or null when the sheet isn't up. */
