@@ -1636,21 +1636,23 @@ async def admin_get_oauth_apps(admin: dict = Depends(admin_required)):
 async def admin_update_oauth_app(
     platform: str, data: OAuthAppUpdate, admin: dict = Depends(admin_required)
 ):
+    # Values are stripped: a client ID pasted with a trailing space was
+    # sent to Google as-is and refused as "OAuth client was not found".
     if platform not in {"_base", "google_drive"} and platform not in OAUTH_PLATFORMS:
         raise HTTPException(400, f"Unknown platform: {platform}")
     database = await db.get_db()
     try:
         if platform == "_base":
             if data.redirect_base is not None:
-                await db.set_site_config(database, "oauth_redirect_base", data.redirect_base)
+                await db.set_site_config(database, "oauth_redirect_base", data.redirect_base.strip())
         elif platform == "google_drive":
             if data.api_key is not None:
-                await db.set_site_config(database, "oauth_google_drive_api_key", data.api_key)
+                await db.set_site_config(database, "oauth_google_drive_api_key", data.api_key.strip())
         else:
             if data.client_id is not None:
-                await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id)
+                await db.set_site_config(database, f"oauth_{platform}_client_id", data.client_id.strip())
             if data.client_secret is not None:
-                await db.set_site_config(database, f"oauth_{platform}_client_secret", data.client_secret)
+                await db.set_site_config(database, f"oauth_{platform}_client_secret", data.client_secret.strip())
             if platform == "instagram" and data.webhook_verify_token is not None:
                 # Empty string clears the token (disables webhook
                 # verification); a non-empty value replaces what's stored.
