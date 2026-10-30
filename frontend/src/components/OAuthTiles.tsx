@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, Link2, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -237,14 +238,17 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
         })}
       </div>
 
-      {pick ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      {/* On document.body: inside the brand page's Connect dialog, its
+          backdrop blur made this "fixed" box the dialog's size and the
+          dialog clipped the accounts past the first few. */}
+      {pick ? createPortal(
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 p-4">
           <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-background p-4 shadow-xl">
             <h3 className="text-sm font-semibold">Pick a Page for this variation</h3>
             <p className="mt-1 text-xs text-muted-foreground">
               You granted multiple Pages / Instagram accounts. Pick the one that belongs to <b>this</b> variation. Each variation needs its own connection — repeat for the others.
             </p>
-            <div className="mt-3 space-y-2 max-h-80 overflow-auto">
+            <div className="mt-3 space-y-2">
               {pick.assets.map((a, i) => (
                 <button
                   key={`${a.page_id || a.ig_user_id || i}`}
@@ -272,7 +276,8 @@ export default function OAuthTiles({ account, onChange, kind = "account" }: OAut
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
 
       <ConfirmModal
