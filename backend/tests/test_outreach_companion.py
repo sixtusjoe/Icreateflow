@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 import database as db
 from routers import outreach as outreach_router
-from services.outreach import companion, runner
+from services.outreach import accounts as account_mgr, companion, runner
 from services.outreach.browser.mock import MockMessenger
 from services.outreach.constants import (
     ACCOUNT_PAUSED,
@@ -261,6 +261,18 @@ async def test_a_phone_account_nobody_has_linked_says_why_and_is_not_paused(
     assert account["status"] != ACCOUNT_PAUSED
     assert "no phone has linked it" in (account["last_error"] or "")
     assert await _tasks(database) == []
+
+
+async def test_an_unlinked_phone_account_is_passed_over_while_a_linked_one_can_work(
+        follow_run, database, account_factory, quick):
+    # Idler than the linked account, so it used to be leased first: it
+    # failed, stood the campaign down, and the working phone waited 3-8 s
+    # behind that on every follow (campaign 31, 2026-10-31).
+    await account_factory(name="Unlinked", via="phone")
+    for _ in range(2):
+        account = await account_mgr.lease_account(database, follow_run["campaign"], follow_run["settings"])
+        assert account["id"] == follow_run["account"]["id"]
+        await account_mgr.release_account(database, account["id"])
 
 
 async def test_a_phone_cannot_report_an_unknown_result(database):

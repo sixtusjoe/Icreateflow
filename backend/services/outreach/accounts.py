@@ -79,6 +79,12 @@ def fits(row, campaign: dict) -> bool:
     return (row.get("via") or ACCOUNT_VIA_BROWSER) != ACCOUNT_VIA_PHONE or phone_ok(campaign)
 
 
+def linked(row) -> bool:
+    """A browser account, or a phone account some phone has linked."""
+    return ((row.get("via") or ACCOUNT_VIA_BROWSER) != ACCOUNT_VIA_PHONE
+            or bool((row.get("companion_device") or "").strip()))
+
+
 async def eligible_account_ids(database, campaign: dict) -> list[int]:
     """Accounts this campaign is allowed to send from, ignoring leases.
 
@@ -122,6 +128,24 @@ async def lease_account(
     )
     assigned = await db.get_campaign_account_ids(database, campaign["id"])
 
+    # A phone account no phone has linked fails in a second, and that
+    # failure stands the campaign down — which the linked phone's next ask
+    # ends at once. Leased first because it was idlest, it put 3-8 s of that
+    # in front of every follow the working phone did (campaign 31,
+    # 2026-10-31). So it is passed over while the campaign has an account
+    # that can work. With none, it is still leased, so the campaign says
+    # "no phone has linked it" and starts on its own once one does.
+    rows = await db.get_sending_accounts(
+        database, user_id=campaign.get("user_id"), platform=campaign.get("platform")
+    )
+    skip_unlinked = any(
+        linked(row) for row in rows
+        if (not assigned or row["id"] in assigned)
+        and row.get("enabled") and row.get("status") != ACCOUNT_PAUSED
+        and (row.get("purpose") or ACCOUNT_PURPOSE_SENDING) == ACCOUNT_PURPOSE_SENDING
+        and fits(row, campaign)
+    )
+
     params: dict[str, Any] = {
         "platform": campaign.get("platform") or "tiktok",
         "campaign_id": campaign["id"],
@@ -135,6 +159,7 @@ async def lease_account(
         "no_action": RESULT_ALREADY_FOLLOWING,
         "phone": ACCOUNT_VIA_PHONE,
         "phone_ok": phone_ok(campaign),
+        "skip_unlinked": skip_unlinked,
     }
     # Clauses are composed from a fixed vocabulary; every value is bound.
     owner_clause = ""
@@ -165,6 +190,9 @@ async def lease_account(
                   -- A phone account has no browser session: only work the
                   -- phone app can do.
                   AND (COALESCE(a.via, 'browser') <> :phone OR :phone_ok)
+                  AND (COALESCE(a.via, 'browser') <> :phone
+                       OR COALESCE(a.companion_device, '') <> ''
+                       OR NOT :skip_unlinked)
                   {owner_clause}
                   {assignment_clause}
                   -- free, or its lease has expired (worker crash)
