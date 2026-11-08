@@ -184,15 +184,18 @@ export function TikTokSettingsCard({
   // dirty, Post Now stays locked even if the form is "valid" — TikTok
   // requires consent be captured at the moment of Save (the consent_at
   // stamp is the music-usage acknowledgement).
+  // Compared as saved: a draft is saved with no privacy and a photo post
+  // with no Duet/Stitch, so what is left on screen for those is not a
+  // change — comparing it kept a saved inbox post "unsaved".
   const dirty = (
     postAsDraft     !== savedSnapshot.postAsDraft     ||
-    privacy         !== savedSnapshot.privacy         ||
+    (!postAsDraft && privacy !== savedSnapshot.privacy) ||
     discloseOn      !== savedSnapshot.discloseOn      ||
     yourBrand       !== savedSnapshot.yourBrand       ||
     brandedContent  !== savedSnapshot.brandedContent  ||
     allowComment    !== savedSnapshot.allowComment    ||
-    allowDuet       !== savedSnapshot.allowDuet       ||
-    allowStitch     !== savedSnapshot.allowStitch
+    (mediaType === "video" && allowDuet   !== savedSnapshot.allowDuet)   ||
+    (mediaType === "video" && allowStitch !== savedSnapshot.allowStitch)
   );
 
   // Persisted-validity: does the LAST SAVED state pass the rules? This

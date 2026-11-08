@@ -125,7 +125,10 @@ export function TikTokSetupCard({
 
   const dirty =
     draft !== snapshot.draft ||
-    privacy !== snapshot.privacy ||
+    // A draft is saved with no privacy (TikTok asks for it when it is
+    // published), so the choice left on screen is not a change: comparing
+    // it kept a saved inbox post "unsaved" and Post Now locked.
+    (!draft && privacy !== snapshot.privacy) ||
     disclose !== snapshot.disclose ||
     ownBrand !== snapshot.ownBrand ||
     branded !== snapshot.branded ||
