@@ -232,7 +232,10 @@ async def upload_photo_slideshow(
     post_mode = (kwargs.get("post_mode") or "DIRECT_POST").upper()
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
-    if post_mode == "MEDIA_UPLOAD":
+    # TikTok calls a photo draft MEDIA_UPLOAD and a video draft INBOX; every
+    # caller says INBOX. Recognising only MEDIA_UPLOAD sent "post as draft"
+    # slideshows to Direct Post, where an unaudited app is refused.
+    if post_mode in ("MEDIA_UPLOAD", "INBOX"):
         # Inbox / draft path. The slideshow lands in the creator's TikTok
         # inbox; they pick caption / privacy / disclosure inside the app.
         init_body = {
