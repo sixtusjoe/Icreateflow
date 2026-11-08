@@ -174,6 +174,10 @@ function Editor() {
   const [confirmPost, setConfirmPost] = useState(false);
   const [busy, setBusy] = useState(false);
   const [building, setBuilding] = useState<BuildProgress | null>(null);
+  // Bumped by the header's Preview: the last step loads the previews and
+  // scrolls to them. Switching step alone did nothing on that step, and
+  // left them behind "Load them".
+  const [previewAsk, setPreviewAsk] = useState(0);
 
   const reload = useCallback(async () => {
     if (!editId) return;
@@ -280,7 +284,13 @@ function Editor() {
           }
         />
         <PageActions>
-          <Chip icon={Eye} onClick={() => setStep(3)}>
+          <Chip
+            icon={Eye}
+            onClick={() => {
+              setStep(3);
+              setPreviewAsk((n) => n + 1);
+            }}
+          >
             Preview
           </Chip>
           <Chip icon={Download} onClick={() => downloadFile(post.id).catch(() => toast.error("Nothing built yet"))}>
@@ -362,6 +372,7 @@ function Editor() {
           onRebuild={() => setConfirmRebuild(true)}
           onPostNow={() => setConfirmPost(true)}
           building={building}
+          previewAsk={previewAsk}
         />
       )}
 
@@ -1371,6 +1382,7 @@ function GenerateStep({
   onRebuild,
   onPostNow,
   building,
+  previewAsk,
 }: {
   post: Post;
   accounts: Account[];
@@ -1382,6 +1394,7 @@ function GenerateStep({
   onRebuild: () => void;
   onPostNow: () => void;
   building: BuildProgress | null;
+  previewAsk: number;
 }) {
   const [validity, setValidity] = useState<Record<string, boolean>>({});
   const [time, setTime] = useState(post.scheduled_time?.slice(0, 5) ?? "");
@@ -1476,6 +1489,19 @@ function GenerateStep({
     if (!previewsLoaded) return;
     getOutputSlides(post.id).then(setPreviews).catch(() => {});
   }, [cacheKey, previewsLoaded, post.id]);
+
+  useEffect(() => {
+    if (!previewAsk) return;
+    getOutputSlides(post.id)
+      .then((p) => {
+        setPreviews(p);
+        // After the render that shows them, so the scroll lands on them.
+        requestAnimationFrame(() =>
+          document.getElementById("post-preview")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        );
+      })
+      .catch((e) => toast.error(apiErrorMessage(e, "Nothing built yet")));
+  }, [previewAsk, post.id]);
 
   // One video at a time: it renders over its own file, and pressing again
   // mid-render started another render of the same file.
@@ -1674,7 +1700,7 @@ function GenerateStep({
               </Card>
             )}
 
-            <Card>
+            <Card id="post-preview" className="scroll-mt-4">
               <CardHead
                 title="Preview"
                 sub="What each account will actually post"
