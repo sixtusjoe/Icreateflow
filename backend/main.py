@@ -5254,7 +5254,9 @@ async def update_variation_tiktok(
         row_d = dict(row)
 
         updates: dict = {}
-        for field, value in data.model_dump(exclude_unset=True).items():
+        # A variation posts many clips, each with its own caption: a title
+        # is per Brand post only, and variations have no column for it.
+        for field, value in data.model_dump(exclude_unset=True, exclude={"tiktok_title"}).items():
             updates[field] = value
 
         if "tiktok_privacy_level" in updates and updates["tiktok_privacy_level"] is not None:

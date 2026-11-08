@@ -259,7 +259,9 @@ export function TikTokSettingsCard({
         // that implies the user opted into them.
         tiktok_allow_duet:   mediaType === "video" ? allowDuet   : false,
         tiktok_allow_stitch: mediaType === "video" ? allowStitch : false,
-        tiktok_title: tiktokTitle.trim() || undefined,
+        // A variation posts many clips with their own captions; one title
+        // would replace them all, and variations have nowhere to keep it.
+        ...(creatorInfoKind === "variation" ? {} : { tiktok_title: tiktokTitle.trim() || undefined }),
       };
       await onSave(payload);
       const stampIso = new Date().toISOString();
@@ -326,7 +328,7 @@ export function TikTokSettingsCard({
 
           {/* Title — TikTok UX guideline Point 2a: editable title field.
               font-size ≥ 16px prevents iOS Safari from auto-zooming on focus. */}
-          <div>
+          {creatorInfoKind !== "variation" && <div>
             <label className="mb-1 block text-xs font-medium">Title</label>
             <textarea
               value={tiktokTitle}
@@ -336,7 +338,7 @@ export function TikTokSettingsCard({
               style={{ fontSize: "16px" }}
               className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/30"
             />
-          </div>
+          </div>}
 
           <label className="flex items-start gap-2 text-sm">
             <input

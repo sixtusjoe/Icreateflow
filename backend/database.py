@@ -273,6 +273,8 @@ class Output(Base):
     tiktok_allow_stitch: Mapped[bool] = mapped_column(Boolean, server_default="false")
     tiktok_privacy_level: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tiktok_consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # TikTok's caption for this post when set; the shared caption otherwise.
+    tiktok_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posted_as_draft: Mapped[bool] = mapped_column(Boolean, server_default="false")
     # Per-platform error messages from the last posting attempt.
     # NULL means no error (either not attempted, or succeeded).
@@ -1422,6 +1424,11 @@ async def _migrate_output_error_columns(conn) -> None:
         ))
     await conn.execute(text(
         "ALTER TABLE outputs ADD COLUMN IF NOT EXISTS tiktok_retry_after TIMESTAMP"
+    ))
+    # Added by hand on one database in June and never here, so every save
+    # of TikTok settings failed with "Unconsumed column names: tiktok_title".
+    await conn.execute(text(
+        "ALTER TABLE outputs ADD COLUMN IF NOT EXISTS tiktok_title TEXT"
     ))
 
 
