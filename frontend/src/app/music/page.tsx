@@ -3,10 +3,9 @@
 /** The music library.
  *
  *  A track here is backing audio for the rendered 9:16 videos — YouTube,
- *  Instagram and Facebook. TikTok is deliberately absent: a brand post
- *  reaches TikTok as a swipeable photo set and takes its sound from
- *  TikTok's own library, so nothing here ever gets there. The page says so
- *  rather than leaving it to be discovered.
+ *  Instagram, Facebook, and TikTok when an account posts TikTok as a video
+ *  rather than a swipeable photo set (a slideshow can carry no sound we
+ *  attach; TikTok adds one in the app).
  *
  *  `platforms_allowed` is the only real state a track carries, and it is
  *  not a preference — it is the operator's note on whether they hold a
@@ -72,9 +71,16 @@ type Track = {
   file_path: string;
 };
 
-/** The three the renderer can lay under a video. TikTok is not one of them. */
-const PLATS = ["youtube", "instagram", "facebook"] as const;
+/** Where the renderer can lay a track under a video. TikTok only when a
+ *  post goes there as a video. */
+const PLATS = ["youtube", "instagram", "facebook", "tiktok"] as const;
 type Plat = (typeof PLATS)[number];
+const PLAT_LABEL: Record<Plat, string> = {
+  youtube: "YouTube",
+  instagram: "Instagram",
+  facebook: "Facebook",
+  tiktok: "TikTok",
+};
 
 const allowedSet = (t: Track) =>
   new Set(
@@ -231,7 +237,7 @@ export default function MusicPage() {
   return (
     <>
       <PageHead>
-        <PageTitle title="Music" sub="Backing tracks for the rendered videos. Nothing here reaches TikTok." />
+        <PageTitle title="Music" sub="Backing tracks for the rendered videos, TikTok's included when a post goes there as a video." />
         <PageActions>
           <Chip href="/posts" icon={FileText}>
             Posts
@@ -282,12 +288,12 @@ export default function MusicPage() {
                       { label: "YOUTUBE", value: per.youtube },
                       { label: "INSTAGRAM", value: per.instagram },
                       { label: "FACEBOOK", value: per.facebook },
-                      { label: "TIKTOK", value: 0 },
+                      { label: "TIKTOK", value: per.tiktok },
                     ]}
                   />
                   <p className="relative mt-4 pl-[19px] text-[11px] leading-[1.5] text-subtle">
                     <Info className="absolute left-0 top-[2px] h-3 w-3" />
-                    TikTok is zero and always will be — a brand post gets a photo set there, and the sound is chosen
+                    TikTok uses a track only for accounts that post TikTok as a video. A slideshow gets its sound
                     inside TikTok.
                   </p>
                 </CardBody>
@@ -299,7 +305,7 @@ export default function MusicPage() {
                 <CardBody className="pt-3">
                   {gaps.length === 0 ? (
                     <p className="text-[12.5px] leading-[1.5] text-subtle">
-                      Every track is marked as cleared for all three.
+                      Every track is marked as cleared everywhere.
                     </p>
                   ) : (
                     <div className="flex flex-col gap-[9px]">
@@ -423,8 +429,8 @@ function EmptyLibrary({ onUpload }: { onUpload: () => void }) {
     },
     {
       icon: null,
-      title: "TikTok never uses these",
-      body: "A brand post reaches TikTok as a photo set and takes its sound from TikTok's own library",
+      title: "TikTok, as a video",
+      body: "Used on TikTok only when an account posts it as a video; a slideshow gets its sound in TikTok",
     },
   ];
   return (
@@ -516,7 +522,7 @@ function TrackRow({
       <div className="flex flex-none items-center gap-[2px] rounded-[10px] border border-border bg-secondary p-[2px]">
         {PLATS.map((p) => {
           const on = allowed.has(p);
-          const label = p === "youtube" ? "YouTube" : p === "instagram" ? "Instagram" : "Facebook";
+          const label = PLAT_LABEL[p];
           return (
             <button
               key={p}
@@ -552,7 +558,14 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
   const [genre, setGenre] = useState("");
-  const [cleared, setCleared] = useState<Record<Plat, boolean>>({ youtube: true, instagram: true, facebook: true });
+  // TikTok starts unticked, as the server stores a new track: a licence
+  // for the other three says nothing about TikTok.
+  const [cleared, setCleared] = useState<Record<Plat, boolean>>({
+    youtube: true,
+    instagram: true,
+    facebook: true,
+    tiktok: false,
+  });
   const [busy, setBusy] = useState(false);
   const picker = useRef<HTMLInputElement | null>(null);
 
@@ -560,7 +573,7 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
     setFile(null);
     setName("");
     setGenre("");
-    setCleared({ youtube: true, instagram: true, facebook: true });
+    setCleared({ youtube: true, instagram: true, facebook: true, tiktok: false });
   };
 
   const pick = (f: File | null) => {
@@ -575,10 +588,10 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
     setBusy(true);
     try {
       const track = await uploadMusicTrack(name.trim(), genre.trim(), file);
-      // The server clears a new track for all three. Only correct it when the
-      // operator asked for something narrower.
+      // The server clears a new track for YouTube, Instagram and Facebook.
+      // Only correct it when the operator asked for something else.
       const want = PLATS.filter((p) => cleared[p]);
-      if (want.length !== PLATS.length) {
+      if (want.join(",") !== "youtube,instagram,facebook") {
         await updateMusicTrack(track.id, { platforms_allowed: want.join(",") });
       }
       toast.success(`${name.trim()} uploaded`);
@@ -648,7 +661,7 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
               <Checkbox key={p} checked={cleared[p]} onChange={(v) => setCleared((c) => ({ ...c, [p]: v }))}>
                 <span className="flex items-center gap-2">
                   <PlatformIcon platform={p} className="h-[13px] w-[13px] text-subtle" />
-                  {p === "youtube" ? "YouTube" : p === "instagram" ? "Instagram" : "Facebook"}
+                  {PLAT_LABEL[p]}
                 </span>
               </Checkbox>
             ))}

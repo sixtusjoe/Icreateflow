@@ -171,7 +171,7 @@ async def render_account_slides(
     return slides_dir, slide_9x16_paths
 
 
-PLATFORM_NAMES = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook"}
+PLATFORM_NAMES = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok": "TikTok"}
 
 
 async def generate_post(post_id: int, database, on_step=None) -> dict:
@@ -218,6 +218,9 @@ async def generate_post(post_id: int, database, on_step=None) -> dict:
             await _music_path(post.get(f"{plat}_music_track_id"))
             or music_path
         )
+    # TikTok's own pick only: a track is cleared per platform, so it never
+    # borrows another platform's.
+    platform_music["tiktok"] = await _music_path(post.get("tiktok_music_track_id"))
 
     # If the legacy music slot is empty, fall back to any per-platform
     # selection (in priority order). This keeps video.mp4 from rendering
@@ -240,7 +243,7 @@ async def generate_post(post_id: int, database, on_step=None) -> dict:
     # Progress for the page: steps done of steps in all, and what is being
     # made now. Each account is its slides, the main video, then one video
     # per platform — a build takes minutes and showed nothing meanwhile.
-    steps_each = 5
+    steps_each = 6
     total_steps = steps_each * len(accounts)
     step_no = 0
 
@@ -270,7 +273,12 @@ async def generate_post(post_id: int, database, on_step=None) -> dict:
             # backward compatibility, plus per-platform renders (YT/IG/FB) with
             # platform-appropriate caps and per-platform music selection.
             video_path = None
-            platform_paths = {"youtube": None, "instagram": None, "facebook": None}
+            platform_paths = {"youtube": None, "instagram": None, "facebook": None, "tiktok": None}
+            # The master skips TikTok; everyone else gets a TikTok video
+            # too, for when that account posts TikTok as a video.
+            platforms = ("youtube", "instagram", "facebook") + (
+                () if account.get("role") == "master" else ("tiktok",)
+            )
             if len(slide_9x16_paths) >= 2:
                 video_path = str(out_dir / "video.mp4")
                 step(f"{account_name}: video")
@@ -285,7 +293,7 @@ async def generate_post(post_id: int, database, on_step=None) -> dict:
                     video_path = None
                     print(f"Video generation failed for {account_name}: {e}")
 
-                for plat in ("youtube", "instagram", "facebook"):
+                for plat in platforms:
                     out_p = str(out_dir / f"video_{plat}.mp4")
                     step(f"{account_name}: {PLATFORM_NAMES[plat]} video")
                     try:
@@ -318,6 +326,7 @@ async def generate_post(post_id: int, database, on_step=None) -> dict:
                     youtube_video_path=platform_paths["youtube"],
                     instagram_video_path=platform_paths["instagram"],
                     facebook_video_path=platform_paths["facebook"],
+                    tiktok_video_path=platform_paths["tiktok"],
                     posting_status="ready"
                 )
             else:
@@ -328,6 +337,7 @@ async def generate_post(post_id: int, database, on_step=None) -> dict:
                     youtube_video_path=platform_paths["youtube"],
                     instagram_video_path=platform_paths["instagram"],
                     facebook_video_path=platform_paths["facebook"],
+                    tiktok_video_path=platform_paths["tiktok"],
                     posting_status="ready"
                 )
 

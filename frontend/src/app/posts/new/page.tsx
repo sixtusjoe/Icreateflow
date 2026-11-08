@@ -60,6 +60,7 @@ import {
   regenerateVideo,
   rerunOcr,
   schedulePost,
+  setPostTikTokFormat,
   unschedulePost,
   updateSlide,
   uploadSlideImage,
@@ -108,7 +109,7 @@ import { SlideImage } from "@/components/post/slide-image";
 import { TikTokSetupCard, type OutputRow } from "@/components/post/tiktok-setup";
 
 /** The three that get a rendered video. TikTok gets a photo set instead. */
-const VIDEO_PLATFORMS = ["youtube", "instagram", "facebook"] as const;
+const VIDEO_PLATFORMS = ["youtube", "instagram", "facebook", "tiktok"] as const;
 type VideoPlatform = (typeof VIDEO_PLATFORMS)[number];
 const PLAT_NAME: Record<string, string> = {
   tiktok: "TikTok",
@@ -1403,12 +1404,28 @@ function GenerateStep({
   const [previewAccount, setPreviewAccount] = useState(0);
   const [platform, setPlatform] = useState<VideoPlatform>("youtube");
   const [rebuilding, setRebuilding] = useState<VideoPlatform | null>(null);
+  // Both are built; this picks which one TikTok is sent.
+  const [tiktokAsVideo, setTiktokAsVideo] = useState(
+    !!(post as unknown as Record<string, unknown>).tiktok_as_video,
+  );
+  const saveTiktokFormat = async (asVideo: boolean) => {
+    const was = tiktokAsVideo;
+    setTiktokAsVideo(asVideo);
+    try {
+      await setPostTikTokFormat(post.id, asVideo);
+      toast.success(asVideo ? "TikTok gets the video, with its music" : "TikTok gets the slides");
+    } catch (e) {
+      setTiktokAsVideo(was);
+      toast.error(apiErrorMessage(e, "Could not change that"));
+    }
+  };
   const [editing, setEditing] = useState<{ accountId: number; name: string; index: number } | null>(null);
   const [tracks, setTracks] = useState<{ id: number; name: string; platforms_allowed?: string | null }[]>([]);
   const [music, setMusic] = useState<Record<VideoPlatform, number | null>>({
     youtube: (post as unknown as Record<string, number | null>).youtube_music_track_id ?? null,
     instagram: (post as unknown as Record<string, number | null>).instagram_music_track_id ?? null,
     facebook: (post as unknown as Record<string, number | null>).facebook_music_track_id ?? null,
+    tiktok: (post as unknown as Record<string, number | null>).tiktok_music_track_id ?? null,
   });
 
   useEffect(() => {
@@ -1431,7 +1448,10 @@ function GenerateStep({
   // A video is only rendered for a platform some account can actually post
   // to. Counting all three would promise files that are never made.
   const linkedVideoPlatforms = VIDEO_PLATFORMS.filter((p) => accounts.some((a) => a[`${p}_token`]));
-  const unlinkedVideoPlatforms = VIDEO_PLATFORMS.filter((p) => !accounts.some((a) => a[`${p}_token`]));
+  // TikTok's video is built either way, for accounts that post it as one.
+  const unlinkedVideoPlatforms = VIDEO_PLATFORMS.filter(
+    (p) => p !== "tiktok" && !accounts.some((a) => a[`${p}_token`]),
+  );
   // An output row is not a build. TikTok's settings create a row before
   // anything is rendered, so "built" has to mean a row that points at
   // files — otherwise saving a privacy setting makes the page claim the
@@ -1647,6 +1667,25 @@ function GenerateStep({
                     there.
                   </Hint>
                 )}
+                <div className="mt-4 flex flex-wrap items-center gap-2.5 rounded-[13px] border border-border bg-secondary px-3.5 py-2.5">
+                  <PlatformIcon platform="tiktok" className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[12.5px] font-semibold leading-normal">TikTok gets</span>
+                    <span className="block text-[11px] leading-normal text-subtle">
+                      {tiktokAsVideo
+                        ? "The TikTok video, with the TikTok track from the Music card"
+                        : "The swipeable slides — TikTok adds a sound in the app"}
+                    </span>
+                  </span>
+                  <Tabs
+                    value={tiktokAsVideo ? "video" : "slides"}
+                    onChange={(k) => saveTiktokFormat(k === "video")}
+                    items={[
+                      { key: "slides", label: "Slides" },
+                      { key: "video", label: "Video" },
+                    ]}
+                  />
+                </div>
                 <Hint>Takes a couple of minutes. You can leave the page — it keeps going.</Hint>
               </CardBody>
             </Card>
@@ -1986,8 +2025,9 @@ function GenerateStep({
                   );
                 })}
                 <Hint>
-                  TikTok is not in this list. It gets a swipeable photo post, and the sound is picked from TikTok&apos;s
-                  own library when it publishes.
+                  TikTok&apos;s track is used when TikTok gets the video (the switch in Build the files). Slides
+                  can&apos;t carry a sound — TikTok adds one in the app. Only tracks cleared for TikTok in the music
+                  library are offered.
                 </Hint>
                 <div className="mt-2.5">
                   <Chip href="/music" icon={ArrowRight} className="w-full justify-center">

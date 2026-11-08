@@ -133,6 +133,7 @@ PLATFORM_PROFILES = {
     "youtube":   {"slide_duration": 3.0, "max_duration": 60.0},   # Shorts cap
     "instagram": {"slide_duration": 3.0, "max_duration": 90.0},   # Reels cap
     "facebook":  {"slide_duration": 3.0, "max_duration": 90.0},   # Match Reels cap
+    "tiktok":    {"slide_duration": 3.0, "max_duration": 90.0},   # well inside TikTok's limit
 }
 
 

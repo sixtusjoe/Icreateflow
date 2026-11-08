@@ -1769,7 +1769,7 @@ async def dispatch_brand_posts_once() -> None:
                                 # Use per-output tiktok_title if set; fall back to
                                 # shared scraped caption so other platforms are unaffected.
                                 tt_caption = out.get("tiktok_title") or caption
-                                if slide_urls:
+                                if slide_urls and not post.get("tiktok_as_video"):
                                     slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
                                                        if k not in ("disable_duet", "disable_stitch")}
                                     res = await _tt.upload_photo_slideshow(
@@ -1777,7 +1777,7 @@ async def dispatch_brand_posts_once() -> None:
                                         proxy_url=account_proxy, **slideshow_kwargs,
                                     )
                                 else:
-                                    plat_url = _public_video_url(None)
+                                    plat_url = _tt.video_url_for(bool(post.get("tiktok_as_video")), out, _public_video_url)
                                     if not plat_url:
                                         per_platform[name] = {"status": "skipped", "reason": "no video rendered"}
                                         continue
@@ -1868,6 +1868,7 @@ async def dispatch_brand_posts_once() -> None:
                 """
                 SELECT o.id AS output_id, o.post_id, o.account_id,
                        o.slides_dir, o.video_path,
+                       p.tiktok_as_video, o.tiktok_video_path,
                        o.tiktok_post_as_draft, o.tiktok_privacy_level,
                        o.tiktok_allow_comment, o.tiktok_allow_duet,
                        o.tiktok_allow_stitch,
@@ -1947,7 +1948,7 @@ async def dispatch_brand_posts_once() -> None:
                         }
 
                     account_proxy = account.get("proxy_url") or None
-                    if slide_urls:
+                    if slide_urls and not drow.get("tiktok_as_video"):
                         slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
                                             if k not in ("disable_duet", "disable_stitch")}
                         res = await _tt.upload_photo_slideshow(
@@ -1955,7 +1956,7 @@ async def dispatch_brand_posts_once() -> None:
                             proxy_url=account_proxy, **slideshow_kwargs,
                         )
                     else:
-                        plat_url = _pub_url(None)
+                        plat_url = _tt.video_url_for(bool(drow.get("tiktok_as_video")), drow, _pub_url)
                         if not plat_url:
                             continue
                         res = await _tt.upload_video(

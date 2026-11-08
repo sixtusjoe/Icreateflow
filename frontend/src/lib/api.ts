@@ -290,7 +290,7 @@ export const regenerateSlide = (postId: number, data: {
 export const regenerateVideo = (
   postId: number,
   accountId: number,
-  platform?: "youtube" | "instagram" | "facebook",
+  platform?: "youtube" | "instagram" | "facebook" | "tiktok",
 ) =>
   api
     .post(`/api/posts/${postId}/regenerate-video`, { account_id: accountId, platform })
@@ -302,8 +302,13 @@ export const updatePostMusic = (
     youtube_music_track_id?: number | null;
     instagram_music_track_id?: number | null;
     facebook_music_track_id?: number | null;
+    tiktok_music_track_id?: number | null;
   },
 ) => api.put(`/api/posts/${postId}/music`, data).then((r) => r.data);
+
+/** Whether TikTok gets the post's slides or its TikTok video. */
+export const setPostTikTokFormat = (postId: number, asVideo: boolean) =>
+  api.put(`/api/posts/${postId}/tiktok-format`, { as_video: asVideo }).then((r) => r.data);
 
 // --- Downloads ---
 export const downloadFile = async (postId: number, accountId?: number) => {

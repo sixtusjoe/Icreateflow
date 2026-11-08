@@ -202,6 +202,10 @@ class Post(Base):
     youtube_music_track_id:   Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
     instagram_music_track_id: Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
     facebook_music_track_id:  Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
+    # TikTok gets the post's video (with tiktok_music_track_id) instead of
+    # its slides. TikTok lets no app put a sound on a slideshow.
+    tiktok_as_video:          Mapped[bool] = mapped_column(Boolean, server_default="false")
+    tiktok_music_track_id:    Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
     scheduled_time: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
@@ -256,6 +260,7 @@ class Output(Base):
     youtube_video_path:   Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     instagram_video_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     facebook_video_path:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tiktok_video_path:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     posting_status: Mapped[str] = mapped_column(Text, server_default="pending")
     tiktok_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
     youtube_posted: Mapped[bool] = mapped_column(Boolean, server_default="false")
@@ -1388,6 +1393,8 @@ async def _migrate_per_platform_post_columns(conn) -> None:
         ("youtube_music_track_id", "INTEGER"),
         ("instagram_music_track_id", "INTEGER"),
         ("facebook_music_track_id", "INTEGER"),
+        ("tiktok_music_track_id", "INTEGER"),
+        ("tiktok_as_video", "BOOLEAN DEFAULT FALSE"),
     ]
     for name, typ in post_cols:
         await conn.execute(text(f"ALTER TABLE posts ADD COLUMN IF NOT EXISTS {name} {typ}"))
@@ -1396,6 +1403,7 @@ async def _migrate_per_platform_post_columns(conn) -> None:
         ("youtube_video_path", "TEXT"),
         ("instagram_video_path", "TEXT"),
         ("facebook_video_path", "TEXT"),
+        ("tiktok_video_path", "TEXT"),
     ]
     for name, typ in output_cols:
         await conn.execute(text(f"ALTER TABLE outputs ADD COLUMN IF NOT EXISTS {name} {typ}"))

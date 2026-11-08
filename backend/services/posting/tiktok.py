@@ -198,6 +198,21 @@ async def upload_video(
         raise PostingError("TikTok publish timed out")
 
 
+def video_url_for(as_video: bool, output: dict, public_url) -> str | None:
+    """The video a Brand output sends to TikTok, as a public URL, or None.
+
+    `as_video` is the post's TikTok switch. Posted as a video, it is the
+    TikTok render — built with the post's TikTok music — and nothing stands
+    in for it: the shared video carries another platform's track, which may
+    not be cleared for TikTok. Posted as slides, the shared video is only
+    the fallback for no slides. `public_url(platform_or_None)` is the
+    caller's path-to-URL helper.
+    """
+    if as_video:
+        return public_url("tiktok") if output.get("tiktok_video_path") else None
+    return public_url(None)
+
+
 async def upload_photo_slideshow(
     access_token: str,
     photo_urls: list[str],

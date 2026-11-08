@@ -436,6 +436,7 @@ class PostMusic(BaseModel):
     youtube_music_track_id: Optional[int] = None
     instagram_music_track_id: Optional[int] = None
     facebook_music_track_id: Optional[int] = None
+    tiktok_music_track_id: Optional[int] = None
 
 class TikTokSettingsPayload(BaseModel):
     """TikTok Direct Post API settings, used both for per-(post, variation)
@@ -3110,6 +3111,7 @@ async def list_output_slides(post_id: int, user: dict = Depends(get_current_user
                 "youtube_video_path": out.get("youtube_video_path"),
                 "instagram_video_path": out.get("instagram_video_path"),
                 "facebook_video_path": out.get("facebook_video_path"),
+                "tiktok_video_path": out.get("tiktok_video_path"),
                 "posting_status": out["posting_status"],
             })
         return result
@@ -3278,7 +3280,7 @@ async def regenerate_single_slide(post_id: int, data: RegenerateSlide, user: dic
 
 class RegenerateVideo(BaseModel):
     account_id: int
-    platform: Optional[str] = None  # "youtube" | "instagram" | "facebook"; None = legacy shared video
+    platform: Optional[str] = None  # "youtube" | "instagram" | "facebook" | "tiktok"; None = legacy shared video
 
 
 async def _music_path_for(database, post: dict, platform: Optional[str]) -> Optional[str]:
@@ -3293,9 +3295,14 @@ async def _music_path_for(database, post: dict, platform: Optional[str]) -> Opti
     candidates = []
     if platform:
         candidates.append(post.get(f"{platform}_music_track_id"))
-    candidates.append(post.get("music_track_id"))
+    if platform == "tiktok":
+        # Its own pick or none: a track is cleared per platform, and the
+        # others' may not be cleared for TikTok.
+        candidates = candidates[:1]
+    else:
+        candidates.append(post.get("music_track_id"))
     for plat in ("youtube", "instagram", "facebook"):
-        if platform != plat:
+        if platform not in (plat, "tiktok"):
             candidates.append(post.get(f"{plat}_music_track_id"))
     for tid in candidates:
         if not tid:
@@ -3435,6 +3442,26 @@ async def update_post_music(post_id: int, data: PostMusic, user: dict = Depends(
 
         await db.update_post(database, post_id, **updates)
         return {"ok": True, **updates}
+    finally:
+        await database.close()
+
+
+class PostTikTokFormat(BaseModel):
+    as_video: bool
+
+
+@app.put("/api/posts/{post_id}/tiktok-format")
+async def update_post_tiktok_format(post_id: int, data: PostTikTokFormat, user: dict = Depends(get_current_user)):
+    """Whether TikTok gets this post's slides or its TikTok video (with the
+    TikTok music). Both are built; this only picks which one is sent."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+        await db.update_post(database, post_id, tiktok_as_video=data.as_video)
+        return {"ok": True, "tiktok_as_video": data.as_video}
     finally:
         await database.close()
 
@@ -3830,7 +3857,7 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                         if tt_err:
                             per_platform[name] = {"status": "failed", "error": tt_err}
                             continue
-                        if slide_urls:
+                        if slide_urls and not post.get("tiktok_as_video"):
                             # Swipeable photo slideshow. Duet/Stitch don't
                             # apply to photo posts — strip those kwargs.
                             slideshow_kwargs = {
@@ -3843,7 +3870,7 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                                 **slideshow_kwargs,
                             )
                         else:
-                            plat_url = _public_video_url(None)
+                            plat_url = _tt.video_url_for(bool(post.get("tiktok_as_video")), out, _public_video_url)
                             if not plat_url:
                                 per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
                                 continue
@@ -3899,13 +3926,13 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                     # Auto-fallback to INBOX when TikTok rejects DIRECT_POST for unaudited apps
                     if name == "tiktok" and "unaudited_client_can_only_post_to_private_accounts" in err_msg.lower():
                         try:
-                            if slide_urls:
+                            if slide_urls and not post.get("tiktok_as_video"):
                                 res = await _tt.upload_photo_slideshow(
                                     token, slide_urls, caption,
                                     proxy_url=account_proxy, post_mode="INBOX",
                                 )
                             else:
-                                _pu = _public_video_url(None)
+                                _pu = _tt.video_url_for(bool(post.get("tiktok_as_video")), out, _public_video_url)
                                 if not _pu:
                                     raise RuntimeError("no_video")
                                 res = await _tt.upload_video(
@@ -4056,7 +4083,7 @@ async def retry_output(
         # Ownership check: output → post → brand → user
         cur = await database.execute(
             """
-            SELECT o.*, p.caption, p.brand_id, p.status AS post_status
+            SELECT o.*, p.caption, p.brand_id, p.status AS post_status, p.tiktok_as_video
             FROM outputs o
             JOIN posts p ON p.id = o.post_id
             WHERE o.id = ?
@@ -4207,7 +4234,7 @@ async def retry_output(
                             "brand_content_toggle": bool(out.get("tiktok_disclose_branded_content")),
                             "brand_organic_toggle": bool(out.get("tiktok_disclose_your_brand")),
                         }
-                    if slide_urls:
+                    if slide_urls and not out.get("tiktok_as_video"):
                         slideshow_kwargs = {k: v for k, v in tt_kwargs.items()
                                             if k not in ("disable_duet", "disable_stitch")}
                         res = await _tt.upload_photo_slideshow(
@@ -4215,7 +4242,7 @@ async def retry_output(
                             proxy_url=account_proxy, **slideshow_kwargs,
                         )
                     else:
-                        plat_url = _public_video_url(None)
+                        plat_url = _tt.video_url_for(bool(out.get("tiktok_as_video")), out, _public_video_url)
                         if not plat_url:
                             per_platform[plat] = {"status": "skipped", "reason": "no video"}
                             continue
@@ -4257,13 +4284,13 @@ async def retry_output(
                 # Auto-fallback to INBOX when TikTok rejects DIRECT_POST for unaudited apps
                 if plat == "tiktok" and "unaudited_client_can_only_post_to_private_accounts" in err_msg.lower():
                     try:
-                        if slide_urls:
+                        if slide_urls and not out.get("tiktok_as_video"):
                             res = await _tt.upload_photo_slideshow(
                                 token, slide_urls, caption,
                                 proxy_url=account_proxy, post_mode="INBOX",
                             )
                         else:
-                            _pu = _public_video_url(None)
+                            _pu = _tt.video_url_for(bool(out.get("tiktok_as_video")), out, _public_video_url)
                             if not _pu:
                                 raise RuntimeError("no_video")
                             res = await _tt.upload_video(
