@@ -3105,6 +3105,11 @@ async def list_output_slides(post_id: int, user: dict = Depends(get_current_user
                 "slides_3x4": slides_3x4,
                 "slides_9x16": slides_9x16,
                 "video_path": out["video_path"],
+                # The page's video tabs read these; without them every
+                # platform tab said "Not built" with the files on disk.
+                "youtube_video_path": out.get("youtube_video_path"),
+                "instagram_video_path": out.get("instagram_video_path"),
+                "facebook_video_path": out.get("facebook_video_path"),
                 "posting_status": out["posting_status"],
             })
         return result
@@ -3418,12 +3423,15 @@ async def update_post_music(post_id: int, data: PostMusic, user: dict = Depends(
             raise HTTPException(404, "Post not found")
         await verify_brand_ownership(post["brand_id"], user)
 
-        updates: dict = {}
-        for plat in ("youtube", "instagram", "facebook"):
-            col = f"{plat}_music_track_id"
-            val = getattr(data, col)
-            # Interpret 0 as clear; anything else (incl None-left-unchanged) handled below
-            updates[col] = val if val else None
+        # Only the platforms sent. The page sends one at a time, and setting
+        # all three cleared the other two: picking Facebook's track wiped
+        # YouTube's. A sent null or 0 clears that platform.
+        updates: dict = {
+            col: (val or None)
+            for col, val in data.model_dump(exclude_unset=True).items()
+        }
+        if not updates:
+            return {"ok": True}
 
         await db.update_post(database, post_id, **updates)
         return {"ok": True, **updates}

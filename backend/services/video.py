@@ -4,6 +4,7 @@ Creates 9:16 videos with left-slide transitions from slide images.
 Optionally mixes in background music.
 """
 import asyncio
+import os
 import subprocess
 import shutil
 from pathlib import Path
@@ -75,6 +76,8 @@ async def build_video(slide_paths: list[str], output_path: str,
     # applied to input url" — and silently produced an audio-less video.
     has_music = bool(music_path) and Path(music_path).exists()
 
+    out = Path(output_path)
+    part = out.with_name(f"{out.stem}.part{out.suffix}")
     cmd = ["ffmpeg", "-y", *inputs]
     if has_music:
         cmd.extend(["-i", str(music_path)])
@@ -97,7 +100,7 @@ async def build_video(slide_paths: list[str], output_path: str,
         "-pix_fmt", "yuv420p",
         "-r", str(fps),
         "-movflags", "+faststart",
-        str(output_path)
+        str(part)
     ])
 
     proc = await asyncio.create_subprocess_exec(
@@ -107,7 +110,11 @@ async def build_video(slide_paths: list[str], output_path: str,
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
+        part.unlink(missing_ok=True)
         raise RuntimeError(f"FFmpeg failed: {stderr.decode()[-500:]}")
+    # Into place only when whole: written in place, the file sat empty for
+    # the whole render, and a page loading it then showed no video.
+    os.replace(part, output_path)
 
     return output_path
 

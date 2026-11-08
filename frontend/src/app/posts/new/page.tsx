@@ -1389,6 +1389,7 @@ function GenerateStep({
   const [previews, setPreviews] = useState<Record<string, unknown>[] | null>(null);
   const [previewAccount, setPreviewAccount] = useState(0);
   const [platform, setPlatform] = useState<VideoPlatform>("youtube");
+  const [rebuilding, setRebuilding] = useState<VideoPlatform | null>(null);
   const [editing, setEditing] = useState<{ accountId: number; name: string; index: number } | null>(null);
   const [tracks, setTracks] = useState<{ id: number; name: string; platforms_allowed?: string | null }[]>([]);
   const [music, setMusic] = useState<Record<VideoPlatform, number | null>>({
@@ -1467,6 +1468,30 @@ function GenerateStep({
     cta_text: s.cta_text,
     imageUrl: s.master_image_path ? fileUrl(s.master_image_path) : undefined,
   }));
+
+  // Loaded on request, then kept fresh: a build or a rebuild bumps
+  // cacheKey, and the paths it makes have to reach the video tabs.
+  const previewsLoaded = previews !== null;
+  useEffect(() => {
+    if (!previewsLoaded) return;
+    getOutputSlides(post.id).then(setPreviews).catch(() => {});
+  }, [cacheKey, previewsLoaded, post.id]);
+
+  // One video at a time: it renders over its own file, and pressing again
+  // mid-render started another render of the same file.
+  const rebuild = async (accountId: number, plat: VideoPlatform) => {
+    if (rebuilding) return;
+    setRebuilding(plat);
+    try {
+      await regenerateVideo(post.id, accountId, plat);
+      toast.success(`The ${PLAT_NAME[plat]} video is rebuilt`);
+      onChange();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Could not rebuild that"));
+    } finally {
+      setRebuilding(null);
+    }
+  };
 
   const current = previews?.[previewAccount] as
     | { account_id: number; account_name: string; account_role: string; slides_3x4?: string[]; [k: string]: unknown }
@@ -1668,13 +1693,8 @@ function GenerateStep({
                       {
                         icon: RefreshCw,
                         label: "Rebuild this account",
-                        onClick: () =>
-                          regenerateVideo(post.id, Number(current?.account_id), platform)
-                            .then(() => {
-                              toast.success("Rebuilding");
-                              onChange();
-                            })
-                            .catch((e) => toast.error(apiErrorMessage(e, "Could not rebuild that"))),
+                        disabled: !!rebuilding,
+                        onClick: () => rebuild(Number(current?.account_id), platform),
                       },
                     ]}
                   />
@@ -1779,18 +1799,12 @@ function GenerateStep({
                         items={VIDEO_PLATFORMS.map((p) => ({ key: p, label: PLAT_NAME[p] }))}
                       />
                       <Chip
-                        icon={RefreshCw}
+                        icon={rebuilding ? Spinning : RefreshCw}
                         className="ml-auto"
-                        onClick={() =>
-                          regenerateVideo(post.id, Number(current?.account_id), platform)
-                            .then(() => {
-                              toast.success(`Rebuilding the ${PLAT_NAME[platform]} video`);
-                              onChange();
-                            })
-                            .catch((e) => toast.error(apiErrorMessage(e, "Could not rebuild that")))
-                        }
+                        disabled={!!rebuilding}
+                        onClick={() => rebuild(Number(current?.account_id), platform)}
                       >
-                        Rebuild {PLAT_NAME[platform]}
+                        {rebuilding ? `Rebuilding ${PLAT_NAME[rebuilding]}…` : `Rebuild ${PLAT_NAME[platform]}`}
                       </Chip>
                     </div>
                     <VideoBox src={current?.[`${platform}_video_path`] as string | undefined} cacheKey={cacheKey} />
@@ -1985,6 +1999,10 @@ function Stat({ n, label, note }: { n: number; label: string; note?: string }) {
       {note && <span className="mt-0.5 block text-[10px] leading-normal text-subtle">{note}</span>}
     </div>
   );
+}
+
+function Spinning({ className = "" }: { className?: string }) {
+  return <Loader2 className={`${className} animate-spin`} />;
 }
 
 function VideoBox({ src, cacheKey }: { src?: string; cacheKey: number }) {
