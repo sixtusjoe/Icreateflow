@@ -3593,10 +3593,17 @@ async def generate_post_content(post_id: int, background_tasks: BackgroundTasks,
 
     generation_status[post_id] = {"status": "generating", "progress": 0}
 
+    def on_step(done: int, total: int, label: str) -> None:
+        generation_status[post_id] = {
+            "status": "generating",
+            "progress": round(100 * done / total) if total else 0,
+            "step": label,
+        }
+
     async def run_generation():
         database = await db.get_db()
         try:
-            result = await generator.generate_post(post_id, database)
+            result = await generator.generate_post(post_id, database, on_step=on_step)
             generation_status[post_id] = {"status": "done", "result": result}
         except Exception as e:
             generation_status[post_id] = {"status": "error", "error": str(e)}

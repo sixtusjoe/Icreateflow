@@ -26,6 +26,7 @@ import {
   Check,
   ChevronDown,
   Clock,
+  Loader2,
   Copy,
   Download,
   Eye,
@@ -172,6 +173,7 @@ function Editor() {
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [confirmPost, setConfirmPost] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [building, setBuilding] = useState<BuildProgress | null>(null);
 
   const reload = useCallback(async () => {
     if (!editId) return;
@@ -191,6 +193,31 @@ function Editor() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     reload();
   }, [reload]);
+
+  // One watcher per page, whether the build started here or elsewhere.
+  const stopWatch = useRef<(() => void) | null>(null);
+  const follow = useCallback(
+    (id: number) => {
+      if (stopWatch.current) return;
+      setBuilding({ progress: 0, step: "" });
+      stopWatch.current = watchBuild(id, setBuilding, () => {
+        stopWatch.current = null;
+        reload();
+      });
+    },
+    [reload],
+  );
+  useEffect(() => () => stopWatch.current?.(), []);
+
+  // A build started on another visit is still running: show it here too.
+  const postId = post?.id;
+  const generating = post?.status === "generating";
+  useEffect(() => {
+    // Syncing with the server's build, not deriving state: the page has to
+    // start following it the moment it learns one is running.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (postId && generating) follow(postId);
+  }, [postId, generating, follow]);
 
   const accounts = post?.brand?.accounts ?? [];
   const master = accounts.find((a) => a.role === "master");
@@ -334,6 +361,7 @@ function Editor() {
           onZoom={setZoom}
           onRebuild={() => setConfirmRebuild(true)}
           onPostNow={() => setConfirmPost(true)}
+          building={building}
         />
       )}
 
@@ -373,7 +401,7 @@ function Editor() {
         onConfirm={async () => {
           setBusy(true);
           setConfirmRebuild(false);
-          await build(post.id, reload);
+          await build(post.id, follow);
           setBusy(false);
         }}
         title="Build it all again?"
@@ -452,24 +480,47 @@ async function runOcr(postId: number, after: () => void) {
   }
 }
 
-async function build(postId: number, after: () => void) {
+type BuildProgress = { progress: number; step: string };
+
+async function build(postId: number, follow: (id: number) => void) {
   try {
     await generatePost(postId);
-    toast.success("Building — you can leave the page");
-    const tick = setInterval(async () => {
-      try {
-        const s = await getGenerationStatus(postId);
-        if (s?.status && s.status !== "generating") {
-          clearInterval(tick);
-          after();
-        }
-      } catch {
-        clearInterval(tick);
-      }
-    }, 4000);
+    follow(postId);
   } catch (e) {
     toast.error(apiErrorMessage(e, "Could not start the build"));
   }
+}
+
+/** Follow a running build until it ends; returns a stop function. */
+function watchBuild(
+  postId: number,
+  onProgress: (p: BuildProgress | null) => void,
+  after: () => void,
+): () => void {
+  let stopped = false;
+  const tick = setInterval(async () => {
+    try {
+      const s = await getGenerationStatus(postId);
+      if (stopped) return;
+      if (s?.status === "generating") {
+        onProgress({ progress: s.progress ?? 0, step: s.step ?? "" });
+        return;
+      }
+      clearInterval(tick);
+      onProgress(null);
+      // "idle": the server restarted mid-build and lost track — the reload
+      // shows whatever was made.
+      if (s?.status === "error") toast.error(`The build stopped: ${s.error || "something went wrong"}`);
+      else if (s?.status === "done") toast.success("Built — everything is ready");
+      after();
+    } catch {
+      // A blip: ask again on the next tick rather than give up on it.
+    }
+  }, 2000);
+  return () => {
+    stopped = true;
+    clearInterval(tick);
+  };
 }
 
 /* ---------------------------------------------------------------- step 1 */
@@ -1319,6 +1370,7 @@ function GenerateStep({
   onZoom,
   onRebuild,
   onPostNow,
+  building,
 }: {
   post: Post;
   accounts: Account[];
@@ -1329,6 +1381,7 @@ function GenerateStep({
   onZoom: (z: { src: string; caption: string }) => void;
   onRebuild: () => void;
   onPostNow: () => void;
+  building: BuildProgress | null;
 }) {
   const [validity, setValidity] = useState<Record<string, boolean>>({});
   const [time, setTime] = useState(post.scheduled_time?.slice(0, 5) ?? "");
@@ -1479,7 +1532,27 @@ function GenerateStep({
                   />
                 </div>
                 <div className="flex flex-wrap items-center gap-2.5">
-                  {built ? (
+                  {building ? (
+                    <div className="flex w-full items-center gap-2.5" role="status" aria-live="polite">
+                      <span className="grid h-[26px] w-[26px] flex-none place-items-center rounded-full bg-chart-1/15 text-chart-1">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px] font-semibold leading-normal">
+                          Building{building.step ? ` — ${building.step}` : "…"}
+                        </span>
+                        <span className="mt-1.5 block h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                          <span
+                            className="block h-full rounded-full bg-chart-1 transition-[width] duration-500"
+                            style={{ width: `${Math.max(4, building.progress)}%` }}
+                          />
+                        </span>
+                      </span>
+                      <span className="flex-none text-[11px] font-semibold tabular-nums text-subtle">
+                        {building.progress}%
+                      </span>
+                    </div>
+                  ) : built ? (
                     <>
                       <span className="grid h-[26px] w-[26px] flex-none place-items-center rounded-full bg-good/15 text-good">
                         <Check className="h-3.5 w-3.5" strokeWidth={3} />

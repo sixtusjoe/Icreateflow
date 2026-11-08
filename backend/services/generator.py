@@ -171,7 +171,10 @@ async def render_account_slides(
     return slides_dir, slide_9x16_paths
 
 
-async def generate_post(post_id: int, database) -> dict:
+PLATFORM_NAMES = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook"}
+
+
+async def generate_post(post_id: int, database, on_step=None) -> dict:
     """
     Generate all outputs (slides + videos) for a post across all accounts.
 
@@ -234,10 +237,25 @@ async def generate_post(post_id: int, database) -> dict:
     # Update post status
     await db.update_post(database, post_id, status="generating")
 
+    # Progress for the page: steps done of steps in all, and what is being
+    # made now. Each account is its slides, the main video, then one video
+    # per platform — a build takes minutes and showed nothing meanwhile.
+    steps_each = 5
+    total_steps = steps_each * len(accounts)
+    step_no = 0
+
+    def step(label: str) -> None:
+        nonlocal step_no
+        if on_step:
+            on_step(step_no, total_steps, label)
+        step_no += 1
+
     try:
-        for account in accounts:
+        for n, account in enumerate(accounts):
             account_id = account["id"]
             account_name = account["name"]
+            step_no = n * steps_each
+            step(f"{account_name}: slides")
 
             # Render this account's 9:16 slides from the current master /
             # variation images. Shared with regenerate_single_video so any
@@ -255,6 +273,7 @@ async def generate_post(post_id: int, database) -> dict:
             platform_paths = {"youtube": None, "instagram": None, "facebook": None}
             if len(slide_9x16_paths) >= 2:
                 video_path = str(out_dir / "video.mp4")
+                step(f"{account_name}: video")
                 try:
                     await video.build_video(
                         slide_paths=slide_9x16_paths,
@@ -268,6 +287,7 @@ async def generate_post(post_id: int, database) -> dict:
 
                 for plat in ("youtube", "instagram", "facebook"):
                     out_p = str(out_dir / f"video_{plat}.mp4")
+                    step(f"{account_name}: {PLATFORM_NAMES[plat]} video")
                     try:
                         await video.build_platform_video(
                             slide_paths=slide_9x16_paths,
