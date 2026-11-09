@@ -4682,6 +4682,33 @@ async def upload_music(
     finally:
         await database.close()
 
+class MusicFromLink(BaseModel):
+    url: str
+    name: Optional[str] = None
+    genre: Optional[str] = None
+
+
+@app.post("/api/music/from-link")
+async def music_from_link(data: MusicFromLink, user: dict = Depends(get_current_user)):
+    """Take the sound from a post link and add it to the user's library."""
+    from services.sound_extract import SoundError, extract_sound
+
+    try:
+        got = await extract_sound(data.url, Path("music"), name=data.name)
+    except SoundError as e:
+        raise HTTPException(400, str(e))
+    database = await db.get_db()
+    try:
+        track_id = await db.create_music_track(
+            database, got["name"], got["file_path"], genre=(data.genre or None),
+            duration=got["duration"] or None, is_custom=True, user_id=user["id"],
+        )
+        cursor = await database.execute("SELECT * FROM music_tracks WHERE id = ?", (track_id,))
+        return row_to_dict(await cursor.fetchone())
+    finally:
+        await database.close()
+
+
 @app.delete("/api/music/{track_id}")
 async def delete_music(track_id: int, user: dict = Depends(get_current_user)):
     database = await db.get_db()

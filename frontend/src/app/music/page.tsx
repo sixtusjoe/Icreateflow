@@ -16,11 +16,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Music2, Upload, Pause, Play, Search, Trash2, Pencil, Download, Info, FileText, Shield } from "lucide-react";
+import { Music2, Upload, Link2, Pause, Play, Search, Trash2, Pencil, Download, Info, FileText, Shield } from "lucide-react";
 import {
   getMusicTracks,
   getPosts,
   uploadMusicTrack,
+  addMusicFromLink,
   updateMusicTrack,
   deleteMusicTrack,
   fileUrl,
@@ -244,7 +245,7 @@ export default function MusicPage() {
             <ChipCount>{postCount}</ChipCount>
           </Chip>
           <PrimaryButton icon={Upload} onClick={() => setUploadOpen(true)}>
-            Upload a track
+            Add a track
           </PrimaryButton>
         </PageActions>
       </PageHead>
@@ -555,6 +556,8 @@ function TrackRow({
 }
 
 function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
+  const [source, setSource] = useState<"file" | "link">("file");
+  const [link, setLink] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
   const [genre, setGenre] = useState("");
@@ -571,6 +574,7 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
 
   const reset = () => {
     setFile(null);
+    setLink("");
     setName("");
     setGenre("");
     setCleared({ youtube: true, instagram: true, facebook: true, tiktok: false });
@@ -583,23 +587,28 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
     if (!name) setName(f.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim());
   };
 
+  const ready = source === "file" ? Boolean(file && name.trim()) : Boolean(link.trim());
+
   const submit = async () => {
-    if (!file || !name.trim()) return;
+    if (!ready) return;
     setBusy(true);
     try {
-      const track = await uploadMusicTrack(name.trim(), genre.trim(), file);
+      const track =
+        source === "file" && file
+          ? await uploadMusicTrack(name.trim(), genre.trim(), file)
+          : await addMusicFromLink(link.trim(), name.trim(), genre.trim());
       // The server clears a new track for YouTube, Instagram and Facebook.
       // Only correct it when the operator asked for something else.
       const want = PLATS.filter((p) => cleared[p]);
       if (want.join(",") !== "youtube,instagram,facebook") {
         await updateMusicTrack(track.id, { platforms_allowed: want.join(",") });
       }
-      toast.success(`${name.trim()} uploaded`);
+      toast.success(`${track.name || name.trim()} added`);
       reset();
       onClose();
       onDone();
     } catch (e) {
-      toast.error(apiErrorMessage(e, "Upload failed"));
+      toast.error(apiErrorMessage(e, source === "link" ? "Couldn't take the sound from that link" : "Upload failed"));
     } finally {
       setBusy(false);
     }
@@ -607,8 +616,17 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
 
   return (
     <Dialog open={open} onClose={onClose} label="Upload a track" size="md">
-      <DialogHead title="Upload a track" sub="It becomes pickable on every post, per platform." onClose={onClose} />
+      <DialogHead title="Add a track" sub="From a file or a post's sound. It becomes pickable on every post, per platform." onClose={onClose} />
       <DialogBody>
+        <Tabs
+          className="mb-3"
+          value={source}
+          onChange={(k) => setSource(k as "file" | "link")}
+          items={[
+            { key: "file", label: "Audio file", icon: Upload },
+            { key: "link", label: "Post link", icon: Link2 },
+          ]}
+        />
         <input
           ref={picker}
           type="file"
@@ -616,7 +634,20 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
           className="hidden"
           onChange={(e) => pick(e.target.files?.[0] ?? null)}
         />
-        {!file ? (
+        {source === "link" ? (
+          <Field label="Post link">
+            <Input
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              placeholder="https://vm.tiktok.com/…"
+              inputMode="url"
+            />
+            <Hint>
+              A TikTok, Instagram, YouTube, Facebook or X post. We take its sound and save it as an MP3. For TikTok you
+              get the sound itself, so a slideshow works too. Leave the name empty to use the sound&apos;s own name.
+            </Hint>
+          </Field>
+        ) : !file ? (
           <button
             type="button"
             onClick={() => picker.current?.click()}
@@ -674,8 +705,8 @@ function UploadDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
       </DialogBody>
       <DialogFoot>
         <GhostButton onClick={onClose}>Cancel</GhostButton>
-        <PrimaryButton icon={Upload} onClick={submit} disabled={!file || !name.trim() || busy}>
-          {busy ? "Uploading…" : "Upload"}
+        <PrimaryButton icon={source === "link" ? Link2 : Upload} onClick={submit} disabled={!ready || busy}>
+          {busy ? (source === "link" ? "Taking the sound…" : "Uploading…") : source === "link" ? "Add the sound" : "Upload"}
         </PrimaryButton>
       </DialogFoot>
     </Dialog>

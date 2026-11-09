@@ -262,6 +262,10 @@ export const uploadMusicTrack = (name: string, genre: string, file: File) => {
   form.append("file", file);
   return api.post("/api/music", form).then((r) => r.data);
 };
+export const addMusicFromLink = (url: string, name: string, genre: string) =>
+  api
+    .post("/api/music/from-link", { url, name: name || null, genre: genre || null }, { timeout: 180_000 })
+    .then((r) => r.data);
 export const updateMusicTrack = (
   id: number,
   data: { platforms_allowed?: string; name?: string; genre?: string },
