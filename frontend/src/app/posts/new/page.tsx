@@ -60,6 +60,7 @@ import {
   regenerateVideo,
   rerunOcr,
   schedulePost,
+  setPostInstagramFormat,
   setPostTikTokFormat,
   unschedulePost,
   updateSlide,
@@ -1408,6 +1409,27 @@ function GenerateStep({
   const [tiktokAsVideo, setTiktokAsVideo] = useState(
     !!(post as unknown as Record<string, unknown>).tiktok_as_video,
   );
+  const [igAsSlides, setIgAsSlides] = useState(
+    !!(post as unknown as Record<string, unknown>).instagram_as_slides,
+  );
+  // Instagram's carousel limits; outside them only the Reel can go.
+  const slideCount = (post.slides ?? []).length;
+  const igSlidesFit = slideCount >= 2 && slideCount <= 10;
+  const saveIgFormat = async (asSlides: boolean) => {
+    if (asSlides && !igSlidesFit) {
+      toast.error(`Instagram takes 2 to 10 slides in one post; this one has ${slideCount}`);
+      return;
+    }
+    const was = igAsSlides;
+    setIgAsSlides(asSlides);
+    try {
+      await setPostInstagramFormat(post.id, asSlides);
+      toast.success(asSlides ? "Instagram gets the slides" : "Instagram gets the video, with its music");
+    } catch (e) {
+      setIgAsSlides(was);
+      toast.error(apiErrorMessage(e, "Could not change that"));
+    }
+  };
   const saveTiktokFormat = async (asVideo: boolean) => {
     const was = tiktokAsVideo;
     setTiktokAsVideo(asVideo);
@@ -1680,6 +1702,27 @@ function GenerateStep({
                   <Tabs
                     value={tiktokAsVideo ? "video" : "slides"}
                     onChange={(k) => saveTiktokFormat(k === "video")}
+                    items={[
+                      { key: "slides", label: "Slides" },
+                      { key: "video", label: "Video" },
+                    ]}
+                  />
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2.5 rounded-[13px] border border-border bg-secondary px-3.5 py-2.5">
+                  <PlatformIcon platform="instagram" className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[12.5px] font-semibold leading-normal">Instagram gets</span>
+                    <span className="block text-[11px] leading-normal text-subtle">
+                      {igAsSlides
+                        ? "The slides as a swipeable post, 4:5 — goes out live and silent: Instagram lets no app add music to it"
+                        : igSlidesFit
+                          ? "The Reel, with the Instagram track from the Music card"
+                          : `The Reel, with the Instagram track — slides need 2 to 10, this post has ${slideCount}`}
+                    </span>
+                  </span>
+                  <Tabs
+                    value={igAsSlides ? "slides" : "video"}
+                    onChange={(k) => saveIgFormat(k === "slides")}
                     items={[
                       { key: "slides", label: "Slides" },
                       { key: "video", label: "Video" },

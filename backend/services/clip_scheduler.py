@@ -1786,8 +1786,9 @@ async def dispatch_brand_posts_once() -> None:
                                         proxy_url=account_proxy, **tt_kwargs,
                                     )
                             else:
-                                plat_url = _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
-                                if not plat_url:
+                                ig_slides = name == "instagram" and bool(post.get("instagram_as_slides"))
+                                plat_url = None if ig_slides else _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
+                                if not ig_slides and not plat_url:
                                     per_platform[name] = {"status": "skipped", "reason": "no video rendered"}
                                     continue
                                 plat_kwargs: dict = {}
@@ -1795,10 +1796,16 @@ async def dispatch_brand_posts_once() -> None:
                                     plat_kwargs["page_id"] = account["facebook_user_id"]
                                 if name == "instagram" and account.get("instagram_user_id"):
                                     plat_kwargs["ig_user_id"] = account["instagram_user_id"]
-                                res = await adapter.upload_video(
-                                    token, plat_url, caption,
-                                    proxy_url=account_proxy, **plat_kwargs,
-                                )
+                                if ig_slides:
+                                    res = await adapter.upload_carousel(
+                                        token, adapter.carousel_urls(out.get("slides_dir"), public_base), caption,
+                                        proxy_url=account_proxy, **plat_kwargs,
+                                    )
+                                else:
+                                    res = await adapter.upload_video(
+                                        token, plat_url, caption,
+                                        proxy_url=account_proxy, **plat_kwargs,
+                                    )
                             per_platform[name] = {
                                 "status": "posted",
                                 "platform_post_id": res.get("platform_post_id"),

@@ -3446,6 +3446,25 @@ async def update_post_music(post_id: int, data: PostMusic, user: dict = Depends(
         await database.close()
 
 
+class PostInstagramFormat(BaseModel):
+    as_slides: bool
+
+
+@app.put("/api/posts/{post_id}/instagram-format")
+async def update_post_instagram_format(post_id: int, data: PostInstagramFormat, user: dict = Depends(get_current_user)):
+    """Whether Instagram gets this post's slides as a carousel or its Reel."""
+    database = await db.get_db()
+    try:
+        post = await db.get_post(database, post_id)
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await verify_brand_ownership(post["brand_id"], user)
+        await db.update_post(database, post_id, instagram_as_slides=data.as_slides)
+        return {"ok": True, "instagram_as_slides": data.as_slides}
+    finally:
+        await database.close()
+
+
 class PostTikTokFormat(BaseModel):
     as_video: bool
 
@@ -3880,8 +3899,11 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                                 **tt_kwargs,
                             )
                     else:
-                        plat_url = _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
-                        if not plat_url:
+                        # Instagram takes the slides as a carousel when the
+                        # post says so; it has no use for the Reel then.
+                        ig_slides = name == "instagram" and bool(post.get("instagram_as_slides"))
+                        plat_url = None if ig_slides else _public_video_url(name if name in ("youtube", "instagram", "facebook") else None)
+                        if not ig_slides and not plat_url:
                             per_platform[name] = {"status": "skipped", "reason": "no video rendered for this platform"}
                             continue
                         # Per-platform required IDs from the Account row.
@@ -3898,11 +3920,18 @@ async def post_now(post_id: int, user: dict = Depends(get_current_user)):
                             plat_kwargs["page_id"] = account["facebook_user_id"]
                         if name == "instagram" and account.get("instagram_user_id"):
                             plat_kwargs["ig_user_id"] = account["instagram_user_id"]
-                        res = await adapter.upload_video(
-                            token, plat_url, caption,
-                            proxy_url=account_proxy,
-                            **plat_kwargs,
-                        )
+                        if ig_slides:
+                            res = await adapter.upload_carousel(
+                                token, adapter.carousel_urls(out.get("slides_dir"), public_base), caption,
+                                proxy_url=account_proxy,
+                                **plat_kwargs,
+                            )
+                        else:
+                            res = await adapter.upload_video(
+                                token, plat_url, caption,
+                                proxy_url=account_proxy,
+                                **plat_kwargs,
+                            )
                     per_platform[name] = {
                         "status": "posted",
                         "platform_post_id": res.get("platform_post_id"),
@@ -4083,7 +4112,8 @@ async def retry_output(
         # Ownership check: output → post → brand → user
         cur = await database.execute(
             """
-            SELECT o.*, p.caption, p.brand_id, p.status AS post_status, p.tiktok_as_video
+            SELECT o.*, p.caption, p.brand_id, p.status AS post_status, p.tiktok_as_video,
+                   p.instagram_as_slides
             FROM outputs o
             JOIN posts p ON p.id = o.post_id
             WHERE o.id = ?
@@ -4251,8 +4281,9 @@ async def retry_output(
                             proxy_url=account_proxy, **tt_kwargs,
                         )
                 else:
-                    plat_url = _public_video_url(plat)
-                    if not plat_url:
+                    ig_slides = plat == "instagram" and bool(out.get("instagram_as_slides"))
+                    plat_url = None if ig_slides else _public_video_url(plat)
+                    if not ig_slides and not plat_url:
                         per_platform[plat] = {"status": "skipped", "reason": "no video"}
                         continue
                     plat_kwargs: dict = {}
@@ -4260,10 +4291,16 @@ async def retry_output(
                         plat_kwargs["page_id"] = account["facebook_user_id"]
                     if plat == "instagram" and account.get("instagram_user_id"):
                         plat_kwargs["ig_user_id"] = account["instagram_user_id"]
-                    res = await adapter.upload_video(
-                        token, plat_url, caption,
-                        proxy_url=account_proxy, **plat_kwargs,
-                    )
+                    if ig_slides:
+                        res = await adapter.upload_carousel(
+                            token, adapter.carousel_urls(out.get("slides_dir"), public_base), caption,
+                            proxy_url=account_proxy, **plat_kwargs,
+                        )
+                    else:
+                        res = await adapter.upload_video(
+                            token, plat_url, caption,
+                            proxy_url=account_proxy, **plat_kwargs,
+                        )
 
                 per_platform[plat] = {
                     "status": "posted",
@@ -4723,6 +4760,33 @@ async def download_all_outputs(post_id: int, user: dict = Depends(get_current_us
 # =============================================
 # FILE SERVING (public — files are behind auth-gated paths anyway)
 # =============================================
+
+@app.get("/api/files-ig/{file_path:path}")
+async def serve_instagram_slide(file_path: str):
+    """A Brand 9:16 slide as Instagram's 4:5 JPEG, made on request.
+
+    Instagram fetches carousel images from here (its API takes JPEG, no
+    narrower than 4:5). Plain JPEG, and only files under output/.
+    """
+    from io import BytesIO
+    from PIL import Image
+    from services.overlay import to_4x5_from_9x16
+
+    root = Path("output").resolve()
+    full = Path(file_path)
+    full = (full if full.is_absolute() else Path.cwd() / full).resolve()
+    if not full.is_relative_to(root):
+        full = (root / file_path).resolve()
+    if not full.is_relative_to(root) or not full.is_file():
+        raise HTTPException(404, "File not found")
+
+    def _render() -> bytes:
+        buf = BytesIO()
+        to_4x5_from_9x16(Image.open(full)).save(buf, "JPEG", quality=92)
+        return buf.getvalue()
+
+    return Response(content=await asyncio.to_thread(_render), media_type="image/jpeg")
+
 
 @app.get("/api/files-jpg/{file_path:path}")
 async def serve_file_as_jpeg(file_path: str, for_: Optional[int] = Query(None, alias="for")):

@@ -178,6 +178,26 @@ def convert_3x4_to_9x16(img_3x4: Image.Image, bg_color: str = "#000000") -> Imag
     return canvas
 
 
+def to_4x5_from_9x16(img_9x16: Image.Image, bg_color: str = "#000000") -> Image.Image:
+    """Instagram's 4:5 from a 9:16 slide, nothing cut.
+
+    A 9:16 slide is the 3:4 slide centred between bars (convert_3x4_to_9x16).
+    Instagram's API takes no image narrower than 4:5, so take that 3:4 part
+    back out and pad its sides to 4:5 — cropping instead would cut text.
+    """
+    img = img_9x16.convert("RGB")
+    w, h = img.size
+    content_h = min(h, round(w * 4 / 3))
+    top = (h - content_h) // 2
+    content = img.crop((0, top, w, top + content_h))
+    out_w, out_h = w, round(w * 5 / 4)
+    scale = out_h / content.height
+    scaled = content.resize((round(content.width * scale), out_h), Image.LANCZOS)
+    canvas = Image.new("RGB", (out_w, out_h), bg_color)
+    canvas.paste(scaled, ((out_w - scaled.width) // 2, 0))
+    return canvas
+
+
 def _apply_text_block(img: Image.Image, texts: list[dict],
                       weight: str = DEFAULT_WEIGHT,
                       text_style: str = "stroke",

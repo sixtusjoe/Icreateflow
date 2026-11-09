@@ -1,4 +1,4 @@
-"""Instagram Graph API v19 — Reels publish adapter.
+"""Instagram Graph API v19 — Reels and carousel publish adapter.
 
 Requires `ig_user_id` (the IG Business Account id) to be passed in or stored
 alongside the token. The adapter reads it from `kwargs['ig_user_id']` first,
@@ -82,6 +82,105 @@ async def upload_video(
                 raise PostingError(f"IG container error: {reason}")
         else:
             raise PostingError("IG container processing timed out")
+
+        p = await client.post(
+            f"{GRAPH}/{ig_user_id}/media_publish",
+            params={"creation_id": creation_id, "access_token": access_token},
+        )
+        if p.status_code >= 400:
+            raise PostingError(f"IG publish failed {p.status_code}: {p.text[:200]}")
+        media_id = p.json().get("id")
+        if not media_id:
+            raise PostingError("IG publish missing id")
+        return {"platform_post_id": media_id, "permalink": None}
+
+
+#: Instagram's own limits for a carousel.
+CAROUSEL_MIN, CAROUSEL_MAX = 2, 10
+
+
+def carousel_urls(slides_dir: str | None, public_base: str) -> list[str]:
+    """Public URLs for a Brand output's slides as Instagram 4:5 JPEGs.
+
+    Made from the 9:16 slides on request (/api/files-ig/), so an edit to a
+    slide reaches Instagram without a rebuild.
+    """
+    from pathlib import Path
+    from urllib.parse import quote
+
+    if not slides_dir or not Path(slides_dir).is_dir():
+        return []
+    out = []
+    for f in sorted(Path(slides_dir).iterdir()):
+        if f.suffix.lower() == ".png" and f.stem.endswith("_9x16"):
+            rel = str(f).lstrip("./")
+            enc = "/".join(quote(seg, safe="") for seg in rel.split("/") if seg)
+            out.append(f"{public_base}/api/files-ig/{enc}")
+    return out
+
+
+async def upload_carousel(
+    access_token: str, image_urls: list[str], caption: str,
+    proxy_url: str | None = None, **kwargs,
+) -> dict:
+    """Publish a swipeable photo post (carousel).
+
+    Instagram's API puts no sound on a carousel — music on a photo post is
+    added in the app only — and has no draft, so this goes out live.
+    """
+    ig_user_id = kwargs.get("ig_user_id")
+    if not ig_user_id:
+        raise PostingError("Instagram requires ig_user_id (IG Business Account id)")
+    if not CAROUSEL_MIN <= len(image_urls) <= CAROUSEL_MAX:
+        raise PostingError(
+            f"An Instagram carousel takes {CAROUSEL_MIN} to {CAROUSEL_MAX} slides; "
+            f"this post has {len(image_urls)} — send Instagram the video instead"
+        )
+
+    async with httpx.AsyncClient(timeout=120, proxy=proxy_url) as client:
+        children = []
+        for url in image_urls:
+            r = await client.post(
+                f"{GRAPH}/{ig_user_id}/media",
+                params={"image_url": url, "is_carousel_item": "true", "access_token": access_token},
+            )
+            if r.status_code >= 400:
+                raise PostingError(f"IG carousel slide failed {r.status_code}: {r.text[:200]}")
+            child = r.json().get("id")
+            if not child:
+                raise PostingError("IG carousel slide missing id")
+            children.append(child)
+
+        r = await client.post(
+            f"{GRAPH}/{ig_user_id}/media",
+            params={
+                "media_type": "CAROUSEL",
+                "children": ",".join(children),
+                "caption": caption or "",
+                "access_token": access_token,
+            },
+        )
+        if r.status_code >= 400:
+            raise PostingError(f"IG carousel container failed {r.status_code}: {r.text[:200]}")
+        creation_id = r.json().get("id")
+        if not creation_id:
+            raise PostingError("IG carousel container missing id")
+
+        # Images are quick, but the container still has to say FINISHED.
+        for _ in range(30):
+            s = await client.get(
+                f"{GRAPH}/{creation_id}",
+                params={"fields": "status_code,status", "access_token": access_token},
+            )
+            body = s.json() if s.status_code < 400 else {}
+            status = body.get("status_code")
+            if status == "FINISHED":
+                break
+            if status == "ERROR":
+                raise PostingError(f"IG carousel error: {body.get('status') or s.text[:200]}")
+            await asyncio.sleep(3)
+        else:
+            raise PostingError("IG carousel processing timed out")
 
         p = await client.post(
             f"{GRAPH}/{ig_user_id}/media_publish",

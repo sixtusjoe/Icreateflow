@@ -205,6 +205,9 @@ class Post(Base):
     # TikTok gets the post's video (with tiktok_music_track_id) instead of
     # its slides. TikTok lets no app put a sound on a slideshow.
     tiktok_as_video:          Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # Instagram gets the slides as a carousel instead of the Reel. The API
+    # puts no sound on a carousel.
+    instagram_as_slides:      Mapped[bool] = mapped_column(Boolean, server_default="false")
     tiktok_music_track_id:    Mapped[Optional[int]] = mapped_column(ForeignKey("music_tracks.id"), nullable=True)
     scheduled_time: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
@@ -1395,6 +1398,7 @@ async def _migrate_per_platform_post_columns(conn) -> None:
         ("facebook_music_track_id", "INTEGER"),
         ("tiktok_music_track_id", "INTEGER"),
         ("tiktok_as_video", "BOOLEAN DEFAULT FALSE"),
+        ("instagram_as_slides", "BOOLEAN DEFAULT FALSE"),
     ]
     for name, typ in post_cols:
         await conn.execute(text(f"ALTER TABLE posts ADD COLUMN IF NOT EXISTS {name} {typ}"))

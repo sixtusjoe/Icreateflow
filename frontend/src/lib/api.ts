@@ -310,6 +310,10 @@ export const updatePostMusic = (
 export const setPostTikTokFormat = (postId: number, asVideo: boolean) =>
   api.put(`/api/posts/${postId}/tiktok-format`, { as_video: asVideo }).then((r) => r.data);
 
+/** Whether Instagram gets the post's slides as a carousel or its Reel. */
+export const setPostInstagramFormat = (postId: number, asSlides: boolean) =>
+  api.put(`/api/posts/${postId}/instagram-format`, { as_slides: asSlides }).then((r) => r.data);
+
 // --- Downloads ---
 export const downloadFile = async (postId: number, accountId?: number) => {
   const url = accountId
